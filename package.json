@@ -1,5 +1,5 @@
 {
-  "name": "ai-ops-tool",
+  "name": "runbook-bridge",
   "version": "0.1.7",
   "private": true,
   "author": "AI Ops Tool contributors",
@@ -12,14 +12,14 @@
     "electron"
   ],
   "type": "module",
-  "description": "Personal SSH session broker and MCP tool for legacy application operations",
-  "homepage": "https://github.com/coco-ari/ai-ops-tool#readme",
+  "description": "A local SSH session bridge that lets AI agents follow runbooks without receiving server credentials",
+  "homepage": "https://github.com/coco-ari/runbook-bridge#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/coco-ari/ai-ops-tool.git"
+    "url": "git+https://github.com/coco-ari/runbook-bridge.git"
   },
   "bugs": {
-    "url": "https://github.com/coco-ari/ai-ops-tool/issues"
+    "url": "https://github.com/coco-ari/runbook-bridge/issues"
   },
   "main": "src/main.mjs",
   "bin": {

@@ -1,4 +1,4 @@
-# AI 运维工具
+# RunbookBridge（AI 运维工具）
 
 面向个人使用的 Windows SSH 运维桌面工具。用户在桌面界面建立 SSH 连接，Codex 通过本地 MCP 复用该连接执行旧项目的部署、上传和日志下载操作；MCP 接口不会返回密码、私钥口令或代理密码。
 
@@ -46,8 +46,8 @@ SSH 跳板机暂未进入 0.1.x；当前可用 SOCKS5 或 HTTP CONNECT 代理。
 需要 Node.js 22 或更新版本，以及 pnpm。
 
 ```powershell
-git clone https://github.com/coco-ari/ai-ops-tool.git
-cd ai-ops-tool
+git clone https://github.com/coco-ari/runbook-bridge.git
+cd runbook-bridge
 corepack pnpm install
 pnpm test
 pnpm start
