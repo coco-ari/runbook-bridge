@@ -1,0 +1,72 @@
+{
+  "name": "ai-ops-tool",
+  "version": "0.1.7",
+  "private": true,
+  "author": "AI Ops Tool contributors",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "codex",
+    "ssh",
+    "devops",
+    "electron"
+  ],
+  "type": "module",
+  "description": "Personal SSH session broker and MCP tool for legacy application operations",
+  "homepage": "https://github.com/coco-ari/ai-ops-tool#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coco-ari/ai-ops-tool.git"
+  },
+  "bugs": {
+    "url": "https://github.com/coco-ari/ai-ops-tool/issues"
+  },
+  "main": "src/main.mjs",
+  "bin": {
+    "ai-ops-mcp": "src/mcp.mjs"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.mjs",
+    "test:ui": "electron scripts/ui-workflow-smoke.cjs",
+    "check": "node --check src/main.mjs && node --check src/mcp.mjs && node --check src/ssh-broker.mjs && node --check src/command-policy.mjs && node --check src/project-store.mjs && node --check src/credential-store.mjs && node --check src/connection-manager.mjs && node --check renderer/app.js && node --check scripts/ui-workflow-smoke.cjs",
+    "dist": "electron-builder --win"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.4",
+    "socks": "^2.8.7",
+    "ssh2": "^1.17.0",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "electron": "^43.3.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.local.aiopstool",
+    "productName": "AI运维工具",
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/ssh2/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

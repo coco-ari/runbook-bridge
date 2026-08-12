@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build and test output
+dist/
+artifacts/
+coverage/
+*.log
+*.tmp
+*.part
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+credentials.enc.json
+broker.token
+projects/
+data/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini

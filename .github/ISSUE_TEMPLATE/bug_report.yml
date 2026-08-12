@@ -1,0 +1,44 @@
+name: Bug 报告
+description: 报告可以稳定复现的产品问题
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 请勿提交密码、私钥、Token、真实服务器地址或敏感日志。安全漏洞请使用 GitHub Security Advisory 私下报告。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      placeholder: 例如 0.1.7
+    validations:
+      required: true
+  - type: dropdown
+    id: windows
+    attributes:
+      label: Windows 版本
+      options:
+        - Windows 11
+        - Windows 10
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: 请使用脱敏后的项目名、地址和路径。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+    validations:
+      required: true

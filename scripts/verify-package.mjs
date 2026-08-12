@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+
+const executable = path.resolve(process.argv[2] ?? 'dist/win-unpacked/AI运维工具.exe');
+await fs.access(executable);
+const mcpEntrypoint = path.join(path.dirname(executable), 'resources', 'app.asar', 'src', 'mcp.mjs');
+const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-package-'));
+try {
+  const transport = new StdioClientTransport({
+    command: executable,
+    args: [mcpEntrypoint],
+    env: { ...process.env, AI_OPS_DATA_DIR: dataRoot, ELECTRON_RUN_AS_NODE: '1' },
+    stderr: 'pipe',
+  });
+  transport.stderr?.on('data', (chunk) => process.stderr.write(chunk));
+  const client = new Client({ name: 'package-verifier', version: '1.0.0' });
+  await client.connect(transport);
+  const tools = await client.listTools();
+  assert.deepEqual(
+    tools.tools.map((tool) => tool.name),
+    ['list_projects', 'open_project', 'execute', 'upload', 'download'],
+  );
+  await client.close();
+  console.log(`verified: ${executable}`);
+} finally {
+  await fs.rm(dataRoot, { recursive: true, force: true });
+}
