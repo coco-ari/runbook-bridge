@@ -2,6 +2,7 @@
   "name": "runbook-bridge",
   "version": "0.1.7",
   "private": true,
+  "packageManager": "pnpm@11.21.0",
   "author": "AI Ops Tool contributors",
   "license": "MIT",
   "keywords": [
