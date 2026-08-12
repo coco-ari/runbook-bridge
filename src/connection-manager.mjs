@@ -15,9 +15,11 @@ export class ConnectionManager {
     this.projectStore = projectStore;
     this.credentialStore = credentialStore;
     this.broker = broker;
+    this.broker.setReconnectHandler?.((projectId) => this.reconnect(projectId));
   }
 
   async connect(projectId, suppliedSecrets = {}) {
+    this.broker.stopAutoReconnect?.(projectId);
     const config = await this.projectStore.get(projectId);
     let savedSecrets = {};
     if (config.credentials.remember) {
@@ -47,6 +49,20 @@ export class ConnectionManager {
       await this.broker.disconnect(projectId, 'credential-save-failed');
       throw error;
     }
-    return connection;
+    const requiresRememberedSecret =
+      config.auth.type === 'password' ||
+      Boolean(secrets.privateKeyPassphrase) ||
+      Boolean(secrets.proxyPassword);
+    const autoReconnectEnabled = config.credentials.remember || !requiresRememberedSecret;
+    if (autoReconnectEnabled) this.broker.enableAutoReconnect?.(projectId);
+    return { ...connection, autoReconnectEnabled };
+  }
+
+  async reconnect(projectId) {
+    const config = await this.projectStore.get(projectId);
+    const secrets = config.credentials.remember
+      ? await this.credentialStore.load(projectId, config)
+      : {};
+    return this.broker.connectAutomatically(projectId, secrets);
   }
 }

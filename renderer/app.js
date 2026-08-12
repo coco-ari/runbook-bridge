@@ -113,7 +113,8 @@ function renderProjects() {
   for (const project of state.projects) {
     const button = document.createElement('button');
     button.className = `project-item${project.id === state.selectedProjectId ? ' selected' : ''}`;
-    button.innerHTML = `<span class="project-dot ${project.status.connected ? 'connected' : ''}"></span><strong></strong><small></small>`;
+    const dotState = project.status.connected ? 'connected' : project.status.reconnecting ? 'reconnecting' : '';
+    button.innerHTML = `<span class="project-dot ${dotState}"></span><strong></strong><small></small>`;
     button.querySelector('strong').textContent = project.name;
     button.querySelector('small').textContent = project.ssh.host;
     button.addEventListener('click', async () => {
@@ -137,13 +138,15 @@ async function renderSelectedProject() {
   if (!project) return;
   elements.projectName.textContent = project.name;
   elements.serverAddress.textContent = `${project.ssh.username}@${project.ssh.host}:${project.ssh.port}`;
-  elements.badge.textContent = project.status.connected ? '已连接' : '未连接';
-  elements.badge.className = `badge ${project.status.connected ? 'connected' : 'disconnected'}`;
-  elements.connectionButton.textContent = project.status.connected ? '断开' : '连接';
-  elements.connectionButton.className = project.status.connected ? 'outline danger' : 'outline';
-  elements.editProject.disabled = project.status.connected;
-  elements.editProject.title = project.status.connected ? '请先断开当前连接' : '修改服务器、认证和代理设置';
-  updateCodexStatus(project.status.connected);
+  const reconnecting = project.status.reconnecting || (project.status.connecting && !project.status.connected);
+  const connectionActive = project.status.connected || reconnecting;
+  elements.badge.textContent = project.status.connected ? '已连接' : reconnecting ? '自动重连中' : '未连接';
+  elements.badge.className = `badge ${project.status.connected ? 'connected' : reconnecting ? 'reconnecting' : 'disconnected'}`;
+  elements.connectionButton.textContent = project.status.connected ? '断开' : reconnecting ? '停止重连' : '连接';
+  elements.connectionButton.className = connectionActive ? 'outline danger' : 'outline';
+  elements.editProject.disabled = connectionActive;
+  elements.editProject.title = connectionActive ? '请先断开当前连接或停止重连' : '修改服务器、认证和代理设置';
+  updateCodexStatus(project.status);
   const docs = project.documents ?? [];
   if (!docs.includes(state.selectedDocument)) state.selectedDocument = docs[0] ?? null;
   renderDocumentTabs(docs);
@@ -160,12 +163,23 @@ async function renderSelectedProject() {
   }
 }
 
-function updateCodexStatus(connected) {
-  elements.codexStatus.className = `codex-status ${connected ? 'connected' : 'disconnected'}`;
+function updateCodexStatus(status) {
+  const reconnecting = status.reconnecting || (status.connecting && !status.connected);
+  elements.codexStatus.className = `codex-status ${status.connected ? 'connected' : reconnecting ? 'reconnecting' : 'disconnected'}`;
   const strong = elements.codexStatus.querySelector('strong');
   const span = elements.codexStatus.querySelector('span');
-  strong.textContent = connected ? 'Codex 可以使用当前 SSH 连接' : 'Codex 当前不能操作服务器';
-  span.textContent = connected ? '关闭连接后将立即失效' : '在桌面工具中连接项目后即可使用';
+  strong.textContent = status.connected
+    ? 'Codex 可以使用当前 SSH 连接'
+    : reconnecting
+      ? 'SSH 正在自动重连'
+      : 'Codex 当前不能操作服务器';
+  span.textContent = status.connected
+    ? status.autoReconnectEnabled
+      ? '网络意外中断时会自动重连；主动断开后立即失效'
+      : '当前连接未保存所需凭据，意外断线后需要手动连接'
+    : reconnecting
+      ? `网络恢复后自动连接（第 ${status.reconnectAttempt || 1} 次尝试）`
+      : '在桌面工具中连接项目后即可使用';
 }
 
 function renderDocumentTabs(docs) {
@@ -498,11 +512,11 @@ async function submitProject(event) {
 async function toggleConnection() {
   const project = currentProject();
   if (!project) return;
-  if (project.status.connected) {
+  if (project.status.connected || project.status.reconnecting || project.status.connecting) {
     elements.connectionButton.disabled = true;
     try {
       unwrap(await window.aiOps.disconnectProject(project.id));
-      showToast('SSH 已断开。');
+      showToast(project.status.connected ? 'SSH 已断开。' : '已停止自动重连。');
       await refreshProjects();
     } catch (error) {
       showToast(error.message, true);

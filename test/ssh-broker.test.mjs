@@ -18,8 +18,15 @@ async function startSshServer(t, { authorizedPublicKey, sftpRoot, connectionTrac
   });
   const allowedKey = authorizedPublicKey ? ssh2.utils.parseKey(authorizedPublicKey) : null;
   const clients = new Set();
-  if (connectionTracker) connectionTracker.activeClients = () => clients.size;
+  if (connectionTracker) {
+    connectionTracker.totalConnections = 0;
+    connectionTracker.activeClients = () => clients.size;
+    connectionTracker.disconnectAll = () => {
+      for (const client of clients) client.end();
+    };
+  }
   const server = new SshServer({ hostKeys: [privateKey] }, (client) => {
+    if (connectionTracker) connectionTracker.totalConnections += 1;
     clients.add(client);
     client.on('error', () => {});
     client.on('close', () => clients.delete(client));
@@ -149,6 +156,15 @@ async function startSshServer(t, { authorizedPublicKey, sftpRoot, connectionTrac
   return server.address().port;
 }
 
+async function waitFor(predicate, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail('condition was not reached before timeout');
+}
+
 test('SSH broker confirms host key, executes through the live session, and revokes on disconnect', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-ssh-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -263,6 +279,61 @@ test('SSH broker streams uploads and downloads through SFTP', async (t) => {
   assert.equal(await fs.readFile(downloaded.localPath, 'utf8'), 'Started DemoApplication\n');
   assert.equal(downloaded.sizeBytes, 24);
   await broker.disconnect(project.id);
+});
+
+test('unexpected SSH loss reconnects automatically and a user disconnect cancels future retries', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-auto-reconnect-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const tracker = {};
+  const port = await startSshServer(t, { connectionTracker: tracker });
+  const store = new ProjectStore(root);
+  const project = await store.create({
+    id: 'auto-reconnect',
+    name: '自动重连测试',
+    ssh: { host: '127.0.0.1', port, username: 'deploy' },
+    auth: { type: 'password' },
+    proxy: { type: 'direct' },
+    credentials: { remember: true },
+  });
+  const broker = new SshBroker(store, { reconnectDelaysMs: [10, 20] });
+  let fingerprint;
+  await assert.rejects(
+    () => broker.connect(project.id, { password: 'test-password' }),
+    (error) => {
+      fingerprint = error.details?.fingerprint;
+      return error.code === 'SSH_HOST_KEY_CONFIRM_REQUIRED';
+    },
+  );
+  await broker.connect(project.id, { password: 'test-password', acceptHostKey: fingerprint });
+  broker.setReconnectHandler((projectId) =>
+    broker.connectAutomatically(projectId, { password: 'test-password' }));
+  broker.enableAutoReconnect(project.id);
+  const firstGeneration = broker.status(project.id).generation;
+
+  tracker.disconnectAll();
+  await waitFor(() => broker.status(project.id).reconnecting);
+  assert.equal(broker.status(project.id).connected, false);
+  await waitFor(() => broker.status(project.id).connected);
+  assert.ok(broker.status(project.id).generation > firstGeneration);
+  assert.ok(tracker.totalConnections >= 3);
+
+  tracker.disconnectAll();
+  await waitFor(() => broker.status(project.id).reconnecting);
+  const connectionsBeforeStop = tracker.totalConnections;
+  await broker.disconnect(project.id, 'user');
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.deepEqual(broker.status(project.id), {
+    connected: false,
+    connecting: false,
+    reconnecting: false,
+    reconnectAttempt: 0,
+    nextReconnectAt: null,
+    reconnectErrorCode: null,
+    autoReconnectEnabled: false,
+    generation: broker.status(project.id).generation,
+    connectedAt: null,
+  });
+  assert.equal(tracker.totalConnections, connectionsBeforeStop);
 });
 
 test('concurrent connects leave at most one managed SSH client and disconnect revokes it', async (t) => {

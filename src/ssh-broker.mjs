@@ -10,6 +10,7 @@ import { createProxySocket } from './proxy.mjs';
 const MAX_COMMAND_OUTPUT = 512 * 1024;
 const CONTEXT_TTL_MS = 30 * 60 * 1000;
 const MAX_CONTEXTS_PER_PROJECT = 32;
+const DEFAULT_RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
 const { Client } = ssh2;
 
 function fingerprint(key) {
@@ -147,27 +148,132 @@ function redactCommand(command) {
 }
 
 export class SshBroker {
-  constructor(projectStore) {
+  constructor(projectStore, { reconnectDelaysMs = DEFAULT_RECONNECT_DELAYS_MS } = {}) {
     this.store = projectStore;
     this.sessions = new Map();
     this.generations = new Map();
     this.contexts = new Map();
     this.pendingConnections = new Map();
     this.connectionOperations = new Map();
+    this.autoReconnectProjects = new Set();
+    this.reconnectStates = new Map();
+    this.reconnectHandler = null;
+    this.reconnectDelaysMs = reconnectDelaysMs.length ? [...reconnectDelaysMs] : [1_000];
+    this.shuttingDown = false;
   }
 
   status(projectId) {
     const session = this.sessions.get(projectId);
+    const reconnect = this.reconnectStates.get(projectId);
     return {
       connected: Boolean(session),
       connecting: this.pendingConnections.has(projectId),
+      reconnecting: Boolean(reconnect),
+      reconnectAttempt: reconnect?.attempt ?? 0,
+      nextReconnectAt: reconnect?.nextRetryAt ?? null,
+      reconnectErrorCode: reconnect?.lastErrorCode ?? null,
+      autoReconnectEnabled: this.autoReconnectProjects.has(projectId),
       generation: session?.generation ?? this.generations.get(projectId) ?? 0,
       connectedAt: session?.connectedAt ?? null,
     };
   }
 
   listStatuses() {
-    return Object.fromEntries([...this.sessions.keys()].map((id) => [id, this.status(id)]));
+    const projectIds = new Set([
+      ...this.sessions.keys(),
+      ...this.pendingConnections.keys(),
+      ...this.reconnectStates.keys(),
+    ]);
+    return Object.fromEntries([...projectIds].map((id) => [id, this.status(id)]));
+  }
+
+  setReconnectHandler(handler) {
+    this.reconnectHandler = handler;
+  }
+
+  enableAutoReconnect(projectId) {
+    if (this.shuttingDown) return;
+    this.autoReconnectProjects.add(projectId);
+    if (!this.sessions.has(projectId) && !this.pendingConnections.has(projectId)) {
+      this.scheduleAutoReconnect(projectId, 'enabled-after-connection-loss');
+    }
+  }
+
+  stopAutoReconnect(projectId) {
+    this.autoReconnectProjects.delete(projectId);
+    const state = this.reconnectStates.get(projectId);
+    if (state?.timer) clearTimeout(state.timer);
+    this.reconnectStates.delete(projectId);
+  }
+
+  clearReconnectState(projectId) {
+    const state = this.reconnectStates.get(projectId);
+    if (state?.timer) clearTimeout(state.timer);
+    this.reconnectStates.delete(projectId);
+  }
+
+  scheduleAutoReconnect(projectId, reason) {
+    if (
+      this.shuttingDown ||
+      !this.autoReconnectProjects.has(projectId) ||
+      !this.reconnectHandler ||
+      this.sessions.has(projectId)
+    ) return;
+    const current = this.reconnectStates.get(projectId);
+    if (current?.timer || current?.inProgress) return;
+    const attempt = (current?.attempt ?? 0) + 1;
+    const delayMs = this.reconnectDelaysMs[Math.min(attempt - 1, this.reconnectDelaysMs.length - 1)];
+    const state = {
+      attempt,
+      reason,
+      inProgress: false,
+      lastErrorCode: current?.lastErrorCode ?? null,
+      nextRetryAt: new Date(Date.now() + delayMs).toISOString(),
+      timer: null,
+    };
+    state.timer = setTimeout(() => this.runAutoReconnect(projectId, state), delayMs);
+    state.timer.unref?.();
+    this.reconnectStates.set(projectId, state);
+  }
+
+  async runAutoReconnect(projectId, state) {
+    if (this.reconnectStates.get(projectId) !== state) return;
+    state.timer = null;
+    state.inProgress = true;
+    state.nextRetryAt = null;
+    try {
+      await this.reconnectHandler(projectId);
+      if (!this.autoReconnectProjects.has(projectId)) return;
+      this.clearReconnectState(projectId);
+      await this.store.appendAudit(projectId, {
+        type: 'auto-reconnect',
+        result: 'success',
+        attempt: state.attempt,
+      }).catch(() => undefined);
+    } catch (error) {
+      if (!this.autoReconnectProjects.has(projectId) || this.shuttingDown) {
+        this.clearReconnectState(projectId);
+        return;
+      }
+      state.inProgress = false;
+      state.lastErrorCode = error?.code ?? 'SSH_CONNECTION_FAILED';
+      await this.store.appendAudit(projectId, {
+        type: 'auto-reconnect',
+        result: 'failed',
+        attempt: state.attempt,
+        errorCode: state.lastErrorCode,
+      }).catch(() => undefined);
+      this.scheduleAutoReconnect(projectId, 'retry');
+    }
+  }
+
+  connectAutomatically(projectId, secrets = {}) {
+    return this.runConnectionOperation(projectId, async () => {
+      if (!this.autoReconnectProjects.has(projectId) || this.shuttingDown) {
+        throw new AppError('SSH_CONNECTION_CANCELLED', 'SSH 自动重连已取消。');
+      }
+      return this.connectUnlocked(projectId, secrets);
+    });
   }
 
   runConnectionOperation(projectId, operation) {
@@ -310,6 +416,7 @@ export class SshBroker {
       const record = { client: session.client, generation, connectedAt: new Date().toISOString() };
       publishedRecord = record;
       this.sessions.set(projectId, record);
+      this.clearReconnectState(projectId);
       const clearInterruptedSession = (reason) => {
         if (this.sessions.get(projectId) === record) {
           this.sessions.delete(projectId);
@@ -317,6 +424,7 @@ export class SshBroker {
           this.store
             .appendAudit(projectId, { type: 'disconnect', reason, result: 'connection-lost' })
             .catch(() => undefined);
+          this.scheduleAutoReconnect(projectId, reason);
         }
       };
       session.client.on('error', () => clearInterruptedSession('connection-error'));
@@ -367,6 +475,7 @@ export class SshBroker {
   }
 
   disconnect(projectId, reason = 'user') {
+    if (reason !== 'reconnect') this.stopAutoReconnect(projectId);
     this.cancelPendingConnection(projectId);
     return this.runConnectionOperation(projectId, () => this.disconnectUnlocked(projectId, reason));
   }
@@ -396,10 +505,13 @@ export class SshBroker {
   }
 
   async closeAll() {
+    this.shuttingDown = true;
     const projectIds = new Set([
       ...this.sessions.keys(),
       ...this.pendingConnections.keys(),
       ...this.connectionOperations.keys(),
+      ...this.autoReconnectProjects.keys(),
+      ...this.reconnectStates.keys(),
     ]);
     await Promise.all([...projectIds].map((id) => this.disconnect(id, 'app-exit')));
   }

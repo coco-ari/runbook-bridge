@@ -27,9 +27,17 @@ test('a user-supplied password is encrypted after success and reused only on a l
   });
   const credentials = new CredentialStore(projects, fakeEncryption);
   const calls = [];
+  const automaticallyEnabled = [];
+  let reconnectHandler;
   const broker = {
+    setReconnectHandler(handler) { reconnectHandler = handler; },
+    enableAutoReconnect(projectId) { automaticallyEnabled.push(projectId); },
     async connect(projectId, secrets) {
       calls.push({ projectId, secrets: { ...secrets } });
+      return { connected: true };
+    },
+    async connectAutomatically(projectId, secrets) {
+      calls.push({ projectId, secrets: { ...secrets }, automatic: true });
       return { connected: true };
     },
     async disconnect() {},
@@ -37,9 +45,13 @@ test('a user-supplied password is encrypted after success and reused only on a l
   const connections = new ConnectionManager(projects, credentials, broker);
   await connections.connect(project.id, { password: 'remember-me' });
   await connections.connect(project.id, {});
-  assert.equal(calls.length, 2);
+  await reconnectHandler(project.id);
+  assert.equal(calls.length, 3);
   assert.equal(calls[0].secrets.password, 'remember-me');
   assert.equal(calls[1].secrets.password, 'remember-me');
+  assert.equal(calls[2].secrets.password, 'remember-me');
+  assert.equal(calls[2].automatic, true);
+  assert.deepEqual(automaticallyEnabled, [project.id, project.id]);
   assert.equal(await credentials.has(project.id), true);
 });
 

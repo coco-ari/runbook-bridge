@@ -9,7 +9,7 @@ import { AppError, toPublicError } from './errors.mjs';
 
 const dataRoot = defaultDataRoot();
 const store = new ProjectStore(dataRoot);
-const MCP_VERSION = '0.1.7';
+const MCP_VERSION = '0.1.8';
 
 const instructions = `这是一个个人 SSH 运维工具。执行任何服务器操作前，必须先调用 open_project 读取最新项目文档，并使用返回的 contextToken。必须遵守项目文档中的部署流程、路径和限制。execute 命令还会经过桌面 Broker 的项目安全策略，命中高危规则时会返回 COMMAND_BLOCKED，不能尝试改写、混淆或绕过规则。不得要求用户在对话中提供服务器密码、私钥口令或代理密码。不得尝试通过 MCP 建立新的 SSH 连接；项目未连接时，提示用户在桌面工具中点击连接。upload 和 download 只传文件路径，不要把二进制内容放进参数。`;
 

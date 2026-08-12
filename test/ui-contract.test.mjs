@@ -20,6 +20,9 @@ test('renderer exposes project lifecycle, document editing, and per-project comm
   assert.match(renderer, /documentDialog\.showModal/);
   assert.match(renderer, /project\.credentialsSaved/);
   assert.match(renderer, /project\.commandPolicy\?\.enabled/);
+  assert.match(renderer, /project\.status\.reconnecting/);
+  assert.match(renderer, /停止重连/);
+  assert.match(renderer, /SSH 正在自动重连/);
   assert.match(renderer, /customDeny\.value\.split/);
   assert.match(renderer, /loadedDocumentKey !== currentDocumentKey\(\)/);
   assert.match(renderer, /state\.documentDirty = true/);
