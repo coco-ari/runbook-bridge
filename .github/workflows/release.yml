@@ -48,4 +48,6 @@ jobs:
         run: |
           $installer = Get-ChildItem -LiteralPath dist -Filter "AI运维工具 Setup *.exe" | Select-Object -First 1
           if (-not $installer) { throw "Windows installer was not produced." }
-          gh release create $env:GITHUB_REF_NAME $installer.FullName --generate-notes --title $env:GITHUB_REF_NAME
+          $releaseInstaller = Join-Path $installer.DirectoryName "RunbookBridge-Setup-$($env:GITHUB_REF_NAME.TrimStart('v')).exe"
+          Copy-Item -LiteralPath $installer.FullName -Destination $releaseInstaller
+          gh release create $env:GITHUB_REF_NAME $releaseInstaller --generate-notes --title $env:GITHUB_REF_NAME
