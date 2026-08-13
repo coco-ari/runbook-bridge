@@ -5,12 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import ssh2 from 'ssh2';
+import YAML from 'yaml';
 import { ProjectStore } from '../src/project-store.mjs';
 import { SshBroker } from '../src/ssh-broker.mjs';
 
 const { Server: SshServer } = ssh2;
 
-async function startSshServer(t, { authorizedPublicKey, sftpRoot, connectionTracker } = {}) {
+async function startSshServer(t, { authorizedPublicKey, sftpRoot, connectionTracker, authenticationState } = {}) {
   const { privateKey } = crypto.generateKeyPairSync('rsa', {
     modulusLength: 2048,
     privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
@@ -31,7 +32,12 @@ async function startSshServer(t, { authorizedPublicKey, sftpRoot, connectionTrac
     client.on('error', () => {});
     client.on('close', () => clients.delete(client));
     client.on('authentication', (ctx) => {
-      if (ctx.method === 'password' && ctx.username === 'deploy' && ctx.password === 'test-password') ctx.accept();
+      if (
+        ctx.method === 'password' &&
+        ctx.username === 'deploy' &&
+        ctx.password === 'test-password' &&
+        authenticationState?.allowPassword !== false
+      ) ctx.accept();
       else if (
         ctx.method === 'publickey' &&
         ctx.username === 'deploy' &&
@@ -281,6 +287,78 @@ test('SSH broker streams uploads and downloads through SFTP', async (t) => {
   await broker.disconnect(project.id);
 });
 
+test('structured log search accepts explicit absolute files and returns bounded context metadata', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-log-search-'));
+  const remoteRoot = path.join(root, 'remote');
+  await fs.mkdir(path.join(remoteRoot, 'logs'), { recursive: true });
+  await fs.writeFile(
+    path.join(remoteRoot, 'logs', 'app.log'),
+    ['INFO boot', 'request order-42 accepted', `WARN ${'x'.repeat(9_000)}`, 'order-42 completed', 'INFO done'].join('\n'),
+  );
+  await fs.mkdir(path.join(remoteRoot, 'archive'), { recursive: true });
+  await fs.writeFile(path.join(remoteRoot, 'archive', 'old.log'), 'archived order-42\n');
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const port = await startSshServer(t, { sftpRoot: remoteRoot });
+  const store = new ProjectStore(root);
+  const project = await store.create({
+    id: 'log-search-project',
+    name: '日志搜索测试',
+    ssh: { host: '127.0.0.1', port, username: 'deploy' },
+    auth: { type: 'password' },
+    proxy: { type: 'direct' },
+  });
+  const configPath = path.join(root, 'projects', project.id, 'project.yaml');
+  const legacyConfig = YAML.parse(await fs.readFile(configPath, 'utf8'));
+  legacyConfig.diagnostics = { allowedLogRoots: ['/logs'] };
+  await fs.writeFile(configPath, YAML.stringify(legacyConfig), 'utf8');
+  const broker = new SshBroker(store);
+  let fingerprint;
+  await assert.rejects(
+    () => broker.connect(project.id, { password: 'test-password' }),
+    (error) => {
+      fingerprint = error.details?.fingerprint;
+      return error.code === 'SSH_HOST_KEY_CONFIRM_REQUIRED';
+    },
+  );
+  await broker.connect(project.id, { password: 'test-password', acceptHostKey: fingerprint });
+  const { docsHash } = await store.readContext(project.id);
+  const { contextToken } = await broker.openContext(project.id, docsHash);
+  const result = await broker.searchLogs(project.id, contextToken, {
+    files: ['/logs/app.log'],
+    keywords: ['order-42'],
+    beforeLines: 1,
+    afterLines: 1,
+    pageSize: 1,
+  });
+  assert.equal(result.summary.totalMatches, 2);
+  assert.equal(result.summary.lineNumberScope, 'scanned_snapshot');
+  assert.equal('displayTimezone' in result.summary, false);
+  assert.equal('timeNormalization' in result.summary, false);
+  assert.equal(result.contexts.length, 1);
+  assert.match(result.contexts[0].lines.map((line) => line.text).join('\n'), /order-42/);
+  assert.equal(result.summary.truncated, true);
+  assert.equal(result.summary.outputTruncated, true);
+  assert.equal(result.summary.truncation.sourceTruncated, false);
+  assert.equal(result.summary.firstMatch.text, undefined);
+  assert.equal(result.summary.lastMatch.text, undefined);
+  assert.equal(result.summary.snapshots[0].firstMatch.text, undefined);
+  assert.equal(result.summary.matchTextIncludedInSummary, false);
+  assert.equal(result.contexts[0].lines.some((line) => line.textTruncated), true);
+  const legacyWhitelistIgnored = await broker.searchLogs(project.id, contextToken, {
+    files: ['/archive/old.log'],
+    keywords: ['order-42'],
+  });
+  assert.equal(legacyWhitelistIgnored.summary.totalMatches, 1);
+  await assert.rejects(
+    () => broker.searchLogs(project.id, contextToken, {
+      files: ['logs/app.log'],
+      keywords: ['order-42'],
+    }),
+    (error) => error.code === 'PATH_INVALID',
+  );
+  await broker.disconnect(project.id);
+});
+
 test('unexpected SSH loss reconnects automatically and a user disconnect cancels future retries', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-auto-reconnect-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -326,6 +404,7 @@ test('unexpected SSH loss reconnects automatically and a user disconnect cancels
     connected: false,
     connecting: false,
     reconnecting: false,
+    reconnectStopped: false,
     reconnectAttempt: 0,
     nextReconnectAt: null,
     reconnectErrorCode: null,
@@ -334,6 +413,59 @@ test('unexpected SSH loss reconnects automatically and a user disconnect cancels
     connectedAt: null,
   });
   assert.equal(tracker.totalConnections, connectionsBeforeStop);
+});
+
+test('automatic reconnect stops after SSH authentication is rejected', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-auth-reconnect-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const tracker = {};
+  const authenticationState = { allowPassword: true };
+  const port = await startSshServer(t, { connectionTracker: tracker, authenticationState });
+  const store = new ProjectStore(root);
+  const project = await store.create({
+    id: 'auth-reconnect',
+    name: '认证失败停止重连',
+    ssh: { host: '127.0.0.1', port, username: 'deploy' },
+    auth: { type: 'password' },
+    proxy: { type: 'direct' },
+    credentials: { remember: true },
+  });
+  const broker = new SshBroker(store, { reconnectDelaysMs: [10, 20] });
+  let fingerprint;
+  await assert.rejects(
+    () => broker.connect(project.id, { password: 'test-password' }),
+    (error) => {
+      fingerprint = error.details?.fingerprint;
+      return error.code === 'SSH_HOST_KEY_CONFIRM_REQUIRED';
+    },
+  );
+  await broker.connect(project.id, { password: 'test-password', acceptHostKey: fingerprint });
+  broker.setReconnectHandler((projectId) =>
+    broker.connectAutomatically(projectId, { password: 'test-password' }));
+  broker.enableAutoReconnect(project.id);
+
+  authenticationState.allowPassword = false;
+  tracker.disconnectAll();
+  await waitFor(() => broker.status(project.id).reconnectStopped);
+  const stopped = broker.status(project.id);
+  assert.equal(stopped.connected, false);
+  assert.equal(stopped.reconnecting, false);
+  assert.equal(stopped.reconnectStopped, true);
+  assert.equal(stopped.reconnectErrorCode, 'SSH_AUTH_FAILED');
+  assert.equal(stopped.autoReconnectEnabled, false);
+  const connectionsAfterStop = tracker.totalConnections;
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(tracker.totalConnections, connectionsAfterStop);
+
+  const audit = (await fs.readFile(path.join(root, 'projects', project.id, 'audit', 'operations.jsonl'), 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.ok(audit.some((entry) =>
+    entry.type === 'auto-reconnect' &&
+    entry.result === 'stopped' &&
+    entry.errorCode === 'SSH_AUTH_FAILED' &&
+    entry.retryable === false));
 });
 
 test('concurrent connects leave at most one managed SSH client and disconnect revokes it', async (t) => {

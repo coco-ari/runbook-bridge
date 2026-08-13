@@ -99,7 +99,12 @@ export class BrokerServer {
       case 'statuses':
         return this.broker.listStatuses();
       case 'openContext':
-        return this.broker.openContext(params.projectId, params.expectedDocsHash);
+        return this.broker.openContext(
+          params.projectId,
+          params.expectedDocsHash,
+          params.clientInstanceId,
+          params.expectedSecurityConfigHash,
+        );
       case 'execute':
         return this.broker.execute(
           params.projectId,
@@ -111,6 +116,8 @@ export class BrokerServer {
         return this.broker.upload(params.projectId, params.contextToken, params.localPath, params.remotePath);
       case 'download':
         return this.broker.download(params.projectId, params.contextToken, params.remotePath);
+      case 'searchLogs':
+        return this.broker.searchLogs(params.projectId, params.contextToken, params);
       default:
         throw new AppError('METHOD_NOT_FOUND', '不支持的 Broker 操作。');
     }

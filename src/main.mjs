@@ -66,6 +66,9 @@ function registerIpc() {
     resultHandler(async ({ id, project }) => {
       const previous = await store.get(id);
       const updated = await store.update(id, project);
+      if (store.securityConfigHash(previous) !== store.securityConfigHash(updated)) {
+        broker.invalidateProjectContexts(id);
+      }
       if (!updated.credentials.remember || !sameCredentialBinding(previous, updated)) {
         await credentialStore.clear(id);
       }

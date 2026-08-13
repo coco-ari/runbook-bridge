@@ -48,7 +48,17 @@ function createBrokerFixture({ policy = DEFAULT_POLICY, failAudit = false } = {}
     },
   };
   const store = {
-    async readContext() { return { docsHash: 'docs-v1', truncated: false }; },
+    async readContext() {
+      return {
+        docsHash: 'docs-v1',
+        truncated: false,
+        config: {
+          limits: { commandTimeoutSeconds: 2 },
+          commandPolicy: policy,
+        },
+      };
+    },
+    securityConfigHash() { return 'security-v1'; },
     async get() {
       return {
         id: 'policy-project',
@@ -70,6 +80,7 @@ function createBrokerFixture({ policy = DEFAULT_POLICY, failAudit = false } = {}
   broker.contexts.set('context-token', {
     projectId: 'policy-project',
     docsHash: 'docs-v1',
+    securityConfigHash: 'security-v1',
     generation: 1,
     createdAt: Date.now(),
   });

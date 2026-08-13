@@ -38,6 +38,9 @@ test('project creation persists only non-secret connection metadata', async (t) 
   assert.equal(parsed.proxy.username, 'proxy-user');
   assert.equal(parsed.password, undefined);
   assert.deepEqual(parsed.commandPolicy, { enabled: true, customDeny: [] });
+  assert.equal(parsed.access, undefined);
+  assert.equal(parsed.diagnostics, undefined);
+  assert.equal(parsed.limits.maxLogScanMB, 16);
   const defaultReadme = await store.readDoc(project.id, 'README.md');
   assert.match(defaultReadme, /产物清单/);
   assert.match(defaultReadme, /Codex MCP 安装/);
@@ -71,6 +74,40 @@ test('command policy is enabled by default and validates per-project custom deny
     () => store.update(project.id, { commandPolicy: { customDeny: ['bad\nrule'] } }),
     (error) => error.code === 'INVALID_ARGUMENT',
   );
+});
+
+test('project validates bounded log scan limits', async (t) => {
+  const root = await tempRoot(t);
+  const store = new ProjectStore(root);
+  const project = await store.create(input);
+  assert.equal(project.access, undefined);
+  assert.equal(project.diagnostics, undefined);
+  await assert.rejects(
+    () => store.update(project.id, { limits: { maxLogScanMB: 33 } }),
+    (error) => error.code === 'INVALID_ARGUMENT',
+  );
+});
+
+test('legacy diagnostics and access settings are ignored on load and removed on the next save', async (t) => {
+  const root = await tempRoot(t);
+  const store = new ProjectStore(root);
+  const project = await store.create(input);
+  const configPath = path.join(root, 'projects', project.id, 'project.yaml');
+  const legacy = YAML.parse(await fs.readFile(configPath, 'utf8'));
+  legacy.diagnostics = {
+    displayTimezone: '+08:00',
+    allowedLogRoots: ['/home/order/logs'],
+  };
+  legacy.access = { mode: 'readOnly' };
+  await fs.writeFile(configPath, YAML.stringify(legacy), 'utf8');
+
+  const loaded = await store.get(project.id);
+  assert.equal(loaded.diagnostics, undefined);
+  assert.equal(loaded.access, undefined);
+  await store.update(project.id, { name: loaded.name });
+  const saved = YAML.parse(await fs.readFile(configPath, 'utf8'));
+  assert.equal(saved.diagnostics, undefined);
+  assert.equal(saved.access, undefined);
 });
 
 test('connection settings can be edited and changing the target clears the pinned host key', async (t) => {
@@ -127,6 +164,48 @@ test('broker context is invalidated when markdown changes', async (t) => {
   );
 });
 
+test('broker context is invalidated when security-relevant project configuration changes', async (t) => {
+  const root = await tempRoot(t);
+  const store = new ProjectStore(root);
+  const project = await store.create(input);
+  const broker = new SshBroker(store);
+  broker.sessions.set(project.id, {
+    client: {},
+    generation: 1,
+    connectedAt: new Date().toISOString(),
+  });
+  const { docsHash } = await store.readContext(project.id);
+  const { contextToken } = await broker.openContext(project.id, docsHash);
+  await store.update(project.id, {
+    limits: { maxLogScanMB: 20 },
+  });
+  await assert.rejects(
+    () => broker.requireContext(project.id, contextToken),
+    (error) => error.code === 'PROJECT_CONTEXT_REQUIRED' && /安全配置/.test(error.message),
+  );
+});
+
+test('broker reuses an unexpired context for the same MCP instance and reports expiry', async (t) => {
+  const root = await tempRoot(t);
+  const store = new ProjectStore(root);
+  const project = await store.create(input);
+  const broker = new SshBroker(store);
+  broker.sessions.set(project.id, {
+    client: {},
+    generation: 1,
+    connectedAt: new Date().toISOString(),
+  });
+  const { docsHash } = await store.readContext(project.id);
+  const clientInstanceId = '1'.repeat(32);
+  const first = await broker.openContext(project.id, docsHash, clientInstanceId);
+  const second = await broker.openContext(project.id, docsHash, clientInstanceId);
+  assert.equal(first.contextToken, second.contextToken);
+  assert.equal(first.reused, false);
+  assert.equal(second.reused, true);
+  assert.match(second.expiresAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.ok(second.remainingSeconds > 0);
+});
+
 test('broker refuses a token when documents changed between MCP read and token signing', async (t) => {
   const root = await tempRoot(t);
   const store = new ProjectStore(root);
@@ -138,6 +217,25 @@ test('broker refuses a token when documents changed between MCP read and token s
   await assert.rejects(
     () => broker.openContext(project.id, first.docsHash),
     (error) => error.code === 'PROJECT_CONTEXT_CHANGED',
+  );
+});
+
+test('broker refuses a token when security configuration changed between MCP read and token signing', async (t) => {
+  const root = await tempRoot(t);
+  const store = new ProjectStore(root);
+  const project = await store.create(input);
+  const broker = new SshBroker(store);
+  broker.sessions.set(project.id, {
+    client: {},
+    generation: 1,
+    connectedAt: new Date().toISOString(),
+  });
+  const first = await store.readContext(project.id);
+  const oldSecurityHash = store.securityConfigHash(first.config);
+  await store.update(project.id, { limits: { maxLogScanMB: 20 } });
+  await assert.rejects(
+    () => broker.openContext(project.id, first.docsHash, '2'.repeat(32), oldSecurityHash),
+    (error) => error.code === 'PROJECT_CONTEXT_CHANGED' && /安全配置/.test(error.message),
   );
 });
 

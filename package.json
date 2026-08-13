@@ -1,6 +1,6 @@
 {
   "name": "runbook-bridge",
-  "version": "0.1.8",
+  "version": "0.3.0",
   "private": true,
   "packageManager": "pnpm@11.21.0",
   "author": "AI Ops Tool contributors",
@@ -31,7 +31,7 @@
     "install:electron-runtime": "node node_modules/electron/install.js",
     "test": "node --test test/*.test.mjs",
     "test:ui": "electron scripts/ui-workflow-smoke.cjs",
-    "check": "node --check src/main.mjs && node --check src/mcp.mjs && node --check src/ssh-broker.mjs && node --check src/command-policy.mjs && node --check src/project-store.mjs && node --check src/credential-store.mjs && node --check src/connection-manager.mjs && node --check renderer/app.js && node --check scripts/ui-workflow-smoke.cjs",
+    "check": "node --check src/main.mjs && node --check src/mcp.mjs && node --check src/broker-server.mjs && node --check src/ssh-broker.mjs && node --check src/command-policy.mjs && node --check src/log-search.mjs && node --check src/project-store.mjs && node --check src/credential-store.mjs && node --check src/connection-manager.mjs && node --check renderer/app.js && node --check scripts/ui-workflow-smoke.cjs",
     "dist": "electron-builder --win --publish never"
   },
   "dependencies": {

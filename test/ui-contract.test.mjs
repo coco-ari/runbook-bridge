@@ -14,6 +14,12 @@ test('renderer exposes project lifecycle, document editing, and per-project comm
   assert.match(html, /name="rememberCredentials"/);
   assert.match(html, /name="commandPolicyEnabled"/);
   assert.match(html, /name="customDeny"/);
+  assert.doesNotMatch(html, /name="accessMode"/);
+  assert.doesNotMatch(renderer, /accessMode/);
+  assert.doesNotMatch(html, /name="displayTimezone"/);
+  assert.doesNotMatch(renderer, /displayTimezone/);
+  assert.doesNotMatch(html, /name="allowedLogRoots"/);
+  assert.doesNotMatch(renderer, /allowedLogRoots/);
   assert.doesNotMatch(renderer, /window\.prompt/);
   assert.match(renderer, /window\.aiOps\.updateProject/);
   assert.match(renderer, /window\.aiOps\.deleteProject/);
@@ -23,6 +29,8 @@ test('renderer exposes project lifecycle, document editing, and per-project comm
   assert.match(renderer, /project\.status\.reconnecting/);
   assert.match(renderer, /停止重连/);
   assert.match(renderer, /SSH 正在自动重连/);
+  assert.match(renderer, /SSH 自动重连已停止/);
+  assert.match(renderer, /SSH_AUTH_FAILED/);
   assert.match(renderer, /customDeny\.value\.split/);
   assert.match(renderer, /loadedDocumentKey !== currentDocumentKey\(\)/);
   assert.match(renderer, /state\.documentDirty = true/);

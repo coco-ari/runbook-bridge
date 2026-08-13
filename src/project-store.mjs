@@ -12,11 +12,12 @@ const DEFAULT_LIMITS = Object.freeze({
   maxUploadMB: 500,
   maxDownloadMB: 100,
   maxDocumentKB: 200,
+  maxLogScanMB: 16,
 });
 const DEFAULT_COMMAND_POLICY = Object.freeze({ enabled: true, customDeny: [] });
 const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f]/;
 
-const DEFAULT_README = (name) => `# ${name}\n\n## 服务器与项目目录\n\n在这里填写项目涉及的服务器目录。\n\n## 产物清单\n\n| 本地文件 | 上传目标 | 说明 |\n| --- | --- | --- |\n| \`D:\\\\work\\\\project\\\\target\\\\app.jar\` | \`/home/deploy/app/app.jar\` | 示例，请修改 |\n\n## 部署流程\n\n1. 检查当前进程。\n2. 备份现有产物。\n3. 上传新产物。\n4. 执行项目启动命令。\n5. 检查日志确认启动成功。\n6. 失败时恢复备份。\n\n## 日志位置\n\n在这里填写日志文件以及启动成功的判断方法。\n\n## 操作要求\n\n- 不使用 sudo。\n- 删除或覆盖文件前先备份。\n- 遇到不确定情况先询问。\n\n## Codex MCP 安装\n\n安装“AI 运维工具”后，在 PowerShell 中执行以下命令。若修改过安装目录，请把命令中的路径替换为实际安装位置。\n\n\`\`\`powershell\ncodex mcp add --env ELECTRON_RUN_AS_NODE=1 ai-ops -- \"$env:LOCALAPPDATA\\Programs\\AI运维工具\\AI运维工具.exe\" \"$env:LOCALAPPDATA\\Programs\\AI运维工具\\resources\\app.asar\\src\\mcp.mjs\"\n\`\`\`\n\n验证 MCP 是否注册成功：\n\n\`\`\`powershell\ncodex mcp get ai-ops\n\`\`\`\n\n注册或升级后请完全退出并重新启动 Codex。服务器连接仍需由用户在桌面工具中主动建立，MCP 不会自行登录服务器。\n`;
+const DEFAULT_README = (name) => `# ${name}\n\n## 服务器与项目目录\n\n在这里填写项目涉及的服务器目录。\n\n## 产物清单\n\n| 本地文件 | 上传目标 | 说明 |\n| --- | --- | --- |\n| \`D:\\\\work\\\\project\\\\target\\\\app.jar\` | \`/home/deploy/app/app.jar\` | 示例，请修改 |\n\n## 部署流程\n\n1. 检查当前进程。\n2. 备份现有产物。\n3. 上传新产物。\n4. 执行项目启动命令。\n5. 检查日志确认启动成功。\n6. 失败时恢复备份。\n\n## 日志位置\n\n在这里填写日志文件完整路径、日志格式、启动成功标志和常用关联字段。Codex 会从本文档取得明确路径，并可使用结构化日志搜索。\n\n## 操作要求\n\n- 不使用 sudo。\n- 删除或覆盖文件前先备份。\n- 遇到不确定情况先询问。\n\n## Codex MCP 安装\n\n安装“AI 运维工具”后，在 PowerShell 中执行以下命令。若修改过安装目录，请把命令中的路径替换为实际安装位置。\n\n\`\`\`powershell\ncodex mcp add --env ELECTRON_RUN_AS_NODE=1 ai-ops -- \"$env:LOCALAPPDATA\\Programs\\AI运维工具\\AI运维工具.exe\" \"$env:LOCALAPPDATA\\Programs\\AI运维工具\\resources\\app.asar\\src\\mcp.mjs\"\n\`\`\`\n\n验证 MCP 是否注册成功：\n\n\`\`\`powershell\ncodex mcp get ai-ops\n\`\`\`\n\n注册或升级后请完全退出并重新启动 Codex。服务器连接仍需由用户在桌面工具中主动建立，MCP 不会自行登录服务器。\n`;
 
 function sanitizeId(input) {
   const normalized = String(input ?? '')
@@ -68,6 +69,7 @@ function safeProjectConfig(input, id) {
     ['maxUploadMB', 10_240],
     ['maxDownloadMB', 10_240],
     ['maxDocumentKB', 1024],
+    ['maxLogScanMB', 32],
   ]) {
     const value = Number(limits[key]);
     if (!Number.isFinite(value) || value <= 0 || value > maximum) {
@@ -363,14 +365,25 @@ export class ProjectStore {
     return { config, documents, documentNames: names, docsHash: hash, truncated };
   }
 
+  securityConfigHash(config) {
+    const securityConfig = {
+      commandPolicy: config.commandPolicy,
+      limits: config.limits,
+    };
+    return crypto.createHash('sha256').update(JSON.stringify(securityConfig)).digest('hex');
+  }
+
   downloadsDir(id) {
     return path.join(this.projectDir(id), 'downloads');
   }
 
   async appendAudit(id, entry) {
     const dir = path.join(this.projectDir(id), 'audit');
-    await fs.mkdir(dir, { recursive: true });
-    const clean = { time: new Date().toISOString(), projectId: id, ...entry };
-    await fs.appendFile(path.join(dir, 'operations.jsonl'), `${JSON.stringify(clean)}\n`, 'utf8');
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    const clean = { ...entry, schemaVersion: 2, time: new Date().toISOString(), projectId: id };
+    await fs.appendFile(path.join(dir, 'operations.jsonl'), `${JSON.stringify(clean)}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
   }
 }

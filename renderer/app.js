@@ -139,8 +139,15 @@ async function renderSelectedProject() {
   elements.projectName.textContent = project.name;
   elements.serverAddress.textContent = `${project.ssh.username}@${project.ssh.host}:${project.ssh.port}`;
   const reconnecting = project.status.reconnecting || (project.status.connecting && !project.status.connected);
+  const reconnectStopped = Boolean(project.status.reconnectStopped);
   const connectionActive = project.status.connected || reconnecting;
-  elements.badge.textContent = project.status.connected ? '已连接' : reconnecting ? '自动重连中' : '未连接';
+  elements.badge.textContent = project.status.connected
+    ? '已连接'
+    : reconnecting
+      ? '自动重连中'
+      : reconnectStopped
+        ? '重连已停止'
+        : '未连接';
   elements.badge.className = `badge ${project.status.connected ? 'connected' : reconnecting ? 'reconnecting' : 'disconnected'}`;
   elements.connectionButton.textContent = project.status.connected ? '断开' : reconnecting ? '停止重连' : '连接';
   elements.connectionButton.className = connectionActive ? 'outline danger' : 'outline';
@@ -165,6 +172,7 @@ async function renderSelectedProject() {
 
 function updateCodexStatus(status) {
   const reconnecting = status.reconnecting || (status.connecting && !status.connected);
+  const reconnectStopped = Boolean(status.reconnectStopped);
   elements.codexStatus.className = `codex-status ${status.connected ? 'connected' : reconnecting ? 'reconnecting' : 'disconnected'}`;
   const strong = elements.codexStatus.querySelector('strong');
   const span = elements.codexStatus.querySelector('span');
@@ -172,6 +180,8 @@ function updateCodexStatus(status) {
     ? 'Codex 可以使用当前 SSH 连接'
     : reconnecting
       ? 'SSH 正在自动重连'
+      : reconnectStopped
+        ? 'SSH 自动重连已停止'
       : 'Codex 当前不能操作服务器';
   span.textContent = status.connected
     ? status.autoReconnectEnabled
@@ -179,6 +189,10 @@ function updateCodexStatus(status) {
       : '当前连接未保存所需凭据，意外断线后需要手动连接'
     : reconnecting
       ? `网络恢复后自动连接（第 ${status.reconnectAttempt || 1} 次尝试）`
+      : reconnectStopped
+        ? status.reconnectErrorCode === 'SSH_AUTH_FAILED'
+          ? '服务器拒绝了登录凭据，请点击“连接”重新输入账号密码或私钥口令'
+          : `连接配置需要人工处理（${status.reconnectErrorCode || '未知错误'}），请检查连接设置后重试`
       : '在桌面工具中连接项目后即可使用';
 }
 
