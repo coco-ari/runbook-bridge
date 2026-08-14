@@ -11,7 +11,15 @@ import { SshBroker } from '../src/ssh-broker.mjs';
 
 const { Server: SshServer } = ssh2;
 
-async function startSshServer(t, { authorizedPublicKey, sftpRoot, connectionTracker, authenticationState } = {}) {
+async function startSshServer(t, {
+  authorizedPublicKey,
+  sftpRoot,
+  connectionTracker,
+  authenticationState,
+  sftpCloseDelayMs = 0,
+  disconnectAfterSftpReads = null,
+  sftpTracker,
+} = {}) {
   const { privateKey } = crypto.generateKeyPairSync('rsa', {
     modulusLength: 2048,
     privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
@@ -65,6 +73,7 @@ async function startSshServer(t, { authorizedPublicKey, sftpRoot, connectionTrac
             const { OPEN_MODE, STATUS_CODE } = ssh2.utils.sftp;
             const handles = new Map();
             let nextHandle = 1;
+            let readRequests = 0;
             const sftp = acceptSftp();
             const resolveRemote = (filename) => {
               const rootPath = path.resolve(sftpRoot);
@@ -110,6 +119,23 @@ async function startSshServer(t, { authorizedPublicKey, sftpRoot, connectionTrac
                 sftp.status(reqid, error ? STATUS_CODE.FAILURE : STATUS_CODE.OK));
             });
             sftp.on('READ', (reqid, handle, offset, length) => {
+              readRequests += 1;
+              if (sftpTracker) sftpTracker.readRequests = (sftpTracker.readRequests ?? 0) + 1;
+              if (
+                Number.isInteger(disconnectAfterSftpReads) &&
+                readRequests > disconnectAfterSftpReads
+              ) {
+                const id = handle.readUInt32BE(0);
+                const entry = handles.get(id);
+                if (sftpTracker) sftpTracker.readDisconnects = (sftpTracker.readDisconnects ?? 0) + 1;
+                if (!entry) {
+                  client.end();
+                  return;
+                }
+                handles.delete(id);
+                fsSync.close(entry.fd, () => client.end());
+                return;
+              }
               const entry = handleEntry(handle);
               if (!entry) return sftp.status(reqid, STATUS_CODE.FAILURE);
               const buffer = Buffer.alloc(length);
@@ -128,11 +154,19 @@ async function startSshServer(t, { authorizedPublicKey, sftpRoot, connectionTrac
               });
             });
             sftp.on('CLOSE', (reqid, handle) => {
+              if (sftpTracker) sftpTracker.closeRequests = (sftpTracker.closeRequests ?? 0) + 1;
               const id = handle.readUInt32BE(0);
               const entry = handles.get(id);
               if (!entry) return sftp.status(reqid, STATUS_CODE.FAILURE);
               handles.delete(id);
-              fsSync.close(entry.fd, (error) => sftp.status(reqid, error ? STATUS_CODE.FAILURE : STATUS_CODE.OK));
+              fsSync.close(entry.fd, (error) => {
+                const respond = () => {
+                  if (sftpTracker) sftpTracker.closeResponses = (sftpTracker.closeResponses ?? 0) + 1;
+                  sftp.status(reqid, error ? STATUS_CODE.FAILURE : STATUS_CODE.OK);
+                };
+                if (sftpCloseDelayMs > 0) setTimeout(respond, sftpCloseDelayMs);
+                else respond();
+              });
             });
             sftp.on('STAT', stat).on('LSTAT', stat);
             sftp.on('RENAME', (reqid, from, to) => {
@@ -169,6 +203,19 @@ async function waitFor(predicate, timeoutMs = 2_000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail('condition was not reached before timeout');
+}
+
+function monitorProcessErrors(t) {
+  const errors = [];
+  const onUncaughtException = (error) => errors.push(error);
+  const onUnhandledRejection = (reason) => errors.push(reason);
+  process.on('uncaughtExceptionMonitor', onUncaughtException);
+  process.on('unhandledRejection', onUnhandledRejection);
+  t.after(() => {
+    process.removeListener('uncaughtExceptionMonitor', onUncaughtException);
+    process.removeListener('unhandledRejection', onUnhandledRejection);
+  });
+  return errors;
 }
 
 test('SSH broker confirms host key, executes through the live session, and revokes on disconnect', async (t) => {
@@ -356,6 +403,116 @@ test('structured log search accepts explicit absolute files and returns bounded 
     }),
     (error) => error.code === 'PATH_INVALID',
   );
+  await broker.disconnect(project.id);
+});
+
+test('structured log search waits for a delayed SFTP CLOSE response without a late process error', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-log-close-delay-'));
+  const remoteRoot = path.join(root, 'remote');
+  await fs.mkdir(path.join(remoteRoot, 'logs'), { recursive: true });
+  await fs.writeFile(path.join(remoteRoot, 'logs', 'app.log'), 'INFO boot\norder-42 completed\n');
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const sftpTracker = {};
+  const closeDelayMs = 80;
+  const port = await startSshServer(t, {
+    sftpRoot: remoteRoot,
+    sftpCloseDelayMs: closeDelayMs,
+    sftpTracker,
+  });
+  const store = new ProjectStore(root);
+  const project = await store.create({
+    id: 'log-close-delay',
+    name: '日志关闭延迟测试',
+    ssh: { host: '127.0.0.1', port, username: 'deploy' },
+    auth: { type: 'password' },
+    proxy: { type: 'direct' },
+  });
+  const broker = new SshBroker(store);
+  let fingerprint;
+  await assert.rejects(
+    () => broker.connect(project.id, { password: 'test-password' }),
+    (error) => {
+      fingerprint = error.details?.fingerprint;
+      return error.code === 'SSH_HOST_KEY_CONFIRM_REQUIRED';
+    },
+  );
+  await broker.connect(project.id, { password: 'test-password', acceptHostKey: fingerprint });
+  const { docsHash } = await store.readContext(project.id);
+  const { contextToken } = await broker.openContext(project.id, docsHash);
+  const processErrors = monitorProcessErrors(t);
+
+  const result = await broker.searchLogs(project.id, contextToken, {
+    files: ['/logs/app.log'],
+    keywords: ['order-42'],
+  });
+
+  assert.equal(result.summary.totalMatches, 1);
+  assert.equal(sftpTracker.closeRequests, 1);
+  assert.equal(sftpTracker.closeResponses, 1);
+  await new Promise((resolve) => setTimeout(resolve, closeDelayMs * 2));
+  assert.deepEqual(processErrors, []);
+  await broker.disconnect(project.id);
+});
+
+test('mid-read SSH loss returns TRANSFER_INTERRUPTED without hanging and releases log-search state', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-log-read-loss-'));
+  const remoteRoot = path.join(root, 'remote');
+  await fs.mkdir(path.join(remoteRoot, 'logs'), { recursive: true });
+  await fs.writeFile(path.join(remoteRoot, 'logs', 'large.log'), Buffer.alloc(150_000, 0x61));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const sftpTracker = {};
+  const port = await startSshServer(t, {
+    sftpRoot: remoteRoot,
+    disconnectAfterSftpReads: 1,
+    sftpTracker,
+  });
+  const store = new ProjectStore(root);
+  const project = await store.create({
+    id: 'log-read-loss',
+    name: '日志读取中断测试',
+    ssh: { host: '127.0.0.1', port, username: 'deploy' },
+    auth: { type: 'password' },
+    proxy: { type: 'direct' },
+  });
+  const broker = new SshBroker(store);
+  let fingerprint;
+  await assert.rejects(
+    () => broker.connect(project.id, { password: 'test-password' }),
+    (error) => {
+      fingerprint = error.details?.fingerprint;
+      return error.code === 'SSH_HOST_KEY_CONFIRM_REQUIRED';
+    },
+  );
+  await broker.connect(project.id, { password: 'test-password', acceptHostKey: fingerprint });
+  const { docsHash } = await store.readContext(project.id);
+  const { contextToken } = await broker.openContext(project.id, docsHash);
+  const processErrors = monitorProcessErrors(t);
+  let deadlineTimer;
+  const deadline = new Promise((_, reject) => {
+    deadlineTimer = setTimeout(() => reject(new Error('log search did not settle after the SSH connection closed')), 3_000);
+  });
+
+  try {
+    await assert.rejects(
+      Promise.race([
+        broker.searchLogs(project.id, contextToken, {
+          files: ['/logs/large.log'],
+          keywords: ['needle'],
+        }),
+        deadline,
+      ]),
+      (error) => error.code === 'TRANSFER_INTERRUPTED',
+    );
+  } finally {
+    clearTimeout(deadlineTimer);
+  }
+
+  assert.equal(sftpTracker.readRequests, 2);
+  assert.equal(sftpTracker.readDisconnects, 1);
+  assert.equal(broker.activeLogSearchProjects.has(project.id), false);
+  assert.equal(broker.activeLogSearchCount, 0);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual(processErrors, []);
   await broker.disconnect(project.id);
 });
 

@@ -10,7 +10,7 @@ import { AppError, toPublicError } from './errors.mjs';
 
 const dataRoot = defaultDataRoot();
 const store = new ProjectStore(dataRoot);
-const MCP_VERSION = '0.3.1';
+const MCP_VERSION = '0.3.2';
 const clientInstanceId = crypto.randomBytes(16).toString('hex');
 const BATCH_OUTPUT_LIMIT_BYTES = 1024 * 1024;
 // ProjectStore caps remote command execution at 3600 seconds. Keep the local

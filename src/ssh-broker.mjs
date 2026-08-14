@@ -12,6 +12,9 @@ const MAX_COMMAND_OUTPUT = 512 * 1024;
 const CONTEXT_TTL_MS = 30 * 60 * 1000;
 const MAX_CONTEXTS_PER_PROJECT = 32;
 const CONTEXT_REUSE_MIN_REMAINING_MS = 60 * 1000;
+const SFTP_CLEANUP_GRACE_MS = 1_000;
+const SFTP_READ_INACTIVITY_MS = 30_000;
+const SFTP_READ_CHUNK_BYTES = 64 * 1024;
 const NON_RETRYABLE_RECONNECT_ERRORS = new Set([
   'SSH_AUTH_FAILED',
   'SSH_IDENTITY_UNAVAILABLE',
@@ -94,33 +97,116 @@ function execOnClient(client, command, timeoutMs) {
   });
 }
 
+function isSftpInterruptedError(error) {
+  if (!error) return false;
+  if (error instanceof AppError && error.code === 'TRANSFER_INTERRUPTED') return true;
+  if (['ECONNRESET', 'ECONNABORTED', 'EPIPE', 'ETIMEDOUT'].includes(error.code)) return true;
+  if (['client-socket', 'client-timeout'].includes(error.level)) return true;
+  return /no response from server|channel.*(?:closed|ended)|connection.*(?:closed|lost|reset)|socket.*(?:closed|ended)/i.test(
+    String(error.message ?? ''),
+  );
+}
+
+function transferError(error) {
+  if (error instanceof AppError) return error;
+  if (isSftpInterruptedError(error)) {
+    return new AppError('TRANSFER_INTERRUPTED', 'SSH/SFTP 连接在文件操作完成前中断，请重新连接后确认结果。');
+  }
+  return new AppError('TRANSFER_FAILED', '文件传输失败。');
+}
+
 function withSftp(client, action, { timeoutMs = 0, timeoutCode = 'TRANSFER_TIMEOUT', timeoutMessage = '文件传输超时。' } = {}) {
   return new Promise((resolve, reject) => {
-    client.sftp(async (error, sftp) => {
-      if (error) {
-        reject(new AppError('SFTP_UNAVAILABLE', '无法建立 SFTP 文件传输通道。'));
-        return;
-      }
-      let timedOut = false;
-      const timer = timeoutMs > 0
-        ? setTimeout(() => {
-            timedOut = true;
-            sftp.end();
-            reject(new AppError(timeoutCode, timeoutMessage));
-          }, timeoutMs)
-        : null;
+    const controller = new AbortController();
+    let sftp = null;
+    let settled = false;
+    let closing = false;
+    let timeoutTimer = null;
+    let forceCloseTimer = null;
+
+    const safeEnd = () => {
+      if (!sftp || closing) return;
+      closing = true;
       try {
-        const value = await action(sftp);
-        if (!timedOut) resolve(value);
-      } catch (cause) {
-        if (!timedOut) {
-          reject(cause instanceof AppError ? cause : new AppError('TRANSFER_FAILED', '文件传输失败。'));
-        }
-      } finally {
-        clearTimeout(timer);
         sftp.end();
+      } catch {
+        // A closed channel needs no further cleanup. Runtime errors remain
+        // observed by onSftpError until the channel emits close.
       }
-    });
+    };
+    const abort = (reason) => {
+      if (!controller.signal.aborted) controller.abort(reason);
+      if (!forceCloseTimer) {
+        forceCloseTimer = setTimeout(() => {
+          safeEnd();
+          finish(
+            controller.signal.reason
+              ?? new AppError('TRANSFER_INTERRUPTED', 'SSH/SFTP 文件操作未能完成。'),
+          );
+        }, SFTP_CLEANUP_GRACE_MS);
+        forceCloseTimer.unref?.();
+      }
+    };
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutTimer);
+      clearTimeout(forceCloseTimer);
+      safeEnd();
+      if (error) reject(transferError(error));
+      else resolve(value);
+    };
+    const onSftpError = (error) => abort(transferError(error));
+    const onSftpEnd = () => {
+      if (!settled) {
+        abort(new AppError('TRANSFER_INTERRUPTED', 'SSH/SFTP 通道在文件操作完成前关闭。'));
+      }
+    };
+    const onSftpClose = () => {
+      onSftpEnd();
+      sftp?.removeListener('error', onSftpError);
+      sftp?.removeListener('end', onSftpEnd);
+      sftp?.removeListener('close', onSftpClose);
+    };
+
+    if (timeoutMs > 0) {
+      timeoutTimer = setTimeout(
+        () => abort(new AppError(timeoutCode, timeoutMessage)),
+        timeoutMs,
+      );
+      timeoutTimer.unref?.();
+    }
+
+    try {
+      client.sftp((error, openedSftp) => {
+        if (error) {
+          if (!settled) {
+            finish(
+              controller.signal.reason
+                ?? new AppError('SFTP_UNAVAILABLE', '无法建立 SFTP 文件传输通道。'),
+            );
+          }
+          return;
+        }
+        sftp = openedSftp;
+        sftp.on('error', onSftpError);
+        sftp.on('end', onSftpEnd);
+        sftp.on('close', onSftpClose);
+        if (settled || controller.signal.aborted) {
+          safeEnd();
+          if (!settled) finish(controller.signal.reason);
+          return;
+        }
+        Promise.resolve()
+          .then(() => action(sftp, { signal: controller.signal, abort }))
+          .then(
+            (value) => finish(controller.signal.reason ?? null, value),
+            (error) => finish(controller.signal.reason ?? error),
+          );
+      });
+    } catch (error) {
+      finish(new AppError('SFTP_UNAVAILABLE', '无法建立 SFTP 文件传输通道。'));
+    }
   });
 }
 
@@ -136,37 +222,75 @@ function sftpRealpath(sftp, remotePath) {
   });
 }
 
-async function sftpReadRange(sftp, remotePath, start, maxBytes) {
-  if (maxBytes <= 0) return Buffer.alloc(0);
-  const stream = sftp.createReadStream(remotePath, {
-    start,
-    end: start + maxBytes - 1,
-    autoClose: true,
+function sftpOpen(sftp, remotePath, flags = 'r') {
+  return new Promise((resolve, reject) => {
+    sftp.open(remotePath, flags, (error, handle) => (error ? reject(error) : resolve(handle)));
   });
+}
+
+function sftpRead(sftp, handle, buffer, position) {
+  return new Promise((resolve, reject) => {
+    sftp.read(handle, buffer, 0, buffer.length, position, (error, bytesRead) =>
+      (error ? reject(error) : resolve(bytesRead)));
+  });
+}
+
+function sftpCloseHandle(sftp, handle) {
+  return new Promise((resolve, reject) => {
+    sftp.close(handle, (error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new AppError('TRANSFER_INTERRUPTED', 'SSH/SFTP 文件操作已中止。');
+}
+
+async function sftpReadRange(sftp, remotePath, start, maxBytes, { signal, abort } = {}) {
+  if (maxBytes <= 0) return Buffer.alloc(0);
+  throwIfAborted(signal);
+  const handle = await sftpOpen(sftp, remotePath);
   const chunks = [];
   let total = 0;
-  let inactivityTimer;
-  const resetInactivityTimer = () => {
-    clearTimeout(inactivityTimer);
-    inactivityTimer = setTimeout(() => {
-      stream.destroy(new AppError('LOG_SCAN_TIMEOUT', '读取服务器日志超时。'));
-    }, 30_000);
-  };
-  resetInactivityTimer();
+  let primaryError = null;
   try {
-    for await (const chunk of stream) {
-      resetInactivityTimer();
-      const buffer = Buffer.from(chunk);
-      total += buffer.length;
-      if (total > maxBytes) {
-        stream.destroy();
-        throw new AppError('LOG_SCAN_LIMIT_EXCEEDED', '服务器返回的日志数据超过本次扫描限制。');
+    while (total < maxBytes) {
+      throwIfAborted(signal);
+      const buffer = Buffer.allocUnsafe(Math.min(SFTP_READ_CHUNK_BYTES, maxBytes - total));
+      let inactivityTimer;
+      const read = sftpRead(sftp, handle, buffer, start + total);
+      const inactivity = new Promise((_, reject) => {
+        inactivityTimer = setTimeout(() => {
+          const error = new AppError('LOG_SCAN_TIMEOUT', '读取服务器日志超时。');
+          abort?.(error);
+          reject(error);
+        }, SFTP_READ_INACTIVITY_MS);
+        inactivityTimer.unref?.();
+      });
+      let bytesRead;
+      try {
+        bytesRead = await Promise.race([read, inactivity]);
+      } finally {
+        clearTimeout(inactivityTimer);
       }
-      chunks.push(buffer);
+      if (bytesRead === 0) break;
+      chunks.push(buffer.subarray(0, bytesRead));
+      total += bytesRead;
     }
-  } finally {
-    clearTimeout(inactivityTimer);
+  } catch (error) {
+    primaryError = error;
   }
+  if (!signal?.aborted) {
+    try {
+      await sftpCloseHandle(sftp, handle);
+    } catch (error) {
+      primaryError ??= error;
+    }
+  }
+  if (primaryError) throw primaryError;
+  throwIfAborted(signal);
   return Buffer.concat(chunks, total);
 }
 
@@ -903,7 +1027,7 @@ export class SshBroker {
       throw new AppError('LOCAL_FILE_CHANGED', '本地产物在校验期间发生变化，请重新上传。');
     }
     const temp = `${target}.part-${crypto.randomBytes(6).toString('hex')}`;
-    await withSftp(session.client, async (sftp) => {
+    await withSftp(session.client, async (sftp, lifecycle) => {
       try {
         await sftpFastPut(sftp, source, temp);
         const [remoteStats, afterUpload] = await Promise.all([
@@ -915,7 +1039,9 @@ export class SshBroker {
         }
         await sftpRename(sftp, temp, target);
       } catch (error) {
-        await sftpUnlink(sftp, temp);
+        if (!lifecycle.signal.aborted && !isSftpInterruptedError(error)) {
+          await sftpUnlink(sftp, temp);
+        }
         throw error;
       }
     });
@@ -945,7 +1071,8 @@ export class SshBroker {
     let sizeBytes = 0;
     try {
       await withSftp(session.client, async (sftp) => {
-        const stats = await sftpStat(sftp, source).catch(() => {
+        const stats = await sftpStat(sftp, source).catch((error) => {
+          if (isSftpInterruptedError(error)) throw error;
           throw new AppError('PATH_INVALID', '远程文件不存在或无权读取。');
         });
         if (!stats.isFile()) throw new AppError('PATH_INVALID', '只能下载普通文件。');
@@ -1043,7 +1170,7 @@ export class SshBroker {
       ? projectScanLimit
       : clampInteger(options.maxScanBytes, projectScanLimit, 65_536, projectScanLimit, '日志扫描字节数');
     const perFileBudget = Math.max(1, Math.floor(requestedScanLimit / files.length));
-    const snapshots = await withSftp(session.client, async (sftp) => {
+    const snapshots = await withSftp(session.client, async (sftp, lifecycle) => {
       const values = [];
       for (const file of files) {
         let canonicalFile;
@@ -1053,14 +1180,15 @@ export class SshBroker {
             sftpRealpath(sftp, file),
             sftpStat(sftp, file),
           ]);
-        } catch {
+        } catch (error) {
+          if (isSftpInterruptedError(error)) throw error;
           throw new AppError('PATH_INVALID', '日志文件不存在或无权读取。');
         }
         canonicalFile = path.posix.normalize(canonicalFile);
         if (!stats.isFile()) throw new AppError('PATH_INVALID', '结构化日志搜索只能读取普通文件。');
         const scanBytes = Math.min(Number(stats.size), perFileBudget);
         const startByte = Math.max(0, Number(stats.size) - scanBytes);
-        const content = await sftpReadRange(sftp, canonicalFile, startByte, scanBytes);
+        const content = await sftpReadRange(sftp, canonicalFile, startByte, scanBytes, lifecycle);
         values.push({
           path: file,
           content,
