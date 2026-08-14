@@ -131,7 +131,25 @@ async function run() {
     [...document.querySelectorAll('.doc-tab')].find((button) => button.textContent === 'DEPLOY.md').click();
     document.querySelector('#save-document').click();
     await waitFor(() => editor.value.includes('部署文档'));
-    return { firstFailure, valueAfterRefresh, dirtyAfterRefresh };
+
+    const projectList = document.querySelector('#project-list');
+    for (let index = 0; index < 12; index += 1) {
+      const item = document.createElement('button');
+      item.className = 'project-item';
+      item.innerHTML = '<span class="project-dot"></span><strong>额外项目 ' + index + '</strong><small>127.0.0.1</small>';
+      projectList.append(item);
+    }
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const sidebarRect = document.querySelector('.sidebar').getBoundingClientRect();
+    const newProjectRect = document.querySelector('#new-project').getBoundingClientRect();
+    const sidebarLayout = {
+      listScrollable: projectList.scrollHeight > projectList.clientHeight,
+      buttonVisible:
+        newProjectRect.height > 0 &&
+        newProjectRect.top >= sidebarRect.top &&
+        newProjectRect.bottom <= sidebarRect.bottom,
+    };
+    return { firstFailure, valueAfterRefresh, dirtyAfterRefresh, sidebarLayout };
   })()`);
 
   assert.equal(createCalls, 1, 'retry must not create a duplicate project');
@@ -144,6 +162,8 @@ async function run() {
   assert.equal(result.dirtyAfterRefresh, true);
   assert.equal(savedContent, '# 已修改文档\n\n必须保持。');
   assert.equal(saveCalls, 1, 'loading another document must not save stale editor content');
+  assert.equal(result.sidebarLayout.listScrollable, true, 'a long project list must scroll inside the sidebar');
+  assert.equal(result.sidebarLayout.buttonVisible, true, 'the new-project button must remain visible');
   window.destroy();
 }
 

@@ -30,6 +30,8 @@ button { cursor: pointer; }
   grid-row: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   background: linear-gradient(180deg, var(--navy) 0%, #081526 100%);
   color: white;
   padding: 28px 16px 18px;
@@ -38,7 +40,7 @@ button { cursor: pointer; }
 .brand { font-size: 22px; font-weight: 700; padding: 0 14px 28px; display: flex; gap: 10px; align-items: center; }
 .brand-mark { color: #4ea1ff; font-size: 28px; line-height: 1; }
 .section-label { color: #aab7c9; font-size: 14px; padding: 4px 14px 12px; }
-.project-list { flex: 1; overflow: auto; }
+.project-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .project-item {
   width: 100%; border: 0; color: #ecf2fb; background: transparent; text-align: left;
   padding: 14px 14px; border-radius: 8px; margin-bottom: 6px; display: grid;
@@ -51,8 +53,8 @@ button { cursor: pointer; }
 .project-dot.reconnecting { background: #f59e0b; box-shadow: 0 0 0 3px rgba(245,158,11,.14); }
 .project-item strong { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .project-item small { grid-column: 2; color: #afbdd0; margin-top: 6px; }
-.sidebar-button { width: 100%; margin-top: 12px; }
-.icon-button { align-self: center; border: 0; background: transparent; color: #d7e0ed; font-size: 22px; margin-top: 15px; }
+.sidebar-button { width: 100%; margin-top: 12px; flex: 0 0 auto; }
+.icon-button { align-self: center; flex: 0 0 auto; border: 0; background: transparent; color: #d7e0ed; font-size: 22px; margin-top: 15px; }
 
 .workspace { grid-column: 2; grid-row: 1; background: #f7f8fa; min-width: 0; overflow: hidden; }
 .empty-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--muted); }

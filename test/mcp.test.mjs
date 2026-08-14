@@ -56,7 +56,7 @@ async function startBatchFixture(t, execute) {
     status() { return { connected: true, generation: 1 }; },
     listStatuses() { return { 'batch-project': { connected: true, generation: 1 } }; },
   };
-  const brokerServer = new BrokerServer({ dataRoot: root, token, broker, appVersion: '0.3.0' });
+  const brokerServer = new BrokerServer({ dataRoot: root, token, broker, appVersion: '0.3.1' });
   await brokerServer.start();
   t.after(async () => {
     await brokerServer.stop();

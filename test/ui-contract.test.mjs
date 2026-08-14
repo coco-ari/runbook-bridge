@@ -3,9 +3,10 @@ import fs from 'node:fs/promises';
 import test from 'node:test';
 
 test('renderer exposes project lifecycle, document editing, and per-project command policy controls', async () => {
-  const [html, renderer, preload, main] = await Promise.all([
+  const [html, renderer, styles, preload, main] = await Promise.all([
     fs.readFile('renderer/index.html', 'utf8'),
     fs.readFile('renderer/app.js', 'utf8'),
+    fs.readFile('renderer/styles.css', 'utf8'),
     fs.readFile('src/preload.cjs', 'utf8'),
     fs.readFile('src/main.mjs', 'utf8'),
   ]);
@@ -39,6 +40,8 @@ test('renderer exposes project lifecycle, document editing, and per-project comm
   assert.match(renderer, /function continueCreatedProjectAsConnect/);
   assert.match(renderer, /projectCreated = true;\s+continueCreatedProjectAsConnect\(created\.project\)/);
   assert.match(renderer, /项目已经创建，但连接失败/);
+  assert.match(styles, /\.project-list\s*\{[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/s);
+  assert.match(styles, /\.sidebar-button\s*\{[^}]*flex:\s*0 0 auto/s);
   assert.match(preload, /project:delete/);
   assert.match(preload, /project:trust-host-key-change/);
   assert.match(main, /shell\.trashItem/);
