@@ -256,24 +256,71 @@ function renderRunbook() {
 
 async function loadAudit() {
   const requestedScope = scopeKey();
-  const result = await call(api.listAudit({ projectId:state.projectId, environmentId:state.environmentId, limit:100 }));
+  const result = await call(api.listAudit({ projectId:state.projectId, environmentId:state.environmentId, limit:200 }));
   if (state.view !== 'audit' || requestedScope !== scopeKey()) return;
   state.auditEntries = result.entries ?? [];
   renderAudit();
 }
-function auditResult(entry) { return entry.result ?? (entry.errorCode ? 'error' : 'success'); }
+function auditResult(entry) {
+  const value = String(entry.result ?? (entry.errorCode ? 'error' : 'success')).toLowerCase();
+  if (['success','connected','disconnected','complete','completed'].includes(value)) return 'success';
+  if (['partial','warning'].includes(value)) return 'warning';
+  if (['blocked','denied'].includes(value)) return 'blocked';
+  return 'error';
+}
+function auditPluginName(entry) {
+  if (!entry.pluginInstanceId) return activeEnvironment()?.name ?? '当前环境';
+  return state.plugins.find((item) => item.pluginInstanceId === entry.pluginInstanceId)?.displayName ?? '已删除的插件';
+}
+function auditCapabilityName(value) {
+  return ({status:'查看系统状态',diagnostics:'运行安全诊断',logs:'查询日志',config:'查看配置',download:'下载文件',describe:'查看表结构',select:'查询数据',explain:'查看执行计划',scan:'扫描缓存键',read:'读取缓存',ttl:'查看过期时间'})[value] ?? value;
+}
+function auditErrorName(value) {
+  return ({POLICY_DENIED:'操作规则禁止',CONFIRMATION_REQUIRED:'等待人工确认',PLUGIN_NOT_CONNECTED:'插件尚未连接',PLUGIN_UNAVAILABLE:'插件当前不可用',AUTHENTICATION_FAILED:'身份认证失败',ROUTE_UNAVAILABLE:'网络不可达',CONNECT_TIMEOUT:'连接超时',DATABASE_ACCOUNT_NOT_READONLY:'数据库账号不是只读账号'})[value] ?? value;
+}
+function auditOperationName(entry) {
+  if (entry.type === 'environment-disconnected') return '断开环境';
+  if (entry.type?.startsWith('environment-')) return '连接环境';
+  if (entry.type === 'host-key-change-approved') return '确认服务器指纹';
+  if (entry.type === 'auto-reconnect') return '自动恢复连接';
+  if (entry.type === 'disconnect' && entry.result === 'connection-lost') return '连接意外中断';
+  if (entry.type === 'plugin-operation') return auditCapabilityName(entry.capability ?? entry.operation ?? '执行插件操作');
+  return auditCapabilityName(entry.operation ?? entry.capability ?? ({'mysql-query':'查询数据','policy-denied':'操作被规则拦截'})[entry.type] ?? '系统操作');
+}
+function auditDescription(entry) {
+  if (entry.detail) return entry.detail;
+  if (entry.type?.startsWith('environment-')) {
+    if (entry.type === 'environment-disconnected') return '当前环境的插件连接已断开';
+    const connected = Number(entry.connectedCount ?? 0);
+    const eligible = Number(entry.eligibleCount ?? connected);
+    return `${connected}/${eligible} 个插件已连接${connected < eligible ? '，其余插件不可用' : ''}`;
+  }
+  if (entry.type === 'auto-reconnect') return entry.errorCode ? auditErrorName(entry.errorCode) : `第 ${entry.attempt ?? 1} 次尝试已完成`;
+  if (entry.type === 'disconnect' && entry.result === 'connection-lost') return '网络或远端连接中断';
+  if (entry.errorCode) return auditErrorName(entry.errorCode);
+  if (Number.isFinite(entry.durationMs)) return `耗时 ${entry.durationMs} ms`;
+  return '已完成';
+}
+function visibleAuditEntries() {
+  return state.auditEntries.filter((entry) => {
+    if (entry.type === 'plugin-operation-started' || entry.type === 'connect') return false;
+    if (entry.type === 'disconnect' && entry.result !== 'connection-lost') return false;
+    return true;
+  }).sort((left,right) => new Date(right.time).getTime() - new Date(left.time).getTime());
+}
 function renderAudit() {
   const environment = activeEnvironment();
   if (!environment) return;
   $('#auditTitle').textContent = `${environment.name} · 操作记录`;
   const query = $('#auditSearch').value.trim().toLocaleLowerCase('zh-CN');
   const resultFilter = $('#auditResult').value;
-  const rows = state.auditEntries.filter((entry) => {
+  const rows = visibleAuditEntries().filter((entry) => {
     const result = auditResult(entry);
-    const text = [entry.id,entry.type,entry.pluginInstanceId,entry.operation,entry.errorCode,entry.detail].join(' ').toLocaleLowerCase('zh-CN');
+    const text = [auditOperationName(entry),auditPluginName(entry),auditDescription(entry)].join(' ').toLocaleLowerCase('zh-CN');
     return (!resultFilter || result === resultFilter) && (!query || text.includes(query));
   });
-  $('#auditBody').innerHTML = rows.map((entry) => { const result = auditResult(entry); return `<tr><td>${escapeHtml(new Date(entry.time).toLocaleString())}<small>${escapeHtml(entry.id ?? '')}</small></td><td>${escapeHtml(entry.pluginInstanceId ?? '环境')}</td><td>${escapeHtml(entry.operation ?? entry.type ?? '')}</td><td><span class="result ${escapeAttr(result)}">${result === 'success' ? '成功' : result === 'blocked' ? '已拦截' : '失败'}</span></td><td>${escapeHtml(entry.detail ?? entry.errorCode ?? '')}</td></tr>`; }).join('');
+  const resultNames = { success:'成功',warning:'部分成功',blocked:'已拦截',error:'失败' };
+  $('#auditBody').innerHTML = rows.map((entry) => { const result = auditResult(entry); return `<tr><td>${escapeHtml(new Date(entry.time).toLocaleString())}</td><td><strong>${escapeHtml(auditOperationName(entry))}</strong></td><td>${escapeHtml(auditPluginName(entry))}</td><td><span class="result ${escapeAttr(result)}">${resultNames[result]}</span></td><td>${escapeHtml(auditDescription(entry))}</td></tr>`; }).join('');
   $('#auditEmpty').classList.toggle('hidden', rows.length > 0);
   $('.audit-table-wrap table').classList.toggle('hidden', rows.length === 0);
 }
@@ -386,31 +433,40 @@ async function environmentAction() {
   renderShell();
 }
 
-function diagnosticSteps(plugin) {
-  if (plugin.pluginType === 'server') return ['解析服务器地址',`建立 ${uplinkName(plugin)} 路由`,'验证 SSH 身份与主机指纹','检查已登记日志和配置源'];
-  if (plugin.transport?.kind === 'serverTunnel') return ['检查 Server 插件','建立受控 SSH 隧道','验证数据库身份','检查固定数据库访问'];
-  return ['解析目标地址',`建立 ${transportName(plugin)} 路由`,'验证服务身份','检查固定资源访问'];
+function diagnosticScopeName(plugin) {
+  if (plugin.pluginType === 'server') return '网络路由、SSH 认证与主机指纹';
+  if (plugin.pluginType === 'mysql') return '连接路由、数据库认证、只读账号与固定数据库';
+  return '连接路由、Redis 认证与 PING';
+}
+function diagnosticRouteName(plugin) { return plugin.pluginType === 'server' ? uplinkName(plugin) : transportName(plugin); }
+function diagnosticElapsed(started) {
+  const value = performance.now() - started;
+  return value < 1 ? '< 1 ms' : `${Math.round(value)} ms`;
+}
+function diagnosticMarkup(plugin, status, elapsed = '', reused = false) {
+  const pending = status === 'pending';
+  const title = pending ? '正在检查连接' : status === 'success' ? (reused ? '当前已连接' : '连接正常') : '连接检查失败';
+  const subtitle = pending ? '等待真实连接结果…' : status === 'success' ? (reused ? '读取当前环境的活动连接状态' : '临时连接检查已完成') : '未通过连接检查';
+  const statusIcon = pending ? 'loader' : status === 'success' ? 'check' : 'x';
+  return `<div class="diagnostic-state ${status}"><span class="diagnostic-state-icon">${icon(statusIcon)}</span><span><strong>${title}</strong><small>${subtitle}</small></span><span class="diagnostic-elapsed">${escapeHtml(elapsed)}</span></div><dl class="diagnostic-facts"><dt>目标</dt><dd>${escapeHtml(pluginTarget(plugin))}</dd><dt>连接方式</dt><dd>${escapeHtml(diagnosticRouteName(plugin))}</dd><dt>${reused ? '结果依据' : '实际检查'}</dt><dd>${escapeHtml(reused ? '当前环境的活动连接状态' : diagnosticScopeName(plugin))}</dd></dl>`;
 }
 async function testPlugin() {
   const plugin = activePlugin();
   const environment = activeEnvironment();
   $('#diagnosticTitle').textContent = `${plugin.displayName} · 连接检查`;
   $('#diagnosticScope').textContent = `${activeProject().name} / ${environment.name}`;
-  const steps = diagnosticSteps(plugin);
-  $('#diagnosticList').innerHTML = steps.map((step) => `<div class="diagnostic-row"><span>${icon('loader')}</span><strong>${escapeHtml(step)}</strong><span class="step-state">等待</span></div>`).join('');
+  $('#diagnosticList').innerHTML = diagnosticMarkup(plugin,'pending');
   $('#diagnosticSummary').className = 'diagnostic-summary';
-  $('#diagnosticSummary').textContent = '正在检查…';
+  $('#diagnosticSummary').textContent = '这里只显示后端实际返回的整体结果，不模拟中间步骤。';
   $('#diagnosticDialog').showModal();
-  const rows = $$('.diagnostic-row', $('#diagnosticList'));
+  const started = performance.now();
   try {
     const result = await call(api.testPlugin({projectId:state.projectId,environmentId:state.environmentId,pluginInstanceId:plugin.pluginInstanceId}));
-    rows.forEach((row,index) => { row.classList.add('pass'); $('span:first-child',row).innerHTML = icon('check'); $('.step-state',row).textContent = `${12 + index * 17} ms`; });
+    $('#diagnosticList').innerHTML = diagnosticMarkup(plugin,'success',diagnosticElapsed(started),Boolean(result.reused));
     $('#diagnosticSummary').className = 'diagnostic-summary success';
-    $('#diagnosticSummary').textContent = result.reused ? '插件当前已连接。' : '检查成功；环境连接状态未改变。';
+    $('#diagnosticSummary').textContent = result.reused ? '复用当前环境连接完成检查，没有新建或断开连接。' : '已建立一次临时连接并立即释放；环境连接状态未改变。';
   } catch (error) {
-    const failIndex = Math.min(rows.length - 1, 2);
-    rows.forEach((row,index) => { if (index < failIndex) { row.classList.add('pass'); $('span:first-child',row).innerHTML=icon('check'); $('.step-state',row).textContent=`${12+index*17} ms`; } });
-    if (rows[failIndex]) { rows[failIndex].classList.add('fail'); $('span:first-child',rows[failIndex]).innerHTML=icon('x'); $('.step-state',rows[failIndex]).textContent='失败'; }
+    $('#diagnosticList').innerHTML = diagnosticMarkup(plugin,'failure',diagnosticElapsed(started));
     $('#diagnosticSummary').className = 'diagnostic-summary failure';
     $('#diagnosticSummary').textContent = error.message;
   }
