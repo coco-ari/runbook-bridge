@@ -1,4 +1,5 @@
 import redisPackage from 'redis';
+import { EventEmitter } from 'node:events';
 import { AppError } from './errors.mjs';
 
 const { createClient } = redisPackage;
@@ -33,8 +34,9 @@ async function withTimeout(plugin, operation) {
   }
 }
 
-export class RedisPluginRuntime {
+export class RedisPluginRuntime extends EventEmitter {
   constructor(routeManager, credentialVault, { factory = createClient } = {}) {
+    super();
     this.routeManager = routeManager;
     this.credentialVault = credentialVault;
     this.factory = factory;
@@ -85,11 +87,20 @@ export class RedisPluginRuntime {
       ...(secrets.password ? { password: secrets.password } : {}),
       disableOfflineQueue: true,
     });
-    client.on?.('error', () => undefined);
+    let session = null;
+    const lost = (error) => {
+      if (!session || session.closing || this.sessions.get(key(plugin)) !== session) return;
+      this.sessions.delete(key(plugin));
+      this.routeManager.closeRelay(plugin).catch(() => undefined);
+      this.emit('lifecycle', { type:'lost', projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, error });
+    };
+    client.on?.('error', (error) => lost(error));
+    client.on?.('end', () => lost(new AppError('ROUTE_UNAVAILABLE', 'Redis 连接已中断。')));
     try {
       await client.connect();
       await client.ping();
-      this.sessions.set(key(plugin), { client, connectedAt: new Date().toISOString(), routeGeneration: relay.generation });
+      session = { client, connectedAt: new Date().toISOString(), routeGeneration: relay.generation, closing:false };
+      this.sessions.set(key(plugin), session);
       return { connected: true, connectedAt: this.sessions.get(key(plugin)).connectedAt, routeGeneration: relay.generation };
     } catch (error) {
       await client.disconnect?.().catch(() => undefined);
@@ -103,12 +114,19 @@ export class RedisPluginRuntime {
   async disconnect(plugin) {
     const session = this.sessions.get(key(plugin));
     this.sessions.delete(key(plugin));
+    if (session) session.closing = true;
     if (session?.client) {
       if (session.client.isOpen) await session.client.quit().catch(() => session.client.disconnect?.());
       else await session.client.disconnect?.().catch(() => undefined);
     }
     await this.routeManager.closeRelay(plugin);
     return { connected: false };
+  }
+
+  async health(plugin) {
+    const session = this.require(plugin);
+    await withTimeout(plugin, session.client.ping());
+    return { connected:true, checkedAt:new Date().toISOString() };
   }
 
   async scan(plugin, { patternId, cursor = '0', limit } = {}) {
@@ -170,7 +188,7 @@ export class RedisPluginRuntime {
   async closeAll() {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
-    await Promise.all(sessions.map((session) => session.client.disconnect?.().catch(() => undefined)));
+    await Promise.all(sessions.map(async (session) => { session.closing = true; await session.client.disconnect?.().catch(() => undefined); }));
   }
 }
 

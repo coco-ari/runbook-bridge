@@ -2,15 +2,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { app, BrowserWindow, dialog, ipcMain, shell, powerMonitor } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
 import { ProjectStore } from './project-store.mjs';
-import { SshBroker } from './ssh-broker.mjs';
 import { BrokerServer } from './broker-server.mjs';
 import { rotateBrokerToken } from './broker-auth.mjs';
-import { CredentialStore, sameCredentialBinding } from './credential-store.mjs';
-import { ConnectionManager } from './connection-manager.mjs';
+import { CredentialStore } from './credential-store.mjs';
 import { defaultDataRoot } from './paths.mjs';
-import { AppError, toPublicError } from './errors.mjs';
 import { WorkspaceStore } from './workspace-store.mjs';
 import { PluginCredentialVault } from './plugin-credential-vault.mjs';
 import { AddressResolver, WindowsVpnGuard, RouteManager } from './route-manager.mjs';
@@ -29,116 +26,13 @@ import { NetworkChangeWatcher } from './network-change-watcher.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataRoot = defaultDataRoot();
 const store = new ProjectStore(dataRoot);
-const broker = new SshBroker(store);
 let brokerServer;
 let credentialStore;
-let connectionManager;
 let mainWindow;
 let v2;
 
 app.setName('AI 运维工具');
 app.disableHardwareAcceleration();
-
-function resultHandler(handler) {
-  return async (_event, ...args) => {
-    try {
-      return { ok: true, data: await handler(...args) };
-    } catch (error) {
-      return { ok: false, error: toPublicError(error) };
-    }
-  };
-}
-
-async function listProjects() {
-  const projects = await store.list();
-  return Promise.all(
-    projects.map(async (project) => ({
-      ...project,
-      status: broker.status(project.id),
-      credentialsSaved: await credentialStore.hasUsable(project.id, project),
-      documents: await store.listDocs(project.id),
-    })),
-  );
-}
-
-function registerIpc() {
-  ipcMain.handle('project:list', resultHandler(listProjects));
-  ipcMain.handle('project:get', resultHandler((id) => store.get(id)));
-  ipcMain.handle(
-    'project:create',
-    resultHandler(async ({ project: input, secrets }) => {
-      const project = await store.create(input);
-      try {
-        const connection = await connectionManager.connect(project.id, secrets);
-        return { project: await store.get(project.id), connection };
-      } catch (error) {
-        return { project: await store.get(project.id), connectError: toPublicError(error) };
-      }
-    }),
-  );
-  ipcMain.handle(
-    'project:update',
-    resultHandler(async ({ id, project }) => {
-      const previous = await store.get(id);
-      const updated = await store.update(id, project);
-      if (store.securityConfigHash(previous) !== store.securityConfigHash(updated)) {
-        broker.invalidateProjectContexts(id);
-      }
-      if (!updated.credentials.remember || !sameCredentialBinding(previous, updated)) {
-        await credentialStore.clear(id);
-      }
-      return updated;
-    }),
-  );
-  ipcMain.handle(
-    'project:delete',
-    resultHandler(async (projectId) => {
-      const project = await store.get(projectId);
-      await broker.disconnect(projectId, 'project-delete');
-      broker.invalidateProjectContexts(projectId);
-      await shell.trashItem(store.projectDir(projectId));
-      return { id: project.id, name: project.name };
-    }),
-  );
-  ipcMain.handle(
-    'project:connect',
-    resultHandler(async ({ projectId, secrets }) => connectionManager.connect(projectId, secrets)),
-  );
-  ipcMain.handle(
-    'project:trust-host-key-change',
-    resultHandler(async ({ projectId, fingerprint }) => {
-      const value = String(fingerprint ?? '');
-      if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(value)) {
-        throw new AppError('INVALID_ARGUMENT', 'SSH 主机指纹格式无效。');
-      }
-      const updated = await store.update(projectId, { ssh: { hostKeyFingerprint: value } });
-      await store.appendAudit(projectId, { type: 'host-key-change-approved', fingerprint: value });
-      return updated;
-    }),
-  );
-  ipcMain.handle('project:disconnect', resultHandler((projectId) => broker.disconnect(projectId)));
-  ipcMain.handle('document:list', resultHandler((projectId) => store.listDocs(projectId)));
-  ipcMain.handle('document:read', resultHandler(({ projectId, name }) => store.readDoc(projectId, name)));
-  ipcMain.handle(
-    'document:save',
-    resultHandler(({ projectId, name, content }) => store.saveDoc(projectId, name, content)),
-  );
-  ipcMain.handle('document:create', resultHandler(({ projectId, name }) => store.createDoc(projectId, name)));
-  ipcMain.handle('document:delete', resultHandler(({ projectId, name }) => store.deleteDoc(projectId, name)));
-  ipcMain.handle(
-    'dialog:private-key',
-    resultHandler(async () => {
-      const selection = await dialog.showOpenDialog(mainWindow, {
-        title: '选择 SSH 私钥文件',
-        properties: ['openFile'],
-        filters: [{ name: 'SSH 私钥', extensions: ['pem', 'key', 'ppk', '*'] }],
-      });
-      return selection.canceled ? null : selection.filePaths[0];
-    }),
-  );
-  ipcMain.handle('app:open-data-folder', resultHandler(() => shell.openPath(dataRoot)));
-  ipcMain.handle('app:info', resultHandler(() => ({ version: app.getVersion(), dataRoot })));
-}
 
 function createWindow() {
   const screenshotPath = process.env.AI_OPS_SCREENSHOT_PATH;
@@ -210,7 +104,6 @@ if (process.argv.includes('--mcp')) {
         await store.init();
         const { safeStorage } = await import('electron');
         credentialStore = new CredentialStore(store, safeStorage);
-        connectionManager = new ConnectionManager(store, credentialStore, broker);
         const workspaceStore = new WorkspaceStore(dataRoot, { legacyStore: store });
         await workspaceStore.init({ migrateLegacy: true });
         const pluginCredentialVault = new PluginCredentialVault(dataRoot, safeStorage);
@@ -238,22 +131,28 @@ if (process.argv.includes('--mcp')) {
         const networkWatcher = new NetworkChangeWatcher((reason) => environmentConnectionManager.networkChanged(reason));
         environmentConnectionManager.on('changed', () => networkWatcher.setActive(Object.values(environmentConnectionManager.listStates()).some((item) => item.desiredConnected)));
         serverRuntime.on('lifecycle', (event) => {
-          if (event.type === 'lost') environmentConnectionManager.networkChanged('server-connection-lost').catch(() => undefined);
+          if (event.type === 'lost') environmentConnectionManager.pluginLost(event.projectId, event.environmentId, event.pluginInstanceId, event.error).catch(() => undefined);
+        });
+        mysqlRuntime.on('lifecycle', (event) => {
+          if (event.type === 'lost') environmentConnectionManager.pluginLost(event.projectId, event.environmentId, event.pluginInstanceId, event.error).catch(() => undefined);
+        });
+        redisRuntime.on('lifecycle', (event) => {
+          if (event.type === 'lost') environmentConnectionManager.pluginLost(event.projectId, event.environmentId, event.pluginInstanceId, event.error).catch(() => undefined);
         });
         const serverOperations = new ServerOperations(serverRuntime, workspaceStore);
         const contextManager = new EnvironmentContextManager(workspaceStore);
         const confirmationManager = new ConfirmationManager();
-        const v2Service = new V2Service({ workspaceStore, connectionManager: environmentConnectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault: pluginCredentialVault });
+        const broadcast = (channel, payload) => {
+          for (const window of BrowserWindow.getAllWindows()) window.webContents.send(channel, payload);
+        };
+        const v2Service = new V2Service({ workspaceStore, connectionManager: environmentConnectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault: pluginCredentialVault, workspaceChanged:(payload) => broadcast('v2:workspace-changed', payload) });
         v2 = { workspaceStore, credentialVault: pluginCredentialVault, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
         const token = await rotateBrokerToken(dataRoot);
-        brokerServer = new BrokerServer({ dataRoot, token, broker, v2Service, appVersion: app.getVersion() });
+        brokerServer = new BrokerServer({ dataRoot, token, v2Service, appVersion: app.getVersion() });
         await brokerServer.start();
-        registerIpc();
         registerV2Ipc(ipcMain, {
           ...v2,
-          broadcast: (channel, payload) => {
-            for (const window of BrowserWindow.getAllWindows()) window.webContents.send(channel, payload);
-          },
+          broadcast,
         });
         createWindow();
         powerMonitor.on('resume', () => environmentConnectionManager.networkChanged('system-resume').catch(() => undefined));
@@ -271,7 +170,7 @@ if (process.argv.includes('--mcp')) {
       event.preventDefault();
       app.__aiOpsClosing = true;
       v2?.networkWatcher?.stop();
-      Promise.all([broker.closeAll(), v2?.connectionManager?.closeAll(), brokerServer?.stop()])
+      Promise.all([v2?.connectionManager?.closeAll(), brokerServer?.stop()])
         .catch(() => undefined)
         .finally(() => app.quit());
     });

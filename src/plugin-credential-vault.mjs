@@ -110,6 +110,18 @@ export class PluginCredentialVault {
     });
   }
 
+  async saveMerged(previousPlugin, nextPlugin, secrets = {}) {
+    let existing = {};
+    try {
+      existing = await this.load(previousPlugin ?? nextPlugin) ?? {};
+    } catch (error) {
+      if (!Object.values(secrets ?? {}).some((value) => String(value ?? ''))) throw error;
+    }
+    const merged = this.normalizeSecrets(nextPlugin, { ...existing, ...secrets });
+    if (!Object.keys(merged).length) return { saved: false };
+    return this.save(nextPlugin, merged);
+  }
+
   async load(plugin) {
     const envelope = await this.readEnvelope();
     const entry = envelope.entries[resourceKey(plugin)];

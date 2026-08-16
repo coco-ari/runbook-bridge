@@ -46,7 +46,7 @@ export class EnvironmentContextManager {
     return { contextToken, expiresAt: new Date(createdAt + this.ttlMs).toISOString(), ...value };
   }
 
-  async verify(projectId, environmentId, pluginInstanceId, contextToken) {
+  async verifyEnvironment(projectId, environmentId, contextToken, clientInstanceId = 'unknown') {
     const context = this.contexts.get(String(contextToken ?? ''));
     if (!context || context.expiresAt <= Date.now()) {
       if (context) this.contexts.delete(contextToken);
@@ -55,6 +55,9 @@ export class EnvironmentContextManager {
     if (context.projectId !== projectId || context.environmentId !== environmentId) {
       throw new AppError('SCOPE_MISMATCH', '操作目标不属于已打开的环境。');
     }
+    if (context.clientInstanceId !== String(clientInstanceId).slice(0, 128)) {
+      throw new AppError('CLIENT_CONTEXT_MISMATCH', '当前环境上下文属于另一个 Agent 会话，请重新打开环境。');
+    }
     const current = await this.digest(projectId, environmentId);
     if (current.bindingHash !== context.bindingHash) {
       this.contexts.delete(contextToken);
@@ -62,14 +65,19 @@ export class EnvironmentContextManager {
         runbookChanged: current.runbook.hash !== context.runbookHash,
       });
     }
+    return { context, runbook: current.runbook, environment: current.environment, plugins:current.plugins, pluginBindings:current.pluginBindings };
+  }
+
+  async verify(projectId, environmentId, pluginInstanceId, contextToken, clientInstanceId = 'unknown') {
+    const current = await this.verifyEnvironment(projectId, environmentId, contextToken, clientInstanceId);
     const plugin = current.plugins.find((item) => item.pluginInstanceId === pluginInstanceId);
     if (!plugin) {
       throw new AppError('CAPABILITY_NOT_GRANTED', '该插件不在当前环境上下文中。');
     }
-    if (context.pluginBindings[pluginInstanceId] !== current.pluginBindings[pluginInstanceId]) {
+    if (current.context.pluginBindings[pluginInstanceId] !== current.pluginBindings[pluginInstanceId]) {
       throw new AppError('CONTEXT_STALE', '目标插件配置或操作规则已变化，请重新打开环境。', { pluginInstanceId });
     }
-    return { context, plugin, runbook: current.runbook, environment: current.environment };
+    return { context:current.context, plugin, runbook:current.runbook, environment:current.environment };
   }
 
   invalidateEnvironment(projectId, environmentId) {

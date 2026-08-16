@@ -1,23 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('aiOps', {
-  listProjects: () => ipcRenderer.invoke('project:list'),
-  getProject: (id) => ipcRenderer.invoke('project:get', id),
-  createProject: (payload) => ipcRenderer.invoke('project:create', payload),
-  updateProject: (payload) => ipcRenderer.invoke('project:update', payload),
-  deleteProject: (id) => ipcRenderer.invoke('project:delete', id),
-  connectProject: (payload) => ipcRenderer.invoke('project:connect', payload),
-  trustHostKeyChange: (payload) => ipcRenderer.invoke('project:trust-host-key-change', payload),
-  disconnectProject: (id) => ipcRenderer.invoke('project:disconnect', id),
-  listDocuments: (projectId) => ipcRenderer.invoke('document:list', projectId),
-  readDocument: (projectId, name) => ipcRenderer.invoke('document:read', { projectId, name }),
-  saveDocument: (projectId, name, content) =>
-    ipcRenderer.invoke('document:save', { projectId, name, content }),
-  createDocument: (projectId, name) => ipcRenderer.invoke('document:create', { projectId, name }),
-  deleteDocument: (projectId, name) => ipcRenderer.invoke('document:delete', { projectId, name }),
-  choosePrivateKey: () => ipcRenderer.invoke('dialog:private-key'),
-  openDataFolder: () => ipcRenderer.invoke('app:open-data-folder'),
-  getAppInfo: () => ipcRenderer.invoke('app:info'),
   v2: {
     listProjects: () => ipcRenderer.invoke('v2:project-list'),
     createProject: (input) => ipcRenderer.invoke('v2:project-create', input),
@@ -32,6 +15,8 @@ contextBridge.exposeInMainWorld('aiOps', {
     disconnectEnvironment: (payload) => ipcRenderer.invoke('v2:environment-disconnect', payload),
     cancelEnvironment: (payload) => ipcRenderer.invoke('v2:environment-cancel', payload),
     environmentStatus: (payload) => ipcRenderer.invoke('v2:environment-status', payload),
+    connectPlugin: (payload) => ipcRenderer.invoke('v2:plugin-connect', payload),
+    disconnectPlugin: (payload) => ipcRenderer.invoke('v2:plugin-disconnect', payload),
     readRunbook: (payload) => ipcRenderer.invoke('v2:runbook-read', payload),
     saveRunbook: (payload) => ipcRenderer.invoke('v2:runbook-save', payload),
     listPlugins: (payload) => ipcRenderer.invoke('v2:plugin-list', payload),
@@ -51,6 +36,11 @@ contextBridge.exposeInMainWorld('aiOps', {
       const listener = (_event, value) => callback(value);
       ipcRenderer.on('v2:environment-status-changed', listener);
       return () => ipcRenderer.removeListener('v2:environment-status-changed', listener);
+    },
+    onWorkspaceChanged: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('v2:workspace-changed', listener);
+      return () => ipcRenderer.removeListener('v2:workspace-changed', listener);
     },
     onConfirmations: (callback) => {
       const listener = (_event, value) => callback(value);

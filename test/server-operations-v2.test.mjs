@@ -14,6 +14,30 @@ test('Server operations map actionId to fixed commands and reject arbitrary para
 
 test('configuration reader redacts common secret formats', () => {
   const value=serverOperationInternals.redactConfig('username=app\npassword=hunter2\nAuthorization: Bearer abc.def\nnormal=value');
+  const json=serverOperationInternals.redactConfig('{"username":"app","password":"json-secret","nested":{"token":"nested-secret"}}');
+  const structured=serverOperationInternals.redactConfig('secret: |\n  line-one\n  line-two\nname: safe\n<password>xml-secret</password>');
   assert.doesNotMatch(value,/hunter2|abc\.def/);
+  assert.doesNotMatch(json,/json-secret|nested-secret/);
+  assert.doesNotMatch(structured,/line-one|line-two|xml-secret/);
   assert.match(value,/normal=value/);
+});
+
+test('log tools reject configuration file handles and config pagination happens after redaction', async () => {
+  const content='username=app\npassword=supersecret\nnormal=value';
+  const runtime={readRemoteRange:async()=>({content,startByte:0,endByte:Buffer.byteLength(content),size:Buffer.byteLength(content),truncated:false,mtime:7})};
+  const operations=new ServerOperations(runtime,{});
+  const configSource={sourceId:'config',displayName:'Config',kind:'config',root:'/etc/app',patterns:['*.conf'],maxFileBytes:1024};
+  const scopedPlugin={...plugin,sources:[configSource]};
+  const fileId=operations.rememberFile(scopedPlugin,configSource,{canonicalPath:'/etc/app/app.conf',size:Buffer.byteLength(content),mtime:7});
+  await assert.rejects(()=>operations.readLog(scopedPlugin,{fileId}),(error)=>error.code==='SOURCE_NOT_ALLOWED');
+  await assert.rejects(()=>operations.searchLogs(scopedPlugin,{fileIds:[fileId],contains:'secret'}),(error)=>error.code==='SOURCE_NOT_ALLOWED');
+  let cursor=null;
+  let combined='';
+  do {
+    const page=await operations.readConfig(scopedPlugin,{fileId,cursor,maxBytes:5});
+    combined+=page.content;
+    cursor=page.nextCursor;
+  } while(cursor);
+  assert.doesNotMatch(combined,/supersecret/);
+  assert.match(combined,/\[REDACTED\]/);
 });

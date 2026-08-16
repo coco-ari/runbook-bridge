@@ -57,3 +57,27 @@ test('database discovery still reports a stale saved credential when no replacem
   assert.equal(result.ok, false);
   assert.equal(result.error.code, 'CREDENTIAL_BINDING_MISMATCH');
 });
+
+test('deleting a provider with dependents has no connection or credential side effects', async () => {
+  const handlers=new Map();
+  let disconnects=0;
+  let clears=0;
+  let deletes=0;
+  const ipcMain={handle:(name,handler)=>handlers.set(name,handler),on:()=>undefined};
+  registerV2Ipc(ipcMain,{
+    workspaceStore:{
+      preflightDeletePlugin:async()=>{throw new AppError('PLUGIN_HAS_DEPENDENTS','会员主库仍复用此隧道。');},
+      deletePlugin:async()=>{deletes+=1;},
+    },
+    connectionManager:{on:()=>undefined},
+    credentialVault:{clear:async()=>{clears+=1;}},
+    contextManager:{}, confirmationManager:{on:()=>undefined},
+    pluginManager:{disconnect:async()=>{disconnects+=1;}},
+  });
+  const result=await handlers.get('v2:plugin-delete')({}, {projectId:'p1',environmentId:'e1',pluginInstanceId:'server-1'});
+  assert.equal(result.ok,false);
+  assert.equal(result.error.code,'PLUGIN_HAS_DEPENDENTS');
+  assert.equal(disconnects,0);
+  assert.equal(clears,0);
+  assert.equal(deletes,0);
+});

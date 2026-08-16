@@ -33,38 +33,51 @@ export function registerV2Ipc(ipcMain, services) {
   handle('environment-retry', ({ projectId, environmentId, secretsByPlugin }) => connectionManager.retryFailed(projectId, environmentId, { secretsByPlugin }));
   handle('environment-disconnect', ({ projectId, environmentId }) => connectionManager.disconnect(projectId, environmentId));
   handle('environment-cancel', ({ projectId, environmentId }) => connectionManager.cancel(projectId, environmentId));
-  handle('environment-status', ({ projectId, environmentId }) => connectionManager.snapshot(projectId, environmentId));
+  handle('environment-status', ({ projectId, environmentId }) => connectionManager.status(projectId, environmentId));
+  handle('plugin-connect', ({ projectId, environmentId, pluginInstanceId }) => connectionManager.connectPlugin(projectId, environmentId, pluginInstanceId));
+  handle('plugin-disconnect', ({ projectId, environmentId, pluginInstanceId }) => connectionManager.disconnectPlugin(projectId, environmentId, pluginInstanceId));
   handle('runbook-read', ({ projectId, environmentId }) => store.readRunbook(projectId, environmentId));
   handle('runbook-save', async ({ projectId, environmentId, content, expectedRevision }) => {
     const value = await store.saveRunbook(projectId, environmentId, content, expectedRevision);
     contextManager.invalidateEnvironment(projectId, environmentId);
+    await store.appendAudit(projectId, { type:'runbook-updated', environmentId, actor:'user', result:'success', bytes:Buffer.byteLength(String(content ?? ''),'utf8') }).catch(() => undefined);
     return value;
   });
   handle('plugin-list', ({ projectId, environmentId }) => store.listPlugins(projectId, environmentId));
   handle('plugin-create', async ({ projectId, environmentId, input, secrets }) => {
     const plugin = await store.createPlugin(projectId, environmentId, input);
-    if (secrets && Object.values(secrets).some(Boolean)) await credentialVault.save(plugin, secrets);
+    try {
+      if (secrets && Object.values(secrets).some(Boolean)) await credentialVault.save(plugin, secrets);
+    } catch (error) {
+      await store.deletePlugin(projectId, environmentId, plugin.pluginInstanceId).catch(() => undefined);
+      throw error;
+    }
     await connectionManager.configurationChanged(projectId, environmentId, plugin.pluginInstanceId);
     contextManager.invalidateEnvironment(projectId, environmentId);
     return plugin;
   });
   handle('plugin-update', async ({ projectId, environmentId, pluginInstanceId, patch, expectedRevision, secrets }) => {
     const before = await store.getPlugin(projectId, environmentId, pluginInstanceId);
-    if (connectionManager.snapshot(projectId, environmentId).plugins[pluginInstanceId]?.phase === 'connected') await pluginManager.disconnect(before, 'configuration-change');
     const plugin = await store.updatePlugin(projectId, environmentId, pluginInstanceId, patch, expectedRevision);
-    if (secrets && Object.values(secrets).some(Boolean)) await credentialVault.save(plugin, secrets);
+    try {
+      await credentialVault.saveMerged(before, plugin, secrets ?? {});
+    } catch (error) {
+      await store.restorePluginSnapshot(before).catch(() => undefined);
+      throw error;
+    }
+    if (connectionManager.snapshot(projectId, environmentId).plugins[pluginInstanceId]?.phase === 'connected') await pluginManager.disconnect(before, 'configuration-change');
     await connectionManager.configurationChanged(projectId, environmentId, plugin.pluginInstanceId);
     contextManager.invalidateEnvironment(projectId, environmentId);
     return plugin;
   });
   handle('plugin-delete', async ({ projectId, environmentId, pluginInstanceId }) => {
-    const plugin = await store.getPlugin(projectId, environmentId, pluginInstanceId);
-    await pluginManager.disconnect(plugin, 'plugin-delete').catch(() => undefined);
-    await credentialVault.clear(plugin).catch(() => undefined);
+    const { plugin } = await store.preflightDeletePlugin(projectId, environmentId, pluginInstanceId);
     const value = await store.deletePlugin(projectId, environmentId, pluginInstanceId);
+    await pluginManager.disconnect(plugin, 'plugin-delete').catch(() => undefined);
+    const credentialCleanup = await credentialVault.clear(plugin).catch(() => ({ cleared: false, warning: true }));
     await connectionManager.configurationChanged(projectId, environmentId, pluginInstanceId);
     contextManager.invalidateEnvironment(projectId, environmentId);
-    return value;
+    return { ...value, credentialCleanup };
   });
   handle('plugin-credential-status', async ({ projectId, environmentId, pluginInstanceId }) => {
     const plugin = await store.getPlugin(projectId, environmentId, pluginInstanceId);
@@ -105,18 +118,28 @@ export function registerV2Ipc(ipcMain, services) {
   });
   handle('plugin-policy', async ({ projectId, environmentId, pluginInstanceId, policy, expectedRevision }) => {
     const value = await store.updatePlugin(projectId, environmentId, pluginInstanceId, { policy }, expectedRevision);
-    await connectionManager.configurationChanged(projectId, environmentId, pluginInstanceId);
     contextManager.invalidateEnvironment(projectId, environmentId);
+    await store.appendAudit(projectId, { type:'plugin-policy-updated', environmentId, pluginInstanceId, pluginNameSnapshot:value.displayName, actor:'user', result:'success' }).catch(() => undefined);
     return value;
   });
   handle('audit-list', ({ projectId, ...filters }) => store.listAudit(projectId, filters));
   handle('confirmation-list', () => confirmationManager.list());
-  handle('confirmation-approve', (requestId) => confirmationManager.approve(requestId));
-  handle('confirmation-reject', (requestId) => confirmationManager.reject(requestId));
+  handle('confirmation-approve', async (requestId) => {
+    const pending = confirmationManager.list().find((item) => item.requestId === requestId);
+    const result = confirmationManager.approve(requestId);
+    if (pending) await store.appendAudit(pending.projectId, { type:'confirmation-approved', environmentId:pending.environmentId, pluginInstanceId:pending.pluginInstanceId, pluginNameSnapshot:pending.pluginNameSnapshot, actor:'user', capability:pending.capability, operationSummary:pending.summary, confirmationId:requestId, result:'success' }).catch(() => undefined);
+    return result;
+  });
+  handle('confirmation-reject', async (requestId) => {
+    const pending = confirmationManager.list().find((item) => item.requestId === requestId);
+    const result = confirmationManager.reject(requestId);
+    if (pending) await store.appendAudit(pending.projectId, { type:'confirmation-rejected', environmentId:pending.environmentId, pluginInstanceId:pending.pluginInstanceId, pluginNameSnapshot:pending.pluginNameSnapshot, actor:'user', capability:pending.capability, operationSummary:pending.summary, confirmationId:requestId, result:'blocked' }).catch(() => undefined);
+    return result;
+  });
   handle('plugin-test', async ({ projectId, environmentId, pluginInstanceId, secrets }) => {
     const state = connectionManager.snapshot(projectId, environmentId).plugins[pluginInstanceId];
-    if (state?.phase === 'connected') return { connected: true, reused: true };
     const plugin = await store.getPlugin(projectId, environmentId, pluginInstanceId);
+    if (state?.phase === 'connected') return { ...(await pluginManager.health(plugin)), reused: true };
     const result = await pluginManager.connect(plugin, secrets ?? {});
     await pluginManager.disconnect(plugin, 'diagnostic-complete');
     return { ...result, diagnosticOnly: true };

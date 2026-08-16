@@ -14,10 +14,14 @@ export class ConfirmationManager extends EventEmitter {
     this.approved = new Map();
   }
 
-  request(scope, capability, args) {
+  request(scope, capability, args, summary = null, metadata = {}) {
     const operationHash = fingerprint({ scope, capability, args });
+    const current = Date.now();
+    for (const entry of this.pending.values()) {
+      if (entry.expiresAt > current && entry.operationHash === operationHash) return entry;
+    }
     const requestId = crypto.randomUUID();
-    const entry = { requestId, operationHash, ...scope, capability, createdAt: new Date().toISOString(), expiresAt: Date.now() + this.ttlMs };
+    const entry = { requestId, operationHash, ...scope, capability, summary, ...metadata, actor: 'Agent', createdAt: new Date().toISOString(), expiresAt: current + this.ttlMs };
     this.pending.set(requestId, entry);
     this.emit('changed', this.list());
     return entry;

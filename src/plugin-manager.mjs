@@ -23,6 +23,11 @@ export class PluginManager {
     return this.runtime(plugin).disconnect(plugin, reason);
   }
 
+  health(plugin) {
+    const runtime = this.runtime(plugin);
+    return typeof runtime.health === 'function' ? runtime.health(plugin) : Promise.resolve(runtime.status(plugin));
+  }
+
   async invoke(plugin, capability, args = {}) {
     const mode = plugin.policy?.[capability];
     if (!mode) throw new AppError('CAPABILITY_NOT_GRANTED', '插件没有该操作能力。');

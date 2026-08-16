@@ -44,6 +44,19 @@ test('workspace creates independent environments and database-granular plugins',
   assert.equal((await store.listPlugins(project.projectId, gray.environmentId)).length, 0);
 });
 
+test('a plugin name and type are sufficient to save disconnected drafts', async (t) => {
+  const { store } = await fixture(t);
+  const project = await store.createProject({ name:'越南项目', environmentName:'测试环境' });
+  const [environment] = await store.listEnvironments(project.projectId);
+  for (const [pluginType, displayName] of [['server','应用服务器'],['mysql','业务数据库'],['redis','业务缓存']]) {
+    const plugin = await store.createPlugin(project.projectId, environment.environmentId, { pluginType, displayName });
+    assert.equal(plugin.configState, 'draft');
+  }
+  const plugins = await store.listPlugins(project.projectId, environment.environmentId);
+  assert.equal(plugins.length, 3);
+  assert.ok(plugins.every((plugin) => plugin.configState === 'draft'));
+});
+
 test('workspace rejects cross-environment tunnel references and protects providers', async (t) => {
   const { store } = await fixture(t);
   const project = await store.createProject({ name: '订单服务', environmentName: '环境 A' });
@@ -113,4 +126,25 @@ test('plugin credentials are encrypted and bound to the exact resource', async (
   assert.equal(disk.includes('very-secret'), false);
   const changed = { ...mysql, target: { ...mysql.target, host: 'other.internal' } };
   await assert.rejects(() => vault.load(changed), (error) => error.code === 'CREDENTIAL_BINDING_MISMATCH');
+});
+
+test('credential updates merge fields and rebind saved secrets to an edited target', async (t) => {
+  const { root, store } = await fixture(t);
+  const project = await store.createProject({ name: '网关服务' });
+  const [environment] = await store.listEnvironments(project.projectId);
+  const server = await store.createPlugin(project.projectId, environment.environmentId, {
+    pluginType: 'server', pluginInstanceId: 'gateway-server', displayName: '网关服务器',
+    target: { host: 'old.internal', port: 22 }, auth: { type: 'password', username: 'reader' },
+    uplink: { type: 'http', host: 'proxy.internal', port: 8080, username: 'proxy-user' },
+  });
+  const encryption = {
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => Buffer.from(`encrypted:${Buffer.from(value).toString('base64')}`),
+    decryptString: (value) => Buffer.from(value).toString().replace(/^encrypted:/, '').replace(/.+/, (encoded) => Buffer.from(encoded, 'base64').toString()),
+  };
+  const vault = new PluginCredentialVault(root, encryption);
+  await vault.save(server, { password: 'ssh-secret', proxyPassword: 'old-proxy-secret' });
+  const changed = { ...server, target: { ...server.target, host: 'new.internal' }, revision: server.revision + 1 };
+  await vault.saveMerged(server, changed, { proxyPassword: 'new-proxy-secret' });
+  assert.deepEqual(await vault.load(changed), { password: 'ssh-secret', proxyPassword: 'new-proxy-secret' });
 });

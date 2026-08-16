@@ -1,6 +1,6 @@
 {
   "name": "runbook-bridge",
-  "version": "1.0.0",
+  "version": "1.0.11",
   "private": true,
   "packageManager": "pnpm@11.21.0",
   "author": "AI Ops Tool contributors",
@@ -56,7 +56,8 @@
     },
     "files": [
       "src/**/*",
-      "renderer/**/*",
+      "!src/mcp.mjs",
+      "renderer/v2/**/*",
       "package.json"
     ],
     "asarUnpack": [

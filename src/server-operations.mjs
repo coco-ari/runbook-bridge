@@ -4,6 +4,8 @@ import { AppError } from './errors.mjs';
 
 const FILE_ID_TTL_MS = 10 * 60 * 1000;
 const MAX_FILE_IDS = 2000;
+const MAX_CONFIG_BYTES = 1024 * 1024;
+const SECRET_KEY = /^(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|authorization)$/i;
 
 function globMatches(pattern, name) {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
@@ -17,10 +19,35 @@ function withinRoot(root, candidate) {
 }
 
 function redactConfig(content) {
-  return String(content)
+  const raw = String(content);
+  let normalized = raw;
+  try {
+    const parsed = JSON.parse(raw);
+    const redactObject = (value) => {
+      if (Array.isArray(value)) return value.map(redactObject);
+      if (!value || typeof value !== 'object') return value;
+      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, SECRET_KEY.test(key) ? '[REDACTED]' : redactObject(item)]));
+    };
+    normalized = JSON.stringify(redactObject(parsed), null, 2);
+  } catch {
+    // Non-JSON configuration is handled by the bounded text redactors below.
+  }
+  return normalized
+    .replace(/(^|\n)(\s*(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|authorization)\s*:\s*[>|][+-]?\s*\r?\n)(?:[ \t]+[^\r\n]*(?:\r?\n|$))+/gi, '$1$2  [REDACTED]\n')
     .replace(/(^|\n)(\s*(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|authorization)\s*[:=]\s*)([^\r\n]+)/gi, '$1$2[REDACTED]')
+    .replace(/(<(?:password|passwd|secret|token|api[-_]?key|private[-_]?key|authorization)>)[\s\S]*?(<\/(?:password|passwd|secret|token|api[-_]?key|private[-_]?key|authorization)>)/gi, '$1[REDACTED]$2')
     .replace(/(-----BEGIN [A-Z ]*PRIVATE KEY-----)[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----)/g, '$1\n[REDACTED]\n$2')
-    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+\/-]+=*/gi, '[REDACTED_AUTH]');
+    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+\/-]+=*/gi, '[REDACTED_AUTH]')
+    .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)[^\s/@]+@/gi, '$1[REDACTED]@');
+}
+
+function sliceUtf8(value, start, maxBytes) {
+  const buffer = Buffer.from(String(value), 'utf8');
+  let offset = Math.min(Math.max(Number(start) || 0, 0), buffer.length);
+  while (offset < buffer.length && (buffer[offset] & 0xc0) === 0x80) offset += 1;
+  let end = Math.min(offset + maxBytes, buffer.length);
+  while (end > offset && end < buffer.length && (buffer[end] & 0xc0) === 0x80) end -= 1;
+  return { content: buffer.subarray(offset, end).toString('utf8'), startByte: offset, endByte: end, size: buffer.length, truncated: end < buffer.length };
 }
 
 function capText(value, maxBytes) {
@@ -128,6 +155,12 @@ export class ServerOperations {
     return descriptor;
   }
 
+  describeFile(plugin, fileId) {
+    const descriptor = this.requireFile(plugin, fileId);
+    const source = this.source(plugin, descriptor.sourceId);
+    return { relativePath:descriptor.relativePath, size:descriptor.size, sourceName:source.displayName, kind:source.kind };
+  }
+
   async listFiles(plugin, { sourceId, cursor = 0, limit = 200 } = {}) {
     const source = this.source(plugin, sourceId);
     const entries = await this.serverRuntime.listRemoteDirectory(plugin, source.root);
@@ -147,6 +180,8 @@ export class ServerOperations {
 
   async readLog(plugin, { fileId, cursor = null, maxBytes = 262_144, tail = true } = {}) {
     const descriptor = this.requireFile(plugin, fileId);
+    const source = this.source(plugin, descriptor.sourceId);
+    if (source.kind !== 'log') throw new AppError('SOURCE_NOT_ALLOWED', '该文件不属于日志数据源。');
     const limit = Math.min(Math.max(Number(maxBytes) || 262_144, 1), plugin.limits.maxBytes);
     const start = cursor !== null ? Math.max(Number(cursor) || 0, 0) : tail ? Math.max(0, descriptor.size - limit) : 0;
     const result = await this.serverRuntime.readRemoteRange(plugin, descriptor.path, start, limit);
@@ -164,6 +199,8 @@ export class ServerOperations {
     let scannedBytes = 0;
     for (const fileId of fileIds) {
       const descriptor = this.requireFile(plugin, fileId);
+      const source = this.source(plugin, descriptor.sourceId);
+      if (source.kind !== 'log') throw new AppError('SOURCE_NOT_ALLOWED', '该文件不属于日志数据源。');
       const remaining = scanBudget - scannedBytes;
       if (remaining <= 0 || matches.length >= limit) break;
       const start = Math.max(0, descriptor.size - remaining);
@@ -181,9 +218,12 @@ export class ServerOperations {
     const descriptor = this.requireFile(plugin, args.fileId);
     const source = this.source(plugin, descriptor.sourceId);
     if (source.kind !== 'config') throw new AppError('SOURCE_NOT_ALLOWED', '该文件不属于配置数据源。');
-    const result = await this.serverRuntime.readRemoteRange(plugin, descriptor.path, Number(args.cursor) || 0, Math.min(Number(args.maxBytes) || 262_144, 262_144));
+    if (descriptor.size > MAX_CONFIG_BYTES) throw new AppError('FILE_TOO_LARGE', '配置文件超过 1 MiB，无法安全读取和脱敏。');
+    const result = await this.serverRuntime.readRemoteRange(plugin, descriptor.path, 0, MAX_CONFIG_BYTES);
     if (result.mtime !== descriptor.mtime) throw new AppError('SOURCE_CHANGED', '配置文件已经变化，请重新列出。');
-    return { fileId: args.fileId, relativePath: descriptor.relativePath, content: redactConfig(result.content), nextCursor: result.truncated ? String(result.endByte) : null, truncated: result.truncated, redacted: true };
+    if (result.truncated) throw new AppError('FILE_TOO_LARGE', '配置文件超过安全读取上限。');
+    const page = sliceUtf8(redactConfig(result.content), args.cursor, Math.min(Math.max(Number(args.maxBytes) || 262_144, 1), 262_144));
+    return { fileId: args.fileId, relativePath: descriptor.relativePath, content: page.content, nextCursor: page.truncated ? String(page.endByte) : null, truncated: page.truncated, redacted: true };
   }
 
   async download(plugin, { fileId } = {}) {
@@ -196,4 +236,4 @@ export class ServerOperations {
   }
 }
 
-export const serverOperationInternals = { globMatches, withinRoot, redactConfig, capText };
+export const serverOperationInternals = { globMatches, withinRoot, redactConfig, capText, sliceUtf8 };

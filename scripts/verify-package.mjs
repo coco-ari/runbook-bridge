@@ -4,21 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { ProjectStore } from '../src/project-store.mjs';
 
 const executable = path.resolve(process.argv[2] ?? 'dist/win-unpacked/AI运维工具.exe');
 await fs.access(executable);
-const mcpEntrypoint = path.join(path.dirname(executable), 'resources', 'app.asar', 'src', 'mcp.mjs');
+const mcpEntrypoint = path.join(path.dirname(executable), 'resources', 'app.asar', 'src', 'mcp-v2.mjs');
 const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-package-'));
 try {
-  const store = new ProjectStore(dataRoot);
-  const project = await store.create({
-    id: 'package-verifier',
-    name: '安装包验证项目',
-    ssh: { host: '127.0.0.1', port: 22, username: 'deploy' },
-    auth: { type: 'password' },
-    proxy: { type: 'direct' },
-  });
   const transport = new StdioClientTransport({
     command: executable,
     args: [mcpEntrypoint],
@@ -31,17 +22,8 @@ try {
   const tools = await client.listTools();
   assert.deepEqual(
     tools.tools.map((tool) => tool.name),
-    ['list_projects', 'open_project', 'execute', 'execute_batch', 'upload', 'download', 'search_logs'],
+    ['list_projects', 'list_environments', 'open_environment', 'add_plugin', 'server_list_actions', 'server_run_action', 'server_list_sources', 'server_list_files', 'server_read_log', 'server_search_logs', 'server_read_config', 'server_download_file', 'mysql_list_tables', 'mysql_describe_table', 'mysql_query_readonly', 'mysql_explain', 'redis_scan', 'redis_read', 'redis_ttl'],
   );
-  const projects = await client.callTool({ name: 'list_projects', arguments: {} });
-  assert.equal(projects.isError, false);
-  assert.equal('accessMode' in projects.structuredContent.projects[0], false);
-  assert.equal('logRootCount' in projects.structuredContent.projects[0], false);
-  const opened = await client.callTool({ name: 'open_project', arguments: { projectId: project.id } });
-  assert.equal(opened.isError, false);
-  assert.equal('accessMode' in opened.structuredContent, false);
-  assert.equal('displayTimezone' in opened.structuredContent, false);
-  assert.equal('allowedLogRoots' in opened.structuredContent, false);
   await client.close();
   console.log(`verified: ${executable}`);
 } finally {

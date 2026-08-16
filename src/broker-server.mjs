@@ -6,10 +6,9 @@ import { toPublicError, AppError } from './errors.mjs';
 const MAX_REQUEST_BYTES = 1024 * 1024;
 
 export class BrokerServer {
-  constructor({ dataRoot, token, broker, v2Service = null, appVersion = 'unknown' }) {
+  constructor({ dataRoot, token, v2Service = null, appVersion = 'unknown' }) {
     this.endpoint = brokerEndpoint(dataRoot);
     this.token = token;
-    this.broker = broker;
     this.v2Service = v2Service;
     this.appVersion = appVersion;
     this.server = null;
@@ -95,33 +94,9 @@ export class BrokerServer {
     if (method.startsWith('v2.')) return this.dispatchV2(method.slice(3), params);
     switch (method) {
       case 'info':
-        return { version: this.appVersion };
-      case 'status':
-        return this.broker.status(params.projectId);
-      case 'statuses':
-        return this.broker.listStatuses();
-      case 'openContext':
-        return this.broker.openContext(
-          params.projectId,
-          params.expectedDocsHash,
-          params.clientInstanceId,
-          params.expectedSecurityConfigHash,
-        );
-      case 'execute':
-        return this.broker.execute(
-          params.projectId,
-          params.contextToken,
-          params.command,
-          params.workingDirectory,
-        );
-      case 'upload':
-        return this.broker.upload(params.projectId, params.contextToken, params.localPath, params.remotePath);
-      case 'download':
-        return this.broker.download(params.projectId, params.contextToken, params.remotePath);
-      case 'searchLogs':
-        return this.broker.searchLogs(params.projectId, params.contextToken, params);
+        return { version: this.appVersion, protocolVersion: 2 };
       default:
-        throw new AppError('METHOD_NOT_FOUND', '不支持的 Broker 操作。');
+        throw new AppError('METHOD_NOT_FOUND', '旧版 Broker 操作已停用，请重新加载 Agent 运维工作台 MCP。');
     }
   }
 
@@ -131,6 +106,7 @@ export class BrokerServer {
       case 'listProjects': return this.v2Service.listProjects(params);
       case 'listEnvironments': return this.v2Service.listEnvironments(params);
       case 'openEnvironment': return this.v2Service.openEnvironment(params);
+      case 'addPlugin': return this.v2Service.addPlugin(params);
       case 'listEnvironmentPlugins': return this.v2Service.listEnvironmentPlugins(params);
       case 'readRunbook': return this.v2Service.readRunbook(params);
       case 'serverListActions': return this.v2Service.serverDescriptors(params, 'actions');

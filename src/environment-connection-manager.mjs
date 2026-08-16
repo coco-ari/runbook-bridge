@@ -27,6 +27,7 @@ function emptyState(projectId, environmentId) {
     errorCount: 0,
     blockedCount: 0,
     draftCount: 0,
+    manualDisconnected: {},
     plugins: {},
     updatedAt: new Date().toISOString(),
   };
@@ -51,7 +52,7 @@ function isRetryable(error) {
 }
 
 export class EnvironmentConnectionManager extends EventEmitter {
-  constructor(workspaceStore, pluginManager, { retryDelays = RETRY_DELAYS } = {}) {
+  constructor(workspaceStore, pluginManager, { retryDelays = RETRY_DELAYS, maxConcurrency = 4 } = {}) {
     super();
     this.workspaceStore = workspaceStore;
     this.pluginManager = pluginManager;
@@ -60,6 +61,19 @@ export class EnvironmentConnectionManager extends EventEmitter {
     this.retryDelays = [...retryDelays];
     this.retryTimers = new Map();
     this.networkEpoch = 0;
+    this.maxConcurrency = Math.max(1, Number(maxConcurrency) || 4);
+    this.activeConnects = 0;
+    this.connectWaiters = [];
+  }
+
+  async withConnectPermit(operation) {
+    if (this.activeConnects >= this.maxConcurrency) await new Promise((resolve) => this.connectWaiters.push(resolve));
+    this.activeConnects += 1;
+    try { return await operation(); }
+    finally {
+      this.activeConnects -= 1;
+      this.connectWaiters.shift()?.();
+    }
   }
 
   key(projectId, environmentId) {
@@ -72,6 +86,28 @@ export class EnvironmentConnectionManager extends EventEmitter {
 
   snapshot(projectId, environmentId) {
     return structuredClone(this.state(projectId, environmentId));
+  }
+
+  async status(projectId, environmentId) {
+    const state = structuredClone(this.state(projectId, environmentId));
+    const plugins = await this.workspaceStore.listPlugins(projectId, environmentId);
+    const pluginIds = new Set(plugins.map((plugin) => plugin.pluginInstanceId));
+    for (const id of Object.keys(state.plugins)) if (!pluginIds.has(id)) delete state.plugins[id];
+    for (const plugin of plugins) {
+      if (!state.plugins[plugin.pluginInstanceId]) {
+        state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'disconnected', {
+          reason: plugin.configState === 'ready' ? null : 'PLUGIN_CONFIG_INCOMPLETE',
+        });
+      }
+    }
+    const ready = plugins.filter((plugin) => plugin.configState === 'ready');
+    state.eligibleCount = ready.length;
+    state.draftCount = plugins.length - ready.length;
+    state.connectedCount = ready.filter((plugin) => state.plugins[plugin.pluginInstanceId]?.phase === 'connected').length;
+    state.errorCount = ready.filter((plugin) => state.plugins[plugin.pluginInstanceId]?.phase === 'error').length;
+    state.blockedCount = ready.filter((plugin) => state.plugins[plugin.pluginInstanceId]?.phase === 'blocked').length;
+    if (!state.desiredConnected && state.connectedCount === 0) state.phase = 'disconnected';
+    return structuredClone(state);
   }
 
   listStates() {
@@ -101,7 +137,8 @@ export class EnvironmentConnectionManager extends EventEmitter {
     state.connectedCount = ready.filter((plugin) => state.plugins[plugin.pluginInstanceId]?.phase === 'connected').length;
     state.errorCount = ready.filter((plugin) => state.plugins[plugin.pluginInstanceId]?.phase === 'error').length;
     state.blockedCount = ready.filter((plugin) => state.plugins[plugin.pluginInstanceId]?.phase === 'blocked').length;
-    if (!ready.length) state.phase = 'disconnected';
+    if (!state.desiredConnected && state.connectedCount === 0) state.phase = 'disconnected';
+    else if (!ready.length) state.phase = 'disconnected';
     else if (state.connectedCount === ready.length) state.phase = 'connected';
     else if (state.connectedCount > 0) state.phase = 'partial';
     else state.phase = 'failed';
@@ -126,7 +163,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
     return this.enqueue(projectId, environmentId, () => this.connectPrepared(projectId, environmentId, options));
   }
 
-  async connectPrepared(projectId, environmentId, { expectedRevision = null, secretsByPlugin = {}, retryOnly = false, retryableOnly = false, preserveIntent = false } = {}) {
+  async connectPrepared(projectId, environmentId, { expectedRevision = null, secretsByPlugin = {}, retryOnly = false, retryableOnly = false, preserveIntent = false, actor = 'user' } = {}) {
     const prepared = await this.prepare(projectId, environmentId, expectedRevision);
     let state = this.state(projectId, environmentId);
     if (!preserveIntent) {
@@ -147,6 +184,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
     for (const plugin of prepared.plugins) {
       const current = state.plugins[plugin.pluginInstanceId];
       if (plugin.configState !== 'ready') state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'disconnected', { reason: 'PLUGIN_CONFIG_INCOMPLETE' });
+      else if (preserveIntent && state.manualDisconnected?.[plugin.pluginInstanceId]) state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'disconnected', { reason: 'USER_DISCONNECTED' });
       else if (retryOnly && retryableOnly && current?.phase === 'error' && !current.retryable) state.plugins[plugin.pluginInstanceId] = current;
       else if (!retryOnly || current?.phase !== 'connected') state.plugins[plugin.pluginInstanceId] = pluginState(plugin, plugin.transport?.kind === 'serverTunnel' ? 'waitingDependency' : 'connecting', { attempt: (current?.attempt ?? 0) + 1 });
     }
@@ -154,6 +192,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
 
     const promises = new Map();
     const connectOne = (plugin) => {
+      if (state.manualDisconnected?.[plugin.pluginInstanceId]) return Promise.resolve(false);
       if (state.plugins[plugin.pluginInstanceId]?.phase === 'connected') return Promise.resolve(true);
       if (retryOnly && retryableOnly && state.plugins[plugin.pluginInstanceId]?.phase === 'error' && !state.plugins[plugin.pluginInstanceId]?.retryable) return Promise.resolve(false);
       if (promises.has(plugin.pluginInstanceId)) return promises.get(plugin.pluginInstanceId);
@@ -172,7 +211,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
         state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'connecting', { attempt: (state.plugins[plugin.pluginInstanceId]?.attempt ?? 0) + 1 });
         this.publish(state);
         try {
-          const result = await this.pluginManager.connect(plugin, secretsByPlugin[plugin.pluginInstanceId] ?? {});
+          const result = await this.withConnectPermit(() => this.pluginManager.connect(plugin, secretsByPlugin[plugin.pluginInstanceId] ?? {}));
           if (state.connectAttemptId !== attemptId || !state.desiredConnected) {
             await this.pluginManager.disconnect(plugin, 'stale-connect-result');
             return false;
@@ -208,10 +247,105 @@ export class EnvironmentConnectionManager extends EventEmitter {
       projectId,
       environmentId,
       result: state.phase,
+      actor,
       connectedCount: state.connectedCount,
       eligibleCount: state.eligibleCount,
     }).catch(() => undefined);
     return structuredClone(state);
+  }
+
+  connectPlugin(projectId, environmentId, pluginInstanceId) {
+    return this.enqueue(projectId, environmentId, async () => {
+      const prepared = await this.prepare(projectId, environmentId);
+      const target = prepared.byId.get(pluginInstanceId);
+      if (!target || target.configState !== 'ready') throw new AppError('PLUGIN_CONFIG_INCOMPLETE', '请先完成该插件配置。');
+      const previous = this.state(projectId, environmentId);
+      const state = previous.desiredConnected ? structuredClone(previous) : emptyState(projectId, environmentId);
+      if (!previous.desiredConnected) {
+        for (const plugin of prepared.plugins.filter((item) => item.configState === 'ready' && item.pluginInstanceId !== pluginInstanceId)) {
+          state.manualDisconnected[plugin.pluginInstanceId] = true;
+          state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'disconnected', { reason:'USER_DISCONNECTED' });
+        }
+      }
+      state.desiredConnected = true;
+      state.intentGeneration = previous.intentGeneration + 1;
+      state.connectAttemptId = crypto.randomUUID();
+      state.phase = 'connecting';
+      const connectIds = [];
+      if (target.transport?.kind === 'serverTunnel') connectIds.push(target.transport.serverPluginInstanceId);
+      connectIds.push(target.pluginInstanceId);
+      for (const id of connectIds) delete state.manualDisconnected[id];
+      this.publish(state);
+      for (const id of connectIds) {
+        const plugin = prepared.byId.get(id);
+        if (state.plugins[id]?.phase === 'connected') continue;
+        state.plugins[id] = pluginState(plugin, 'connecting', { attempt:(state.plugins[id]?.attempt ?? 0) + 1 });
+        this.publish(state);
+        try {
+          const result = await this.withConnectPermit(() => this.pluginManager.connect(plugin));
+          state.plugins[id] = pluginState(plugin, 'connected', { connectedAt:result.connectedAt, routeGeneration:result.routeGeneration ?? result.generation ?? 0 });
+        } catch (error) {
+          const value = toPublicError(error);
+          state.plugins[id] = pluginState(plugin, 'error', { reason:value.code, retryable:isRetryable(error), error:value });
+          if (id !== target.pluginInstanceId) state.plugins[target.pluginInstanceId] = pluginState(target, 'blocked', { reason:'TUNNEL_PROVIDER_UNAVAILABLE', retryable:true });
+          break;
+        }
+        this.publish(state);
+      }
+      this.aggregate(state, prepared.plugins);
+      this.publish(state);
+      await this.workspaceStore.appendAudit(projectId, { type:'plugin-connected', projectId, environmentId, pluginInstanceId, pluginNameSnapshot:target.displayName, actor:'user', result:state.plugins[pluginInstanceId]?.phase === 'connected' ? 'success' : 'error' }).catch(() => undefined);
+      return structuredClone(state);
+    });
+  }
+
+  disconnectPlugin(projectId, environmentId, pluginInstanceId) {
+    return this.enqueue(projectId, environmentId, async () => {
+      const plugins = await this.workspaceStore.listPlugins(projectId, environmentId);
+      const target = plugins.find((plugin) => plugin.pluginInstanceId === pluginInstanceId);
+      if (!target) throw new AppError('PLUGIN_NOT_FOUND', '插件不存在。');
+      const state = structuredClone(this.state(projectId, environmentId));
+      state.intentGeneration += 1;
+      state.connectAttemptId = crypto.randomUUID();
+      const affected = target.pluginType === 'server'
+        ? [...plugins.filter((plugin) => plugin.transport?.serverPluginInstanceId === pluginInstanceId), target]
+        : [target];
+      for (const plugin of affected) {
+        state.manualDisconnected[plugin.pluginInstanceId] = true;
+        state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'disconnecting');
+        this.publish(state);
+        await this.pluginManager.disconnect(plugin, 'user-plugin-disconnect').catch(() => undefined);
+        state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'disconnected', { reason:'USER_DISCONNECTED' });
+      }
+      this.aggregate(state, plugins);
+      if (!plugins.some((plugin) => state.plugins[plugin.pluginInstanceId]?.phase === 'connected')) {
+        state.desiredConnected = false;
+        state.phase = 'disconnected';
+      }
+      this.publish(state);
+      await this.workspaceStore.appendAudit(projectId, { type:'plugin-disconnected', projectId, environmentId, pluginInstanceId, pluginNameSnapshot:target.displayName, actor:'user', result:'success' }).catch(() => undefined);
+      return structuredClone(state);
+    });
+  }
+
+  pluginLost(projectId, environmentId, pluginInstanceId, error = null) {
+    return this.enqueue(projectId, environmentId, async () => {
+      const state = structuredClone(this.state(projectId, environmentId));
+      if (!state.desiredConnected || state.manualDisconnected?.[pluginInstanceId]) return state;
+      const plugins = await this.workspaceStore.listPlugins(projectId, environmentId);
+      const plugin = plugins.find((item) => item.pluginInstanceId === pluginInstanceId);
+      if (!plugin) return state;
+      const value = toPublicError(error ?? new AppError('ROUTE_UNAVAILABLE', '连接意外中断。'));
+      state.plugins[pluginInstanceId] = pluginState(plugin, 'error', { reason:value.code, retryable:isRetryable(error), error:value });
+      for (const dependent of plugins.filter((item) => item.transport?.serverPluginInstanceId === pluginInstanceId)) {
+        await this.pluginManager.disconnect(dependent, 'provider-lost').catch(() => undefined);
+        state.plugins[dependent.pluginInstanceId] = pluginState(dependent, 'blocked', { reason:'TUNNEL_PROVIDER_UNAVAILABLE', retryable:true });
+      }
+      this.aggregate(state, plugins);
+      this.publish(state);
+      if (isRetryable(error)) this.scheduleReconnect(projectId, environmentId, 0);
+      return structuredClone(state);
+    });
   }
 
   retryFailed(projectId, environmentId, options = {}) {
@@ -220,18 +354,12 @@ export class EnvironmentConnectionManager extends EventEmitter {
     return this.enqueue(projectId, environmentId, () => this.connectPrepared(projectId, environmentId, { ...options, retryOnly: true, preserveIntent: true }));
   }
 
-  cancel(projectId, environmentId) {
-    return this.enqueue(projectId, environmentId, async () => {
-      const state = structuredClone(this.state(projectId, environmentId));
-      if (state.phase !== 'connecting') return state;
-      state.desiredConnected = false;
-      state.intentGeneration += 1;
-      state.connectAttemptId = crypto.randomUUID();
-      this.clearRetry(projectId, environmentId);
-      this.publish(state);
+  async cleanupCancelled(projectId, environmentId) {
       const plugins = await this.workspaceStore.listPlugins(projectId, environmentId);
       const ordered = [...plugins.filter((plugin) => plugin.pluginType !== 'server'), ...plugins.filter((plugin) => plugin.pluginType === 'server')];
       for (const plugin of ordered) await this.pluginManager.disconnect(plugin, 'user-cancel').catch(() => undefined);
+      const state = structuredClone(this.state(projectId, environmentId));
+      if (state.desiredConnected) return state;
       for (const plugin of plugins) state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'disconnected');
       state.phase = 'disconnected';
       state.connectedCount = 0;
@@ -239,7 +367,21 @@ export class EnvironmentConnectionManager extends EventEmitter {
       state.blockedCount = 0;
       this.publish(state);
       return structuredClone(state);
-    });
+  }
+
+  cancel(projectId, environmentId) {
+    const current = this.state(projectId, environmentId);
+    if (!['connecting', 'reconnecting'].includes(current.phase)) return structuredClone(current);
+    current.desiredConnected = false;
+    current.intentGeneration += 1;
+    current.connectAttemptId = crypto.randomUUID();
+    current.phase = 'disconnecting';
+    this.clearRetry(projectId, environmentId);
+    this.publish(current);
+    // Try to abort runtimes immediately; the queued pass is the final cleanup fence.
+    this.cleanupCancelled(projectId, environmentId).catch(() => undefined);
+    this.enqueue(projectId, environmentId, () => this.cleanupCancelled(projectId, environmentId)).catch(() => undefined);
+    return structuredClone(current);
   }
 
   configurationChanged(projectId, environmentId, changedPluginInstanceId = null) {
@@ -275,6 +417,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
       state.intentGeneration += 1;
       state.connectAttemptId = crypto.randomUUID();
       state.phase = 'disconnecting';
+      state.manualDisconnected = {};
       this.clearRetry(projectId, environmentId);
       this.publish(state);
       const plugins = await this.workspaceStore.listPlugins(projectId, environmentId);
@@ -290,7 +433,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
       state.errorCount = 0;
       state.blockedCount = 0;
       this.publish(state);
-      await this.workspaceStore.appendAudit(projectId, { type: 'environment-disconnected', projectId, environmentId, result: 'success', reason }).catch(() => undefined);
+      await this.workspaceStore.appendAudit(projectId, { type: 'environment-disconnected', projectId, environmentId, result: 'success', reason, actor: reason === 'user' ? 'user' : 'system' }).catch(() => undefined);
       return structuredClone(state);
     });
   }
@@ -312,7 +455,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
       const current = this.state(projectId, environmentId);
       if (!current.desiredConnected) return;
       try {
-        const result = await this.retryFailed(projectId, environmentId, { retryableOnly: true });
+        const result = await this.retryFailed(projectId, environmentId, { retryableOnly: true, actor: 'system' });
         if (!['connected', 'partial'].includes(result.phase) || result.errorCount + result.blockedCount > 0) this.scheduleReconnect(projectId, environmentId, attempt + 1);
       } catch {
         this.scheduleReconnect(projectId, environmentId, attempt + 1);
@@ -342,6 +485,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
       const plugins = await this.workspaceStore.listPlugins(projectId, environmentId);
       const ordered = [...plugins.filter((plugin) => plugin.pluginType !== 'server'), ...plugins.filter((plugin) => plugin.pluginType === 'server')];
       for (const plugin of ordered) {
+        if (state.manualDisconnected?.[plugin.pluginInstanceId]) continue;
         if (state.plugins[plugin.pluginInstanceId]?.reason === 'MANUAL_RECONNECT_REQUIRED') continue;
         await this.pluginManager.disconnect(plugin, reason).catch(() => undefined);
         state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'reconnecting', { reason: 'NETWORK_RECONNECTING', retryable: true });

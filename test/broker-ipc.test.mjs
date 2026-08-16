@@ -12,40 +12,39 @@ test('local broker requires the shared per-user token and returns structured dat
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-broker-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const token = await ensureBrokerToken(root);
-  const fakeBroker = {
-    status(projectId) { return { projectId, connected: true, generation: 7 }; },
-    listStatuses() { return { demo: { connected: true, generation: 7 } }; },
-  };
-  const server = new BrokerServer({ dataRoot: root, token, broker: fakeBroker });
+  const v2Service = { listProjects() { return { projects: [{ projectId: 'demo' }] }; } };
+  const server = new BrokerServer({ dataRoot: root, token, v2Service });
   await server.start();
   t.after(() => server.stop());
-  const response = await callBroker(root, 'status', { projectId: 'demo' }, 2_000);
-  assert.deepEqual(response, { projectId: 'demo', connected: true, generation: 7 });
-  assert.deepEqual(await callBroker(root, 'info', {}, 2_000), { version: 'unknown' });
+  await assert.rejects(
+    () => callBroker(root, 'status', { projectId: 'demo' }, 2_000),
+    (error) => error.code === 'METHOD_NOT_FOUND',
+  );
+  assert.deepEqual(await callBroker(root, 'v2.listProjects', {}, 2_000), { projects: [{ projectId: 'demo' }] });
+  assert.deepEqual(await callBroker(root, 'info', {}, 2_000), { version: 'unknown', protocolVersion: 2 });
 });
 
 test('broker survives an abandoned client and stop closes idle pipe clients promptly', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-broker-lifecycle-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const token = await ensureBrokerToken(root);
-  const fakeBroker = {
-    async status(projectId) {
+  const v2Service = {
+    async listProjects() {
       await new Promise((resolve) => setTimeout(resolve, 30));
-      return { projectId, connected: true };
+      return { projects: [{ projectId: 'still-alive' }] };
     },
-    listStatuses() { return {}; },
   };
-  const server = new BrokerServer({ dataRoot: root, token, broker: fakeBroker });
+  const server = new BrokerServer({ dataRoot: root, token, v2Service });
   await server.start();
   const abandoned = net.createConnection(server.endpoint);
   await new Promise((resolve, reject) => {
     abandoned.once('connect', resolve);
     abandoned.once('error', reject);
   });
-  abandoned.write(`${JSON.stringify({ id: 'abandoned', auth: token, method: 'status', params: { projectId: 'demo' } })}\n`);
+  abandoned.write(`${JSON.stringify({ id: 'abandoned', auth: token, method: 'v2.listProjects', params: {} })}\n`);
   abandoned.destroy();
   await new Promise((resolve) => setTimeout(resolve, 60));
-  assert.equal((await callBroker(root, 'status', { projectId: 'still-alive' }, 2_000)).connected, true);
+  assert.equal((await callBroker(root, 'v2.listProjects', {}, 2_000)).projects[0].projectId, 'still-alive');
 
   const idle = net.createConnection(server.endpoint);
   await new Promise((resolve, reject) => {

@@ -5,8 +5,6 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ensureBrokerToken } from '../src/broker-auth.mjs';
 import { BrokerServer } from '../src/broker-server.mjs';
 import { evaluateCommandPolicy } from '../src/command-policy.mjs';
@@ -248,40 +246,18 @@ test('an allowed command still executes and keeps the existing success audit con
   assert.equal(audits[0].exitCode, 0);
 });
 
-test('MCP returns a structured COMMAND_BLOCKED error without leaking the command', async (t) => {
+test('legacy MCP shell execution is rejected by the desktop broker', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-policy-mcp-'));
-  const { broker, commands, audits } = createBrokerFixture();
   const token = await ensureBrokerToken(root);
-  const brokerServer = new BrokerServer({ dataRoot: root, token, broker, appVersion: '0.1.7' });
+  const brokerServer = new BrokerServer({ dataRoot: root, token, appVersion: '1.0.0' });
   await brokerServer.start();
-
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [path.resolve('src/mcp.mjs')],
-    env: { ...process.env, AI_OPS_DATA_DIR: root },
-    stderr: 'pipe',
-  });
-  const client = new Client({ name: 'command-policy-test', version: '1.0.0' });
-  await client.connect(transport);
   t.after(async () => {
-    await client.close().catch(() => undefined);
     await brokerServer.stop();
     await fs.rm(root, { recursive: true, force: true });
   });
-
-  const response = await client.callTool({
-    name: 'execute',
-    arguments: {
-      projectId: 'policy-project',
-      contextToken: 'context-token',
-      command: 'sudo rm -rf / --password supersecret',
-    },
-  });
-  assert.equal(response.isError, true);
-  assert.equal(response.structuredContent.error.code, 'COMMAND_BLOCKED');
-  assert.equal(response.structuredContent.error.details.ruleId, 'PRIVILEGE_ESCALATION');
-  assert.match(response.content[0].text, /^COMMAND_BLOCKED:/);
-  assert.doesNotMatch(JSON.stringify(response), /sudo|rm -rf|password|supersecret/i);
-  assert.deepEqual(commands, []);
-  assert.equal(audits[0].type, 'execute-blocked');
+  const { callBroker } = await import('../src/broker-client.mjs');
+  await assert.rejects(
+    () => callBroker(root, 'execute', { projectId: 'policy-project', command: 'pwd' }, 2_000),
+    (error) => error.code === 'METHOD_NOT_FOUND',
+  );
 });

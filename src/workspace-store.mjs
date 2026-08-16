@@ -80,16 +80,23 @@ function normalizeTransport(input = {}) {
   const kind = TRANSPORTS.has(input.kind) ? input.kind : 'direct';
   const transport = { kind };
   if (kind === 'serverTunnel') {
-    transport.serverPluginInstanceId = assertId(input.serverPluginInstanceId, '隧道 Server 插件标识');
+    const providerId = String(input.serverPluginInstanceId ?? '').trim();
+    if (providerId) transport.serverPluginInstanceId = assertId(providerId, '隧道 Server 插件标识');
   }
   if (kind === 'windowsVpn') {
     const interfaceAlias = String(input.interfaceAlias ?? '').trim();
-    if (!interfaceAlias || interfaceAlias.length > 128 || CONTROL_RE.test(interfaceAlias)) {
+    if (interfaceAlias.length > 128 || CONTROL_RE.test(interfaceAlias)) {
       throw new AppError('INVALID_ARGUMENT', 'Windows VPN 网卡名称无效。');
     }
-    transport.interfaceAlias = interfaceAlias;
+    if (interfaceAlias) transport.interfaceAlias = interfaceAlias;
   }
   return transport;
+}
+
+function transportReady(transport) {
+  if (transport?.kind === 'serverTunnel') return Boolean(transport.serverPluginInstanceId);
+  if (transport?.kind === 'windowsVpn') return Boolean(transport.interfaceAlias);
+  return true;
 }
 
 function normalizeServerSources(input) {
@@ -176,9 +183,14 @@ function normalizePlugin(input, scope, existing = null) {
     if (username.length > 128 || CONTROL_RE.test(username)) throw new AppError('INVALID_ARGUMENT', 'SSH 用户名无效。');
     const authType = ['password', 'privateKey', 'agent'].includes(auth.type) ? auth.type : 'password';
     const uplinkType = ['direct', 'socks5', 'http', 'windowsVpn'].includes(uplink.type) ? uplink.type : 'direct';
+    const proxyHost = uplinkType === 'socks5' || uplinkType === 'http' ? normalizeHost(uplink.host, { required:false }) : '';
+    const vpnAlias = uplinkType === 'windowsVpn' ? String(uplink.interfaceAlias ?? '').trim() : '';
+    if (vpnAlias.length > 128 || CONTROL_RE.test(vpnAlias)) throw new AppError('INVALID_ARGUMENT', 'Windows VPN 网卡名称无效。');
+    const authReady = Boolean(username) && (authType !== 'privateKey' || Boolean(auth.privateKeyPath));
+    const uplinkReady = uplinkType === 'direct' || (['socks5','http'].includes(uplinkType) ? Boolean(proxyHost) : Boolean(vpnAlias));
     const plugin = {
       ...base,
-      configState: host && username ? 'ready' : 'draft',
+      configState: host && authReady && uplinkReady ? 'ready' : 'draft',
       target: {
         host,
         port: normalizePort(target.port, 22),
@@ -195,14 +207,14 @@ function normalizePlugin(input, scope, existing = null) {
         type: uplinkType,
         ...(uplinkType === 'socks5' || uplinkType === 'http'
           ? {
-              host: normalizeHost(uplink.host),
+              host: proxyHost,
               port: normalizePort(uplink.port, uplinkType === 'socks5' ? 1080 : 8080),
               username: String(uplink.username ?? '').trim(),
               remoteDns: false,
             }
           : {}),
         ...(uplinkType === 'windowsVpn'
-          ? { interfaceAlias: normalizeName(uplink.interfaceAlias, 'Windows VPN 网卡名称') }
+          ? { ...(vpnAlias ? { interfaceAlias:vpnAlias } : {}) }
           : {}),
       },
       sources: normalizeServerSources(source.sources),
@@ -240,9 +252,10 @@ function normalizePlugin(input, scope, existing = null) {
     if (database.length > 128 || CONTROL_RE.test(database) || username.length > 128 || CONTROL_RE.test(username)) {
       throw new AppError('INVALID_ARGUMENT', 'MySQL 数据库或用户名无效。');
     }
+    const transport = normalizeTransport({ ...(existing?.transport ?? {}), ...(input.transport ?? {}) });
     return {
       ...base,
-      configState: host && database && username ? 'ready' : 'draft',
+      configState: host && database && username && transportReady(transport) ? 'ready' : 'draft',
       target: {
         host,
         port: normalizePort(target.port, 3306),
@@ -250,7 +263,7 @@ function normalizePlugin(input, scope, existing = null) {
         addressFamily: normalizeAddressFamily(target.addressFamily),
       },
       auth: { username },
-      transport: normalizeTransport({ ...(existing?.transport ?? {}), ...(input.transport ?? {}) }),
+      transport,
       tls: { mode: ['disabled', 'preferred', 'required', 'verifyIdentity'].includes(source.tls?.mode) ? source.tls.mode : 'preferred' },
       policy: normalizePolicy(source.policy, { describe: 'auto', select: 'auto', explain: 'auto' }),
       limits: {
@@ -288,9 +301,10 @@ function normalizePlugin(input, scope, existing = null) {
       throw new AppError('INVALID_ARGUMENT', 'Redis Key pattern 无效。');
     }
   }
+  const transport = normalizeTransport({ ...(existing?.transport ?? {}), ...(input.transport ?? {}) });
   return {
     ...base,
-    configState: host ? 'ready' : 'draft',
+    configState: host && transportReady(transport) ? 'ready' : 'draft',
     target: {
       host,
       port: normalizePort(target.port, 6379),
@@ -298,8 +312,8 @@ function normalizePlugin(input, scope, existing = null) {
       addressFamily: normalizeAddressFamily(target.addressFamily),
     },
     auth: { username },
-    transport: normalizeTransport({ ...(existing?.transport ?? {}), ...(input.transport ?? {}) }),
-    tls: { mode: ['disabled', 'required', 'verifyIdentity'].includes(source.tls?.mode) ? source.tls.mode : 'disabled' },
+    transport,
+    tls: { mode: ['disabled', 'preferred', 'required', 'verifyIdentity'].includes(source.tls?.mode) ? source.tls.mode : 'disabled' },
     patterns,
     policy: normalizePolicy(source.policy, { scan: 'auto', read: 'auto', ttl: 'auto' }),
     limits: {
@@ -618,7 +632,7 @@ export class WorkspaceStore {
 
   async saveRunbook(projectId, environmentId, content, expectedRevision = null) {
     const text = String(content ?? '');
-    if (Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new AppError('RESULT_LIMIT_EXCEEDED', '运维说明不能超过 1 MiB。');
+    if (Buffer.byteLength(text, 'utf8') > 64 * 1024) throw new AppError('RESULT_LIMIT_EXCEEDED', '运维说明不能超过 64 KiB。');
     return this.enqueue(`environment:${projectId}:${environmentId}`, async () => {
       const environment = await this.getEnvironment(projectId, environmentId);
       if (expectedRevision !== null && environment.revision !== expectedRevision) throw new AppError('CONFIG_REVISION_CONFLICT', '环境已经变化，请刷新后重试。');
@@ -644,9 +658,10 @@ export class WorkspaceStore {
     return value;
   }
 
-  async createPlugin(projectId, environmentId, input) {
+  async createPlugin(projectId, environmentId, input, { expectedEnvironmentRevision = null } = {}) {
     return this.enqueue(`environment:${projectId}:${environmentId}`, async () => {
       const environment = await this.getEnvironment(projectId, environmentId);
+      if (expectedEnvironmentRevision !== null && environment.revision !== expectedEnvironmentRevision) throw new AppError('CONFIG_REVISION_CONFLICT', '环境配置已经变化，请重新打开环境后重试。');
       if (environment.pluginOrder.length >= 100) throw new AppError('RESULT_LIMIT_EXCEEDED', '每个环境最多 100 个插件。');
       const plugin = normalizePlugin(input, { projectId, environmentId });
       if (environment.pluginOrder.includes(plugin.pluginInstanceId)) throw new AppError('PLUGIN_ALREADY_EXISTS', '插件标识已经存在。');
@@ -669,13 +684,30 @@ export class WorkspaceStore {
     });
   }
 
+  async restorePluginSnapshot(plugin) {
+    return this.enqueue(`environment:${plugin.projectId}:${plugin.environmentId}`, async () => {
+      await this.writeYaml(this.pluginPath(plugin.projectId, plugin.environmentId, plugin.pluginInstanceId), plugin);
+      return plugin;
+    });
+  }
+
+  async preflightDeletePlugin(projectId, environmentId, pluginInstanceId) {
+    const plugin = await this.getPlugin(projectId, environmentId, pluginInstanceId);
+    const plugins = await this.listPlugins(projectId, environmentId);
+    const dependents = plugins.filter((item) => item.transport?.kind === 'serverTunnel' && item.transport.serverPluginInstanceId === pluginInstanceId);
+    if (dependents.length) {
+      throw new AppError('PLUGIN_HAS_DEPENDENTS', `仍有 ${dependents.length} 个插件复用此隧道：${dependents.map((item) => item.displayName).join('、')}。`);
+    }
+    return { plugin, dependents: [] };
+  }
+
   async deletePlugin(projectId, environmentId, pluginInstanceId) {
     return this.enqueue(`environment:${projectId}:${environmentId}`, async () => {
       const environment = await this.getEnvironment(projectId, environmentId);
       const plugin = await this.getPlugin(projectId, environmentId, pluginInstanceId);
       const plugins = await this.listPlugins(projectId, environmentId);
       const dependents = plugins.filter((item) => item.transport?.kind === 'serverTunnel' && item.transport.serverPluginInstanceId === pluginInstanceId);
-      if (dependents.length) throw new AppError('PLUGIN_HAS_DEPENDENTS', `仍有 ${dependents.length} 个插件复用此隧道。`);
+      if (dependents.length) throw new AppError('PLUGIN_HAS_DEPENDENTS', `仍有 ${dependents.length} 个插件复用此隧道：${dependents.map((item) => item.displayName).join('、')}。`);
       const next = { ...environment, pluginOrder: environment.pluginOrder.filter((id) => id !== pluginInstanceId), revision: environment.revision + 1, updatedAt: now() };
       const source = this.pluginPath(projectId, environmentId, pluginInstanceId);
       const tombstone = `${source}.deleting-${crypto.randomBytes(4).toString('hex')}`;
@@ -693,6 +725,7 @@ export class WorkspaceStore {
 
   async assertPluginReferences(plugin) {
     if (plugin.transport?.kind !== 'serverTunnel') return;
+    if (!plugin.transport.serverPluginInstanceId) return;
     const provider = await this.getPlugin(plugin.projectId, plugin.environmentId, plugin.transport.serverPluginInstanceId);
     if (provider.pluginType !== 'server' || provider.tunnelProvider === false) throw new AppError('INVALID_PLUGIN_REFERENCE', '隧道只能引用同环境且允许提供隧道的 Server 插件。');
   }

@@ -1,4 +1,5 @@
 import mysql from 'mysql2/promise';
+import { EventEmitter } from 'node:events';
 import { AppError } from './errors.mjs';
 import { validateMysqlSelect, validateMysqlExplain, applyMysqlRowLimit } from './mysql-policy.mjs';
 
@@ -58,8 +59,9 @@ function capRows(rows, maxRows, maxBytes) {
   return { rows: output, rowCount: output.length, bytes, truncated };
 }
 
-export class MysqlPluginRuntime {
+export class MysqlPluginRuntime extends EventEmitter {
   constructor(routeManager, credentialVault, { client = mysql } = {}) {
+    super();
     this.routeManager = routeManager;
     this.credentialVault = credentialVault;
     this.client = client;
@@ -105,7 +107,17 @@ export class MysqlPluginRuntime {
         ...(sslOptions(plugin, secrets) ? { ssl: sslOptions(plugin, secrets) } : {}),
       });
       await connection.query({ sql: 'SELECT 1 AS ai_ops_health', timeout: plugin.limits.timeoutMs });
-      this.sessions.set(key(plugin), { connection, connectedAt: new Date().toISOString(), routeGeneration: relay.generation, bindingHash: plugin.revision });
+      const session = { connection, connectedAt: new Date().toISOString(), routeGeneration: relay.generation, bindingHash: plugin.revision, closing:false };
+      this.sessions.set(key(plugin), session);
+      const raw = connection.connection ?? connection;
+      const lost = (error) => {
+        if (session.closing || this.sessions.get(key(plugin)) !== session) return;
+        this.sessions.delete(key(plugin));
+        this.routeManager.closeRelay(plugin).catch(() => undefined);
+        this.emit('lifecycle', { type:'lost', projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, error });
+      };
+      raw.on?.('error', (error) => { if (error?.fatal !== false) lost(error); });
+      raw.on?.('end', () => lost(new AppError('ROUTE_UNAVAILABLE', 'MySQL 连接已中断。')));
       return { connected: true, connectedAt: this.sessions.get(key(plugin)).connectedAt, routeGeneration: relay.generation };
     } catch (error) {
       await connection?.end().catch(() => undefined);
@@ -159,9 +171,16 @@ export class MysqlPluginRuntime {
   async disconnect(plugin) {
     const session = this.sessions.get(key(plugin));
     this.sessions.delete(key(plugin));
+    if (session) session.closing = true;
     await session?.connection?.end().catch(() => undefined);
     await this.routeManager.closeRelay(plugin);
     return { connected: false };
+  }
+
+  async health(plugin) {
+    const session = this.require(plugin);
+    await session.connection.query({ sql:'SELECT 1 AS ai_ops_health', timeout:Math.min(plugin.limits.timeoutMs, 5000) });
+    return { connected:true, checkedAt:new Date().toISOString() };
   }
 
   async assertBaseTables(plugin, tables) {
@@ -239,7 +258,7 @@ export class MysqlPluginRuntime {
   async closeAll() {
     const entries = [...this.sessions.entries()];
     this.sessions.clear();
-    await Promise.all(entries.map(async ([, session]) => session.connection.end().catch(() => undefined)));
+    await Promise.all(entries.map(async ([, session]) => { session.closing = true; await session.connection.end().catch(() => undefined); }));
   }
 }
 
