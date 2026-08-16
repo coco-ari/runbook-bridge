@@ -87,15 +87,21 @@ export function registerV2Ipc(ipcMain, services) {
     await store.getEnvironment(projectId, environmentId);
     const existing = pluginInstanceId ? await store.getPlugin(projectId, environmentId, pluginInstanceId) : null;
     if (existing && existing.pluginType !== 'mysql') throw new AppError('INVALID_ARGUMENT', '只有 MySQL 插件可以查询数据库列表。');
+    const providedSecrets = secrets ?? {};
     let savedSecrets = {};
-    if (existing) savedSecrets = await credentialVault.load(existing) ?? {};
+    if (existing) {
+      try { savedSecrets = await credentialVault.load(existing) ?? {}; }
+      catch (error) {
+        if (!providedSecrets.password) throw error;
+      }
+    }
     const transient = workspaceInternals.normalizePlugin({
       ...input,
       pluginType: 'mysql',
       pluginInstanceId: `mysql-discovery-${crypto.randomBytes(5).toString('hex')}`,
       target: { ...(input?.target ?? {}), database: '' },
     }, { projectId, environmentId });
-    return mysqlRuntime.listDatabases(transient, { ...savedSecrets, ...(secrets ?? {}) });
+    return mysqlRuntime.listDatabases(transient, { ...savedSecrets, ...providedSecrets });
   });
   handle('plugin-policy', async ({ projectId, environmentId, pluginInstanceId, policy, expectedRevision }) => {
     const value = await store.updatePlugin(projectId, environmentId, pluginInstanceId, { policy }, expectedRevision);
