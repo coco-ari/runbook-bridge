@@ -364,8 +364,6 @@ function openPluginDialog(plugin = null) {
   $('#pluginProxyUsername').value = plugin?.uplink?.username ?? '';
   $('#pluginProxyPassword').value = '';
   $('#pluginServerVpnAlias').value = plugin?.uplink?.interfaceAlias ?? '';
-  $('#pluginLogRoot').value = plugin?.sources?.find((item) => item.kind === 'log')?.root ?? '';
-  $('#pluginConfigRoot').value = plugin?.sources?.find((item) => item.kind === 'config')?.root ?? '';
   $('#pluginTls').value = plugin?.tls?.mode ?? 'disabled';
   $('#deletePluginButton').classList.toggle('hidden', !plugin);
   renderPluginForm();
@@ -381,8 +379,6 @@ function renderPluginForm() {
   $('#authTypeField').classList.toggle('hidden', type !== 'server');
   $('#privateKeyField').classList.toggle('hidden', type !== 'server' || $('#pluginAuthType').value !== 'privateKey');
   $('#uplinkField').classList.toggle('hidden', type !== 'server');
-  $('#serverLogsField').classList.toggle('hidden', type !== 'server');
-  $('#serverConfigField').classList.toggle('hidden', type !== 'server');
   const proxy = type === 'server' && ['socks5','http'].includes($('#pluginUplink').value);
   ['proxyHostField','proxyPortField','proxyUsernameField','proxyPasswordField'].forEach((id) => $(`#${id}`).classList.toggle('hidden', !proxy));
   $('#serverVpnField').classList.toggle('hidden', type !== 'server' || $('#pluginUplink').value !== 'windowsVpn');
@@ -404,9 +400,7 @@ async function savePlugin() {
     input.uplink = { type:$('#pluginUplink').value };
     if (['socks5','http'].includes(input.uplink.type)) Object.assign(input.uplink,{host:$('#pluginProxyHost').value.trim(),port:Number($('#pluginProxyPort').value),username:$('#pluginProxyUsername').value.trim()});
     if (input.uplink.type === 'windowsVpn') input.uplink.interfaceAlias = $('#pluginServerVpnAlias').value.trim();
-    input.sources = [];
-    if ($('#pluginLogRoot').value.trim()) input.sources.push({sourceId:'logs',displayName:'应用日志',kind:'log',root:$('#pluginLogRoot').value.trim(),patterns:['*.log','*.txt']});
-    if ($('#pluginConfigRoot').value.trim()) input.sources.push({sourceId:'config',displayName:'应用配置',kind:'config',root:$('#pluginConfigRoot').value.trim(),patterns:['*.yml','*.yaml','*.properties','*.conf','*.json','.env']});
+    input.sources = state.editingPlugin?.sources ?? [];
   } else {
     input.transport = { kind:$('#pluginTransport').value };
     if (input.transport.kind === 'serverTunnel') input.transport.serverPluginInstanceId = $('#pluginProvider').value;

@@ -31,7 +31,7 @@
     "install:electron-runtime": "node node_modules/electron/install.js",
     "test": "node --test test/*.test.mjs",
     "test:ui": "electron scripts/ui-v2-smoke.cjs",
-    "check": "node --check src/main.mjs && node --check src/mcp-v2.mjs && node --check src/v2-service.mjs && node --check src/workspace-store.mjs && node --check src/environment-connection-manager.mjs && node --check src/route-manager.mjs && node --check src/server-operations.mjs && node --check src/mysql-policy.mjs && node --check renderer/v2/app.js && node --check scripts/ui-v2-smoke.cjs",
+    "check": "node --check src/main.mjs && node --check src/mcp-v2.mjs && node --check src/v2-service.mjs && node --check src/workspace-store.mjs && node --check src/runbook-sources.mjs && node --check src/environment-connection-manager.mjs && node --check src/route-manager.mjs && node --check src/server-operations.mjs && node --check src/mysql-policy.mjs && node --check renderer/v2/app.js && node --check scripts/ui-v2-smoke.cjs",
     "dist": "electron-builder --win --publish never"
   },
   "dependencies": {

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { AppError, toPublicError } from './errors.mjs';
+import { pluginWithRunbookSources } from './runbook-sources.mjs';
 
 const MAX_RUNBOOK_BYTES = 64 * 1024;
 
@@ -66,9 +67,10 @@ export class V2Service {
   async serverDescriptors(params, kind) {
     const verified = await this.contextManager.verify(params.projectId, params.environmentId, params.pluginInstanceId, params.contextToken);
     if (verified.plugin.pluginType !== 'server') throw new AppError('PLUGIN_TYPE_MISMATCH', '目标不是 Server 插件。');
+    const plugin = pluginWithRunbookSources(verified.plugin, verified.runbook.content);
     return kind === 'actions'
-      ? { actions: this.serverOperations.listActions(verified.plugin) }
-      : { sources: this.serverOperations.listSources(verified.plugin) };
+      ? { actions: this.serverOperations.listActions(plugin) }
+      : { sources: this.serverOperations.listSources(plugin) };
   }
 
   async requireCallable(params, capability, args) {
@@ -90,7 +92,7 @@ export class V2Service {
         throw new AppError('CONFIRMATION_REQUIRED', '该操作需要在桌面端确认。', { requestId: pending.requestId, summary: operationSummary(verified.plugin, capability, args) });
       }
     }
-    return verified.plugin;
+    return pluginWithRunbookSources(verified.plugin, verified.runbook.content);
   }
 
   async invoke(params, capability, args = {}) {

@@ -11,7 +11,7 @@ const ADDRESS_FAMILIES = new Set(['ipv4Preferred', 'ipv4Only', 'ipv6Preferred', 
 const TRANSPORTS = new Set(['direct', 'windowsVpn', 'serverTunnel']);
 const POLICY_MODES = new Set(['auto', 'confirm', 'deny']);
 
-const DEFAULT_RUNBOOK = (name) => `# ${name}\n\n## 服务拓扑\n\n记录该环境包含的服务和依赖关系。\n\n## 日志与配置\n\n记录日志来源、关键字段和允许读取的配置范围。\n\n## 排障流程\n\n记录只读检查顺序、成功标准和升级处理方式。\n`;
+const DEFAULT_RUNBOOK = (name) => `# ${name}\n\n## 服务拓扑\n\n记录该环境包含的服务和依赖关系。\n\n## 日志与配置\n\n按 Server 插件名称登记允许读取的位置，例如：\n\n### 应用服务器\n- 日志目录：\`/var/log/my-app\`\n- 配置目录：\`/etc/my-app\`\n\n## 排障流程\n\n记录只读检查顺序、成功标准和升级处理方式。\n`;
 
 function clone(value) {
   return structuredClone(value);
