@@ -66,7 +66,23 @@ export function registerV2Ipc(ipcMain, services) {
     contextManager.invalidateEnvironment(projectId, environmentId);
     return value;
   });
-  handle('plugin-credential-status', async ({ projectId, environmentId, pluginInstanceId }) => ({ saved: await credentialVault.has(await store.getPlugin(projectId, environmentId, pluginInstanceId)) }));
+  handle('plugin-credential-status', async ({ projectId, environmentId, pluginInstanceId }) => {
+    const plugin = await store.getPlugin(projectId, environmentId, pluginInstanceId);
+    if (!(await credentialVault.has(plugin))) return { saved: false, fields: { primary: false, proxy: false } };
+    const secrets = await credentialVault.load(plugin) ?? {};
+    const primaryKey = plugin.pluginType === 'server' && plugin.auth?.type === 'privateKey' ? 'privateKeyPassphrase' : 'password';
+    const fields = { primary: Boolean(secrets[primaryKey]), proxy: plugin.pluginType === 'server' && Boolean(secrets.proxyPassword) };
+    return { saved: fields.primary || fields.proxy, fields };
+  });
+  handle('plugin-credential-reveal', async ({ projectId, environmentId, pluginInstanceId, field }) => {
+    const plugin = await store.getPlugin(projectId, environmentId, pluginInstanceId);
+    const primaryKey = plugin.pluginType === 'server' && plugin.auth?.type === 'privateKey' ? 'privateKeyPassphrase' : 'password';
+    const allowed = new Set(plugin.pluginType === 'server' ? [primaryKey, 'proxyPassword'] : [primaryKey]);
+    if (!allowed.has(field)) throw new AppError('INVALID_ARGUMENT', '该插件不支持显示此凭据。');
+    const secrets = await credentialVault.load(plugin) ?? {};
+    if (!secrets[field]) throw new AppError('CREDENTIAL_NOT_FOUND', '该密码尚未保存。');
+    return { value: secrets[field] };
+  });
   handle('plugin-databases', async ({ projectId, environmentId, pluginInstanceId, input, secrets }) => {
     await store.getEnvironment(projectId, environmentId);
     const existing = pluginInstanceId ? await store.getPlugin(projectId, environmentId, pluginInstanceId) : null;

@@ -2,6 +2,7 @@ const api = window.aiOps.v2;
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const icon = (name, className = 'icon') => `<svg class="${className}"><use href="#i-${name}"/></svg>`;
+const STORED_PASSWORD_MASK = '*****';
 
 const state = {
   projects: [], environments: [], plugins: [], auditEntries: [], projectId: null,
@@ -10,6 +11,7 @@ const state = {
   runbookContent: '', runbookRevision: null, runbookScopeKey: null, runbookEditing: false, pendingCount: 0,
   projectEnvironmentMemory: {}, scopePluginMemory: {},
   databaseDiscoverySignature: null, databaseCredentialRevision: 0,
+  credentialProbeGeneration: 0,
 };
 
 const typeNames = { server: 'Server', mysql: 'MySQL', redis: 'Redis' };
@@ -45,6 +47,81 @@ async function call(promise) {
     throw error;
   }
   return response.data;
+}
+
+function resetPasswordControl(id) {
+  const input = $(`#${id}`);
+  input.type = 'password';
+  input.value = '';
+  input.dataset.credentialState = 'empty';
+  updatePasswordToggle(id);
+}
+
+function markPasswordStored(id) {
+  const input = $(`#${id}`);
+  input.type = 'password';
+  input.value = STORED_PASSWORD_MASK;
+  input.dataset.credentialState = 'stored';
+  updatePasswordToggle(id);
+}
+
+function updatePasswordToggle(id) {
+  const input = $(`#${id}`);
+  const button = $(`[data-password-target="${id}"]`);
+  if (!button) return;
+  const visible = input.type === 'text';
+  button.setAttribute('aria-label', visible ? '隐藏密码' : '显示密码');
+  button.title = visible ? '隐藏密码' : '显示密码';
+  button.classList.toggle('active', visible);
+}
+
+function editedPasswordValue(id) {
+  const input = $(`#${id}`);
+  return input.dataset.credentialState === 'edited' ? input.value : '';
+}
+
+function primaryCredentialField(plugin) {
+  return plugin?.pluginType === 'server' && plugin.auth?.type === 'privateKey' ? 'privateKeyPassphrase' : 'password';
+}
+
+async function loadCredentialIndicators(plugin, generation) {
+  if (!plugin) return;
+  const status = await call(api.credentialStatus({
+    projectId:state.projectId, environmentId:state.environmentId, pluginInstanceId:plugin.pluginInstanceId,
+  }));
+  if (generation !== state.credentialProbeGeneration || state.editingPlugin?.pluginInstanceId !== plugin.pluginInstanceId || !$('#pluginDialog').open) return;
+  if (status.fields?.primary) markPasswordStored('pluginPassword');
+  if (status.fields?.proxy) markPasswordStored('pluginProxyPassword');
+}
+
+async function togglePasswordVisibility(button) {
+  const id = button.dataset.passwordTarget;
+  const input = $(`#${id}`);
+  const credentialState = input.dataset.credentialState;
+  if (credentialState === 'stored') {
+    const plugin = state.editingPlugin;
+    if (!plugin) return;
+    button.disabled = true;
+    try {
+      const field = id === 'pluginProxyPassword' ? 'proxyPassword' : primaryCredentialField(plugin);
+      const result = await call(api.revealCredential({
+        projectId:state.projectId, environmentId:state.environmentId, pluginInstanceId:plugin.pluginInstanceId, field,
+      }));
+      input.value = result.value;
+      input.type = 'text';
+      input.dataset.credentialState = 'revealed';
+    } finally {
+      button.disabled = false;
+      updatePasswordToggle(id);
+    }
+    return;
+  }
+  if (credentialState === 'revealed' && input.type === 'text') {
+    markPasswordStored(id);
+    return;
+  }
+  input.type = input.type === 'password' ? 'text' : 'password';
+  updatePasswordToggle(id);
 }
 
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[char]); }
@@ -355,6 +432,7 @@ function openEnvironmentEditor(id = null) {
 
 function openPluginDialog(plugin = null) {
   state.editingPlugin = plugin;
+  const credentialProbeGeneration = ++state.credentialProbeGeneration;
   clearPluginDialogError();
   const type = plugin?.pluginType ?? 'server';
   $('#pluginDialogTitle').textContent = plugin ? '配置插件' : '添加插件';
@@ -372,7 +450,7 @@ function openPluginDialog(plugin = null) {
   state.databaseCredentialRevision = 0;
   $('#pluginRedisDb').value = plugin?.target?.db ?? 0;
   $('#pluginUsername').value = plugin?.auth?.username ?? '';
-  $('#pluginPassword').value = '';
+  resetPasswordControl('pluginPassword');
   $('#pluginAddressFamily').value = plugin?.target?.addressFamily ?? 'ipv4Preferred';
   $('#pluginTransport').value = plugin?.transport?.kind ?? 'direct';
   $('#pluginVpnAlias').value = plugin?.transport?.interfaceAlias ?? '';
@@ -382,7 +460,7 @@ function openPluginDialog(plugin = null) {
   $('#pluginProxyHost').value = plugin?.uplink?.host ?? '';
   $('#pluginProxyPort').value = plugin?.uplink?.port ?? 1080;
   $('#pluginProxyUsername').value = plugin?.uplink?.username ?? '';
-  $('#pluginProxyPassword').value = '';
+  resetPasswordControl('pluginProxyPassword');
   $('#pluginServerVpnAlias').value = plugin?.uplink?.interfaceAlias ?? '';
   $('#pluginTls').value = plugin?.tls?.mode ?? 'disabled';
   $('#deletePluginButton').classList.toggle('hidden', !plugin);
@@ -390,6 +468,7 @@ function openPluginDialog(plugin = null) {
   if (plugin?.transport?.serverPluginInstanceId) $('#pluginProvider').value = plugin.transport.serverPluginInstanceId;
   state.databaseDiscoverySignature = plugin?.pluginType === 'mysql' ? databaseConnectionSignature() : null;
   $('#pluginDialog').showModal();
+  loadCredentialIndicators(plugin, credentialProbeGeneration).catch(showPluginDialogError);
 }
 
 function clearPluginDialogError() {
@@ -441,7 +520,7 @@ async function queryDatabases() {
     };
     if (input.transport.kind === 'serverTunnel') input.transport.serverPluginInstanceId = $('#pluginProvider').value;
     if (input.transport.kind === 'windowsVpn') input.transport.interfaceAlias = $('#pluginVpnAlias').value.trim();
-    const password = $('#pluginPassword').value;
+    const password = editedPasswordValue('pluginPassword');
     const result = await call(api.listPluginDatabases({
       projectId:state.projectId, environmentId:state.environmentId,
       pluginInstanceId:state.editingPlugin?.pluginType === 'mysql' ? state.editingPlugin.pluginInstanceId : null,
@@ -503,8 +582,10 @@ async function savePlugin() {
       input.target.database = $('#pluginDatabase').value;
     } else input.target.db = Number($('#pluginRedisDb').value);
   }
-  const secrets = $('#pluginPassword').value ? (type === 'server' && input.auth.type === 'privateKey' ? {privateKeyPassphrase:$('#pluginPassword').value} : {password:$('#pluginPassword').value}) : {};
-  if (type === 'server' && $('#pluginProxyPassword').value) secrets.proxyPassword = $('#pluginProxyPassword').value;
+  const primaryPassword = editedPasswordValue('pluginPassword');
+  const proxyPassword = editedPasswordValue('pluginProxyPassword');
+  const secrets = primaryPassword ? (type === 'server' && input.auth.type === 'privateKey' ? {privateKeyPassphrase:primaryPassword} : {password:primaryPassword}) : {};
+  if (type === 'server' && proxyPassword) secrets.proxyPassword = proxyPassword;
   const scope = { projectId:state.projectId,environmentId:state.environmentId };
   const plugin = state.editingPlugin ? await call(api.updatePlugin({...scope,pluginInstanceId:state.editingPlugin.pluginInstanceId,patch:input,expectedRevision:state.editingPlugin.revision,secrets})) : await call(api.createPlugin({...scope,input,secrets}));
   $('#pluginDialog').close();
@@ -603,6 +684,7 @@ document.addEventListener('click', async (event) => {
   const target = event.target.closest('button');
   if (!target) return;
   try {
+    if (target.dataset.passwordTarget) { await togglePasswordVisibility(target); return; }
     if (target.dataset.close) { $(`#${target.dataset.close}`).close(); return; }
     if (target.dataset.projectId) { await switchProject(target.dataset.projectId); return; }
     if (target.dataset.environmentId) { await switchEnvironment(target.dataset.environmentId); return; }
@@ -697,7 +779,23 @@ $('#queryDatabases').addEventListener('click', () => queryDatabases().catch(show
 ['pluginHost','pluginPort','pluginUsername','pluginAddressFamily','pluginTransport','pluginProvider','pluginVpnAlias','pluginTls'].forEach((id) => {
   $(`#${id}`).addEventListener(id === 'pluginHost' || id === 'pluginUsername' || id === 'pluginVpnAlias' ? 'input' : 'change', invalidateDatabaseDiscovery);
 });
-$('#pluginPassword').addEventListener('input', () => { state.databaseCredentialRevision += 1; invalidateDatabaseDiscovery(); });
+['pluginPassword','pluginProxyPassword'].forEach((id) => {
+  const input = $(`#${id}`);
+  input.addEventListener('beforeinput', () => {
+    if (input.dataset.credentialState === 'stored') {
+      input.value = '';
+      input.dataset.credentialState = 'edited';
+    }
+  });
+  input.addEventListener('input', () => {
+    input.dataset.credentialState = 'edited';
+    updatePasswordToggle(id);
+    if (id === 'pluginPassword') {
+      state.databaseCredentialRevision += 1;
+      invalidateDatabaseDiscovery();
+    }
+  });
+});
 $('#environmentAction').addEventListener('click', () => environmentAction().catch(showError));
 $('#environmentDisconnect').addEventListener('click', async () => { try { state.runtime = await call(api.disconnectEnvironment({projectId:state.projectId,environmentId:state.environmentId})); renderShell(); } catch (error) { showError(error); } });
 

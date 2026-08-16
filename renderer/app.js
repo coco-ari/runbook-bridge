@@ -391,8 +391,8 @@ function openConnectDialog(project) {
   fields.commandPolicyEnabled.checked = project.commandPolicy?.enabled !== false;
   fields.customDeny.value = (project.commandPolicy?.customDeny ?? []).join('\n');
   fields.password.placeholder = project.credentialsSaved
-    ? '已使用 Windows 加密保存，留空继续使用'
-    : '输入密码后可加密保存';
+    ? '*****'
+    : '请输入密码';
   elements.dialogTitle.textContent = `连接设置 · ${project.name}`;
   elements.submitProject.textContent = '保存并连接';
   for (const field of ['name', 'host', 'port', 'username', 'authType', 'privateKeyPath', 'proxyType', 'proxyHost', 'proxyPort', 'proxyUsername']) {
