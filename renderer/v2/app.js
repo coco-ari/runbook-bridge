@@ -91,6 +91,14 @@ async function loadEnvironment(preferredPlugin = state.pluginId) {
   renderShell();
 }
 
+async function refreshEnvironmentMetadata() {
+  const currentId = state.environmentId;
+  state.environments = await call(api.listEnvironments(state.projectId));
+  if (!state.environments.some((item) => item.environmentId === currentId)) {
+    state.environmentId = state.environments[0]?.environmentId ?? null;
+  }
+}
+
 function projectMark(project) { return [...(project.name || '项')][0]; }
 function renderProjects() {
   $('#projectList').innerHTML = state.projects.map((item) => `<button class="rail-button ${item.projectId === state.projectId ? 'active' : ''}" data-project-id="${escapeAttr(item.projectId)}" aria-label="${escapeAttr(item.name)}"><span class="rail-letter">${escapeHtml(projectMark(item))}</span><span class="project-tooltip">${escapeHtml(item.name)} · ${item.environmentCount} 个环境</span></button>`).join('');
@@ -142,7 +150,7 @@ function renderRuntime() {
   else if (runtime.phase === 'disconnecting') action.textContent = '断开中';
   else if (runtime.phase === 'reconnecting') action.textContent = '重连中';
   else if (runtime.desiredConnected) action.textContent = '重试失败项';
-  else action.textContent = '连接环境';
+  else action.textContent = '连接全部插件';
   action.disabled = ['disconnecting','reconnecting'].includes(runtime.phase);
 }
 
@@ -500,6 +508,7 @@ async function savePlugin() {
   const scope = { projectId:state.projectId,environmentId:state.environmentId };
   const plugin = state.editingPlugin ? await call(api.updatePlugin({...scope,pluginInstanceId:state.editingPlugin.pluginInstanceId,patch:input,expectedRevision:state.editingPlugin.revision,secrets})) : await call(api.createPlugin({...scope,input,secrets}));
   $('#pluginDialog').close();
+  await refreshEnvironmentMetadata();
   await loadEnvironment(plugin.pluginInstanceId);
   toast('插件已保存；不会自动连接。');
 }
@@ -510,7 +519,15 @@ async function environmentAction() {
   if (phase === 'connecting') state.runtime = await call(api.cancelEnvironment(scope));
   else if (phase === 'connected') state.runtime = await call(api.disconnectEnvironment(scope));
   else if (state.runtime?.desiredConnected) state.runtime = await call(api.retryEnvironment(scope));
-  else state.runtime = await call(api.connectEnvironment({...scope,expectedRevision:activeEnvironment().revision}));
+  else {
+    try {
+      state.runtime = await call(api.connectEnvironment({...scope,expectedRevision:activeEnvironment().revision}));
+    } catch (error) {
+      if (error.code !== 'CONFIG_REVISION_CONFLICT') throw error;
+      await refreshEnvironmentMetadata();
+      state.runtime = await call(api.connectEnvironment({...scope,expectedRevision:activeEnvironment().revision}));
+    }
+  }
   renderShell();
 }
 
@@ -624,6 +641,7 @@ document.addEventListener('click', async (event) => {
       await call(api.deletePlugin({projectId:state.projectId,environmentId:state.environmentId,pluginInstanceId:plugin.pluginInstanceId}));
       if ($('#pluginDialog').open) $('#pluginDialog').close();
       delete state.policyDrafts[plugin.pluginInstanceId];
+      await refreshEnvironmentMetadata();
       await loadEnvironment();
       toast('插件已删除。');
       return;
