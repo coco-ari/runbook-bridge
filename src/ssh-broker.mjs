@@ -216,6 +216,12 @@ function sftpStat(sftp, remotePath) {
   });
 }
 
+function sftpReaddir(sftp, remotePath) {
+  return new Promise((resolve, reject) => {
+    sftp.readdir(remotePath, (error, entries) => (error ? reject(error) : resolve(entries)));
+  });
+}
+
 function sftpRealpath(sftp, remotePath) {
   return new Promise((resolve, reject) => {
     sftp.realpath(remotePath, (error, resolved) => (error ? reject(error) : resolve(resolved)));
@@ -447,6 +453,7 @@ export class SshBroker {
     this.autoReconnectProjects = new Set();
     this.reconnectStates = new Map();
     this.reconnectHandler = null;
+    this.lifecycleHandler = null;
     this.reconnectDelaysMs = reconnectDelaysMs.length ? [...reconnectDelaysMs] : [1_000];
     this.shuttingDown = false;
   }
@@ -479,6 +486,10 @@ export class SshBroker {
 
   setReconnectHandler(handler) {
     this.reconnectHandler = handler;
+  }
+
+  setLifecycleHandler(handler) {
+    this.lifecycleHandler = typeof handler === 'function' ? handler : null;
   }
 
   enableAutoReconnect(projectId) {
@@ -586,11 +597,11 @@ export class SshBroker {
     });
   }
 
-  connect(projectId, secrets = {}) {
-    return this.runConnectionOperation(projectId, () => this.connectUnlocked(projectId, secrets));
+  connect(projectId, secrets = {}, runtimeOptions = {}) {
+    return this.runConnectionOperation(projectId, () => this.connectUnlocked(projectId, secrets, runtimeOptions));
   }
 
-  async connectUnlocked(projectId, secrets = {}) {
+  async connectUnlocked(projectId, secrets = {}, runtimeOptions = {}) {
     const config = await this.store.get(projectId);
     await this.disconnectUnlocked(projectId, 'reconnect');
     const attempt = {
@@ -629,7 +640,7 @@ export class SshBroker {
         }
       }
       this.assertPendingConnection(projectId, attempt);
-      sock = await createProxySocket(
+      sock = runtimeOptions.sock ?? await createProxySocket(
         config.proxy,
         { host: config.ssh.host, port: config.ssh.port },
         secrets,
@@ -721,10 +732,12 @@ export class SshBroker {
       };
       publishedRecord = record;
       this.sessions.set(projectId, record);
+      this.lifecycleHandler?.({ projectId, type: 'connected', generation });
       this.clearReconnectState(projectId);
       const clearInterruptedSession = (reason) => {
         if (this.sessions.get(projectId) === record) {
           this.sessions.delete(projectId);
+          this.lifecycleHandler?.({ projectId, type: 'lost', generation: record.generation, reason });
           this.invalidateProjectContexts(projectId);
           this.store
             .appendAudit(projectId, { type: 'disconnect', reason, result: 'connection-lost' })
@@ -792,6 +805,7 @@ export class SshBroker {
     const session = this.sessions.get(projectId);
     if (!session) return { connected: false };
     this.sessions.delete(projectId);
+    this.lifecycleHandler?.({ projectId, type: 'disconnected', generation: session.generation, reason });
     this.generations.set(projectId, session.generation + 1);
     this.invalidateProjectContexts(projectId);
     const closed = new Promise((resolve) => {
@@ -896,6 +910,118 @@ export class SshBroker {
     const session = this.sessions.get(projectId);
     if (!session) throw new AppError('SSH_NOT_CONNECTED', '项目当前未连接，请先在桌面工具中点击连接。');
     return session;
+  }
+
+  async openForward(projectId, targetHost, targetPort) {
+    const session = this.requireSession(projectId);
+    const host = String(targetHost ?? '').trim();
+    const port = Number(targetPort);
+    if (!host || host.length > 255 || /[\u0000-\u001f\u007f]/.test(host)) {
+      throw new AppError('INVALID_ARGUMENT', '隧道目标地址无效。');
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new AppError('INVALID_ARGUMENT', '隧道目标端口无效。');
+    }
+    return new Promise((resolve, reject) => {
+      session.client.forwardOut('127.0.0.1', 0, host, port, (error, channel) => {
+        if (error) {
+          reject(new AppError('TUNNEL_PROVIDER_UNAVAILABLE', 'SSH 隧道通道建立失败。'));
+          return;
+        }
+        if (this.sessions.get(projectId) !== session) {
+          channel.destroy();
+          reject(new AppError('TUNNEL_PROVIDER_UNAVAILABLE', 'SSH 连接已经变化，请重试。'));
+          return;
+        }
+        resolve(channel);
+      });
+    });
+  }
+
+  async withInternalSftp(projectId, operation) {
+    const session = this.requireSession(projectId);
+    const sftp = await new Promise((resolve, reject) => {
+      session.client.sftp((error, value) => (error ? reject(error) : resolve(value)));
+    });
+    try {
+      return await operation(sftp, session);
+    } finally {
+      try {
+        sftp.end();
+      } catch {
+        // The SSH session may already be gone.
+      }
+    }
+  }
+
+  async listRemoteDirectory(projectId, remotePath) {
+    const normalized = normalizeAbsoluteRemotePath(remotePath);
+    return this.withInternalSftp(projectId, async (sftp) => {
+      const canonicalRoot = await sftpRealpath(sftp, normalized);
+      const entries = await sftpReaddir(sftp, canonicalRoot);
+      return Promise.all(entries.map(async (entry) => {
+        const candidate = path.posix.join(canonicalRoot, entry.filename);
+        let canonical = null;
+        try {
+          canonical = await sftpRealpath(sftp, candidate);
+        } catch {
+          // Broken symlinks are returned as unusable descriptors.
+        }
+        return {
+          name: entry.filename,
+          canonicalPath: canonical,
+          size: Number(entry.attrs?.size ?? 0),
+          mtime: Number(entry.attrs?.mtime ?? 0),
+          mode: Number(entry.attrs?.mode ?? 0),
+          isFile: Boolean(entry.attrs?.isFile?.()),
+          isDirectory: Boolean(entry.attrs?.isDirectory?.()),
+          isSymbolicLink: Boolean(entry.attrs?.isSymbolicLink?.()),
+        };
+      }));
+    });
+  }
+
+  async readRemoteRange(projectId, remotePath, start = 0, maxBytes = 262_144) {
+    const normalized = normalizeAbsoluteRemotePath(remotePath);
+    return this.withInternalSftp(projectId, async (sftp) => {
+      const canonical = await sftpRealpath(sftp, normalized);
+      const stats = await sftpStat(sftp, canonical);
+      if (!stats.isFile()) throw new AppError('SOURCE_NOT_ALLOWED', '目标不是普通文件。');
+      const offset = Math.min(Math.max(Number(start) || 0, 0), Number(stats.size));
+      const limit = Math.min(Math.max(Number(maxBytes) || 1, 1), 1024 * 1024);
+      const buffer = await sftpReadRange(sftp, canonical, offset, Math.min(limit, Number(stats.size) - offset));
+      return {
+        canonicalPath: canonical,
+        content: buffer.toString('utf8'),
+        startByte: offset,
+        endByte: offset + buffer.length,
+        size: Number(stats.size),
+        truncated: offset + buffer.length < Number(stats.size),
+        mtime: Number(stats.mtime ?? 0),
+      };
+    });
+  }
+
+  async downloadRemoteFile(projectId, remotePath, localPath, maxBytes = 100 * 1024 * 1024) {
+    const normalized = normalizeAbsoluteRemotePath(remotePath);
+    return this.withInternalSftp(projectId, async (sftp) => {
+      const canonical = await sftpRealpath(sftp, normalized);
+      const stats = await sftpStat(sftp, canonical);
+      if (!stats.isFile()) throw new AppError('SOURCE_NOT_ALLOWED', '目标不是普通文件。');
+      if (Number(stats.size) > Number(maxBytes)) throw new AppError('FILE_TOO_LARGE', '远程文件超过该数据源的下载上限。');
+      await fsp.mkdir(path.dirname(localPath), { recursive: true });
+      const temporary = `${localPath}.${crypto.randomBytes(4).toString('hex')}.part`;
+      try {
+        await sftpFastGet(sftp, canonical, temporary);
+        const downloaded = await fsp.stat(temporary);
+        if (downloaded.size > Number(maxBytes)) throw new AppError('FILE_TOO_LARGE', '下载文件在传输期间超过上限。');
+        await fsp.rename(temporary, localPath);
+        return { canonicalPath: canonical, localPath, bytes: downloaded.size, mtime: Number(stats.mtime ?? 0) };
+      } catch (error) {
+        await fsp.rm(temporary, { force: true }).catch(() => undefined);
+        throw error;
+      }
+    });
   }
 
   async requireContext(projectId, contextToken) {

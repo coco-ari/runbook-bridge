@@ -1,0 +1,27 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+
+test('V2 MCP exposes only bounded structured plugin tools and no arbitrary shell', async (t) => {
+  const transport = new StdioClientTransport({ command: process.execPath, args: [path.resolve('src/mcp-v2.mjs')], stderr: 'pipe' });
+  const client = new Client({ name: 'mcp-v2-test', version: '1.0.0' });
+  await client.connect(transport);
+  t.after(() => client.close().catch(() => undefined));
+  const listed = await client.listTools();
+  const names = listed.tools.map((tool) => tool.name);
+  assert.ok(names.includes('open_environment'));
+  assert.ok(names.includes('server_run_action'));
+  assert.ok(names.includes('mysql_query_readonly'));
+  assert.ok(names.includes('redis_scan'));
+  assert.ok(!names.some((name) => /shell|execute_command|raw|connect/.test(name)));
+  const serverAction = listed.tools.find((tool) => tool.name === 'server_run_action');
+  assert.deepEqual(serverAction.inputSchema.properties.actionId.enum, ['system.summary', 'process.summary', 'network.listen', 'filesystem.usage', 'service.status']);
+  assert.equal('command' in serverAction.inputSchema.properties, false);
+  const mysql = listed.tools.find((tool) => tool.name === 'mysql_query_readonly');
+  assert.equal('host' in mysql.inputSchema.properties, false);
+  assert.equal('database' in mysql.inputSchema.properties, false);
+  assert.equal(mysql.inputSchema.properties.sql.maxLength, 65_536);
+});
+

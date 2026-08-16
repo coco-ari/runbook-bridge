@@ -6,10 +6,11 @@ import { toPublicError, AppError } from './errors.mjs';
 const MAX_REQUEST_BYTES = 1024 * 1024;
 
 export class BrokerServer {
-  constructor({ dataRoot, token, broker, appVersion = 'unknown' }) {
+  constructor({ dataRoot, token, broker, v2Service = null, appVersion = 'unknown' }) {
     this.endpoint = brokerEndpoint(dataRoot);
     this.token = token;
     this.broker = broker;
+    this.v2Service = v2Service;
     this.appVersion = appVersion;
     this.server = null;
     this.sockets = new Set();
@@ -91,6 +92,7 @@ export class BrokerServer {
   }
 
   dispatch(method, params) {
+    if (method.startsWith('v2.')) return this.dispatchV2(method.slice(3), params);
     switch (method) {
       case 'info':
         return { version: this.appVersion };
@@ -120,6 +122,33 @@ export class BrokerServer {
         return this.broker.searchLogs(params.projectId, params.contextToken, params);
       default:
         throw new AppError('METHOD_NOT_FOUND', '不支持的 Broker 操作。');
+    }
+  }
+
+  dispatchV2(method, params) {
+    if (!this.v2Service) throw new AppError('METHOD_NOT_FOUND', '新版 Broker 尚未启用。');
+    switch (method) {
+      case 'listProjects': return this.v2Service.listProjects(params);
+      case 'listEnvironments': return this.v2Service.listEnvironments(params);
+      case 'openEnvironment': return this.v2Service.openEnvironment(params);
+      case 'listEnvironmentPlugins': return this.v2Service.listEnvironmentPlugins(params);
+      case 'readRunbook': return this.v2Service.readRunbook(params);
+      case 'serverListActions': return this.v2Service.serverDescriptors(params, 'actions');
+      case 'serverListSources': return this.v2Service.serverDescriptors(params, 'sources');
+      case 'serverRunAction': return this.v2Service.invoke(params, ['system.summary', 'process.summary', 'network.listen'].includes(params.actionId) ? 'status' : 'diagnostics', { actionId: params.actionId, parameters: params.parameters ?? {} });
+      case 'serverListFiles': return this.v2Service.invoke(params, 'logs', { operation: 'list', sourceId: params.sourceId, cursor: params.cursor, limit: params.limit });
+      case 'serverReadLog': return this.v2Service.invoke(params, 'logs', { operation: 'read', fileId: params.fileId, cursor: params.cursor, maxBytes: params.maxBytes, tail: params.tail });
+      case 'serverSearchLogs': return this.v2Service.invoke(params, 'logs', { operation: 'search', fileIds: params.fileIds, contains: params.contains, maxLines: params.maxLines, maxScanBytes: params.maxScanBytes });
+      case 'serverReadConfig': return this.v2Service.invoke(params, 'config', { fileId: params.fileId, cursor: params.cursor, maxBytes: params.maxBytes });
+      case 'serverDownloadFile': return this.v2Service.invoke(params, 'download', { fileId: params.fileId });
+      case 'mysqlListTables': return this.v2Service.invoke(params, 'describe', { cursor: params.cursor, limit: params.limit });
+      case 'mysqlDescribeTable': return this.v2Service.invoke(params, 'describe', { table: params.table });
+      case 'mysqlQueryReadonly': return this.v2Service.invoke(params, 'select', { sql: params.sql, params: params.params });
+      case 'mysqlExplain': return this.v2Service.invoke(params, 'explain', { sql: params.sql, params: params.params });
+      case 'redisScan': return this.v2Service.invoke(params, 'scan', { patternId: params.patternId, cursor: params.cursor, limit: params.limit });
+      case 'redisRead': return this.v2Service.invoke(params, 'read', { patternId: params.patternId, key: params.key, field: params.field });
+      case 'redisTtl': return this.v2Service.invoke(params, 'ttl', { patternId: params.patternId, key: params.key });
+      default: throw new AppError('METHOD_NOT_FOUND', '不支持的新版 Broker 操作。');
     }
   }
 }

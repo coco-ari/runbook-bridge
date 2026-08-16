@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Agent 运维工作台</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <aside class="project-rail" aria-label="业务项目">
+      <header class="brand"><span class="brand-mark">RB</span><strong>Agent 运维工作台</strong><span class="prototype">V1</span></header>
+      <label class="search"><span>⌕</span><input id="projectSearch" placeholder="筛选业务项目" autocomplete="off"></label>
+      <div class="rail-label">业务项目</div>
+      <nav id="projectList" class="project-list"></nav>
+      <button id="createProjectButton" class="button primary rail-action">＋ 新建项目</button>
+    </aside>
+
+    <main class="main-shell">
+      <header class="topbar">
+        <button id="collapseRail" class="icon-button" title="收起项目栏" aria-label="收起项目栏">◫</button>
+        <div class="scope-title"><strong id="projectTitle">选择项目</strong><span>/</span><button id="environmentPicker" class="environment-picker" disabled>选择环境⌄</button></div>
+        <div class="top-spacer"></div>
+        <button id="commandSearch" class="command-search">⌕&nbsp; 搜索项目、环境或插件 <kbd>Ctrl K</kbd></button>
+        <button id="settingsButton" class="icon-button" title="设置">⚙</button>
+      </header>
+
+      <div id="environmentMenu" class="popover environment-menu hidden" role="menu"></div>
+      <nav class="page-tabs" aria-label="项目功能">
+        <button class="page-tab active" data-view="plugins">插件</button>
+        <button class="page-tab" data-view="runbook">运维说明</button>
+        <button class="page-tab" data-view="audit">操作记录</button>
+      </nav>
+
+      <section id="emptyState" class="empty-state">
+        <div class="empty-icon">⌁</div><h1>选择一个业务项目</h1><p>每个项目可以包含多个完全隔离的环境和插件。</p>
+      </section>
+
+      <section id="workspace" class="workspace hidden">
+        <div class="environment-bar">
+          <div id="environmentTabs" class="environment-tabs"></div>
+          <button id="manageEnvironments" class="text-button">管理环境</button>
+          <div class="top-spacer"></div>
+          <span id="environmentStatus" class="runtime-status">未连接</span>
+          <button id="environmentAction" class="button primary small">连接环境</button>
+          <button id="environmentDisconnect" class="button small hidden">断开</button>
+        </div>
+
+        <div id="pluginsView" class="view">
+          <div class="plugin-toolbar">
+            <div id="typeFilters" class="segmented"></div>
+            <span id="pluginCount" class="muted"></span>
+            <div class="top-spacer"></div>
+            <button id="addPlugin" class="button primary">＋ 添加插件</button>
+          </div>
+          <div class="plugin-workbench">
+            <aside id="pluginList" class="plugin-list"></aside>
+            <article id="pluginDetail" class="plugin-detail"></article>
+          </div>
+        </div>
+
+        <div id="runbookView" class="view hidden">
+          <header class="content-header"><div><h1>运维说明</h1><p id="runbookScope" class="muted"></p></div><button id="saveRunbook" class="button primary">保存</button></header>
+          <textarea id="runbookEditor" class="runbook-editor" spellcheck="false" aria-label="当前环境运维说明"></textarea>
+        </div>
+
+        <div id="auditView" class="view hidden">
+          <header class="content-header"><div><h1>操作记录</h1><p class="muted">连接、配置变更和 Agent 插件操作</p></div><button id="refreshAudit" class="button">刷新</button></header>
+          <div id="auditList" class="audit-list"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="projectDialog"><form method="dialog" class="dialog-card compact"><header><h2>新建项目</h2><button value="cancel" class="icon-button">×</button></header><label>项目名称<input id="projectName" required maxlength="120" placeholder="例如：会员服务"></label><label>第一个环境<input id="firstEnvironmentName" required maxlength="120" placeholder="例如：华东正式"></label><footer><button value="cancel" class="button">取消</button><button id="saveProject" value="default" class="button primary">创建项目</button></footer></form></dialog>
+
+  <dialog id="environmentDialog"><form method="dialog" class="dialog-card compact"><header><h2 id="environmentDialogTitle">新增环境</h2><button value="cancel" class="icon-button">×</button></header><label>环境名称<input id="environmentName" required maxlength="120" placeholder="环境名称"></label><footer><button value="cancel" class="button">取消</button><button id="saveEnvironment" value="default" class="button primary">保存环境</button></footer></form></dialog>
+
+  <dialog id="environmentManagerDialog"><div class="dialog-card manager"><header><div><h2>管理环境</h2><p id="environmentManagerScope" class="muted"></p></div><button class="icon-button" data-close="environmentManagerDialog">×</button></header><div id="environmentManagerList" class="manager-list"></div><footer><button id="managerAddEnvironment" class="button primary">＋ 新增环境</button><button class="button" data-close="environmentManagerDialog">完成</button></footer></div></dialog>
+
+  <dialog id="pluginDialog"><form method="dialog" class="dialog-card plugin-form">
+    <header><div><h2 id="pluginDialogTitle">添加插件</h2><p id="pluginDialogScope" class="muted"></p></div><button value="cancel" class="icon-button">×</button></header>
+    <div class="form-grid">
+      <label>插件类型<select id="pluginType"><option value="server">Server</option><option value="mysql">MySQL</option><option value="redis">Redis</option></select></label>
+      <label>显示名称<input id="pluginDisplayName" required maxlength="120"></label>
+      <label>主机地址<input id="pluginHost" maxlength="255" placeholder="127.0.0.1"></label>
+      <label>端口<input id="pluginPort" type="number" min="1" max="65535"></label>
+      <label id="databaseField">数据库<input id="pluginDatabase" maxlength="128"></label>
+      <label id="redisDbField" class="hidden">Logical DB<input id="pluginRedisDb" type="number" min="0" max="15" value="0"></label>
+      <label>用户名<input id="pluginUsername" maxlength="128"></label>
+      <label>密码<input id="pluginPassword" type="password" autocomplete="new-password" placeholder="留空保持已保存凭据"></label>
+      <label>地址族<select id="pluginAddressFamily"><option value="ipv4Preferred">IPv4 优先，失败尝试 IPv6</option><option value="ipv4Only">仅 IPv4</option><option value="ipv6Preferred">IPv6 优先，失败尝试 IPv4</option><option value="ipv6Only">仅 IPv6</option></select></label>
+      <label id="transportField">连接方式<select id="pluginTransport"><option value="direct">直接连接</option><option value="serverTunnel">复用同环境 Server 隧道</option><option value="windowsVpn">Windows VPN</option></select></label>
+      <label id="providerField" class="hidden">Server 隧道<select id="pluginProvider"></select></label>
+      <label id="vpnField" class="hidden">VPN 网卡名称<input id="pluginVpnAlias"></label>
+      <label id="authTypeField">认证方式<select id="pluginAuthType"><option value="password">密码</option><option value="privateKey">私钥</option><option value="agent">SSH Agent</option></select></label>
+      <label id="privateKeyField" class="hidden">私钥文件<input id="pluginPrivateKeyPath" placeholder="C:\Users\you\.ssh\id_ed25519"></label>
+      <label id="uplinkField">Server 上行方式<select id="pluginUplink"><option value="direct">直接连接</option><option value="socks5">SOCKS5</option><option value="http">HTTP CONNECT</option><option value="windowsVpn">Windows VPN</option></select></label>
+      <label id="proxyHostField" class="hidden">代理地址<input id="pluginProxyHost" placeholder="127.0.0.1"></label>
+      <label id="proxyPortField" class="hidden">代理端口<input id="pluginProxyPort" type="number" min="1" max="65535"></label>
+      <label id="proxyUsernameField" class="hidden">代理用户名<input id="pluginProxyUsername"></label>
+      <label id="proxyPasswordField" class="hidden">代理密码<input id="pluginProxyPassword" type="password" autocomplete="new-password"></label>
+      <label id="serverVpnField" class="hidden">VPN 网卡名称<input id="pluginServerVpnAlias"></label>
+      <label id="serverLogsField">日志目录<input id="pluginLogRoot" placeholder="/var/log/my-app（可选）"></label>
+      <label id="serverConfigField">配置目录<input id="pluginConfigRoot" placeholder="/etc/my-app（可选）"></label>
+      <label id="tlsField">TLS<select id="pluginTls"><option value="disabled">关闭</option><option value="preferred">优先</option><option value="required">必须</option><option value="verifyIdentity">校验证书身份</option></select></label>
+    </div>
+    <footer><button value="cancel" class="button">取消</button><button id="savePlugin" value="default" class="button primary">保存插件</button></footer>
+  </form></dialog>
+
+  <dialog id="policyDialog"><div class="dialog-card policy-dialog"><header><div><h2 id="policyTitle">操作规则</h2><p id="policyScope" class="muted"></p></div><button class="icon-button" data-close="policyDialog">×</button></header><div id="policyRows" class="policy-rows"></div><p id="fixedLimits" class="fixed-limits"></p><footer><button class="button" data-close="policyDialog">取消</button><button id="savePolicy" class="button primary">保存规则</button></footer></div></dialog>
+
+  <dialog id="confirmationDialog"><div class="dialog-card compact"><header><h2>需要确认的操作</h2><button class="icon-button" data-close="confirmationDialog">×</button></header><div id="confirmationList"></div></div></dialog>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
