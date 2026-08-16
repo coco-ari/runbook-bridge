@@ -367,7 +367,7 @@ function auditCapabilityName(value) {
   return ({status:'查看系统状态',diagnostics:'运行安全诊断',logs:'查询日志',config:'查看配置',download:'下载文件',describe:'查看表结构',select:'查询数据',explain:'查看执行计划',scan:'扫描缓存键',read:'读取缓存',ttl:'查看过期时间'})[value] ?? value;
 }
 function auditErrorName(value) {
-  return ({POLICY_DENIED:'操作规则禁止',CONFIRMATION_REQUIRED:'等待人工确认',PLUGIN_NOT_CONNECTED:'插件尚未连接',PLUGIN_UNAVAILABLE:'插件当前不可用',AUTHENTICATION_FAILED:'身份认证失败',ROUTE_UNAVAILABLE:'网络不可达',CONNECT_TIMEOUT:'连接超时',DATABASE_ACCOUNT_NOT_READONLY:'数据库账号不是只读账号'})[value] ?? value;
+  return ({POLICY_DENIED:'操作规则禁止',CONFIRMATION_REQUIRED:'等待人工确认',PLUGIN_NOT_CONNECTED:'插件尚未连接',PLUGIN_UNAVAILABLE:'插件当前不可用',AUTHENTICATION_FAILED:'身份认证失败',ROUTE_UNAVAILABLE:'网络不可达',CONNECT_TIMEOUT:'连接超时'})[value] ?? value;
 }
 function auditOperationName(entry) {
   if (entry.type === 'environment-disconnected') return '断开环境';
@@ -614,7 +614,7 @@ async function environmentAction() {
 
 function diagnosticScopeName(plugin) {
   if (plugin.pluginType === 'server') return '网络路由、SSH 认证与主机指纹';
-  if (plugin.pluginType === 'mysql') return '连接路由、数据库认证、只读账号与固定数据库';
+  if (plugin.pluginType === 'mysql') return '连接路由、数据库认证与固定数据库';
   return '连接路由、Redis 认证与 PING';
 }
 function diagnosticRouteName(plugin) { return plugin.pluginType === 'server' ? uplinkName(plugin) : transportName(plugin); }

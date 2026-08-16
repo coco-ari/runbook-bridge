@@ -105,11 +105,6 @@ export class MysqlPluginRuntime {
         ...(sslOptions(plugin, secrets) ? { ssl: sslOptions(plugin, secrets) } : {}),
       });
       await connection.query({ sql: 'SELECT 1 AS ai_ops_health', timeout: plugin.limits.timeoutMs });
-      const [grantRows] = await connection.query({ sql: 'SHOW GRANTS FOR CURRENT_USER', timeout: plugin.limits.timeoutMs });
-      const grants = grantRows.flatMap((row) => Object.values(row).map(String)).join('\n');
-      if (/\b(?:ALL PRIVILEGES|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|INDEX|TRIGGER|EVENT|EXECUTE|FILE|PROCESS|SUPER|GRANT OPTION)\b/i.test(grants)) {
-        throw new AppError('DATABASE_ACCOUNT_NOT_READONLY', 'MySQL 账号拥有写入或高权限，拒绝建立只读插件连接。');
-      }
       this.sessions.set(key(plugin), { connection, connectedAt: new Date().toISOString(), routeGeneration: relay.generation, bindingHash: plugin.revision });
       return { connected: true, connectedAt: this.sessions.get(key(plugin)).connectedAt, routeGeneration: relay.generation };
     } catch (error) {
@@ -118,7 +113,7 @@ export class MysqlPluginRuntime {
       if (error instanceof AppError) throw error;
       if (error?.code === 'ER_ACCESS_DENIED_ERROR') throw new AppError('AUTHENTICATION_FAILED', 'MySQL 用户名或密码认证失败。');
       if (['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID'].includes(error?.code)) throw new AppError('TLS_IDENTITY_FAILED', 'MySQL TLS 身份校验失败。');
-      throw new AppError('PLUGIN_UNAVAILABLE', 'MySQL 连接或只读校验失败。');
+      throw new AppError('PLUGIN_UNAVAILABLE', 'MySQL 连接初始化失败。');
     }
   }
 

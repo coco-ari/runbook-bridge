@@ -35,3 +35,31 @@ test('MySQL database discovery returns visible non-system databases and releases
   });
   assert.deepEqual(calls, ['relay:create','connection:end','relay:close']);
 });
+
+test('MySQL runtime accepts a write-capable account while Agent SQL remains read-only', async () => {
+  const calls = [];
+  const routeManager = {
+    createRelay: async () => ({ host:'127.0.0.1', port:41235, generation:1 }),
+    closeRelay: async () => { calls.push('relay:close'); },
+  };
+  const connection = {
+    query: async ({ sql }) => {
+      calls.push(sql);
+      if (sql === 'SHOW GRANTS FOR CURRENT_USER') throw new Error('grant inspection must not run');
+      return [[], []];
+    },
+    end: async () => { calls.push('connection:end'); },
+  };
+  const client = { createConnection: async () => connection };
+  const runtime = new MysqlPluginRuntime(routeManager, { load: async () => ({password:'root-secret'}) }, { client });
+  const plugin = {
+    projectId:'p1', environmentId:'e1', pluginInstanceId:'mysql-root', pluginType:'mysql', configState:'ready', revision:1,
+    target:{host:'db.internal',port:3306,database:'app',addressFamily:'ipv4Preferred'}, auth:{username:'root'},
+    transport:{kind:'direct'}, tls:{mode:'disabled'}, limits:{timeoutMs:5000,maxRows:100,maxBytes:1048576},
+  };
+  assert.equal((await runtime.connect(plugin)).connected, true);
+  assert.deepEqual(calls, ['relay:close','SELECT 1 AS ai_ops_health']);
+  await assert.rejects(() => runtime.queryReadonly(plugin, 'UPDATE users SET admin = 1'), (error) => error.code === 'HARD_POLICY_DENIED');
+  await runtime.disconnect(plugin);
+  assert.deepEqual(calls, ['relay:close','SELECT 1 AS ai_ops_health','connection:end','relay:close']);
+});
