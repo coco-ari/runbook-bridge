@@ -20,3 +20,4 @@ dialog{width:min(760px,calc(100vw - 32px));max-height:calc(100vh - 32px);padding
 .dialog-action-spacer{flex:1}
 .dialog-empty{min-height:140px;display:grid;place-items:center;color:var(--muted)}
 .database-picker{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px}.database-picker .button{min-width:104px}.database-picker select:disabled{color:var(--muted);opacity:1}.field-hint{color:var(--faint);font-size:11px}
+.dialog-inline-error{margin:0 20px 2px;padding:10px 12px;border:1px solid rgba(241,123,134,.28);border-radius:7px;color:var(--red);background:rgba(241,123,134,.075);font-size:12px}

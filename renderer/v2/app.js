@@ -347,6 +347,7 @@ function openEnvironmentEditor(id = null) {
 
 function openPluginDialog(plugin = null) {
   state.editingPlugin = plugin;
+  clearPluginDialogError();
   const type = plugin?.pluginType ?? 'server';
   $('#pluginDialogTitle').textContent = plugin ? '配置插件' : '添加插件';
   $('#pluginDialogScope').textContent = `${activeProject().name} / ${activeEnvironment().name}`;
@@ -383,6 +384,19 @@ function openPluginDialog(plugin = null) {
   $('#pluginDialog').showModal();
 }
 
+function clearPluginDialogError() {
+  const element = $('#pluginDialogError');
+  element.textContent = '';
+  element.classList.add('hidden');
+}
+
+function showPluginDialogError(error) {
+  const element = $('#pluginDialogError');
+  element.textContent = error?.message ?? String(error);
+  element.classList.remove('hidden');
+  element.scrollIntoView({ block:'nearest' });
+}
+
 function databaseConnectionSignature() {
   return JSON.stringify({
     host:$('#pluginHost').value.trim(), port:Number($('#pluginPort').value), username:$('#pluginUsername').value.trim(),
@@ -408,6 +422,7 @@ async function queryDatabases() {
   if (!host || !port || !username) throw new Error('请先填写主机地址、端口和用户名。');
   if ($('#pluginTransport').value === 'serverTunnel' && !$('#pluginProvider').value) throw new Error('请选择要复用的 Server 隧道。');
   const button = $('#queryDatabases');
+  clearPluginDialogError();
   button.disabled = true;
   button.textContent = '查询中…';
   try {
@@ -635,7 +650,7 @@ document.addEventListener('click', async (event) => {
       renderShell();
       return;
     }
-  } catch (error) { showError(error); }
+  } catch (error) { if ($('#pluginDialog').open) showPluginDialogError(error); else showError(error); }
 });
 
 document.addEventListener('change', (event) => {
@@ -660,7 +675,7 @@ $('#addPlugin').addEventListener('click', () => openPluginDialog());
 $('#pluginAuthType').addEventListener('change', renderPluginForm);
 $('#pluginTransport').addEventListener('change', renderPluginForm);
 $('#pluginUplink').addEventListener('change', renderPluginForm);
-$('#queryDatabases').addEventListener('click', () => queryDatabases().catch(showError));
+$('#queryDatabases').addEventListener('click', () => queryDatabases().catch(showPluginDialogError));
 ['pluginHost','pluginPort','pluginUsername','pluginAddressFamily','pluginTransport','pluginProvider','pluginVpnAlias','pluginTls'].forEach((id) => {
   $(`#${id}`).addEventListener(id === 'pluginHost' || id === 'pluginUsername' || id === 'pluginVpnAlias' ? 'input' : 'change', invalidateDatabaseDiscovery);
 });
@@ -697,7 +712,7 @@ $('#saveEnvironment').addEventListener('click', async (event) => {
   } catch (error) { showError(error); }
 });
 
-$('#savePlugin').addEventListener('click', async (event) => { event.preventDefault(); try { await savePlugin(); } catch (error) { showError(error); } });
+$('#savePlugin').addEventListener('click', async (event) => { event.preventDefault(); clearPluginDialogError(); try { await savePlugin(); } catch (error) { showPluginDialogError(error); } });
 $('#projectDialog form').addEventListener('submit', (event) => { event.preventDefault(); $('#saveProject').click(); });
 $('#environmentDialog form').addEventListener('submit', (event) => { event.preventDefault(); $('#saveEnvironment').click(); });
 $('#pluginDialog form').addEventListener('submit', (event) => { event.preventDefault(); $('#savePlugin').click(); });
