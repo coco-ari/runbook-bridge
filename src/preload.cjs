@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('aiOps', {
     updatePlugin: (payload) => ipcRenderer.invoke('v2:plugin-update', payload),
     deletePlugin: (payload) => ipcRenderer.invoke('v2:plugin-delete', payload),
     credentialStatus: (payload) => ipcRenderer.invoke('v2:plugin-credential-status', payload),
+    listPluginDatabases: (payload) => ipcRenderer.invoke('v2:plugin-databases', payload),
     savePolicy: (payload) => ipcRenderer.invoke('v2:plugin-policy', payload),
     testPlugin: (payload) => ipcRenderer.invoke('v2:plugin-test', payload),
     listAudit: (payload) => ipcRenderer.invoke('v2:audit-list', payload),

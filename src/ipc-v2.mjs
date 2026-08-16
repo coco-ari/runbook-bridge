@@ -1,4 +1,6 @@
+import crypto from 'node:crypto';
 import { AppError, toPublicError } from './errors.mjs';
+import { workspaceInternals } from './workspace-store.mjs';
 
 function resultHandler(handler) {
   return async (_event, ...args) => {
@@ -8,7 +10,7 @@ function resultHandler(handler) {
 }
 
 export function registerV2Ipc(ipcMain, services) {
-  const { workspaceStore: store, connectionManager, credentialVault, contextManager, confirmationManager, pluginManager } = services;
+  const { workspaceStore: store, connectionManager, credentialVault, contextManager, confirmationManager, pluginManager, mysqlRuntime } = services;
   const handle = (name, fn) => ipcMain.handle(`v2:${name}`, resultHandler(fn));
   ipcMain.on('v2:network-changed', () => connectionManager.networkChanged('renderer-network-change').catch(() => undefined));
 
@@ -65,6 +67,20 @@ export function registerV2Ipc(ipcMain, services) {
     return value;
   });
   handle('plugin-credential-status', async ({ projectId, environmentId, pluginInstanceId }) => ({ saved: await credentialVault.has(await store.getPlugin(projectId, environmentId, pluginInstanceId)) }));
+  handle('plugin-databases', async ({ projectId, environmentId, pluginInstanceId, input, secrets }) => {
+    await store.getEnvironment(projectId, environmentId);
+    const existing = pluginInstanceId ? await store.getPlugin(projectId, environmentId, pluginInstanceId) : null;
+    if (existing && existing.pluginType !== 'mysql') throw new AppError('INVALID_ARGUMENT', '只有 MySQL 插件可以查询数据库列表。');
+    let savedSecrets = {};
+    if (existing) savedSecrets = await credentialVault.load(existing) ?? {};
+    const transient = workspaceInternals.normalizePlugin({
+      ...input,
+      pluginType: 'mysql',
+      pluginInstanceId: `mysql-discovery-${crypto.randomBytes(5).toString('hex')}`,
+      target: { ...(input?.target ?? {}), database: '' },
+    }, { projectId, environmentId });
+    return mysqlRuntime.listDatabases(transient, { ...savedSecrets, ...(secrets ?? {}) });
+  });
   handle('plugin-policy', async ({ projectId, environmentId, pluginInstanceId, policy, expectedRevision }) => {
     const value = await store.updatePlugin(projectId, environmentId, pluginInstanceId, { policy }, expectedRevision);
     await connectionManager.configurationChanged(projectId, environmentId, pluginInstanceId);

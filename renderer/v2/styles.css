@@ -19,3 +19,4 @@ dialog{width:min(760px,calc(100vw - 32px));max-height:calc(100vh - 32px);padding
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
 .dialog-action-spacer{flex:1}
 .dialog-empty{min-height:140px;display:grid;place-items:center;color:var(--muted)}
+.database-picker{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:9px}.database-picker .button{min-width:104px}.database-picker select:disabled{color:var(--muted);opacity:1}.field-hint{color:var(--faint);font-size:11px}

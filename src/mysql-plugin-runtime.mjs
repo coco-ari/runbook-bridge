@@ -2,6 +2,8 @@ import mysql from 'mysql2/promise';
 import { AppError } from './errors.mjs';
 import { validateMysqlSelect, validateMysqlExplain, applyMysqlRowLimit } from './mysql-policy.mjs';
 
+const SYSTEM_DATABASES = new Set(['information_schema', 'mysql', 'performance_schema', 'sys']);
+
 function key(plugin) {
   return `${plugin.projectId}/${plugin.environmentId}/${plugin.pluginInstanceId}`;
 }
@@ -120,6 +122,45 @@ export class MysqlPluginRuntime {
     }
   }
 
+  async listDatabases(plugin, suppliedSecrets = {}) {
+    if (plugin.pluginType !== 'mysql' || !plugin.target?.host || !plugin.auth?.username) {
+      throw new AppError('PLUGIN_CONFIG_INCOMPLETE', '请先填写 MySQL 主机地址、用户名和连接方式。');
+    }
+    const secrets = { ...suppliedSecrets };
+    if (!secrets.password) throw new AppError('CREDENTIAL_UNAVAILABLE', '请先填写 MySQL 密码。');
+    const relay = await this.routeManager.createRelay(plugin);
+    let connection;
+    try {
+      connection = await this.client.createConnection({
+        host: relay.host,
+        port: relay.port,
+        user: plugin.auth.username,
+        password: secrets.password,
+        connectTimeout: Math.min(plugin.limits.timeoutMs, 20_000),
+        multipleStatements: false,
+        namedPlaceholders: false,
+        supportBigNumbers: true,
+        decimalNumbers: false,
+        ...(sslOptions(plugin, secrets) ? { ssl: sslOptions(plugin, secrets) } : {}),
+      });
+      const [rows] = await connection.query({ sql: 'SHOW DATABASES', timeout: plugin.limits.timeoutMs });
+      const visible = [...new Set(rows
+        .flatMap((row) => Object.values(row).slice(0, 1))
+        .map((value) => String(value ?? '').trim())
+        .filter((name) => name && name.length <= 128 && !SYSTEM_DATABASES.has(name.toLocaleLowerCase())))]
+        .sort((left, right) => left.localeCompare(right, 'zh-CN'));
+      return { databases: visible.slice(0, 200), truncated: visible.length > 200 };
+    } catch (error) {
+      if (error instanceof AppError) throw error;
+      if (error?.code === 'ER_ACCESS_DENIED_ERROR') throw new AppError('AUTHENTICATION_FAILED', 'MySQL 用户名或密码认证失败。');
+      if (['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID'].includes(error?.code)) throw new AppError('TLS_IDENTITY_FAILED', 'MySQL TLS 身份校验失败。');
+      throw new AppError('PLUGIN_UNAVAILABLE', '无法连接 MySQL 并查询数据库列表。');
+    } finally {
+      await connection?.end().catch(() => undefined);
+      await this.routeManager.closeRelay(plugin);
+    }
+  }
+
   async disconnect(plugin) {
     const session = this.sessions.get(key(plugin));
     this.sessions.delete(key(plugin));
@@ -207,4 +248,4 @@ export class MysqlPluginRuntime {
   }
 }
 
-export const mysqlRuntimeInternals = { key, normalizeParams, capRows, sslOptions };
+export const mysqlRuntimeInternals = { key, normalizeParams, capRows, sslOptions, SYSTEM_DATABASES };

@@ -9,6 +9,7 @@ const state = {
   editingPlugin: null, editingEnvironmentId: null, detailTabs: {}, policyDrafts: {},
   runbookContent: '', runbookRevision: null, runbookScopeKey: null, runbookEditing: false, pendingCount: 0,
   projectEnvironmentMemory: {}, scopePluginMemory: {},
+  databaseDiscoverySignature: null, databaseCredentialRevision: 0,
 };
 
 const typeNames = { server: 'Server', mysql: 'MySQL', redis: 'Redis' };
@@ -354,7 +355,12 @@ function openPluginDialog(plugin = null) {
   $('#pluginDisplayName').value = plugin?.displayName ?? '';
   $('#pluginHost').value = plugin?.target?.host ?? '';
   $('#pluginPort').value = plugin?.target?.port ?? (type === 'server' ? 22 : type === 'mysql' ? 3306 : 6379);
-  $('#pluginDatabase').value = plugin?.target?.database ?? '';
+  const database = plugin?.target?.database ?? '';
+  $('#pluginDatabase').innerHTML = database ? `<option value="${escapeAttr(database)}">${escapeHtml(database)}</option>` : '<option value="">先填写连接信息并查询</option>';
+  $('#pluginDatabase').value = database;
+  $('#pluginDatabase').disabled = !database;
+  $('#databaseHint').textContent = database ? '当前已保存数据库；连接信息变化后请重新查询' : '只显示当前账号实际可见的普通数据库';
+  state.databaseCredentialRevision = 0;
   $('#pluginRedisDb').value = plugin?.target?.db ?? 0;
   $('#pluginUsername').value = plugin?.auth?.username ?? '';
   $('#pluginPassword').value = '';
@@ -373,7 +379,65 @@ function openPluginDialog(plugin = null) {
   $('#deletePluginButton').classList.toggle('hidden', !plugin);
   renderPluginForm();
   if (plugin?.transport?.serverPluginInstanceId) $('#pluginProvider').value = plugin.transport.serverPluginInstanceId;
+  state.databaseDiscoverySignature = plugin?.pluginType === 'mysql' ? databaseConnectionSignature() : null;
   $('#pluginDialog').showModal();
+}
+
+function databaseConnectionSignature() {
+  return JSON.stringify({
+    host:$('#pluginHost').value.trim(), port:Number($('#pluginPort').value), username:$('#pluginUsername').value.trim(),
+    addressFamily:$('#pluginAddressFamily').value, transport:$('#pluginTransport').value,
+    provider:$('#pluginProvider').value, vpn:$('#pluginVpnAlias').value.trim(), tls:$('#pluginTls').value,
+    credentialRevision:state.databaseCredentialRevision,
+  });
+}
+
+function invalidateDatabaseDiscovery() {
+  if ($('#pluginType').value !== 'mysql' || !$('#pluginDialog').open) return;
+  if (state.databaseDiscoverySignature === databaseConnectionSignature()) return;
+  state.databaseDiscoverySignature = null;
+  $('#pluginDatabase').innerHTML = '<option value="">连接信息已变化，请重新查询</option>';
+  $('#pluginDatabase').disabled = true;
+  $('#databaseHint').textContent = '数据库列表已失效，请重新查询';
+}
+
+async function queryDatabases() {
+  const host = $('#pluginHost').value.trim();
+  const port = Number($('#pluginPort').value);
+  const username = $('#pluginUsername').value.trim();
+  if (!host || !port || !username) throw new Error('请先填写主机地址、端口和用户名。');
+  if ($('#pluginTransport').value === 'serverTunnel' && !$('#pluginProvider').value) throw new Error('请选择要复用的 Server 隧道。');
+  const button = $('#queryDatabases');
+  button.disabled = true;
+  button.textContent = '查询中…';
+  try {
+    const input = {
+      pluginType:'mysql', displayName:$('#pluginDisplayName').value.trim() || 'MySQL 数据库',
+      target:{ host, port, database:'', addressFamily:$('#pluginAddressFamily').value },
+      auth:{ username }, transport:{ kind:$('#pluginTransport').value }, tls:{ mode:$('#pluginTls').value },
+    };
+    if (input.transport.kind === 'serverTunnel') input.transport.serverPluginInstanceId = $('#pluginProvider').value;
+    if (input.transport.kind === 'windowsVpn') input.transport.interfaceAlias = $('#pluginVpnAlias').value.trim();
+    const password = $('#pluginPassword').value;
+    const result = await call(api.listPluginDatabases({
+      projectId:state.projectId, environmentId:state.environmentId,
+      pluginInstanceId:state.editingPlugin?.pluginType === 'mysql' ? state.editingPlugin.pluginInstanceId : null,
+      input, secrets:password ? {password} : {},
+    }));
+    const databases = result.databases ?? [];
+    $('#pluginDatabase').innerHTML = databases.length
+      ? `<option value="">请选择数据库</option>${databases.map((name) => `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`).join('')}`
+      : '<option value="">没有可选择的数据库</option>';
+    $('#pluginDatabase').disabled = !databases.length;
+    const previous = state.editingPlugin?.target?.database;
+    if (previous && databases.includes(previous)) $('#pluginDatabase').value = previous;
+    else if (databases.length === 1) $('#pluginDatabase').value = databases[0];
+    state.databaseDiscoverySignature = databaseConnectionSignature();
+    $('#databaseHint').textContent = databases.length ? `已查询到 ${databases.length} 个数据库${result.truncated ? '（仅显示前 200 个）' : ''}` : '当前账号没有可见的普通数据库';
+  } finally {
+    button.disabled = false;
+    button.textContent = '查询数据库';
+  }
 }
 function renderPluginForm() {
   const type = $('#pluginType').value;
@@ -411,7 +475,10 @@ async function savePlugin() {
     if (input.transport.kind === 'serverTunnel') input.transport.serverPluginInstanceId = $('#pluginProvider').value;
     if (input.transport.kind === 'windowsVpn') input.transport.interfaceAlias = $('#pluginVpnAlias').value.trim();
     input.tls = { mode:$('#pluginTls').value };
-    if (type === 'mysql') input.target.database = $('#pluginDatabase').value.trim(); else input.target.db = Number($('#pluginRedisDb').value);
+    if (type === 'mysql') {
+      if (!$('#pluginDatabase').value || state.databaseDiscoverySignature !== databaseConnectionSignature()) throw new Error('请先查询并选择数据库。');
+      input.target.database = $('#pluginDatabase').value;
+    } else input.target.db = Number($('#pluginRedisDb').value);
   }
   const secrets = $('#pluginPassword').value ? (type === 'server' && input.auth.type === 'privateKey' ? {privateKeyPassphrase:$('#pluginPassword').value} : {password:$('#pluginPassword').value}) : {};
   if (type === 'server' && $('#pluginProxyPassword').value) secrets.proxyPassword = $('#pluginProxyPassword').value;
@@ -593,6 +660,11 @@ $('#addPlugin').addEventListener('click', () => openPluginDialog());
 $('#pluginAuthType').addEventListener('change', renderPluginForm);
 $('#pluginTransport').addEventListener('change', renderPluginForm);
 $('#pluginUplink').addEventListener('change', renderPluginForm);
+$('#queryDatabases').addEventListener('click', () => queryDatabases().catch(showError));
+['pluginHost','pluginPort','pluginUsername','pluginAddressFamily','pluginTransport','pluginProvider','pluginVpnAlias','pluginTls'].forEach((id) => {
+  $(`#${id}`).addEventListener(id === 'pluginHost' || id === 'pluginUsername' || id === 'pluginVpnAlias' ? 'input' : 'change', invalidateDatabaseDiscovery);
+});
+$('#pluginPassword').addEventListener('input', () => { state.databaseCredentialRevision += 1; invalidateDatabaseDiscovery(); });
 $('#environmentAction').addEventListener('click', () => environmentAction().catch(showError));
 $('#environmentDisconnect').addEventListener('click', async () => { try { state.runtime = await call(api.disconnectEnvironment({projectId:state.projectId,environmentId:state.environmentId})); renderShell(); } catch (error) { showError(error); } });
 
