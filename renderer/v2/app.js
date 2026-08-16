@@ -125,17 +125,22 @@ function renderRuntime() {
   const runtime = state.runtime ?? { phase:'disconnected', eligibleCount:0, connectedCount:0 };
   const status = $('#environmentStatus');
   status.dataset.state = runtime.phase;
-  if (runtime.phase === 'connected') status.textContent = `${runtime.connectedCount}/${runtime.eligibleCount} 已连接`;
-  else if (runtime.phase === 'partial') status.textContent = `${runtime.connectedCount}/${runtime.eligibleCount} 可用`;
-  else if (runtime.phase === 'failed') status.textContent = `0/${runtime.eligibleCount} 可用`;
-  else if (['connecting','reconnecting'].includes(runtime.phase)) status.textContent = `${phaseNames[runtime.phase]} ${runtime.connectedCount}/${runtime.eligibleCount}`;
+  const total = Number(runtime.eligibleCount ?? 0);
+  const connected = Number(runtime.connectedCount ?? 0);
+  if (runtime.phase === 'connected') status.textContent = `${connected}/${total} 已连接`;
+  else if (runtime.phase === 'partial') status.textContent = `${connected}/${total} 可用`;
+  else if (runtime.phase === 'failed') status.textContent = total ? `连接失败 · 0/${total}` : '没有可连接的插件';
+  else if (runtime.phase === 'connecting') status.textContent = total ? `连接中 ${connected}/${total}` : '正在准备连接';
+  else if (runtime.phase === 'reconnecting') status.textContent = total ? `网络变化 · 重连中 ${connected}/${total}` : '网络变化 · 重连中';
   else status.textContent = phaseNames[runtime.phase] ?? '未连接';
   const action = $('#environmentAction');
   const disconnect = $('#environmentDisconnect');
-  disconnect.classList.toggle('hidden', !runtime.desiredConnected || runtime.phase === 'connected');
+  disconnect.classList.toggle('hidden', !runtime.desiredConnected || !['partial','failed','reconnecting'].includes(runtime.phase));
   if (runtime.phase === 'connecting') action.textContent = '取消';
   else if (runtime.phase === 'connected') action.textContent = '断开环境';
-  else if (runtime.desiredConnected) action.textContent = runtime.phase === 'reconnecting' ? '重连中' : '重试失败项';
+  else if (runtime.phase === 'disconnecting') action.textContent = '断开中';
+  else if (runtime.phase === 'reconnecting') action.textContent = '重连中';
+  else if (runtime.desiredConnected) action.textContent = '重试失败项';
   else action.textContent = '连接环境';
   action.disabled = ['disconnecting','reconnecting'].includes(runtime.phase);
 }

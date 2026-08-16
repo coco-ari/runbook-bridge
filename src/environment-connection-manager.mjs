@@ -140,6 +140,9 @@ export class EnvironmentConnectionManager extends EventEmitter {
     state.networkEpoch = this.networkEpoch;
     state.connectAttemptId = crypto.randomUUID();
     state.phase = retryOnly ? 'reconnecting' : 'connecting';
+    state.eligibleCount = prepared.plugins.filter((plugin) => plugin.configState === 'ready').length;
+    state.draftCount = prepared.plugins.length - state.eligibleCount;
+    state.connectedCount = prepared.plugins.filter((plugin) => state.plugins[plugin.pluginInstanceId]?.phase === 'connected').length;
     const attemptId = state.connectAttemptId;
     for (const plugin of prepared.plugins) {
       const current = state.plugins[plugin.pluginInstanceId];

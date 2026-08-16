@@ -10,8 +10,13 @@ test('environment connection honors tunnel dependencies and preserves successful
   const store={getEnvironment:async()=>({revision:1}),listPlugins:async()=>plugins,getPlugin:async(_p,_e,id)=>plugins.find((x)=>x.pluginInstanceId===id),appendAudit:async()=>{}};
   const runtime={connect:async(p)=>{calls.push(`start:${p.pluginInstanceId}`);if(p===server)await new Promise(r=>setTimeout(r,20));if(p===mysql)throw Object.assign(new Error('auth'),{code:'AUTHENTICATION_FAILED'});calls.push(`end:${p.pluginInstanceId}`);return{connectedAt:'now'};},disconnect:async()=>{},closeAll:async()=>{}};
   const manager=new EnvironmentConnectionManager(store,runtime,{retryDelays:[]});
+  const published=[];
+  manager.on('changed',(state)=>published.push(state));
   const result=await manager.connect('p1','e1');
   assert.equal(result.phase,'partial');assert.equal(result.connectedCount,2);assert.equal(result.plugins.mysql.phase,'error');assert.equal(result.plugins.mysql.retryable,false);
+  const connecting=published.find((state)=>state.phase==='connecting');
+  assert.equal(connecting.eligibleCount,3,'connecting state must publish the real denominator before any plugin finishes');
+  assert.equal(connecting.connectedCount,0);
   assert.ok(calls.indexOf('start:mysql')>calls.indexOf('end:server'),'tunnel database starts after its provider is connected');
   assert.equal(manager.snapshot('p1','e1').desiredConnected,true);
   await manager.disconnect('p1','e1');assert.equal(manager.snapshot('p1','e1').desiredConnected,false);
