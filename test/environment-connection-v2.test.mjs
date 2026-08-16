@@ -23,3 +23,17 @@ test('opening or inspecting an environment never connects it', () => {
   assert.equal(state.phase,'disconnected');assert.equal(state.desiredConnected,false);
 });
 
+test('a new application runtime never restores a previous connection intent', async () => {
+  const server=plugin('server','server');
+  let connectCalls=0;
+  const store={getEnvironment:async()=>({revision:1}),listPlugins:async()=>[server],getPlugin:async()=>server,appendAudit:async()=>{}};
+  const runtime={connect:async()=>{connectCalls++;return{connectedAt:'now'};},disconnect:async()=>{},closeAll:async()=>{}};
+  const first=new EnvironmentConnectionManager(store,runtime,{retryDelays:[]});
+  await first.connect('p1','e1');
+  assert.equal(first.snapshot('p1','e1').desiredConnected,true);
+  const restarted=new EnvironmentConnectionManager(store,runtime,{retryDelays:[]});
+  const state=restarted.snapshot('p1','e1');
+  assert.equal(state.phase,'disconnected');
+  assert.equal(state.desiredConnected,false);
+  assert.equal(connectCalls,1,'constructing or inspecting the restarted runtime must not open a connection');
+});

@@ -82,8 +82,12 @@ codex mcp add --env ELECTRON_RUN_AS_NODE=1 agent-ops -- `
 
 完整架构、安全约束、状态机和验收场景见 [技术设计](docs/agent-ops-v1-technical-design.md)。
 
+## 界面基线
+
+正式界面以 [可点击原型](docs/ai-ops-plugin-environment-prototype.html) 为结构与交互基线：窄项目栏、顶栏环境切换和环境一键连接、插件分组列表，以及插件详情中的“连接 / 操作权限”一级页签。正式 Renderer 直接消费真实 IPC 数据，不在页面中保留原型模拟状态。
+
 ## 测试范围
 
-自动化测试覆盖旧版兼容、V2 数据迁移、凭据绑定、环境依赖连接、部分成功、上下文失效、MySQL AST 拒绝语料、Server 固定 action、MCP 无任意 Shell 契约，以及 1280×720 Electron UI 工作流。生产部署前仍应在独立的测试账号、测试数据库和目标网络中完成连接、权限与故障恢复验证。
+自动化测试覆盖旧版兼容、V2 数据迁移、凭据绑定、环境依赖连接、部分成功、上下文失效、MySQL AST 拒绝语料、Server 固定 action、MCP 无任意 Shell 契约，以及 1024×720、1280×720、1600×900 Electron UI 工作流。UI 验收还覆盖环境增删改排序、环境切换零连接、内嵌权限保存、20 个插件渲染和控制台零错误。生产部署前仍应在独立的测试账号、测试数据库和目标网络中完成连接、权限与故障恢复验证。
 
 本项目采用 [MIT License](LICENSE)。
