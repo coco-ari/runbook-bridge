@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { AppError, toPublicError } from './errors.mjs';
+import { OperationGate, capabilityRule } from './operation-gate.mjs';
 import { pluginWithRunbookSources } from './runbook-sources.mjs';
 
 const MAX_RUNBOOK_BYTES = 64 * 1024;
@@ -29,13 +30,13 @@ function scopeOf(params) {
 function operationSummary(plugin, capability, args) {
   if (plugin.pluginType === 'mysql') return `${capability}: ${String(args.sql ?? args.table ?? '').slice(0, 240)}`;
   if (plugin.pluginType === 'redis') return `${capability}: ${String(args.key ?? args.patternId ?? '').slice(0, 240)}`;
-  return `${capability}: ${String(args.actionId ?? args.sourceId ?? '').slice(0, 240)}`;
+  return `${capability}: ${String(args.path ?? args.remotePath ?? args.sourcePath ?? args.unit ?? args.actionId ?? args.sourceId ?? '').slice(0, 240)}`;
 }
 
 function auditSummary(plugin, capability, args) {
   if (plugin.pluginType === 'mysql') return `${capability} · 固定数据库 ${plugin.target.database}`;
   if (plugin.pluginType === 'redis') return `${capability} · 固定 DB ${plugin.target.db}`;
-  return `${capability} · ${String(args.actionId ?? args.sourceId ?? '已登记资源').slice(0, 120)}`;
+  return `${capability} · ${String(args.path ?? args.remotePath ?? args.sourcePath ?? args.unit ?? args.actionId ?? args.sourceId ?? '服务器').slice(0, 120)}`;
 }
 
 function definedEntries(value) {
@@ -83,8 +84,9 @@ function agentPluginInput(params) {
 }
 
 export class V2Service {
-  constructor({ workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault, workspaceChanged = null }) {
+  constructor({ workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, operationGate = null, serverOperations, credentialVault, workspaceChanged = null }) {
     Object.assign(this, { workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault, workspaceChanged });
+    this.operationGate = operationGate ?? new OperationGate(confirmationManager);
   }
 
   async listProjects() {
@@ -152,6 +154,12 @@ export class V2Service {
 
   confirmationSummary(plugin, capability, args) {
     if (plugin.pluginType !== 'server') return operationSummary(plugin, capability, args);
+    if (capability === 'fs.upload') return `上传 ${args._precondition.local.size} 字节（SHA-256 ${args._precondition.local.sha256.slice(0, 12)}…）：${args.localPath} → ${args.remotePath}${args.overwrite ? '（覆盖）' : ''}`;
+    if (capability === 'fs.write') return `写入 ${args._precondition.bytes} 字节（SHA-256 ${args._precondition.newSha256.slice(0, 12)}…）：${args.path}${args.overwrite ? '（覆盖）' : ''}`;
+    if (capability === 'fs.move') return `移动或重命名：${args.sourcePath} → ${args.destinationPath}${args.overwrite ? '（覆盖）' : ''}`;
+    if (capability === 'fs.delete') return `删除 ${args._precondition.remote.type}：${args.path}`;
+    if (capability === 'service.control') return `${args.action} systemd 服务：${args.unit}`;
+    if (capability === 'shell.execute') return `执行 Shell：${args.command}${args.workingDirectory ? `（目录 ${args.workingDirectory}）` : ''}`;
     if (args.fileId) {
       const file = this.serverOperations.describeFile(plugin, args.fileId);
       return `${capability === 'download' ? '下载' : capability === 'config' ? '读取配置' : '读取日志'}：${file.relativePath}（${file.size} 字节）`;
@@ -173,7 +181,7 @@ export class V2Service {
       : { sources: this.serverOperations.listSources(plugin) };
   }
 
-  async requireCallable(params, capability, args) {
+  async requireCallable(params) {
     const scope = scopeOf(params);
     const verified = await this.contextManager.verify(scope.projectId, scope.environmentId, scope.pluginInstanceId, params.contextToken, scope.clientInstanceId);
     const runtime = this.connectionManager.snapshot(scope.projectId, scope.environmentId).plugins[scope.pluginInstanceId];
@@ -181,31 +189,33 @@ export class V2Service {
       const code = runtime?.phase === 'reconnecting' ? 'PLUGIN_RECONNECTING' : runtime?.phase === 'blocked' || runtime?.phase === 'error' ? 'PLUGIN_UNAVAILABLE' : 'PLUGIN_NOT_CONNECTED';
       throw new AppError(code, runtime?.error?.message ?? '目标插件当前不可用。', { phase: runtime?.phase ?? 'disconnected', reason: runtime?.reason ?? null });
     }
-    const mode = verified.plugin.policy?.[capability];
-    if (!mode || mode === 'deny') throw new AppError('POLICY_DENIED', '该操作已被插件规则禁止。');
-    if (mode === 'confirm') {
-      const approved = params.approvalToken
-        ? this.confirmationManager.consume(params.approvalToken, scope, capability, args)
-        : this.confirmationManager.consumeMatching(scope, capability, args);
-      if (!approved) {
-        const summary = this.confirmationSummary(verified.plugin, capability, args);
-        const project = await this.workspaceStore.getProject(scope.projectId);
-        const pending = this.confirmationManager.request(scope, capability, args, summary, {
-          projectNameSnapshot:project.name,
-          environmentNameSnapshot:verified.environment.name,
-          pluginNameSnapshot:verified.plugin.displayName,
-        });
-        throw new AppError('CONFIRMATION_REQUIRED', '该操作需要在桌面端确认。', { requestId: pending.requestId, summary });
-      }
-    }
-    return pluginWithRunbookSources(verified.plugin, verified.runbook.content);
+    return { plugin:pluginWithRunbookSources(verified.plugin, verified.runbook.content), environment:verified.environment };
   }
 
   async invoke(params, capability, args = {}) {
     const requestId = String(params.requestId ?? crypto.randomUUID()).slice(0, 128);
     let plugin;
+    let operationArgs = args;
     try {
-      plugin = await this.requireCallable(params, capability, args);
+      const callable = await this.requireCallable(params);
+      plugin = callable.plugin;
+      if (plugin.pluginType === 'server' && capabilityRule('server', capability).decision === 'confirm') {
+        operationArgs = await this.serverOperations.prepareMutation(plugin, capability, args);
+      }
+      const rule = capabilityRule(plugin.pluginType, capability);
+      const metadata = {};
+      if (rule.decision === 'confirm') {
+        const project = await this.workspaceStore.getProject(params.projectId);
+        Object.assign(metadata, {
+          projectNameSnapshot:project.name,
+          environmentNameSnapshot:callable.environment.name,
+          pluginNameSnapshot:plugin.displayName,
+        });
+      }
+      this.operationGate.authorize({
+        scope:scopeOf(params), plugin, capability, args:operationArgs, approvalToken:params.approvalToken,
+        summary:this.confirmationSummary(plugin, capability, operationArgs), metadata,
+      });
     } catch (error) {
       const value = toPublicError(error);
       const attempted = await this.workspaceStore.getPlugin(params.projectId, params.environmentId, params.pluginInstanceId).catch(() => null);
@@ -213,7 +223,7 @@ export class V2Service {
         type:'plugin-operation-decision', requestId, environmentId:params.environmentId,
         pluginInstanceId:params.pluginInstanceId, pluginType:attempted?.pluginType,
         pluginNameSnapshot:attempted?.displayName, actor:'agent', capability,
-        operationSummary:attempted ? auditSummary(attempted, capability, args) : String(capability),
+        operationSummary:attempted ? auditSummary(attempted, capability, operationArgs) : String(capability),
         result:value.code === 'CONFIRMATION_REQUIRED' ? 'pending-confirmation' : 'blocked', errorCode:value.code,
       }).catch(() => undefined);
       throw error;
@@ -222,22 +232,25 @@ export class V2Service {
     await this.workspaceStore.appendAudit(plugin.projectId, {
       type: 'plugin-operation-started', requestId, environmentId: plugin.environmentId,
       pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, capability,
-      pluginNameSnapshot: plugin.displayName, actor: 'agent', operationSummary: auditSummary(plugin, capability, args), result: 'started',
+      pluginNameSnapshot: plugin.displayName, actor: 'agent', operationSummary: auditSummary(plugin, capability, operationArgs), result: 'started',
     });
     try {
       let result;
-      if (plugin.pluginType === 'server') result = await this.invokeServer(plugin, capability, args);
-      else result = await this.pluginManager.invoke(plugin, capability, { ...args, policyApproved: true });
-      const auditFailed = await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor: 'agent', capability, operationSummary: auditSummary(plugin, capability, args), result: 'success', durationMs: Date.now() - started }).then(() => false, () => true);
+      if (plugin.pluginType === 'server') result = await this.invokeServer(plugin, capability, operationArgs);
+      else result = await this.pluginManager.invoke(plugin, capability, { ...operationArgs, policyApproved: true });
+      const auditFailed = await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor: 'agent', capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'success', durationMs: Date.now() - started }).then(() => false, () => true);
       return auditFailed && result && typeof result === 'object' ? { ...result, auditWarning:true } : result;
     } catch (error) {
-      await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor: 'agent', capability, operationSummary: auditSummary(plugin, capability, args), result: 'error', errorCode: toPublicError(error).code, durationMs: Date.now() - started }).catch(() => undefined);
+      await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor: 'agent', capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'error', errorCode: toPublicError(error).code, durationMs: Date.now() - started }).catch(() => undefined);
       throw error;
     }
   }
 
   invokeServer(plugin, capability, args) {
     if (capability === 'status' || capability === 'diagnostics') return this.serverOperations.runAction(plugin, args.actionId, args.parameters ?? {});
+    if (capability === 'service.inspect') return this.serverOperations.inspectService(plugin, args);
+    if (capability === 'journal.read') return this.serverOperations.queryJournal(plugin, args);
+    if (capability === 'container.inspect') return this.serverOperations.inspectContainer(plugin, args);
     if (capability === 'logs') {
       if (args.operation === 'list') return this.serverOperations.listFiles(plugin, args);
       if (args.operation === 'search') return this.serverOperations.searchLogs(plugin, args);
@@ -245,6 +258,13 @@ export class V2Service {
     }
     if (capability === 'config') return this.serverOperations.readConfig(plugin, args);
     if (capability === 'download') return this.serverOperations.download(plugin, args);
+    if (capability === 'fs.stat') return this.serverOperations.statPath(plugin, args);
+    if (capability === 'fs.list') return this.serverOperations.listDirectory(plugin, args);
+    if (capability === 'fs.find') return this.serverOperations.findFiles(plugin, args);
+    if (capability === 'fs.read') return this.serverOperations.readFile(plugin, args);
+    if (capability === 'fs.search') return this.serverOperations.searchFiles(plugin, args);
+    if (capability === 'fs.download') return this.serverOperations.downloadPath(plugin, args);
+    if (capabilityRule('server', capability).decision === 'confirm') return this.serverOperations.mutate(plugin, capability, args);
     throw new AppError('CAPABILITY_NOT_IMPLEMENTED', 'Server 操作尚未实现。');
   }
 }

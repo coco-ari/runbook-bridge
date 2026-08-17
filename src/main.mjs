@@ -2,7 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session } from 'electron';
 import { ProjectStore } from './project-store.mjs';
 import { BrokerServer } from './broker-server.mjs';
 import { rotateBrokerToken } from './broker-auth.mjs';
@@ -101,12 +101,16 @@ if (process.argv.includes('--mcp')) {
     });
     app.whenReady()
       .then(async () => {
+        // Renderer assets use stable app.asar URLs. Avoid retaining stale CSS/JS
+        // after an in-place upgrade by clearing Electron's disk cache first.
+        await session.defaultSession.clearCache().catch(() => undefined);
         await store.init();
         const { safeStorage } = await import('electron');
         credentialStore = new CredentialStore(store, safeStorage);
         const workspaceStore = new WorkspaceStore(dataRoot, { legacyStore: store });
         await workspaceStore.init({ migrateLegacy: true });
         const pluginCredentialVault = new PluginCredentialVault(dataRoot, safeStorage);
+        await pluginCredentialVault.ensureBackup();
         for (const project of await workspaceStore.listProjects()) {
           if (project.migration?.source !== 'project-v1') continue;
           try {

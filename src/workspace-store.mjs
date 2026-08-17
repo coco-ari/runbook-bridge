@@ -11,7 +11,7 @@ const ADDRESS_FAMILIES = new Set(['ipv4Preferred', 'ipv4Only', 'ipv6Preferred', 
 const TRANSPORTS = new Set(['direct', 'windowsVpn', 'serverTunnel']);
 const POLICY_MODES = new Set(['auto', 'confirm', 'deny']);
 
-const DEFAULT_RUNBOOK = (name) => `# ${name}\n\n## 服务拓扑\n\n记录该环境包含的服务和依赖关系。\n\n## 日志与配置\n\n按 Server 插件名称登记允许读取的位置，例如：\n\n### 应用服务器\n- 日志目录：\`/var/log/my-app\`\n- 配置目录：\`/etc/my-app\`\n\n## 排障流程\n\n记录只读检查顺序、成功标准和升级处理方式。\n`;
+const DEFAULT_RUNBOOK = (name) => `# ${name}\n\n## 环境说明\n\n记录环境用途、访问入口、部署方式和关键依赖。不要在此粘贴密码或私钥。\n\n## 服务器与服务\n\n按 Server 插件名称准确记录服务信息，例如：\n\n### 应用服务器\n- 主机职责：订单 API\n- systemd unit：\`orders.service\`\n- 安装目录：\`/srv/orders\`\n- 当前制品：\`/srv/orders/orders.jar\`\n- 配置文件：\`/etc/orders/application-prod.yml\`\n- 日志目录：\`/var/log/orders\`\n- 健康检查：\`http://127.0.0.1:8080/actuator/health\`\n\n## 中间件\n\n记录 MySQL、Redis、消息队列等实例的用途、配置位置、服务单元和相互依赖。\n\n## 查询建议\n\n记录常用只读排障顺序、应优先检查的路径以及需要避免的大目录或高负载查询。Agent 可以读取服务器上的任意普通文件，不需要把每个目录登记为数据源。\n\n## 发布与回滚\n\n记录制品来源、备份位置、发布步骤、重启顺序、验证标准和回滚步骤。任何服务器变更仍需用户逐次确认。\n`;
 
 function clone(value) {
   return structuredClone(value);
@@ -532,13 +532,42 @@ export class WorkspaceStore {
     });
   }
 
+  async deleteProject(projectId) {
+    return this.enqueue(`project:${projectId}`, async () => {
+      const project = await this.getProject(projectId);
+      const environments = await this.listEnvironments(projectId);
+      const source = this.projectDir(projectId);
+      const tombstone = path.join(this.projectsRoot, `.deleting-${projectId}-${crypto.randomBytes(4).toString('hex')}`);
+      await fs.rename(source, tombstone);
+      try {
+        await fs.rm(tombstone, { recursive: true, force: true });
+      } catch (error) {
+        await fs.rename(tombstone, source).catch(() => undefined);
+        throw error;
+      }
+      return {
+        projectId,
+        name: project.name,
+        environmentCount: environments.length,
+        pluginCount: environments.reduce((sum, environment) => sum + Number(environment.pluginCount ?? 0), 0),
+      };
+    });
+  }
+
   async listEnvironments(projectId) {
     const project = await this.getProject(projectId);
     const environments = [];
     for (const environmentId of project.environmentOrder ?? []) {
       const environment = await this.getEnvironment(projectId, environmentId);
       const plugins = await this.listPlugins(projectId, environmentId);
-      environments.push({ ...environment, pluginCount: plugins.length, readyPluginCount: plugins.filter((item) => item.configState === 'ready').length });
+      environments.push({
+        ...environment,
+        pluginCount: plugins.length,
+        readyPluginCount: plugins.filter((item) => item.configState === 'ready').length,
+        pluginTypeCounts: plugins.reduce((counts,item) => ({ ...counts, [item.pluginType]:(counts[item.pluginType] ?? 0) + 1 }), { server:0,mysql:0,redis:0 }),
+        resourcePreview: plugins.slice(0,6).map((plugin) => this.publicPlugin(plugin)),
+        resourcePreviewTruncated: plugins.length > 6,
+      });
     }
     return environments;
   }
@@ -744,13 +773,13 @@ export class WorkspaceStore {
           ? { db: target.db }
           : { host: target.host, port: target.port },
       transport: plugin.transport?.kind ?? plugin.uplink?.type ?? 'direct',
-      policy: clone(plugin.policy ?? {}),
+      accessModel: 'builtin-risk-v1',
       limits: clone(plugin.limits ?? {}),
     };
   }
 
   pluginBindingHash(plugin) {
-    const projection = { pluginType: plugin.pluginType, target: plugin.target, auth: plugin.auth, transport: plugin.transport, uplink: plugin.uplink, tls: plugin.tls, sources: plugin.sources, actions: plugin.actions, policy: plugin.policy, limits: plugin.limits };
+    const projection = { pluginType: plugin.pluginType, target: plugin.target, auth: plugin.auth, transport: plugin.transport, uplink: plugin.uplink, tls: plugin.tls, sources: plugin.sources, actions: plugin.actions, limits: plugin.limits };
     return crypto.createHash('sha256').update(JSON.stringify(projection)).digest('hex');
   }
 

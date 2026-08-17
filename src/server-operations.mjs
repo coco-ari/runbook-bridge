@@ -1,10 +1,13 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from './errors.mjs';
 
 const FILE_ID_TTL_MS = 10 * 60 * 1000;
 const MAX_FILE_IDS = 2000;
 const MAX_CONFIG_BYTES = 1024 * 1024;
+const REMOTE_DIRECTORY_CONCURRENCY = 2;
 const SECRET_KEY = /^(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|authorization)$/i;
 
 function globMatches(pattern, name) {
@@ -56,6 +59,33 @@ function capText(value, maxBytes) {
   let end = maxBytes;
   while (end > 0 && (buffer[end] & 0xc0) === 0x80) end -= 1;
   return { text: buffer.subarray(0, end).toString('utf8'), bytes: end, truncated: true };
+}
+
+function normalizeRemotePath(value) {
+  const text = String(value ?? '').trim().replace(/\\/g, '/');
+  if (!text || text.length > 4096 || text.includes('\0') || !text.startsWith('/')) {
+    throw new AppError('PATH_INVALID', '服务器路径必须是绝对路径。');
+  }
+  return path.posix.normalize(text);
+}
+
+function quotePosix(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
+async function sha256File(filePath) {
+  const hash = crypto.createHash('sha256');
+  const stream = fs.createReadStream(filePath);
+  for await (const chunk of stream) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+function namePattern(value) {
+  const pattern = String(value ?? '*').trim() || '*';
+  if (pattern.length > 256 || pattern.includes('/') || pattern.includes('\\') || pattern.includes('\0')) {
+    throw new AppError('INVALID_ARGUMENT', '文件名模式只能匹配单个文件名。');
+  }
+  return pattern;
 }
 
 export class ServerOperations {
@@ -110,17 +140,58 @@ export class ServerOperations {
 
   async runAction(plugin, actionId, parameters) {
     const command = this.commandFor(plugin, actionId, parameters);
+    return this.runReadCommand(plugin, command, { actionId });
+  }
+
+  async runReadCommand(plugin, command, metadata = {}) {
     const result = await this.serverRuntime.executeFixed(plugin, command);
     const stdout = capText(result.stdout, plugin.limits.maxBytes);
     const stderr = capText(result.stderr, Math.max(0, plugin.limits.maxBytes - stdout.bytes));
     return {
-      actionId,
+      ...metadata,
       exitCode: result.exitCode,
       stdout: stdout.text,
       stderr: stderr.text,
       truncated: stdout.truncated || stderr.truncated,
       durationMs: result.durationMs,
     };
+  }
+
+  inspectService(plugin, { unit, view = 'status' } = {}) {
+    const name = String(unit ?? '').trim();
+    if (!name || name.length > 255 || !/^[A-Za-z0-9_.@:-]+$/.test(name)) throw new AppError('INVALID_ARGUMENT', 'systemd unit 名称无效。');
+    if (!['status','show','cat'].includes(view)) throw new AppError('INVALID_ARGUMENT', '服务查询类型必须是 status、show 或 cat。');
+    const command = `LC_ALL=C systemctl --no-pager --full ${view} -- ${quotePosix(name)}`;
+    return this.runReadCommand(plugin, command, { unit:name, view });
+  }
+
+  queryJournal(plugin, { unit, since, priority, lines = 500 } = {}) {
+    const count = Math.min(Math.max(Number(lines) || 500, 1), 2000);
+    const parts = ['LC_ALL=C journalctl --no-pager -o short-iso', `-n ${count}`];
+    if (unit !== undefined) {
+      const name = String(unit).trim();
+      if (!name || name.length > 255 || !/^[A-Za-z0-9_.@:-]+$/.test(name)) throw new AppError('INVALID_ARGUMENT', 'systemd unit 名称无效。');
+      parts.push(`--unit ${quotePosix(name)}`);
+    }
+    if (since !== undefined) {
+      const value = String(since).trim();
+      if (!value || value.length > 128 || /[\u0000-\u001f\u007f]/.test(value)) throw new AppError('INVALID_ARGUMENT', 'journal since 参数无效。');
+      parts.push(`--since ${quotePosix(value)}`);
+    }
+    if (priority !== undefined) {
+      const value = Number(priority);
+      if (!Number.isInteger(value) || value < 0 || value > 7) throw new AppError('INVALID_ARGUMENT', 'journal priority 必须在 0 到 7 之间。');
+      parts.push(`--priority ${value}`);
+    }
+    return this.runReadCommand(plugin, parts.join(' '), { unit:unit ?? null, lines:count });
+  }
+
+  inspectContainer(plugin, { runtime = 'docker', container } = {}) {
+    if (!['docker','podman'].includes(runtime)) throw new AppError('INVALID_ARGUMENT', '容器运行时必须是 docker 或 podman。');
+    if (container === undefined) return this.runReadCommand(plugin, `LC_ALL=C ${runtime} ps --no-trunc`, { runtime, operation:'list' });
+    const value = String(container).trim();
+    if (!value || value.length > 255 || !/^[A-Za-z0-9_.-]+$/.test(value)) throw new AppError('INVALID_ARGUMENT', '容器名称或 ID 无效。');
+    return this.runReadCommand(plugin, `LC_ALL=C ${runtime} inspect ${quotePosix(value)}`, { runtime, operation:'inspect', container:value });
   }
 
   source(plugin, sourceId) {
@@ -218,12 +289,12 @@ export class ServerOperations {
     const descriptor = this.requireFile(plugin, args.fileId);
     const source = this.source(plugin, descriptor.sourceId);
     if (source.kind !== 'config') throw new AppError('SOURCE_NOT_ALLOWED', '该文件不属于配置数据源。');
-    if (descriptor.size > MAX_CONFIG_BYTES) throw new AppError('FILE_TOO_LARGE', '配置文件超过 1 MiB，无法安全读取和脱敏。');
+    if (descriptor.size > MAX_CONFIG_BYTES) throw new AppError('FILE_TOO_LARGE', '配置文件超过 1 MiB，请改用 server_read_file 分页读取。');
     const result = await this.serverRuntime.readRemoteRange(plugin, descriptor.path, 0, MAX_CONFIG_BYTES);
     if (result.mtime !== descriptor.mtime) throw new AppError('SOURCE_CHANGED', '配置文件已经变化，请重新列出。');
     if (result.truncated) throw new AppError('FILE_TOO_LARGE', '配置文件超过安全读取上限。');
-    const page = sliceUtf8(redactConfig(result.content), args.cursor, Math.min(Math.max(Number(args.maxBytes) || 262_144, 1), 262_144));
-    return { fileId: args.fileId, relativePath: descriptor.relativePath, content: page.content, nextCursor: page.truncated ? String(page.endByte) : null, truncated: page.truncated, redacted: true };
+    const page = sliceUtf8(result.content, args.cursor, Math.min(Math.max(Number(args.maxBytes) || 262_144, 1), 262_144));
+    return { fileId: args.fileId, relativePath: descriptor.relativePath, content: page.content, nextCursor: page.truncated ? String(page.endByte) : null, truncated: page.truncated, redacted: false };
   }
 
   async download(plugin, { fileId } = {}) {
@@ -234,6 +305,215 @@ export class ServerOperations {
     const result = await this.serverRuntime.downloadRemoteFile(plugin, descriptor.path, destination, source.maxFileBytes);
     return { fileId, relativePath: descriptor.relativePath, savedAs: result.localPath, bytes: result.bytes };
   }
+
+  statPath(plugin, { path: remotePath } = {}) {
+    return this.serverRuntime.statRemotePath(plugin, normalizeRemotePath(remotePath));
+  }
+
+  async listDirectory(plugin, { path: remotePath, cursor = 0, limit = 200 } = {}) {
+    const requestedPath = normalizeRemotePath(remotePath);
+    const entries = await this.serverRuntime.listRemoteDirectory(plugin, requestedPath);
+    const offset = Math.max(Number(cursor) || 0, 0);
+    const pageSize = Math.min(Math.max(Number(limit) || 200, 1), 500);
+    const sorted = entries.sort((left, right) => left.name.localeCompare(right.name));
+    return {
+      path:requestedPath,
+      entries:sorted.slice(offset, offset + pageSize).map((entry) => ({
+        name:entry.name,
+        path:entry.canonicalPath ?? path.posix.join(requestedPath, entry.name),
+        size:entry.size,
+        mtime:entry.mtime,
+        mode:entry.mode,
+        type:entry.isSymbolicLink ? 'symlink' : entry.isDirectory ? 'directory' : entry.isFile ? 'file' : 'special',
+      })),
+      nextCursor:offset + pageSize < sorted.length ? String(offset + pageSize) : null,
+      truncated:Boolean(entries.truncated) || offset + pageSize < sorted.length,
+    };
+  }
+
+  withRemoteReadSession(plugin, operation) {
+    if (typeof this.serverRuntime.withRemoteReadSession === 'function') {
+      return this.serverRuntime.withRemoteReadSession(plugin, operation);
+    }
+    return operation({
+      listDirectory: (remotePath) => this.serverRuntime.listRemoteDirectory(plugin, remotePath),
+      readRange: (remotePath, start, maxBytes) => this.serverRuntime.readRemoteRange(plugin, remotePath, start, maxBytes),
+    });
+  }
+
+  async findFilesWithReader(reader, { path: remotePath, pattern = '*', maxDepth = 6, maxResults = 500 } = {}) {
+    const root = normalizeRemotePath(remotePath);
+    const filter = namePattern(pattern);
+    const depthLimit = Math.min(Math.max(Number(maxDepth) || 0, 0), 12);
+    const resultLimit = Math.min(Math.max(Number(maxResults) || 500, 1), 1000);
+    const queue = [{ path:root, depth:0 }];
+    const matches = [];
+    let visitedDirectories = 0;
+    let visitedEntries = 0;
+    let truncated = false;
+    while (queue.length && matches.length < resultLimit && visitedDirectories < 200 && visitedEntries < 10_000) {
+      const batchSize = Math.min(REMOTE_DIRECTORY_CONCURRENCY, queue.length, 200 - visitedDirectories);
+      const batch = queue.splice(0, batchSize);
+      const listed = await Promise.all(batch.map(async (current) => ({ current, entries:await reader.listDirectory(current.path) })));
+      for (const { current, entries } of listed) {
+        truncated ||= Boolean(entries.truncated);
+        visitedDirectories += 1;
+        if (matches.length >= resultLimit || visitedEntries >= 10_000) {
+          truncated = true;
+          continue;
+        }
+        for (const entry of entries) {
+          visitedEntries += 1;
+          if (entry.isFile && !entry.isSymbolicLink && globMatches(filter, entry.name)) {
+            matches.push({ path:entry.canonicalPath, name:entry.name, size:entry.size, mtime:entry.mtime });
+            if (matches.length >= resultLimit) break;
+          }
+          if (entry.isDirectory && !entry.isSymbolicLink && current.depth < depthLimit && entry.canonicalPath) {
+            queue.push({ path:entry.canonicalPath, depth:current.depth + 1 });
+          }
+          if (visitedEntries >= 10_000) break;
+        }
+      }
+    }
+    truncated ||= queue.length > 0 || matches.length >= resultLimit || visitedDirectories >= 200 || visitedEntries >= 10_000;
+    return { root, pattern:filter, files:matches, truncated, scanned:{ directories:visitedDirectories, entries:visitedEntries }, limitsApplied:{ maxDepth:depthLimit, maxResults:resultLimit, maxDirectories:200, maxEntries:10_000 } };
+  }
+
+  findFiles(plugin, options = {}) {
+    return this.withRemoteReadSession(plugin, (reader) => this.findFilesWithReader(reader, options));
+  }
+
+  async readFile(plugin, { path: remotePath, cursor = 0, maxBytes = 262_144 } = {}) {
+    const requestedPath = normalizeRemotePath(remotePath);
+    const limit = Math.min(Math.max(Number(maxBytes) || 262_144, 1), 1024 * 1024);
+    const result = await this.serverRuntime.readRemoteRange(plugin, requestedPath, Math.max(Number(cursor) || 0, 0), limit);
+    return { path:result.canonicalPath, content:result.content, startByte:result.startByte, endByte:result.endByte, size:result.size, mtime:result.mtime, nextCursor:result.truncated ? String(result.endByte) : null, truncated:result.truncated };
+  }
+
+  async searchFiles(plugin, { path: remotePath, pattern = '*', contains, maxDepth = 6, maxFiles = 100, maxMatches = 200, maxScanBytes = 16 * 1024 * 1024 } = {}) {
+    const needle = String(contains ?? '');
+    if (!needle || Buffer.byteLength(needle) > 4096 || needle.includes('\0')) throw new AppError('INVALID_ARGUMENT', '搜索文本不能为空且不能超过 4096 字节。');
+    const fileLimit = Math.min(Math.max(Number(maxFiles) || 100, 1), 500);
+    const matchLimit = Math.min(Math.max(Number(maxMatches) || 200, 1), 500);
+    const scanLimit = Math.min(Math.max(Number(maxScanBytes) || 1024 * 1024, 64 * 1024), 32 * 1024 * 1024);
+    return this.withRemoteReadSession(plugin, async (reader) => {
+      const found = await this.findFilesWithReader(reader, { path:remotePath, pattern, maxDepth, maxResults:fileLimit });
+      const matches = [];
+      let scannedBytes = 0;
+      let scannedFiles = 0;
+      for (const file of found.files) {
+        if (scannedBytes >= scanLimit || matches.length >= matchLimit) break;
+        let cursor = 0;
+        let lineBase = 0;
+        let carry = '';
+        scannedFiles += 1;
+        while (scannedBytes < scanLimit && matches.length < matchLimit) {
+          const remaining = scanLimit - scannedBytes;
+          const page = await reader.readRange(file.path, cursor, Math.min(1024 * 1024, remaining));
+          const bytes = page.endByte - page.startByte;
+          scannedBytes += bytes;
+          const text = carry + page.content;
+          const lines = text.split(/\r?\n/);
+          carry = page.truncated ? lines.pop() ?? '' : '';
+          for (let index = 0; index < lines.length && matches.length < matchLimit; index += 1) {
+            if (lines[index].includes(needle)) matches.push({ path:file.path, line:lineBase + index + 1, text:capText(lines[index], 4096).text });
+          }
+          lineBase += lines.length;
+          cursor = page.endByte;
+          if (!page.truncated || bytes === 0) {
+            if (carry.includes(needle) && matches.length < matchLimit) matches.push({ path:file.path, line:lineBase + 1, text:capText(carry, 4096).text });
+            break;
+          }
+        }
+      }
+      const truncated = found.truncated || scannedFiles < found.files.length || scannedBytes >= scanLimit || matches.length >= matchLimit;
+      return { matches, matchCount:matches.length, scannedFiles, scannedBytes, truncated, limitsApplied:{ maxFiles:fileLimit, maxMatches:matchLimit, maxScanBytes:scanLimit } };
+    });
+  }
+
+  async downloadPath(plugin, { path: remotePath } = {}) {
+    const requestedPath = normalizeRemotePath(remotePath);
+    const safeName = path.posix.basename(requestedPath).replace(/[^\p{L}\p{N}._-]+/gu, '_') || 'download.bin';
+    const destination = path.join(this.workspaceStore.projectDir(plugin.projectId), 'downloads', plugin.environmentId, plugin.pluginInstanceId, `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(4).toString('hex')}-${safeName}`);
+    const result = await this.serverRuntime.downloadRemoteFile(plugin, requestedPath, destination, 500 * 1024 * 1024);
+    return { path:result.canonicalPath, savedAs:result.localPath, bytes:result.bytes, mtime:result.mtime };
+  }
+
+  async remoteSnapshot(plugin, remotePath) {
+    try {
+      const value = await this.serverRuntime.statRemotePath(plugin, normalizeRemotePath(remotePath));
+      return { exists:true, path:value.path, canonicalPath:value.canonicalPath, type:value.type, size:value.size, mtime:value.mtime, mode:value.mode };
+    } catch (error) {
+      if (error?.code === 'SOURCE_NOT_FOUND') return { exists:false, path:normalizeRemotePath(remotePath) };
+      throw error;
+    }
+  }
+
+  async prepareMutation(plugin, capability, input) {
+    const args = { ...input };
+    if (capability === 'fs.upload') {
+      const localPath = path.resolve(String(args.localPath ?? ''));
+      const local = await fsp.lstat(localPath).catch(() => { throw new AppError('PATH_INVALID', '本地上传文件不存在。'); });
+      if (!local.isFile() || local.isSymbolicLink()) throw new AppError('PATH_INVALID', '只能上传本地普通文件。');
+      if (local.size > 500 * 1024 * 1024) throw new AppError('FILE_TOO_LARGE', '上传文件不能超过 500 MiB。');
+      const sha256 = await sha256File(localPath);
+      const after = await fsp.lstat(localPath);
+      if (after.size !== local.size || after.mtimeMs !== local.mtimeMs) throw new AppError('LOCAL_FILE_CHANGED', '本地文件在校验期间发生变化。');
+      const remotePath = normalizeRemotePath(args.remotePath);
+      const remote = await this.remoteSnapshot(plugin, remotePath);
+      if (remote.exists && args.overwrite !== true) throw new AppError('TARGET_EXISTS', '远程目标已存在；如需覆盖请明确传 overwrite=true。');
+      return { localPath, remotePath, overwrite:args.overwrite === true, _precondition:{ local:{ size:local.size, mtimeMs:local.mtimeMs, sha256 }, remote } };
+    }
+    if (capability === 'fs.write') {
+      const remotePath = normalizeRemotePath(args.path);
+      const content = String(args.content ?? '');
+      if (Buffer.byteLength(content) > 1024 * 1024) throw new AppError('FILE_TOO_LARGE', '单次写入内容不能超过 1 MiB。');
+      const remote = await this.remoteSnapshot(plugin, remotePath);
+      if (remote.exists && args.overwrite !== true) throw new AppError('TARGET_EXISTS', '远程目标已存在；如需覆盖请明确传 overwrite=true。');
+      return { path:remotePath, content, overwrite:args.overwrite === true, _precondition:{ remote, newSha256:crypto.createHash('sha256').update(content).digest('hex'), bytes:Buffer.byteLength(content) } };
+    }
+    if (capability === 'fs.move') {
+      const sourcePath = normalizeRemotePath(args.sourcePath);
+      const destinationPath = normalizeRemotePath(args.destinationPath);
+      if (sourcePath === destinationPath) throw new AppError('INVALID_ARGUMENT', '源路径和目标路径不能相同。');
+      const source = await this.remoteSnapshot(plugin, sourcePath);
+      if (!source.exists) throw new AppError('SOURCE_NOT_FOUND', '待移动的服务器路径不存在。');
+      const destination = await this.remoteSnapshot(plugin, destinationPath);
+      if (destination.exists && args.overwrite !== true) throw new AppError('TARGET_EXISTS', '目标路径已存在；如需覆盖请明确传 overwrite=true。');
+      return { sourcePath, destinationPath, overwrite:args.overwrite === true, _precondition:{ source, destination } };
+    }
+    if (capability === 'fs.delete') {
+      const remotePath = normalizeRemotePath(args.path);
+      if (remotePath === '/') throw new AppError('POLICY_DENIED', '禁止删除服务器根目录。');
+      const remote = await this.remoteSnapshot(plugin, remotePath);
+      if (!remote.exists) throw new AppError('SOURCE_NOT_FOUND', '待删除的服务器路径不存在。');
+      return { path:remotePath, _precondition:{ remote } };
+    }
+    if (capability === 'service.control') {
+      const action = String(args.action ?? '');
+      const unit = String(args.unit ?? '').trim();
+      if (!['restart','reload','stop','start'].includes(action)) throw new AppError('INVALID_ARGUMENT', '服务操作必须是 start、stop、restart 或 reload。');
+      if (!unit || unit.length > 255 || !/^[A-Za-z0-9_.@:-]+$/.test(unit)) throw new AppError('INVALID_ARGUMENT', 'systemd unit 名称无效。');
+      return { action, unit };
+    }
+    if (capability === 'shell.execute') {
+      const command = String(args.command ?? '').trim();
+      if (!command || command.length > 16_384 || command.includes('\0')) throw new AppError('INVALID_ARGUMENT', 'Shell 命令为空或过长。');
+      const workingDirectory = args.workingDirectory ? normalizeRemotePath(args.workingDirectory) : undefined;
+      return { command, ...(workingDirectory ? { workingDirectory } : {}) };
+    }
+    return args;
+  }
+
+  mutate(plugin, capability, args) {
+    if (capability === 'fs.upload') return this.serverRuntime.uploadRemoteFile(plugin, args.localPath, args.remotePath, args._precondition);
+    if (capability === 'fs.write') return this.serverRuntime.writeRemoteFile(plugin, args.path, args.content, args._precondition);
+    if (capability === 'fs.move') return this.serverRuntime.moveRemotePath(plugin, args.sourcePath, args.destinationPath, args._precondition);
+    if (capability === 'fs.delete') return this.serverRuntime.deleteRemotePath(plugin, args.path, args._precondition);
+    if (capability === 'service.control') return this.serverRuntime.executeApproved(plugin, `LC_ALL=C systemctl ${args.action} -- ${quotePosix(args.unit)}`);
+    if (capability === 'shell.execute') return this.serverRuntime.executeApproved(plugin, args.command, args.workingDirectory);
+    throw new AppError('CAPABILITY_NOT_IMPLEMENTED', 'Server 变更操作尚未实现。');
+  }
 }
 
-export const serverOperationInternals = { globMatches, withinRoot, redactConfig, capText, sliceUtf8 };
+export const serverOperationInternals = { globMatches, withinRoot, redactConfig, capText, sliceUtf8, normalizeRemotePath, quotePosix };

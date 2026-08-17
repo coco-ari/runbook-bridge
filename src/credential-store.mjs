@@ -95,8 +95,7 @@ export class CredentialStore {
   async save(projectId, secrets, config) {
     const clean = cleanSecrets(secrets);
     if (Object.keys(clean).length === 0) {
-      await this.clear(projectId);
-      return;
+      return { saved:false, preserved:await this.has(projectId) };
     }
     if (!this.encryption.isEncryptionAvailable()) {
       throw new AppError('CREDENTIAL_STORAGE_UNAVAILABLE', 'Windows 安全存储当前不可用。');
@@ -132,6 +131,6 @@ export class CredentialStore {
   }
 
   async clear(projectId) {
-    await fs.rm(this.filePath(projectId), { force: true });
+    return { cleared:false, preserved:await this.has(projectId) };
   }
 }

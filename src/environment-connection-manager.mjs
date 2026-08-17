@@ -114,6 +114,17 @@ export class EnvironmentConnectionManager extends EventEmitter {
     return Object.fromEntries([...this.states.entries()].map(([key, value]) => [key, structuredClone(value)]));
   }
 
+  forgetProject(projectId) {
+    const prefix = `${projectId}/`;
+    for (const key of this.states.keys()) if (key.startsWith(prefix)) this.states.delete(key);
+    for (const key of this.queues.keys()) if (key.startsWith(prefix)) this.queues.delete(key);
+    for (const key of this.retryTimers.keys()) {
+      if (!key.startsWith(prefix)) continue;
+      clearTimeout(this.retryTimers.get(key));
+      this.retryTimers.delete(key);
+    }
+  }
+
   enqueue(projectId, environmentId, operation) {
     const key = this.key(projectId, environmentId);
     const previous = this.queues.get(key) ?? Promise.resolve();
@@ -140,7 +151,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
     if (!state.desiredConnected && state.connectedCount === 0) state.phase = 'disconnected';
     else if (!ready.length) state.phase = 'disconnected';
     else if (state.connectedCount === ready.length) state.phase = 'connected';
-    else if (state.connectedCount > 0) state.phase = 'partial';
+    else if (state.connectedCount > 0) state.phase = state.errorCount + state.blockedCount > 0 ? 'partial' : 'connected';
     else state.phase = 'failed';
   }
 

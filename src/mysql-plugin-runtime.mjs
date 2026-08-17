@@ -4,6 +4,37 @@ import { AppError } from './errors.mjs';
 import { validateMysqlSelect, validateMysqlExplain, applyMysqlRowLimit } from './mysql-policy.mjs';
 
 const SYSTEM_DATABASES = new Set(['information_schema', 'mysql', 'performance_schema', 'sys']);
+const MYSQL_TIMEOUT_CODES = new Set(['PROTOCOL_SEQUENCE_TIMEOUT', 'ETIMEDOUT', 'ESOCKETTIMEDOUT']);
+const MYSQL_CONNECTION_CODES = new Set([
+  'PROTOCOL_CONNECTION_LOST', 'PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR', 'PROTOCOL_ENQUEUE_AFTER_QUIT',
+  'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH',
+]);
+const MYSQL_TLS_CODES = new Set(['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID']);
+
+function mysqlError(error, fallbackMessage = 'MySQL 操作失败。') {
+  if (error instanceof AppError) return error;
+  const code = String(error?.code ?? '');
+  const message = String(error?.message ?? '');
+  if (code === 'ER_ACCESS_DENIED_ERROR') return new AppError('AUTHENTICATION_FAILED', 'MySQL 用户名或密码认证失败。');
+  if (MYSQL_TLS_CODES.has(code)) return new AppError('TLS_IDENTITY_FAILED', 'MySQL TLS 身份校验失败。');
+  if (MYSQL_TIMEOUT_CODES.has(code) || /(?:query|operation|socket).*tim(?:e|ed) ?out/i.test(message)) {
+    return new AppError('DATABASE_QUERY_TIMEOUT', 'MySQL 操作超时，当前连接已关闭并将按环境策略重新建立。');
+  }
+  if (MYSQL_CONNECTION_CODES.has(code) || /connection.*(?:closed|lost|reset)|socket.*(?:closed|ended)/i.test(message)) {
+    return new AppError('ROUTE_UNAVAILABLE', 'MySQL 连接已经中断，将按环境连接策略重试。');
+  }
+  return new AppError('DATABASE_OPERATION_FAILED', fallbackMessage);
+}
+
+function invalidatesSession(error) {
+  if (!error) return false;
+  if (error instanceof AppError) return ['DATABASE_QUERY_TIMEOUT', 'ROUTE_UNAVAILABLE', 'PLUGIN_UNAVAILABLE'].includes(error.code);
+  const code = String(error.code ?? '');
+  return MYSQL_TIMEOUT_CODES.has(code)
+    || MYSQL_CONNECTION_CODES.has(code)
+    || error.fatal === true
+    || /(?:query|operation|socket).*tim(?:e|ed) ?out|connection.*(?:closed|lost|reset)|socket.*(?:closed|ended)/i.test(String(error.message ?? ''));
+}
 
 function key(plugin) {
   return `${plugin.projectId}/${plugin.environmentId}/${plugin.pluginInstanceId}`;
@@ -79,6 +110,39 @@ export class MysqlPluginRuntime extends EventEmitter {
     return session;
   }
 
+  async invalidateSession(plugin, session, error) {
+    if (!session || session.closing || this.sessions.get(key(plugin)) !== session) return;
+    session.closing = true;
+    this.sessions.delete(key(plugin));
+    const raw = session.connection?.connection ?? session.connection;
+    try {
+      raw?.destroy?.();
+    } catch {
+      // The socket may already have been closed by mysql2.
+    }
+    await this.routeManager.closeRelay(plugin).catch(() => undefined);
+    this.emit('lifecycle', {
+      type: 'lost',
+      projectId: plugin.projectId,
+      environmentId: plugin.environmentId,
+      pluginInstanceId: plugin.pluginInstanceId,
+      error,
+    });
+  }
+
+  async querySession(plugin, request, { invalidateOnAnyError = false, fallbackMessage } = {}) {
+    const session = this.require(plugin);
+    try {
+      return await session.connection.query(request);
+    } catch (error) {
+      const mapped = mysqlError(error, fallbackMessage);
+      if (invalidateOnAnyError || invalidatesSession(error) || invalidatesSession(mapped)) {
+        await this.invalidateSession(plugin, session, mapped);
+      }
+      throw mapped;
+    }
+  }
+
   async connect(plugin, suppliedSecrets = {}) {
     if (plugin.pluginType !== 'mysql' || plugin.configState !== 'ready') throw new AppError('PLUGIN_CONFIG_INCOMPLETE', 'MySQL 插件配置不完整。');
     await this.disconnect(plugin);
@@ -112,20 +176,17 @@ export class MysqlPluginRuntime extends EventEmitter {
       const raw = connection.connection ?? connection;
       const lost = (error) => {
         if (session.closing || this.sessions.get(key(plugin)) !== session) return;
-        this.sessions.delete(key(plugin));
-        this.routeManager.closeRelay(plugin).catch(() => undefined);
-        this.emit('lifecycle', { type:'lost', projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, error });
+        void this.invalidateSession(plugin, session, mysqlError(error, 'MySQL 连接已经中断。'));
       };
-      raw.on?.('error', (error) => { if (error?.fatal !== false) lost(error); });
+      raw.on?.('error', (error) => { if (invalidatesSession(error)) lost(error); });
       raw.on?.('end', () => lost(new AppError('ROUTE_UNAVAILABLE', 'MySQL 连接已中断。')));
       return { connected: true, connectedAt: this.sessions.get(key(plugin)).connectedAt, routeGeneration: relay.generation };
     } catch (error) {
       await connection?.end().catch(() => undefined);
       await this.routeManager.closeRelay(plugin);
-      if (error instanceof AppError) throw error;
-      if (error?.code === 'ER_ACCESS_DENIED_ERROR') throw new AppError('AUTHENTICATION_FAILED', 'MySQL 用户名或密码认证失败。');
-      if (['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID'].includes(error?.code)) throw new AppError('TLS_IDENTITY_FAILED', 'MySQL TLS 身份校验失败。');
-      throw new AppError('PLUGIN_UNAVAILABLE', 'MySQL 连接初始化失败。');
+      const mapped = mysqlError(error, 'MySQL 连接初始化失败。');
+      if (mapped.code === 'DATABASE_OPERATION_FAILED') throw new AppError('PLUGIN_UNAVAILABLE', mapped.message);
+      throw mapped;
     }
   }
 
@@ -158,10 +219,9 @@ export class MysqlPluginRuntime extends EventEmitter {
         .sort((left, right) => left.localeCompare(right, 'zh-CN'));
       return { databases: visible.slice(0, 200), truncated: visible.length > 200 };
     } catch (error) {
-      if (error instanceof AppError) throw error;
-      if (error?.code === 'ER_ACCESS_DENIED_ERROR') throw new AppError('AUTHENTICATION_FAILED', 'MySQL 用户名或密码认证失败。');
-      if (['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID'].includes(error?.code)) throw new AppError('TLS_IDENTITY_FAILED', 'MySQL TLS 身份校验失败。');
-      throw new AppError('PLUGIN_UNAVAILABLE', '无法连接 MySQL 并查询数据库列表。');
+      const mapped = mysqlError(error, '无法连接 MySQL 并查询数据库列表。');
+      if (mapped.code === 'DATABASE_OPERATION_FAILED') throw new AppError('PLUGIN_UNAVAILABLE', mapped.message);
+      throw mapped;
     } finally {
       await connection?.end().catch(() => undefined);
       await this.routeManager.closeRelay(plugin);
@@ -178,20 +238,22 @@ export class MysqlPluginRuntime extends EventEmitter {
   }
 
   async health(plugin) {
-    const session = this.require(plugin);
-    await session.connection.query({ sql:'SELECT 1 AS ai_ops_health', timeout:Math.min(plugin.limits.timeoutMs, 5000) });
+    await this.querySession(
+      plugin,
+      { sql:'SELECT 1 AS ai_ops_health', timeout:Math.min(plugin.limits.timeoutMs, 5000) },
+      { invalidateOnAnyError:true, fallbackMessage:'MySQL 连接检查失败。' },
+    );
     return { connected:true, checkedAt:new Date().toISOString() };
   }
 
   async assertBaseTables(plugin, tables) {
     if (!tables.length) return;
-    const session = this.require(plugin);
     const placeholders = tables.map(() => '?').join(',');
-    const [rows] = await session.connection.query({
+    const [rows] = await this.querySession(plugin, {
       sql: `SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME IN (${placeholders})`,
       timeout: plugin.limits.timeoutMs,
       values: [plugin.target.database, ...tables],
-    });
+    }, { fallbackMessage:'MySQL 表访问检查失败。' });
     const types = new Map(rows.map((row) => [String(row.TABLE_NAME), String(row.TABLE_TYPE)]));
     for (const table of tables) {
       const type = types.get(table);
@@ -201,14 +263,13 @@ export class MysqlPluginRuntime extends EventEmitter {
   }
 
   async listTables(plugin, { cursor = 0, limit = 100 } = {}) {
-    const session = this.require(plugin);
     const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 200);
     const offset = Math.max(Number(cursor) || 0, 0);
-    const [rows] = await session.connection.query({
+    const [rows] = await this.querySession(plugin, {
       sql: 'SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME LIMIT ? OFFSET ?',
       timeout: plugin.limits.timeoutMs,
       values: [plugin.target.database, safeLimit + 1, offset],
-    });
+    }, { fallbackMessage:'MySQL 数据表列表读取失败。' });
     const truncated = rows.length > safeLimit;
     return {
       tables: rows.slice(0, safeLimit).map((row) => ({ name: row.TABLE_NAME, type: row.TABLE_TYPE, queryable: row.TABLE_TYPE === 'BASE TABLE' })),
@@ -221,12 +282,11 @@ export class MysqlPluginRuntime extends EventEmitter {
     const table = String(tableName ?? '').trim();
     if (!table || table.length > 128 || /[\u0000-\u001f\u007f]/.test(table)) throw new AppError('INVALID_ARGUMENT', '表名无效。');
     await this.assertBaseTables(plugin, [table]);
-    const session = this.require(plugin);
-    const [rows] = await session.connection.query({
+    const [rows] = await this.querySession(plugin, {
       sql: 'SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION',
       timeout: plugin.limits.timeoutMs,
       values: [plugin.target.database, table],
-    });
+    }, { fallbackMessage:'MySQL 表结构读取失败。' });
     return { table, columns: rows.map((row) => ({ name: row.COLUMN_NAME, type: row.COLUMN_TYPE, nullable: row.IS_NULLABLE === 'YES', key: row.COLUMN_KEY || null, default: row.COLUMN_DEFAULT, extra: row.EXTRA || null })) };
   }
 
@@ -234,9 +294,12 @@ export class MysqlPluginRuntime extends EventEmitter {
     const validated = validateMysqlSelect(sql);
     await this.assertBaseTables(plugin, validated.tables);
     const statement = applyMysqlRowLimit(validated, plugin.limits.maxRows);
-    const session = this.require(plugin);
     const started = Date.now();
-    const [rows, fields] = await session.connection.query({ sql: statement, timeout: plugin.limits.timeoutMs, values: normalizeParams(params) });
+    const [rows, fields] = await this.querySession(
+      plugin,
+      { sql: statement, timeout: plugin.limits.timeoutMs, values: normalizeParams(params) },
+      { fallbackMessage:'MySQL 只读查询执行失败。' },
+    );
     const capped = capRows(rows, plugin.limits.maxRows, plugin.limits.maxBytes);
     return {
       ...capped,
@@ -250,8 +313,11 @@ export class MysqlPluginRuntime extends EventEmitter {
   async explain(plugin, sql, params) {
     const validated = validateMysqlExplain(sql);
     await this.assertBaseTables(plugin, validated.tables);
-    const session = this.require(plugin);
-    const [rows] = await session.connection.query({ sql: validated.statement, timeout: plugin.limits.timeoutMs, values: normalizeParams(params) });
+    const [rows] = await this.querySession(
+      plugin,
+      { sql: validated.statement, timeout: plugin.limits.timeoutMs, values: normalizeParams(params) },
+      { fallbackMessage:'MySQL 执行计划读取失败。' },
+    );
     return { plan: capRows(rows, 200, plugin.limits.maxBytes), fingerprint: validated.fingerprint };
   }
 
@@ -262,4 +328,6 @@ export class MysqlPluginRuntime extends EventEmitter {
   }
 }
 
-export const mysqlRuntimeInternals = { key, normalizeParams, capRows, sslOptions, SYSTEM_DATABASES };
+export const mysqlRuntimeInternals = {
+  key, normalizeParams, capRows, sslOptions, SYSTEM_DATABASES, mysqlError, invalidatesSession,
+};

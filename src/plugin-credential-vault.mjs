@@ -46,20 +46,29 @@ async function maybeAwait(value) {
 export class PluginCredentialVault {
   constructor(dataRoot, encryption) {
     this.file = path.join(dataRoot, 'credentials', 'plugins.enc.json');
+    this.backupFile = path.join(dataRoot, 'credentials', 'plugins.enc.backup.json');
     this.encryption = encryption;
     this.queue = Promise.resolve();
   }
 
+  async readEnvelopeFile(file) {
+    const parsed = JSON.parse(await fs.readFile(file, 'utf8'));
+    if (parsed?.schemaVersion !== 1 || !parsed.entries || typeof parsed.entries !== 'object') {
+      throw new AppError('CREDENTIAL_STORE_INVALID', '插件凭据存储格式无效。');
+    }
+    return parsed;
+  }
+
   async readEnvelope() {
     try {
-      const parsed = JSON.parse(await fs.readFile(this.file, 'utf8'));
-      if (parsed?.schemaVersion !== 1 || !parsed.entries || typeof parsed.entries !== 'object') {
-        throw new AppError('CREDENTIAL_STORE_INVALID', '插件凭据存储格式无效。');
+      return await this.readEnvelopeFile(this.file);
+    } catch (primaryError) {
+      try {
+        return await this.readEnvelopeFile(this.backupFile);
+      } catch (backupError) {
+        if (primaryError?.code === 'ENOENT' && backupError?.code === 'ENOENT') return { schemaVersion: 1, entries: {} };
+        throw primaryError;
       }
-      return parsed;
-    } catch (error) {
-      if (error?.code === 'ENOENT') return { schemaVersion: 1, entries: {} };
-      throw error;
     }
   }
 
@@ -69,11 +78,38 @@ export class PluginCredentialVault {
     return current;
   }
 
-  async writeEnvelope(envelope) {
+  async atomicWrite(file, content) {
     await fs.mkdir(path.dirname(this.file), { recursive: true });
-    const temp = `${this.file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-    await fs.writeFile(temp, JSON.stringify(envelope, null, 2), { encoding: 'utf8', mode: 0o600 });
-    await fs.rename(temp, this.file);
+    const temp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    try {
+      await fs.writeFile(temp, content, { encoding: 'utf8', mode: 0o600 });
+      await fs.rename(temp, file);
+    } catch (error) {
+      await fs.rm(temp, { force:true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async writeEnvelope(envelope) {
+    const content = JSON.stringify(envelope, null, 2);
+    await this.atomicWrite(this.file, content);
+    await this.atomicWrite(this.backupFile, content);
+  }
+
+  async ensureBackup() {
+    try {
+      const envelope = await this.readEnvelopeFile(this.file);
+      await this.atomicWrite(this.backupFile, JSON.stringify(envelope, null, 2));
+      return { backedUp:true };
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { backedUp:false };
+      try {
+        await this.readEnvelopeFile(this.backupFile);
+        return { backedUp:true, recoveredFromBackup:true };
+      } catch {
+        throw error;
+      }
+    }
   }
 
   normalizeSecrets(plugin, secrets) {
@@ -151,14 +187,8 @@ export class PluginCredentialVault {
   }
 
   async clear(plugin) {
-    return this.enqueue(async () => {
-      const envelope = await this.readEnvelope();
-      const key = resourceKey(plugin);
-      if (!(key in envelope.entries)) return { cleared: false };
-      delete envelope.entries[key];
-      await this.writeEnvelope(envelope);
-      return { cleared: true };
-    });
+    const preserved = Boolean((await this.readEnvelope()).entries[resourceKey(plugin)]);
+    return { cleared:false, preserved };
   }
 }
 

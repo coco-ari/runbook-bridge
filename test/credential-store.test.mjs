@@ -12,7 +12,7 @@ const fakeEncryption = {
   decryptString: (value) => value.toString('utf8').replace(/^encrypted:/, ''),
 };
 
-test('credentials are stored outside project.yaml as encrypted data and can be cleared', async (t) => {
+test('credentials are encrypted and software clear requests preserve them', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-credentials-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const projects = new ProjectStore(root);
@@ -41,7 +41,11 @@ test('credentials are stored outside project.yaml as encrypted data and can be c
   assert.equal(await credentials.has(project.id), true);
   assert.equal(await credentials.hasUsable(project.id, project), true);
   await credentials.clear(project.id);
-  assert.equal(await credentials.has(project.id), false);
+  assert.equal(await credentials.has(project.id), true);
+  assert.deepEqual(await credentials.load(project.id, project), {
+    password: 'server-password',
+    proxyPassword: 'proxy-password',
+  });
 });
 
 test('legacy credential envelopes require one explicit credential re-entry', async (t) => {

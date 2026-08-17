@@ -112,11 +112,28 @@ export class BrokerServer {
       case 'serverListActions': return this.v2Service.serverDescriptors(params, 'actions');
       case 'serverListSources': return this.v2Service.serverDescriptors(params, 'sources');
       case 'serverRunAction': return this.v2Service.invoke(params, ['system.summary', 'process.summary', 'network.listen'].includes(params.actionId) ? 'status' : 'diagnostics', { actionId: params.actionId, parameters: params.parameters ?? {} });
+      case 'serverSystemSnapshot': return this.v2Service.invoke(params, 'status', { actionId:'system.summary', parameters:{} });
+      case 'serverServiceInspect': return this.v2Service.invoke(params, 'service.inspect', { unit:params.unit, view:params.view });
+      case 'serverJournalQuery': return this.v2Service.invoke(params, 'journal.read', { unit:params.unit, since:params.since, priority:params.priority, lines:params.lines });
+      case 'serverContainerInspect': return this.v2Service.invoke(params, 'container.inspect', { runtime:params.runtime, container:params.container });
       case 'serverListFiles': return this.v2Service.invoke(params, 'logs', { operation: 'list', sourceId: params.sourceId, cursor: params.cursor, limit: params.limit });
       case 'serverReadLog': return this.v2Service.invoke(params, 'logs', { operation: 'read', fileId: params.fileId, cursor: params.cursor, maxBytes: params.maxBytes, tail: params.tail });
       case 'serverSearchLogs': return this.v2Service.invoke(params, 'logs', { operation: 'search', fileIds: params.fileIds, contains: params.contains, maxLines: params.maxLines, maxScanBytes: params.maxScanBytes });
       case 'serverReadConfig': return this.v2Service.invoke(params, 'config', { fileId: params.fileId, cursor: params.cursor, maxBytes: params.maxBytes });
-      case 'serverDownloadFile': return this.v2Service.invoke(params, 'download', { fileId: params.fileId });
+      case 'serverStat': return this.v2Service.invoke(params, 'fs.stat', { path:params.path });
+      case 'serverListDirectory': return this.v2Service.invoke(params, 'fs.list', { path:params.path, cursor:params.cursor, limit:params.limit });
+      case 'serverFindFiles': return this.v2Service.invoke(params, 'fs.find', { path:params.path, pattern:params.pattern, maxDepth:params.maxDepth, maxResults:params.maxResults });
+      case 'serverReadFile': return this.v2Service.invoke(params, 'fs.read', { path:params.path, cursor:params.cursor, maxBytes:params.maxBytes });
+      case 'serverSearchFiles': return this.v2Service.invoke(params, 'fs.search', { path:params.path, pattern:params.pattern, contains:params.contains, maxDepth:params.maxDepth, maxFiles:params.maxFiles, maxMatches:params.maxMatches, maxScanBytes:params.maxScanBytes });
+      case 'serverDownloadFile': return params.path
+        ? this.v2Service.invoke(params, 'fs.download', { path:params.path })
+        : this.v2Service.invoke(params, 'download', { fileId:params.fileId });
+      case 'serverUploadFile': return this.v2Service.invoke(params, 'fs.upload', { localPath:params.localPath, remotePath:params.remotePath, overwrite:params.overwrite });
+      case 'serverWriteFile': return this.v2Service.invoke(params, 'fs.write', { path:params.path, content:params.content, overwrite:params.overwrite });
+      case 'serverMovePath': return this.v2Service.invoke(params, 'fs.move', { sourcePath:params.sourcePath, destinationPath:params.destinationPath, overwrite:params.overwrite });
+      case 'serverDeletePath': return this.v2Service.invoke(params, 'fs.delete', { path:params.path });
+      case 'serverControlService': return this.v2Service.invoke(params, 'service.control', { action:params.action, unit:params.unit });
+      case 'serverExecuteShell': return this.v2Service.invoke(params, 'shell.execute', { command:params.command, workingDirectory:params.workingDirectory });
       case 'mysqlListTables': return this.v2Service.invoke(params, 'describe', { cursor: params.cursor, limit: params.limit });
       case 'mysqlDescribeTable': return this.v2Service.invoke(params, 'describe', { table: params.table });
       case 'mysqlQueryReadonly': return this.v2Service.invoke(params, 'select', { sql: params.sql, params: params.params });

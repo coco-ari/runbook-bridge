@@ -3,8 +3,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('aiOps', {
   v2: {
     listProjects: () => ipcRenderer.invoke('v2:project-list'),
+    workspaceOverview: () => ipcRenderer.invoke('v2:workspace-overview'),
     createProject: (input) => ipcRenderer.invoke('v2:project-create', input),
     updateProject: (payload) => ipcRenderer.invoke('v2:project-update', payload),
+    deleteProject: (payload) => ipcRenderer.invoke('v2:project-delete', payload),
     listEnvironments: (projectId) => ipcRenderer.invoke('v2:environment-list', projectId),
     createEnvironment: (payload) => ipcRenderer.invoke('v2:environment-create', payload),
     updateEnvironment: (payload) => ipcRenderer.invoke('v2:environment-update', payload),
@@ -26,7 +28,6 @@ contextBridge.exposeInMainWorld('aiOps', {
     credentialStatus: (payload) => ipcRenderer.invoke('v2:plugin-credential-status', payload),
     revealCredential: (payload) => ipcRenderer.invoke('v2:plugin-credential-reveal', payload),
     listPluginDatabases: (payload) => ipcRenderer.invoke('v2:plugin-databases', payload),
-    savePolicy: (payload) => ipcRenderer.invoke('v2:plugin-policy', payload),
     testPlugin: (payload) => ipcRenderer.invoke('v2:plugin-test', payload),
     listAudit: (payload) => ipcRenderer.invoke('v2:audit-list', payload),
     listConfirmations: () => ipcRenderer.invoke('v2:confirmation-list'),

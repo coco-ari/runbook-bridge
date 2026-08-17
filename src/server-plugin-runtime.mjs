@@ -45,7 +45,7 @@ class ScopedServerStoreAdapter {
       commandPolicy: { enabled: true, customDeny: [] },
       limits: {
         commandTimeoutSeconds: Math.max(1, Math.ceil((plugin.limits?.timeoutMs ?? 10_000) / 1000)),
-        maxUploadMB: 1,
+        maxUploadMB: 500,
         maxDownloadMB: 100,
         maxDocumentKB: 200,
         maxLogScanMB: 16,
@@ -197,12 +197,40 @@ export class ServerPluginRuntime extends EventEmitter {
     return this.broker.listRemoteDirectory(this.key(plugin), remotePath);
   }
 
+  withRemoteReadSession(plugin, operation) {
+    return this.broker.withRemoteReadSession(this.key(plugin), operation);
+  }
+
+  statRemotePath(plugin, remotePath) {
+    return this.broker.statRemotePath(this.key(plugin), remotePath);
+  }
+
   readRemoteRange(plugin, remotePath, start, maxBytes) {
     return this.broker.readRemoteRange(this.key(plugin), remotePath, start, maxBytes);
   }
 
   downloadRemoteFile(plugin, remotePath, localPath, maxBytes) {
     return this.broker.downloadRemoteFile(this.key(plugin), remotePath, localPath, maxBytes);
+  }
+
+  uploadRemoteFile(plugin, localPath, remotePath, precondition) {
+    return this.broker.uploadRemoteFileApproved(this.key(plugin), localPath, remotePath, precondition);
+  }
+
+  writeRemoteFile(plugin, remotePath, content, precondition) {
+    return this.broker.writeRemoteFileApproved(this.key(plugin), remotePath, content, precondition);
+  }
+
+  moveRemotePath(plugin, sourcePath, destinationPath, precondition) {
+    return this.broker.moveRemotePathApproved(this.key(plugin), sourcePath, destinationPath, precondition);
+  }
+
+  deleteRemotePath(plugin, remotePath, precondition) {
+    return this.broker.deleteRemotePathApproved(this.key(plugin), remotePath, precondition);
+  }
+
+  executeApproved(plugin, command, workingDirectory) {
+    return this.broker.executeApproved(this.key(plugin), command, workingDirectory);
   }
 
   async closeAll() {

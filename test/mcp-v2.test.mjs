@@ -4,7 +4,7 @@ import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-test('V2 MCP exposes only bounded structured plugin tools and no arbitrary shell', async (t) => {
+test('V2 MCP exposes unrestricted bounded reads and confirmation-gated server changes', async (t) => {
   const transport = new StdioClientTransport({ command: process.execPath, args: [path.resolve('src/mcp-v2.mjs')], stderr: 'pipe' });
   const client = new Client({ name: 'mcp-v2-test', version: '1.0.0' });
   await client.connect(transport);
@@ -15,13 +15,16 @@ test('V2 MCP exposes only bounded structured plugin tools and no arbitrary shell
   assert.ok(names.includes('server_run_action'));
   assert.ok(names.includes('mysql_query_readonly'));
   assert.ok(names.includes('redis_scan'));
-  assert.ok(!names.some((name) => /shell|execute_command|raw|connect/.test(name)));
+  for (const name of ['server_stat','server_list_directory','server_find_files','server_read_file','server_search_files','server_system_snapshot','server_service_inspect','server_journal_query','server_container_inspect','server_upload_file','server_control_service','server_execute_shell']) assert.ok(names.includes(name));
+  assert.ok(!names.some((name) => /execute_command|raw|connect/.test(name)));
   const serverAction = listed.tools.find((tool) => tool.name === 'server_run_action');
   assert.deepEqual(serverAction.inputSchema.properties.actionId.enum, ['system.summary', 'process.summary', 'network.listen', 'filesystem.usage', 'service.status']);
   assert.equal('command' in serverAction.inputSchema.properties, false);
+  const shell = listed.tools.find((tool) => tool.name === 'server_execute_shell');
+  assert.equal(shell.inputSchema.properties.command.maxLength, 16_384);
+  assert.ok(shell.description.includes('确认'));
   const mysql = listed.tools.find((tool) => tool.name === 'mysql_query_readonly');
   assert.equal('host' in mysql.inputSchema.properties, false);
   assert.equal('database' in mysql.inputSchema.properties, false);
   assert.equal(mysql.inputSchema.properties.sql.maxLength, 65_536);
 });
-

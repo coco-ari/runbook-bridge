@@ -75,7 +75,7 @@ export class EnvironmentContextManager {
       throw new AppError('CAPABILITY_NOT_GRANTED', '该插件不在当前环境上下文中。');
     }
     if (current.context.pluginBindings[pluginInstanceId] !== current.pluginBindings[pluginInstanceId]) {
-      throw new AppError('CONTEXT_STALE', '目标插件配置或操作规则已变化，请重新打开环境。', { pluginInstanceId });
+      throw new AppError('CONTEXT_STALE', '目标插件连接配置已变化，请重新打开环境。', { pluginInstanceId });
     }
     return { context:current.context, plugin, runbook:current.runbook, environment:current.environment };
   }
@@ -83,6 +83,12 @@ export class EnvironmentContextManager {
   invalidateEnvironment(projectId, environmentId) {
     for (const [token, context] of this.contexts) {
       if (context.projectId === projectId && context.environmentId === environmentId) this.contexts.delete(token);
+    }
+  }
+
+  invalidateProject(projectId) {
+    for (const [token, context] of this.contexts) {
+      if (context.projectId === projectId) this.contexts.delete(token);
     }
   }
 

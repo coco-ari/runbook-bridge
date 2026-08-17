@@ -327,10 +327,60 @@ test('SSH broker streams uploads and downloads through SFTP', async (t) => {
   const uploaded = await broker.upload(project.id, contextToken, localArtifact, '/releases/app.jar');
   assert.equal(uploaded.sizeBytes, 16);
   assert.equal(await fs.readFile(path.join(remoteRoot, 'releases', 'app.jar'), 'utf8'), 'fake-jar-content');
+  const localStats = await fs.lstat(localArtifact);
+  const localSha256 = crypto.createHash('sha256').update(await fs.readFile(localArtifact)).digest('hex');
+  await broker.uploadRemoteFileApproved(project.id, localArtifact, '/releases/approved.jar', {
+    local:{size:localStats.size,mtimeMs:localStats.mtimeMs,sha256:localSha256},
+    remote:{exists:false,path:'/releases/approved.jar'},
+  });
+  assert.equal(await fs.readFile(path.join(remoteRoot, 'releases', 'approved.jar'), 'utf8'), 'fake-jar-content');
+  const writeContent='server.port=8080\npassword=visible\n';
+  const writeBuffer=Buffer.from(writeContent);
+  await broker.writeRemoteFileApproved(project.id, '/releases/application.conf', writeContent, {
+    remote:{exists:false,path:'/releases/application.conf'}, bytes:writeBuffer.length,
+    newSha256:crypto.createHash('sha256').update(writeBuffer).digest('hex'),
+  });
+  const sourceSnapshot=await broker.statRemotePath(project.id,'/releases/application.conf');
+  await broker.moveRemotePathApproved(project.id,'/releases/application.conf','/releases/application-moved.conf',{
+    source:sourceSnapshot,destination:{exists:false,path:'/releases/application-moved.conf'},
+  });
+  const movedSnapshot=await broker.statRemotePath(project.id,'/releases/application-moved.conf');
+  await broker.deleteRemotePathApproved(project.id,'/releases/application-moved.conf',{remote:movedSnapshot});
+  await assert.rejects(()=>fs.stat(path.join(remoteRoot,'releases','application-moved.conf')),(error)=>error.code==='ENOENT');
   await fs.writeFile(path.join(remoteRoot, 'logs', 'start.log'), 'Started DemoApplication\n');
   const downloaded = await broker.download(project.id, contextToken, '/logs/start.log');
   assert.equal(await fs.readFile(downloaded.localPath, 'utf8'), 'Started DemoApplication\n');
   assert.equal(downloaded.sizeBytes, 24);
+  await broker.disconnect(project.id);
+});
+
+test('SSH broker reports an unavailable SFTP subsystem without leaking INTERNAL_ERROR', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-sftp-unavailable-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const port = await startSshServer(t);
+  const store = new ProjectStore(root);
+  const project = await store.create({
+    id: 'sftp-unavailable-project',
+    name: 'SFTP 不可用测试',
+    ssh: { host: '127.0.0.1', port, username: 'deploy' },
+    auth: { type: 'password' },
+    proxy: { type: 'direct' },
+  });
+  const broker = new SshBroker(store);
+  let fingerprint;
+  await assert.rejects(
+    () => broker.connect(project.id, { password: 'test-password' }),
+    (error) => {
+      fingerprint = error.details?.fingerprint;
+      return error.code === 'SSH_HOST_KEY_CONFIRM_REQUIRED';
+    },
+  );
+  await broker.connect(project.id, { password: 'test-password', acceptHostKey: fingerprint });
+
+  await assert.rejects(
+    () => broker.listRemoteDirectory(project.id, '/var/log/app'),
+    (error) => error.code === 'SFTP_UNAVAILABLE' && error.code !== 'INTERNAL_ERROR',
+  );
   await broker.disconnect(project.id);
 });
 

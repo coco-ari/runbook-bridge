@@ -91,6 +91,9 @@ test('single plugin controls connect tunnel dependencies and preserve manual dis
   const manager=new EnvironmentConnectionManager(store,runtime,{retryDelays:[]});
   const connected=await manager.connectPlugin('p1','e1','mysql');
   assert.deepEqual(calls.slice(0,2),['connect:server','connect:mysql']);
+  assert.equal(connected.phase,'connected','a deliberately selected subset is healthy, not partially failed');
+  assert.equal(connected.errorCount,0);
+  assert.equal(connected.blockedCount,0);
   assert.equal(connected.plugins.mysql.phase,'connected');
   assert.equal(connected.plugins.redis.reason,'USER_DISCONNECTED');
   const disconnected=await manager.disconnectPlugin('p1','e1','server');

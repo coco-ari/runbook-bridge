@@ -41,12 +41,17 @@ jobs:
       - name: Build Windows installer
         run: pnpm run dist
 
+      - name: Verify packaged application
+        run: |
+          node scripts/verify-package.mjs "dist/win-unpacked/Agent运维工作台.exe"
+          node scripts/packaged-mcp-smoke.mjs "dist/win-unpacked/Agent运维工作台.exe"
+
       - name: Publish GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $installer = Get-ChildItem -LiteralPath dist -Filter "AI运维工具 Setup *.exe" | Select-Object -First 1
+          $installer = Get-ChildItem -LiteralPath dist -Filter "Agent运维工作台 Setup *.exe" | Select-Object -First 1
           if (-not $installer) { throw "Windows installer was not produced." }
           $releaseInstaller = Join-Path $installer.DirectoryName "RunbookBridge-Setup-$($env:GITHUB_REF_NAME.TrimStart('v')).exe"
           Copy-Item -LiteralPath $installer.FullName -Destination $releaseInstaller

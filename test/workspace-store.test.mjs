@@ -38,10 +38,29 @@ test('workspace creates independent environments and database-granular plugins',
   assert.equal(mysql.target.database, 'member');
   assert.equal('databases' in mysql, false);
   assert.equal(mysql.transport.serverPluginInstanceId, server.pluginInstanceId);
+  const [overviewEnvironment] = await store.listEnvironments(project.projectId);
+  assert.deepEqual(overviewEnvironment.resourcePreview.map((item) => item.displayName), ['应用服务器','会员主库']);
+  assert.deepEqual(overviewEnvironment.resourcePreview.map((item) => item.resource), [{host:'10.0.0.10',port:22},{database:'member'}]);
+  assert.doesNotMatch(JSON.stringify(overviewEnvironment.resourcePreview), /auth|password|username|reader/i);
   const gray = await store.createEnvironment(project.projectId, { name: '灰度一组' });
   assert.notEqual(gray.environmentId, east.environmentId);
   assert.equal((await store.readRunbook(project.projectId, gray.environmentId)).empty, false);
   assert.equal((await store.listPlugins(project.projectId, gray.environmentId)).length, 0);
+});
+
+test('projects can be renamed and deleted with all nested workspace data', async (t) => {
+  const { root, store } = await fixture(t);
+  const project = await store.createProject({ name:'旧项目名称', environmentName:'生产环境' });
+  const [environment] = await store.listEnvironments(project.projectId);
+  await store.createPlugin(project.projectId, environment.environmentId, {
+    pluginType:'server', displayName:'应用服务器', target:{host:'127.0.0.1'}, auth:{username:'reader'},
+  });
+  const renamed = await store.updateProject(project.projectId, { name:'新项目名称' }, project.revision);
+  assert.equal(renamed.name, '新项目名称');
+  const deleted = await store.deleteProject(project.projectId);
+  assert.deepEqual({ name:deleted.name, environmentCount:deleted.environmentCount, pluginCount:deleted.pluginCount }, { name:'新项目名称', environmentCount:1, pluginCount:1 });
+  await assert.rejects(() => store.getProject(project.projectId), (error) => error.code === 'PROJECT_NOT_FOUND');
+  await assert.rejects(() => fs.access(path.join(root, 'projects', project.projectId)));
 });
 
 test('a plugin name and type are sufficient to save disconnected drafts', async (t) => {
@@ -123,7 +142,13 @@ test('plugin credentials are encrypted and bound to the exact resource', async (
   await vault.save(mysql, { password: 'very-secret' });
   assert.deepEqual(await vault.load(mysql), { password: 'very-secret' });
   const disk = await fs.readFile(path.join(root, 'credentials', 'plugins.enc.json'), 'utf8');
+  const backup = await fs.readFile(path.join(root, 'credentials', 'plugins.enc.backup.json'), 'utf8');
   assert.equal(disk.includes('very-secret'), false);
+  assert.equal(backup.includes('very-secret'), false);
+  await fs.writeFile(path.join(root, 'credentials', 'plugins.enc.json'), '{broken', 'utf8');
+  assert.deepEqual(await vault.load(mysql), { password: 'very-secret' });
+  assert.deepEqual(await vault.clear(mysql), { cleared:false, preserved:true });
+  assert.deepEqual(await vault.load(mysql), { password: 'very-secret' });
   const changed = { ...mysql, target: { ...mysql.target, host: 'other.internal' } };
   await assert.rejects(() => vault.load(changed), (error) => error.code === 'CREDENTIAL_BINDING_MISMATCH');
 });

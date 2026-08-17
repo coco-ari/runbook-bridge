@@ -42,8 +42,6 @@ export class ConnectionManager {
     try {
       if (config.credentials.remember) {
         await this.credentialStore.save(projectId, relevantCredentials(config, secrets), config);
-      } else {
-        await this.credentialStore.clear(projectId);
       }
     } catch (error) {
       await this.broker.disconnect(projectId, 'credential-save-failed');

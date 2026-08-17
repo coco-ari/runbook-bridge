@@ -29,10 +29,6 @@ export class PluginManager {
   }
 
   async invoke(plugin, capability, args = {}) {
-    const mode = plugin.policy?.[capability];
-    if (!mode) throw new AppError('CAPABILITY_NOT_GRANTED', '插件没有该操作能力。');
-    if (mode === 'deny') throw new AppError('POLICY_DENIED', '该操作已被插件规则禁止。');
-    if (mode === 'confirm' && !args.policyApproved) throw new AppError('CONFIRMATION_REQUIRED', '该操作需要桌面确认。', { capability });
     const runtime = this.runtime(plugin);
     if (plugin.pluginType === 'mysql') {
       if (capability === 'describe') return args.table ? runtime.describeTable(plugin, args.table) : runtime.listTables(plugin, args);

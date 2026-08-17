@@ -15,8 +15,51 @@ export function registerV2Ipc(ipcMain, services) {
   ipcMain.on('v2:network-changed', () => connectionManager.networkChanged('renderer-network-change').catch(() => undefined));
 
   handle('project-list', () => store.listProjects());
-  handle('project-create', (input) => store.createProject(input));
-  handle('project-update', ({ projectId, patch, expectedRevision }) => store.updateProject(projectId, patch, expectedRevision));
+  handle('workspace-overview', async () => {
+    const projects = await store.listProjects();
+    return Promise.all(projects.map(async (project) => {
+      const environments = await store.listEnvironments(project.projectId);
+      return {
+        ...project,
+        environments: environments.map((environment) => {
+          const runtime = connectionManager.snapshot(project.projectId, environment.environmentId);
+          return {
+            ...environment,
+            runtime: {
+              ...runtime,
+              eligibleCount: environment.readyPluginCount,
+              draftCount: environment.pluginCount - environment.readyPluginCount,
+            },
+          };
+        }),
+      };
+    }));
+  });
+  handle('project-create', async (input) => {
+    const value = await store.createProject(input);
+    services.broadcast?.('v2:workspace-changed', { type:'project-created', projectId:value.projectId });
+    return value;
+  });
+  handle('project-update', async ({ projectId, patch, expectedRevision }) => {
+    const value = await store.updateProject(projectId, patch, expectedRevision);
+    services.broadcast?.('v2:workspace-changed', { type:'project-updated', projectId });
+    return value;
+  });
+  handle('project-delete', async ({ projectId }) => {
+    const environments = await store.listEnvironments(projectId);
+    const active = environments.filter((environment) => {
+      const runtime = connectionManager.snapshot(projectId, environment.environmentId);
+      return runtime.desiredConnected || runtime.phase !== 'disconnected';
+    });
+    if (active.length) {
+      throw new AppError('PROJECT_CONNECTED', `请先断开项目中的环境：${active.map((item) => item.name).join('、')}。`);
+    }
+    const value = await store.deleteProject(projectId);
+    contextManager.invalidateProject(projectId);
+    connectionManager.forgetProject(projectId);
+    services.broadcast?.('v2:workspace-changed', { type:'project-deleted', projectId });
+    return { ...value, credentialsPreserved:true };
+  });
   handle('environment-list', (projectId) => store.listEnvironments(projectId));
   handle('environment-create', ({ projectId, input }) => store.createEnvironment(projectId, input));
   handle('environment-update', async ({ projectId, environmentId, patch, expectedRevision }) => {
@@ -74,10 +117,9 @@ export function registerV2Ipc(ipcMain, services) {
     const { plugin } = await store.preflightDeletePlugin(projectId, environmentId, pluginInstanceId);
     const value = await store.deletePlugin(projectId, environmentId, pluginInstanceId);
     await pluginManager.disconnect(plugin, 'plugin-delete').catch(() => undefined);
-    const credentialCleanup = await credentialVault.clear(plugin).catch(() => ({ cleared: false, warning: true }));
     await connectionManager.configurationChanged(projectId, environmentId, pluginInstanceId);
     contextManager.invalidateEnvironment(projectId, environmentId);
-    return { ...value, credentialCleanup };
+    return { ...value, credentialsPreserved:true };
   });
   handle('plugin-credential-status', async ({ projectId, environmentId, pluginInstanceId }) => {
     const plugin = await store.getPlugin(projectId, environmentId, pluginInstanceId);
@@ -115,12 +157,6 @@ export function registerV2Ipc(ipcMain, services) {
       target: { ...(input?.target ?? {}), database: '' },
     }, { projectId, environmentId });
     return mysqlRuntime.listDatabases(transient, { ...savedSecrets, ...providedSecrets });
-  });
-  handle('plugin-policy', async ({ projectId, environmentId, pluginInstanceId, policy, expectedRevision }) => {
-    const value = await store.updatePlugin(projectId, environmentId, pluginInstanceId, { policy }, expectedRevision);
-    contextManager.invalidateEnvironment(projectId, environmentId);
-    await store.appendAudit(projectId, { type:'plugin-policy-updated', environmentId, pluginInstanceId, pluginNameSnapshot:value.displayName, actor:'user', result:'success' }).catch(() => undefined);
-    return value;
   });
   handle('audit-list', ({ projectId, ...filters }) => store.listAudit(projectId, filters));
   handle('confirmation-list', () => confirmationManager.list());

@@ -22,7 +22,7 @@ test('configuration reader redacts common secret formats', () => {
   assert.match(value,/normal=value/);
 });
 
-test('log tools reject configuration file handles and config pagination happens after redaction', async () => {
+test('log tools reject configuration handles while config reads return sensitive content unchanged', async () => {
   const content='username=app\npassword=supersecret\nnormal=value';
   const runtime={readRemoteRange:async()=>({content,startByte:0,endByte:Buffer.byteLength(content),size:Buffer.byteLength(content),truncated:false,mtime:7})};
   const operations=new ServerOperations(runtime,{});
@@ -38,6 +38,73 @@ test('log tools reject configuration file handles and config pagination happens 
     combined+=page.content;
     cursor=page.nextCursor;
   } while(cursor);
-  assert.doesNotMatch(combined,/supersecret/);
-  assert.match(combined,/\[REDACTED\]/);
+  assert.match(combined,/supersecret/);
+  assert.doesNotMatch(combined,/\[REDACTED\]/);
+});
+
+test('recursive file discovery reuses one remote read session', async () => {
+  let sessions=0;
+  let activeListings=0;
+  let maxActiveListings=0;
+  const listed=[];
+  const directories={
+    '/logs':[
+      {name:'api',canonicalPath:'/logs/api',isDirectory:true,isFile:false,isSymbolicLink:false},
+      {name:'manage',canonicalPath:'/logs/manage',isDirectory:true,isFile:false,isSymbolicLink:false},
+      {name:'root.log',canonicalPath:'/logs/root.log',isDirectory:false,isFile:true,isSymbolicLink:false,size:10,mtime:3},
+    ],
+    '/logs/api':[
+      {name:'today.log',canonicalPath:'/logs/api/today.log',isDirectory:false,isFile:true,isSymbolicLink:false,size:20,mtime:4},
+    ],
+    '/logs/manage':[],
+  };
+  const runtime={
+    withRemoteReadSession:async(_plugin,operation)=>{
+      sessions+=1;
+      return operation({
+        listDirectory:async(remotePath)=>{
+          listed.push(remotePath);
+          activeListings+=1;
+          maxActiveListings=Math.max(maxActiveListings,activeListings);
+          await new Promise((resolve)=>setTimeout(resolve,2));
+          activeListings-=1;
+          return directories[remotePath] ?? [];
+        },
+        readRange:async()=>{throw new Error('unexpected read');},
+      });
+    },
+  };
+  const operations=new ServerOperations(runtime,{});
+  const result=await operations.findFiles(plugin,{path:'/logs',pattern:'*.log',maxDepth:2,maxResults:10});
+  assert.equal(sessions,1);
+  assert.equal(maxActiveListings,2);
+  assert.deepEqual(listed,['/logs','/logs/api','/logs/manage']);
+  assert.deepEqual(result.files.map((file)=>file.path),['/logs/root.log','/logs/api/today.log']);
+});
+
+test('file search shares one remote read session across discovery and reads', async () => {
+  let sessions=0;
+  let reads=0;
+  const runtime={
+    withRemoteReadSession:async(_plugin,operation)=>{
+      sessions+=1;
+      return operation({
+        listDirectory:async()=>[
+          {name:'app.log',canonicalPath:'/logs/app.log',isDirectory:false,isFile:true,isSymbolicLink:false,size:25,mtime:5},
+        ],
+        readRange:async(remotePath,start)=>{
+          reads+=1;
+          assert.equal(remotePath,'/logs/app.log');
+          assert.equal(start,0);
+          return {canonicalPath:remotePath,content:'INFO boot\nERROR failed\n',startByte:0,endByte:23,size:23,truncated:false,mtime:5};
+        },
+      });
+    },
+  };
+  const operations=new ServerOperations(runtime,{});
+  const result=await operations.searchFiles(plugin,{path:'/logs',pattern:'*.log',contains:'ERROR',maxDepth:1,maxFiles:5,maxMatches:5,maxScanBytes:65536});
+  assert.equal(sessions,1);
+  assert.equal(reads,1);
+  assert.equal(result.matchCount,1);
+  assert.equal(result.matches[0].text,'ERROR failed');
 });

@@ -14,6 +14,7 @@ const MAX_CONTEXTS_PER_PROJECT = 32;
 const CONTEXT_REUSE_MIN_REMAINING_MS = 60 * 1000;
 const SFTP_CLEANUP_GRACE_MS = 1_000;
 const SFTP_READ_INACTIVITY_MS = 30_000;
+const SFTP_READ_SESSION_TIMEOUT_MS = 120_000;
 const SFTP_READ_CHUNK_BYTES = 64 * 1024;
 const NON_RETRYABLE_RECONNECT_ERRORS = new Set([
   'SSH_AUTH_FAILED',
@@ -109,6 +110,14 @@ function isSftpInterruptedError(error) {
 
 function transferError(error) {
   if (error instanceof AppError) return error;
+  const code = String(error?.code ?? '');
+  const message = String(error?.message ?? '');
+  if (code === '2' || code === 'ENOENT' || /no such file|not found/i.test(message)) {
+    return new AppError('SOURCE_NOT_FOUND', '服务器上的日志或配置路径不存在。');
+  }
+  if (code === '3' || code === 'EACCES' || code === 'EPERM' || /permission denied|access denied/i.test(message)) {
+    return new AppError('SOURCE_ACCESS_DENIED', '当前 SSH 用户无权读取该日志或配置路径。');
+  }
   if (isSftpInterruptedError(error)) {
     return new AppError('TRANSFER_INTERRUPTED', 'SSH/SFTP 连接在文件操作完成前中断，请重新连接后确认结果。');
   }
@@ -216,6 +225,12 @@ function sftpStat(sftp, remotePath) {
   });
 }
 
+function sftpLstat(sftp, remotePath) {
+  return new Promise((resolve, reject) => {
+    sftp.lstat(remotePath, (error, stats) => (error ? reject(error) : resolve(stats)));
+  });
+}
+
 function sftpReaddir(sftp, remotePath) {
   return new Promise((resolve, reject) => {
     sftp.readdir(remotePath, (error, entries) => (error ? reject(error) : resolve(entries)));
@@ -310,6 +325,22 @@ function sftpUnlink(sftp, target) {
   return new Promise((resolve) => sftp.unlink(target, () => resolve()));
 }
 
+function sftpUnlinkStrict(sftp, target) {
+  return new Promise((resolve, reject) => sftp.unlink(target, (error) => (error ? reject(error) : resolve())));
+}
+
+function sftpRmdir(sftp, target) {
+  return new Promise((resolve, reject) => sftp.rmdir(target, (error) => (error ? reject(error) : resolve())));
+}
+
+function sftpWriteFile(sftp, target, content) {
+  return new Promise((resolve, reject) => sftp.writeFile(target, content, (error) => (error ? reject(error) : resolve())));
+}
+
+function sftpChmod(sftp, target, mode) {
+  return new Promise((resolve, reject) => sftp.chmod(target, mode, (error) => (error ? reject(error) : resolve())));
+}
+
 function sftpFastPut(sftp, localPath, remotePath) {
   return new Promise((resolve, reject) => {
     sftp.fastPut(localPath, remotePath, (error) => (error ? reject(error) : resolve()));
@@ -351,6 +382,109 @@ function normalizeRemoteLogPath(value) {
     throw new AppError('PATH_INVALID', '日志文件必须是服务器上的绝对路径。');
   }
   return path.posix.normalize(text);
+}
+
+function normalizeAbsoluteRemotePath(value) {
+  const text = String(value ?? '').trim().replace(/\\/g, '/');
+  if (!text || text.length > 4096 || text.includes('\0') || !text.startsWith('/')) {
+    throw new AppError('PATH_INVALID', '服务器文件必须使用绝对路径。');
+  }
+  return path.posix.normalize(text);
+}
+
+function remoteType(stats) {
+  if (stats.isSymbolicLink?.()) return 'symlink';
+  if (stats.isDirectory?.()) return 'directory';
+  if (stats.isFile?.()) return 'file';
+  return 'special';
+}
+
+function remoteSnapshot(remotePath, stats, canonicalPath = null) {
+  return {
+    exists:true,
+    path:remotePath,
+    canonicalPath,
+    type:remoteType(stats),
+    size:Number(stats.size ?? 0),
+    mtime:Number(stats.mtime ?? 0),
+    mode:Number(stats.mode ?? 0),
+  };
+}
+
+function snapshotMatches(actual, expected) {
+  return Boolean(actual?.exists) === Boolean(expected?.exists)
+    && (!actual?.exists || (actual.type === expected.type && actual.size === expected.size && actual.mtime === expected.mtime && actual.mode === expected.mode));
+}
+
+async function readRemoteSnapshot(sftp, remotePath) {
+  try {
+    const stats = await sftpLstat(sftp, remotePath);
+    let canonicalPath = null;
+    try { canonicalPath = await sftpRealpath(sftp, remotePath); } catch { /* Broken symlink. */ }
+    return remoteSnapshot(remotePath, stats, canonicalPath);
+  } catch (error) {
+    const mapped = transferError(error);
+    if (mapped.code === 'SOURCE_NOT_FOUND') return { exists:false, path:remotePath };
+    throw mapped;
+  }
+}
+
+async function listRemoteDirectoryOnSftp(sftp, remotePath) {
+  const normalized = normalizeAbsoluteRemotePath(remotePath);
+  const canonicalRoot = await sftpRealpath(sftp, normalized);
+  const entries = await sftpReaddir(sftp, canonicalRoot);
+  const bounded = entries.slice(0, 10_000);
+  const result = await Promise.all(bounded.map(async (entry) => {
+    const candidate = path.posix.join(canonicalRoot, entry.filename);
+    let canonical = candidate;
+    if (entry.attrs?.isSymbolicLink?.()) {
+      try { canonical = await sftpRealpath(sftp, candidate); }
+      catch { canonical = null; /* Broken symlink. */ }
+    }
+    return {
+      name: entry.filename,
+      canonicalPath: canonical,
+      size: Number(entry.attrs?.size ?? 0),
+      mtime: Number(entry.attrs?.mtime ?? 0),
+      mode: Number(entry.attrs?.mode ?? 0),
+      isFile: Boolean(entry.attrs?.isFile?.()),
+      isDirectory: Boolean(entry.attrs?.isDirectory?.()),
+      isSymbolicLink: Boolean(entry.attrs?.isSymbolicLink?.()),
+    };
+  }));
+  result.truncated = entries.length > bounded.length;
+  return result;
+}
+
+async function readRemoteRangeOnSftp(sftp, remotePath, start = 0, maxBytes = 262_144, lifecycle = {}) {
+  const normalized = normalizeAbsoluteRemotePath(remotePath);
+  const canonical = await sftpRealpath(sftp, normalized);
+  const stats = await sftpStat(sftp, canonical);
+  if (!stats.isFile()) throw new AppError('SOURCE_NOT_ALLOWED', '目标不是普通文件。');
+  const offset = Math.min(Math.max(Number(start) || 0, 0), Number(stats.size));
+  const limit = Math.min(Math.max(Number(maxBytes) || 1, 1), 1024 * 1024);
+  const buffer = await sftpReadRange(
+    sftp,
+    canonical,
+    offset,
+    Math.min(limit, Number(stats.size) - offset),
+    lifecycle,
+  );
+  return {
+    canonicalPath: canonical,
+    content: buffer.toString('utf8'),
+    startByte: offset,
+    endByte: offset + buffer.length,
+    size: Number(stats.size),
+    truncated: offset + buffer.length < Number(stats.size),
+    mtime: Number(stats.mtime ?? 0),
+  };
+}
+
+async function requireRemoteSnapshot(sftp, remotePath, expected) {
+  const actual = await readRemoteSnapshot(sftp, remotePath);
+  if (!snapshotMatches(actual, expected)) throw new AppError('REMOTE_CHANGED', '服务器目标在确认后发生变化，需要重新确认。', { path:remotePath });
+  return actual;
 }
 
 function clampInteger(value, fallback, minimum, maximum, name) {
@@ -938,68 +1072,45 @@ export class SshBroker {
     });
   }
 
-  async withInternalSftp(projectId, operation) {
+  async withInternalSftp(projectId, operation, { timeoutMs = SFTP_READ_INACTIVITY_MS } = {}) {
     const session = this.requireSession(projectId);
-    const sftp = await new Promise((resolve, reject) => {
-      session.client.sftp((error, value) => (error ? reject(error) : resolve(value)));
+    return withSftp(
+      session.client,
+      (sftp, lifecycle) => operation(sftp, session, lifecycle),
+      {
+        timeoutMs,
+        timeoutCode: 'SFTP_OPERATION_TIMEOUT',
+        timeoutMessage: '服务器文件操作超时，请检查 SFTP 服务和目标路径。',
+      },
+    );
+  }
+
+  async withRemoteReadSession(projectId, operation) {
+    if (typeof operation !== 'function') throw new AppError('INVALID_ARGUMENT', '服务器只读会话操作无效。');
+    return this.withInternalSftp(projectId, async (sftp, _session, lifecycle) => operation({
+      listDirectory: (remotePath) => listRemoteDirectoryOnSftp(sftp, remotePath),
+      readRange: (remotePath, start, maxBytes) => readRemoteRangeOnSftp(sftp, remotePath, start, maxBytes, lifecycle),
+    }), {
+      timeoutMs: SFTP_READ_SESSION_TIMEOUT_MS,
     });
-    try {
-      return await operation(sftp, session);
-    } finally {
-      try {
-        sftp.end();
-      } catch {
-        // The SSH session may already be gone.
-      }
-    }
+  }
+
+  async statRemotePath(projectId, remotePath) {
+    const normalized = normalizeAbsoluteRemotePath(remotePath);
+    return this.withInternalSftp(projectId, async (sftp) => {
+      const snapshot = await readRemoteSnapshot(sftp, normalized);
+      if (!snapshot.exists) throw new AppError('SOURCE_NOT_FOUND', '服务器路径不存在。');
+      return snapshot;
+    });
   }
 
   async listRemoteDirectory(projectId, remotePath) {
-    const normalized = normalizeAbsoluteRemotePath(remotePath);
-    return this.withInternalSftp(projectId, async (sftp) => {
-      const canonicalRoot = await sftpRealpath(sftp, normalized);
-      const entries = await sftpReaddir(sftp, canonicalRoot);
-      return Promise.all(entries.map(async (entry) => {
-        const candidate = path.posix.join(canonicalRoot, entry.filename);
-        let canonical = null;
-        try {
-          canonical = await sftpRealpath(sftp, candidate);
-        } catch {
-          // Broken symlinks are returned as unusable descriptors.
-        }
-        return {
-          name: entry.filename,
-          canonicalPath: canonical,
-          size: Number(entry.attrs?.size ?? 0),
-          mtime: Number(entry.attrs?.mtime ?? 0),
-          mode: Number(entry.attrs?.mode ?? 0),
-          isFile: Boolean(entry.attrs?.isFile?.()),
-          isDirectory: Boolean(entry.attrs?.isDirectory?.()),
-          isSymbolicLink: Boolean(entry.attrs?.isSymbolicLink?.()),
-        };
-      }));
-    });
+    return this.withInternalSftp(projectId, (sftp) => listRemoteDirectoryOnSftp(sftp, remotePath));
   }
 
   async readRemoteRange(projectId, remotePath, start = 0, maxBytes = 262_144) {
-    const normalized = normalizeAbsoluteRemotePath(remotePath);
-    return this.withInternalSftp(projectId, async (sftp) => {
-      const canonical = await sftpRealpath(sftp, normalized);
-      const stats = await sftpStat(sftp, canonical);
-      if (!stats.isFile()) throw new AppError('SOURCE_NOT_ALLOWED', '目标不是普通文件。');
-      const offset = Math.min(Math.max(Number(start) || 0, 0), Number(stats.size));
-      const limit = Math.min(Math.max(Number(maxBytes) || 1, 1), 1024 * 1024);
-      const buffer = await sftpReadRange(sftp, canonical, offset, Math.min(limit, Number(stats.size) - offset));
-      return {
-        canonicalPath: canonical,
-        content: buffer.toString('utf8'),
-        startByte: offset,
-        endByte: offset + buffer.length,
-        size: Number(stats.size),
-        truncated: offset + buffer.length < Number(stats.size),
-        mtime: Number(stats.mtime ?? 0),
-      };
-    });
+    return this.withInternalSftp(projectId, (sftp, _session, lifecycle) =>
+      readRemoteRangeOnSftp(sftp, remotePath, start, maxBytes, lifecycle));
   }
 
   async downloadRemoteFile(projectId, remotePath, localPath, maxBytes = 100 * 1024 * 1024) {
@@ -1021,6 +1132,80 @@ export class SshBroker {
         await fsp.rm(temporary, { force: true }).catch(() => undefined);
         throw error;
       }
+    });
+  }
+
+  async uploadRemoteFileApproved(projectId, localPath, remotePath, precondition) {
+    const source = path.resolve(String(localPath ?? ''));
+    const target = normalizeAbsoluteRemotePath(remotePath);
+    const before = await fsp.lstat(source).catch(() => { throw new AppError('PATH_INVALID', '本地上传文件不存在。'); });
+    if (!before.isFile() || before.isSymbolicLink()) throw new AppError('PATH_INVALID', '只能上传本地普通文件。');
+    if (before.size !== precondition?.local?.size || before.mtimeMs !== precondition?.local?.mtimeMs) {
+      throw new AppError('LOCAL_FILE_CHANGED', '本地文件在确认后发生变化，需要重新确认。');
+    }
+    const sha256 = await hashFile(source);
+    if (sha256 !== precondition?.local?.sha256) throw new AppError('LOCAL_FILE_CHANGED', '本地文件内容在确认后发生变化，需要重新确认。');
+    const temporary = `${target}.part-${crypto.randomBytes(6).toString('hex')}`;
+    await this.withInternalSftp(projectId, async (sftp, _session, lifecycle) => {
+      await requireRemoteSnapshot(sftp, target, precondition.remote);
+      try {
+        await sftpFastPut(sftp, source, temporary);
+        const uploaded = await sftpStat(sftp, temporary);
+        if (Number(uploaded.size) !== before.size) throw new AppError('TRANSFER_INTEGRITY_FAILED', '远端临时文件大小与本地文件不一致。');
+        await requireRemoteSnapshot(sftp, target, precondition.remote);
+        await sftpRename(sftp, temporary, target);
+      } catch (error) {
+        if (!lifecycle.signal.aborted && !isSftpInterruptedError(error)) await sftpUnlink(sftp, temporary);
+        throw error;
+      }
+    }, { timeoutMs:10 * 60 * 1000 });
+    return { localPath:source, remotePath:target, bytes:before.size, sha256 };
+  }
+
+  async writeRemoteFileApproved(projectId, remotePath, content, precondition) {
+    const target = normalizeAbsoluteRemotePath(remotePath);
+    const buffer = Buffer.from(String(content ?? ''), 'utf8');
+    if (buffer.length > 1024 * 1024) throw new AppError('FILE_TOO_LARGE', '单次写入内容不能超过 1 MiB。');
+    const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+    if (sha256 !== precondition?.newSha256 || buffer.length !== precondition?.bytes) throw new AppError('CONFIRMATION_SCOPE_MISMATCH', '写入内容已经变化，需要重新确认。');
+    const temporary = `${target}.part-${crypto.randomBytes(6).toString('hex')}`;
+    await this.withInternalSftp(projectId, async (sftp, _session, lifecycle) => {
+      await requireRemoteSnapshot(sftp, target, precondition.remote);
+      try {
+        await sftpWriteFile(sftp, temporary, buffer);
+        if (precondition.remote.exists && precondition.remote.mode) await sftpChmod(sftp, temporary, precondition.remote.mode & 0o7777);
+        const written = await sftpStat(sftp, temporary);
+        if (Number(written.size) !== buffer.length) throw new AppError('TRANSFER_INTEGRITY_FAILED', '远端临时文件大小与写入内容不一致。');
+        await requireRemoteSnapshot(sftp, target, precondition.remote);
+        await sftpRename(sftp, temporary, target);
+      } catch (error) {
+        if (!lifecycle.signal.aborted && !isSftpInterruptedError(error)) await sftpUnlink(sftp, temporary);
+        throw error;
+      }
+    }, { timeoutMs:2 * 60 * 1000 });
+    return { path:target, bytes:buffer.length, sha256 };
+  }
+
+  async moveRemotePathApproved(projectId, sourcePath, destinationPath, precondition) {
+    const source = normalizeAbsoluteRemotePath(sourcePath);
+    const destination = normalizeAbsoluteRemotePath(destinationPath);
+    return this.withInternalSftp(projectId, async (sftp) => {
+      await requireRemoteSnapshot(sftp, source, precondition.source);
+      await requireRemoteSnapshot(sftp, destination, precondition.destination);
+      await sftpRename(sftp, source, destination);
+      return { sourcePath:source, destinationPath:destination, moved:true };
+    });
+  }
+
+  async deleteRemotePathApproved(projectId, remotePath, precondition) {
+    const target = normalizeAbsoluteRemotePath(remotePath);
+    if (target === '/') throw new AppError('POLICY_DENIED', '禁止删除服务器根目录。');
+    return this.withInternalSftp(projectId, async (sftp) => {
+      const current = await requireRemoteSnapshot(sftp, target, precondition.remote);
+      if (current.type === 'directory') await sftpRmdir(sftp, target);
+      else if (current.type === 'file' || current.type === 'symlink') await sftpUnlinkStrict(sftp, target);
+      else throw new AppError('SOURCE_NOT_ALLOWED', '禁止删除设备、FIFO、Socket 等特殊文件。');
+      return { path:target, deleted:true, type:current.type };
     });
   }
 
@@ -1130,6 +1315,33 @@ export class SshBroker {
       truncated: false,
       auditWarning,
     };
+  }
+
+  async executeApproved(projectId, command, workingDirectory) {
+    const session = this.requireSession(projectId);
+    const config = await this.store.get(projectId);
+    const operationId = crypto.randomUUID();
+    const raw = String(command ?? '').trim();
+    if (!raw || raw.length > 16_384 || raw.includes('\0')) throw new AppError('INVALID_ARGUMENT', '命令为空或过长。');
+    const finalCommand = workingDirectory ? `cd -- ${quotePosix(normalizeAbsoluteRemotePath(workingDirectory))} && ${raw}` : raw;
+    const started = Date.now();
+    try {
+      const result = await execOnClient(session.client, finalCommand, Math.max(1, Number(config.limits.commandTimeoutSeconds ?? 180)) * 1000);
+      const auditWarning = await this.appendAuditSafe(projectId, {
+        type:'execute-approved', operationId, result:'success', command:redactCommand(raw),
+        commandSha256:crypto.createHash('sha256').update(raw).digest('hex'), workingDirectory:workingDirectory || null,
+        exitCode:result.exitCode, durationMs:Date.now() - started,
+      });
+      return { ...result, operationId, stdoutBytes:Buffer.byteLength(result.stdout, 'utf8'), stderrBytes:Buffer.byteLength(result.stderr, 'utf8'), outputLimitBytes:MAX_COMMAND_OUTPUT, truncated:false, auditWarning };
+    } catch (error) {
+      const auditWarning = await this.appendAuditSafe(projectId, {
+        type:'execute-approved', operationId, result:'failed', command:redactCommand(raw),
+        commandSha256:crypto.createHash('sha256').update(raw).digest('hex'), workingDirectory:workingDirectory || null,
+        errorCode:error?.code ?? 'SSH_EXEC_FAILED', durationMs:Date.now() - started,
+      });
+      if (error instanceof AppError) error.details = { ...(error.details ?? {}), operationId, auditWarning };
+      throw error;
+    }
   }
 
   async upload(projectId, contextToken, localPath, remotePath) {
