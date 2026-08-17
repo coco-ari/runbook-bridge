@@ -933,11 +933,12 @@ dialog{width:min(760px,calc(100vw - 32px));max-height:calc(100vh - 32px);padding
  * project-level editing is no longer hidden behind environment management. */
 .rail-expanded .project-tree-head{
   display:grid!important;
-  grid-template-columns:minmax(0,1fr) 58px;
+  grid-template-columns:minmax(0,1fr);
   align-items:center;
   gap:4px;
   padding:0 6px;
 }
+.rail-expanded .project-tree-item.active>.project-tree-head{grid-template-columns:minmax(0,1fr) 58px}
 .rail-expanded .project-tree-head>.rail-button{
   padding:0 8px!important;
   text-align:left;
@@ -949,7 +950,7 @@ dialog{width:min(760px,calc(100vw - 32px));max-height:calc(100vh - 32px);padding
   font-size:10.5px;
   font-weight:400;
 }
-.rail-expanded .rail-project-manage{
+.rail-expanded .project-tree-item.active .rail-project-manage{
   display:flex!important;
   width:58px;
   height:32px;
@@ -1078,6 +1079,7 @@ html.rail-resizing *{cursor:col-resize!important;user-select:none!important}
 .overview-section-head p,
 .overview-panel header p{margin:4px 0 0;color:var(--faint);font-size:10.5px}
 .overview-section-count{color:var(--muted);font-size:11px;white-space:nowrap}
+.overview-section-actions{display:flex;align-items:center;gap:10px;white-space:nowrap}
 .project-overview-primary .environment-overview-list{grid-template-columns:minmax(0,1fr);gap:12px}
 .project-overview-primary .environment-overview-row,
 .project-overview-primary .environment-overview-row:not(:has(.environment-overview-issue)){
@@ -1092,6 +1094,24 @@ html.rail-resizing *{cursor:col-resize!important;user-select:none!important}
   min-height:0;
   padding:16px;
 }
+.project-overview-primary .environment-overview-main{
+  flex-direction:row;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.environment-card-actions{display:inline-flex;align-items:center;gap:2px}
+.environment-card-actions .text-button,
+.environment-card-delete-prompt .text-button{padding:3px 5px;font-size:10px}
+.environment-card-actions .danger,
+.environment-card-delete-prompt .danger{color:var(--red)}
+.environment-card-name{font-size:15px;font-weight:650}
+.environment-card-editor{min-width:min(100%,420px);display:flex;align-items:center;gap:6px}
+.environment-card-editor input{min-width:120px;height:30px;flex:1;padding:0 9px;border:1px solid var(--accent);border-radius:7px;color:var(--text);background:#0c0d10;outline:0}
+.environment-card-editor input:focus{box-shadow:0 0 0 2px rgba(139,140,255,.14)}
+.environment-card-editor .primary{color:#aaa6ff}
+.environment-card-delete-prompt{min-width:0;display:inline-flex;align-items:center;flex-wrap:wrap;gap:4px;color:var(--red);font-size:10px}
+.environment-card-delete-prompt.blocked{color:var(--amber)}
 .environment-overview-resources{
   grid-area:resources;
   overflow:hidden;
@@ -1176,10 +1196,34 @@ html.rail-resizing *{cursor:col-resize!important;user-select:none!important}
   min-height:44px;
   display:flex;
   align-items:center;
+  justify-content:space-between;
+  gap:12px;
   padding:0 12px;
   color:var(--faint);
   font-size:10.5px;
 }
+.environment-resource-add{
+  min-height:26px;
+  flex:0 0 auto;
+  padding:4px 9px;
+  border:1px solid rgba(131,124,246,.24);
+  border-radius:7px;
+  color:#aaa6ff;
+  background:rgba(131,124,246,.07);
+  font-size:10px;
+  font-weight:600;
+}
+.environment-resource-add:hover{border-color:rgba(131,124,246,.46);background:rgba(131,124,246,.14)}
+.environment-resource-add.footer{
+  width:100%;
+  min-height:30px;
+  border:0;
+  border-top:1px solid var(--soft-line);
+  border-radius:0;
+  background:rgba(255,255,255,.012);
+  text-align:left;
+}
+.environment-resource-add.footer:hover{background:rgba(131,124,246,.075)}
 .environment-resource-more{
   width:100%;
   min-height:30px;
@@ -1307,6 +1351,8 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 @media(max-width:620px){
   .project-overview-shell,
   .rail-expanded .project-overview-shell{padding:20px 16px 32px}
+  .overview-section-head{align-items:flex-start}
+  .overview-section-actions{align-items:flex-end;flex-direction:column;gap:6px}
   .project-overview-stats{grid-template-columns:minmax(0,1fr)}
   .project-overview-primary .environment-overview-row,
   .project-overview-primary .environment-overview-row:not(:has(.environment-overview-issue)){

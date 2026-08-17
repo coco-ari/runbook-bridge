@@ -21,6 +21,8 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(html, /id="projectOverviewStats"/);
   assert.match(html, /id="projectOverviewAttention"/);
   assert.match(html, /id="projectOverviewActivity"/);
+  assert.match(html, /id="overviewAddEnvironment"/);
+  assert.doesNotMatch(html, /id="overviewManageEnvironments"/);
   assert.match(html, /id="projectSettingsDialog"/);
   assert.match(html, /id="deleteProjectDialog"/);
   assert.match(html, /data-password-target="pluginPassword"/);
@@ -36,6 +38,10 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(renderer, /PROJECT_RAIL_WIDTH_KEY/);
   assert.match(renderer, /setPointerCapture/);
   assert.match(renderer, /resourcePreview/);
+  assert.match(renderer, /data-overview-rename-environment/);
+  assert.match(renderer, /data-overview-delete-environment/);
+  assert.doesNotMatch(renderer, /data-overview-manage-environment/);
+  assert.match(renderer, /data-overview-add-resource/);
   assert.match(renderer, /handleOverviewPluginRuntimeAction/);
   assert.match(renderer, /function runtimeFacts/);
   assert.match(renderer, /USER_DISCONNECTED/);

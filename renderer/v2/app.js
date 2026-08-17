@@ -33,7 +33,11 @@ const state = {
   projectOverviewActivityProjectId: null,
   projectOverviewActivityEntries: [],
   projectOverviewActivityLoading: false,
+  projectOverviewActivityRefreshing: false,
   projectOverviewActivityGeneration: 0,
+  overviewEditingProjectId: null,
+  overviewEditingEnvironmentId: null,
+  overviewEnvironmentDeletePrompt: null,
   managingProjectId: null,
   managedProjectId: null,
   managedEnvironments: [],
@@ -475,7 +479,8 @@ function renderProjects() {
   renderProjectRailState();
   $('#projectList').innerHTML = state.projects.map((project) => {
     const projectActive = project.projectId === state.projectId;
-    return `<section class="project-tree-item ${projectActive ? 'active' : ''}" data-tree-project="${escapeAttr(project.projectId)}" data-project-state="${escapeAttr(projectState(project.projectId))}"><div class="project-tree-head"><button type="button" class="rail-button ${projectActive ? 'active' : ''}" draggable="true" data-project-id="${escapeAttr(project.projectId)}" aria-label="打开 ${escapeAttr(project.name)} 的项目概览" title="${escapeAttr(project.name)}"><span class="rail-letter">${escapeHtml(projectMark(project))}</span><span class="rail-project-copy"><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(projectSubtitle(project.projectId))}</small></span><span class="project-tooltip">${escapeHtml(project.name)}</span></button><button type="button" class="rail-project-manage" data-project-settings="${escapeAttr(project.projectId)}" aria-label="设置项目 ${escapeAttr(project.name)}" title="项目设置">${icon('edit')}<span>设置</span></button></div></section>`;
+    const settingsAction = projectActive ? `<button type="button" class="rail-project-manage" data-project-settings="${escapeAttr(project.projectId)}" aria-label="设置项目 ${escapeAttr(project.name)}" title="项目设置">${icon('edit')}<span>设置</span></button>` : '';
+    return `<section class="project-tree-item ${projectActive ? 'active' : ''}" data-tree-project="${escapeAttr(project.projectId)}" data-project-state="${escapeAttr(projectState(project.projectId))}"><div class="project-tree-head"><button type="button" class="rail-button ${projectActive ? 'active' : ''}" draggable="true" data-project-id="${escapeAttr(project.projectId)}" aria-label="打开 ${escapeAttr(project.name)} 的项目概览" title="${escapeAttr(project.name)}"><span class="rail-letter">${escapeHtml(projectMark(project))}</span><span class="rail-project-copy"><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(projectSubtitle(project.projectId))}</small></span><span class="project-tooltip">${escapeHtml(project.name)}</span></button>${settingsAction}</div></section>`;
   }).join('');
 }
 
@@ -602,7 +607,8 @@ function resourceAction(resource,phase) {
 function renderEnvironmentResources(projectId,environment,runtime) {
   const resources = Array.isArray(environment.resourcePreview) ? environment.resourcePreview.slice(0,4) : [];
   if (!resources.length) {
-    return `<div class="environment-resource-empty">${environment.pluginCount ? '打开环境查看资源详情' : '此环境尚未添加资源'}</div>`;
+    const message = environment.pluginCount ? '打开环境查看资源详情' : '此环境尚未添加资源';
+    return `<div class="environment-resource-empty"><span>${message}</span><button class="environment-resource-add" data-overview-project-id="${escapeAttr(projectId)}" data-overview-environment-id="${escapeAttr(environment.environmentId)}" data-overview-add-resource>添加资源</button></div>`;
   }
   const rows = resources.map((resource) => {
     const phase = resourcePhase(resource,runtime);
@@ -611,7 +617,9 @@ function renderEnvironmentResources(projectId,environment,runtime) {
     return `<div class="environment-resource-row"><button class="environment-resource-open" data-overview-project-id="${escapeAttr(projectId)}" data-overview-environment-id="${escapeAttr(environment.environmentId)}" data-overview-plugin="${escapeAttr(resource.pluginInstanceId)}"><span class="environment-resource-icon ${escapeAttr(resource.pluginType)}">${icon(typeIcons[resource.pluginType] ?? 'plug')}</span><span class="environment-resource-copy"><strong>${escapeHtml(resource.displayName)}</strong><small>${escapeHtml(resourceTargetText(resource))}</small></span></button><button class="environment-resource-action ${escapeAttr(phase)}" data-overview-project-id="${escapeAttr(projectId)}" data-overview-environment-id="${escapeAttr(environment.environmentId)}" data-overview-plugin-id="${escapeAttr(resource.pluginInstanceId)}" data-overview-plugin-action="${escapeAttr(action.action)}" aria-label="${escapeAttr(`${action.label} ${resource.displayName}`)}" title="${escapeAttr(actionTitle)}" ${action.disabled ? 'disabled' : ''}>${escapeHtml(action.label)}</button></div>`;
   }).join('');
   const remaining = Math.max(0,Number(environment.pluginCount ?? 0) - resources.length);
-  return `${rows}${remaining ? `<button class="environment-resource-more" data-overview-project-id="${escapeAttr(projectId)}" data-overview-enter="${escapeAttr(environment.environmentId)}">还有 ${remaining} 个资源，打开查看</button>` : ''}`;
+  const more = remaining ? `<button class="environment-resource-more" data-overview-project-id="${escapeAttr(projectId)}" data-overview-enter="${escapeAttr(environment.environmentId)}">还有 ${remaining} 个资源，打开查看</button>` : '';
+  const add = `<button class="environment-resource-add footer" data-overview-project-id="${escapeAttr(projectId)}" data-overview-environment-id="${escapeAttr(environment.environmentId)}" data-overview-add-resource>＋ 添加资源</button>`;
+  return `${rows}${more}${add}`;
 }
 
 function projectAttentionItems(projectId) {
@@ -657,7 +665,7 @@ function overviewActivityTime(value) {
 
 function renderProjectOverviewActivity(projectId) {
   const panel = $('#projectOverviewActivity');
-  if (state.projectOverviewActivityLoading && state.projectOverviewActivityProjectId === projectId) {
+  if (state.projectOverviewActivityLoading && !state.projectOverviewActivityRefreshing && state.projectOverviewActivityProjectId === projectId) {
     panel.innerHTML = '<div class="overview-panel-empty">正在读取本机操作记录…</div>';
     return;
   }
@@ -681,9 +689,18 @@ function renderProjectOverviewActivity(projectId) {
 
 async function loadProjectOverviewActivity(projectId,{ force = false } = {}) {
   if (!force && state.projectOverviewActivityProjectId === projectId && !state.projectOverviewActivityLoading) return;
+  const refreshing = Boolean(force && state.projectOverviewActivityProjectId === projectId && state.projectOverviewActivityEntries.length);
+  const overview = $('#projectOverviewView');
+  const preservedScrollTop = refreshing ? overview.scrollTop : null;
   const generation = ++state.projectOverviewActivityGeneration;
   state.projectOverviewActivityProjectId = projectId;
   state.projectOverviewActivityLoading = true;
+  state.projectOverviewActivityRefreshing = refreshing;
+  const refreshButton = $('[data-refresh-overview-activity]');
+  if (refreshButton) {
+    refreshButton.disabled = true;
+    refreshButton.setAttribute('aria-busy','true');
+  }
   if (state.projectId === projectId && state.projectOverviewActive) renderProjectOverviewActivity(projectId);
   try {
     const result = await call(api.listAudit({ projectId,limit:20 }));
@@ -692,8 +709,49 @@ async function loadProjectOverviewActivity(projectId,{ force = false } = {}) {
   } finally {
     if (generation === state.projectOverviewActivityGeneration && state.projectOverviewActivityProjectId === projectId) {
       state.projectOverviewActivityLoading = false;
-      if (state.projectId === projectId && state.projectOverviewActive) renderProjectOverviewActivity(projectId);
+      state.projectOverviewActivityRefreshing = false;
+      if (refreshButton) {
+        refreshButton.disabled = false;
+        refreshButton.setAttribute('aria-busy','false');
+      }
+      if (state.projectId === projectId && state.projectOverviewActive) {
+        renderProjectOverviewActivity(projectId);
+        if (preservedScrollTop !== null) overview.scrollTop = preservedScrollTop;
+      }
     }
+  }
+}
+
+function renderOverviewEnvironmentMain(projectId,environment) {
+  if (state.overviewEditingProjectId === projectId && state.overviewEditingEnvironmentId === environment.environmentId) {
+    return `<form class="environment-card-editor" data-overview-environment-editor="${escapeAttr(environment.environmentId)}" data-overview-project-id="${escapeAttr(projectId)}"><input maxlength="120" autocomplete="off" aria-label="环境名称" value="${escapeAttr(environment.name)}"><button type="button" class="text-button" data-overview-cancel-environment-edit>取消</button><button type="submit" class="text-button primary">保存</button></form>`;
+  }
+  const prompt = state.overviewEnvironmentDeletePrompt?.environmentId === environment.environmentId ? state.overviewEnvironmentDeletePrompt : null;
+  if (prompt) {
+    return `<span class="environment-card-name">${escapeHtml(environment.name)}</span><span class="environment-card-delete-prompt ${prompt.confirmable ? '' : 'blocked'}"><span>${escapeHtml(prompt.message)}</span><button class="text-button" data-overview-cancel-environment-delete>${prompt.confirmable ? '取消' : '关闭'}</button>${prompt.confirmable ? `<button class="text-button danger" data-overview-confirm-delete-environment="${escapeAttr(environment.environmentId)}" data-overview-project-id="${escapeAttr(projectId)}">确认删除</button>` : ''}</span>`;
+  }
+  return `<button class="overview-environment-link" data-overview-project-id="${escapeAttr(projectId)}" data-overview-enter="${escapeAttr(environment.environmentId)}">${escapeHtml(environment.name)}</button><span class="environment-card-actions"><button class="text-button" data-overview-rename-environment="${escapeAttr(environment.environmentId)}">重命名</button><button class="text-button danger" data-overview-delete-environment="${escapeAttr(environment.environmentId)}" data-overview-project-id="${escapeAttr(projectId)}">删除</button></span>`;
+}
+
+async function saveOverviewEnvironmentName(form) {
+  const projectId = form.dataset.overviewProjectId;
+  const environmentId = form.dataset.overviewEnvironmentEditor;
+  const environment = (state.environmentsByProject[projectId] ?? []).find((item) => item.environmentId === environmentId);
+  const name = form.querySelector('input').value.trim();
+  if (!environment) return;
+  if (!name) throw new Error('请输入环境名称。');
+  const submit = form.querySelector('[type="submit"]');
+  submit.disabled = true;
+  try {
+    await call(api.updateEnvironment({projectId,environmentId,patch:{name},expectedRevision:environment.revision}));
+    state.overviewEditingProjectId = null;
+    state.overviewEditingEnvironmentId = null;
+    await refreshWorkspaceOverview({render:false});
+    state.environments = state.environmentsByProject[state.projectId] ?? [];
+    renderShell();
+    toast('环境名称已更新。');
+  } finally {
+    if (submit.isConnected) submit.disabled = false;
   }
 }
 
@@ -716,8 +774,9 @@ function renderProjectOverview() {
       ? `<p class="environment-overview-issue" title="${escapeAttr(issue)}">${escapeHtml(issue)}</p>`
       : '<p class="environment-overview-issue empty" aria-hidden="true">&nbsp;</p>';
     const presentationPhase = runtimePresentationPhase(runtime);
-    return `<article class="environment-overview-row" data-overview-project="${escapeAttr(project.projectId)}" data-overview-environment="${escapeAttr(environment.environmentId)}" data-state="${escapeAttr(presentationPhase)}"><div class="environment-overview-main"><button class="overview-environment-link" data-overview-project-id="${escapeAttr(project.projectId)}" data-overview-enter="${escapeAttr(environment.environmentId)}">${escapeHtml(environment.name)}</button></div><div class="environment-overview-state" data-state="${escapeAttr(presentationPhase)}"><strong>${escapeHtml(environmentStatusText(project.projectId,environment))}</strong></div><dl class="environment-overview-metrics"><div><dt>插件</dt><dd>${pluginCount}</dd></div><div><dt>已配置</dt><dd>${readyCount}/${pluginCount}</dd></div><div><dt>已连接</dt><dd>${connectedCount}/${eligibleCount}</dd></div></dl><div class="environment-overview-resources">${renderEnvironmentResources(project.projectId,environment,runtime)}</div>${issueRow}<div class="environment-overview-actions">${overviewActions(project.projectId,environment)}</div></article>`;
+    return `<article class="environment-overview-row" data-overview-project="${escapeAttr(project.projectId)}" data-overview-environment="${escapeAttr(environment.environmentId)}" data-state="${escapeAttr(presentationPhase)}"><div class="environment-overview-main">${renderOverviewEnvironmentMain(project.projectId,environment)}</div><div class="environment-overview-state" data-state="${escapeAttr(presentationPhase)}"><strong>${escapeHtml(environmentStatusText(project.projectId,environment))}</strong></div><dl class="environment-overview-metrics"><div><dt>插件</dt><dd>${pluginCount}</dd></div><div><dt>已配置</dt><dd>${readyCount}/${pluginCount}</dd></div><div><dt>已连接</dt><dd>${connectedCount}/${eligibleCount}</dd></div></dl><div class="environment-overview-resources">${renderEnvironmentResources(project.projectId,environment,runtime)}</div>${issueRow}<div class="environment-overview-actions">${overviewActions(project.projectId,environment)}</div></article>`;
   }).join('');
+  $('.environment-card-editor')?.addEventListener('submit', (event) => { event.preventDefault(); saveOverviewEnvironmentName(event.currentTarget).catch(showError); });
   if (!state.projectOverviewActivityLoading && state.projectOverviewActivityProjectId !== project.projectId) loadProjectOverviewActivity(project.projectId).catch(showError);
 }
 
@@ -1673,6 +1732,75 @@ document.addEventListener('click', async (event) => {
     }
     if (target.dataset.projectSettings) { openProjectSettings(target.dataset.projectSettings); return; }
     if (target.dataset.manageProjectId) { openEnvironmentManager(target.dataset.manageProjectId); return; }
+    if (target.dataset.overviewRenameEnvironment) {
+      state.overviewEnvironmentDeletePrompt = null;
+      state.overviewEditingProjectId = state.projectId;
+      state.overviewEditingEnvironmentId = target.dataset.overviewRenameEnvironment;
+      renderProjectOverview();
+      requestAnimationFrame(() => { const input = $('.environment-card-editor input'); input?.focus(); input?.select(); });
+      return;
+    }
+    if (target.hasAttribute('data-overview-cancel-environment-edit')) {
+      state.overviewEditingProjectId = null;
+      state.overviewEditingEnvironmentId = null;
+      renderProjectOverview();
+      return;
+    }
+    if (target.dataset.overviewDeleteEnvironment) {
+      const projectId = target.dataset.overviewProjectId;
+      const environments = state.environmentsByProject[projectId] ?? [];
+      const environment = environments.find((item) => item.environmentId === target.dataset.overviewDeleteEnvironment);
+      if (!environment) return;
+      let message = `确定删除“${environment.name}”？`;
+      let confirmable = true;
+      if (environments.length <= 1) { message = '项目至少需要保留一个环境'; confirmable = false; }
+      else if (environment.pluginCount) { message = `请先处理该环境的 ${environment.pluginCount} 个插件`; confirmable = false; }
+      const runtime = state.runtimeByScope[scopeKey(projectId,environment.environmentId)];
+      if (confirmable && (runtime?.desiredConnected || (runtime && runtime.phase !== 'disconnected'))) { message = '请先断开该环境'; confirmable = false; }
+      state.overviewEditingProjectId = null;
+      state.overviewEditingEnvironmentId = null;
+      state.overviewEnvironmentDeletePrompt = {projectId,environmentId:environment.environmentId,message,confirmable};
+      renderProjectOverview();
+      return;
+    }
+    if (target.hasAttribute('data-overview-cancel-environment-delete')) {
+      state.overviewEnvironmentDeletePrompt = null;
+      renderProjectOverview();
+      return;
+    }
+    if (target.dataset.overviewConfirmDeleteEnvironment) {
+      const projectId = target.dataset.overviewProjectId;
+      const environmentId = target.dataset.overviewConfirmDeleteEnvironment;
+      const environments = state.environmentsByProject[projectId] ?? [];
+      const environment = environments.find((item) => item.environmentId === environmentId);
+      const prompt = state.overviewEnvironmentDeletePrompt;
+      if (!environment || prompt?.projectId !== projectId || prompt?.environmentId !== environmentId || !prompt.confirmable) return;
+      const index = environments.findIndex((item) => item.environmentId === environmentId);
+      const nextEnvironmentId = environments[index + 1]?.environmentId ?? environments[index - 1]?.environmentId ?? null;
+      const deletingCurrent = projectId === state.projectId && environmentId === state.environmentId;
+      if (deletingCurrent && !mayLeaveCurrentScope()) return;
+      try {
+        await call(api.deleteEnvironment({projectId,environmentId}));
+        state.overviewEnvironmentDeletePrompt = null;
+        await refreshWorkspaceOverview({render:false});
+        state.environments = state.environmentsByProject[state.projectId] ?? [];
+        if (deletingCurrent) {
+          state.environmentId = nextEnvironmentId;
+          if (nextEnvironmentId) state.projectEnvironmentMemory[projectId] = nextEnvironmentId;
+        }
+        renderShell();
+        toast(`“${environment.name}”已删除。`);
+      } catch (error) {
+        state.overviewEnvironmentDeletePrompt = {projectId,environmentId,message:error?.message ?? '删除失败',confirmable:false};
+        renderProjectOverview();
+      }
+      return;
+    }
+    if (target.hasAttribute('data-overview-add-resource')) {
+      await openScope(target.dataset.overviewProjectId,target.dataset.overviewEnvironmentId);
+      openPluginDialog();
+      return;
+    }
     if (target.dataset.environmentRuntimeAction) {
       target.disabled = true;
       try {
@@ -1861,7 +1989,7 @@ $('#toggleProjectRail').addEventListener('click', () => {
 $('#moreEnvironments').addEventListener('click', openEnvironmentSwitcher);
 $('#confirmationButton').addEventListener('click', () => openConfirmations().catch(showError));
 $('#managerAddEnvironment').addEventListener('click', () => openEnvironmentEditor());
-$('#overviewManageEnvironments').addEventListener('click', () => openEnvironmentManager(state.projectId));
+$('#overviewAddEnvironment').addEventListener('click', () => openEnvironmentManager(state.projectId,null));
 $('#addPlugin').addEventListener('click', () => openPluginDialog());
 $('#pluginAuthType').addEventListener('change', () => {
   const plugin = state.editingPlugin;
