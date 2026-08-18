@@ -2483,14 +2483,18 @@ function populatePluginForm(plugin = null) {
   const validationSession = pluginValidationSession();
   if (validationSession) validationSession.lastDraftSignature = state.pluginFormInitial;
   const restoreCount = state.pluginEditSession?.preEditConnectedSet?.length ?? 0;
+  const actionLayout = pluginFormActionLayout({plugin,persistentDraft,restoreCount});
   $('#pluginEditSafetyStatus').textContent = persistentDraft
     ? `草稿 · ${persistentDraft.credentialState === 'stored-active' ? '密码已安全保存' : persistentDraft.credentialState === 'stored-inactive' ? '密码属于旧身份' : persistentDraft.credentialState === 'unreadable' ? '密码暂时不可读' : '未保存密码'}`
     : plugin
     ? restoreCount ? `已安全断开 · 可恢复 ${restoreCount} 个连接` : '连接编辑门禁已启用'
     : '保存后才会成为正式配置';
   $('#deleteCurrentDraft').classList.toggle('hidden',!persistentDraft);
-  $('#savePluginOnly').classList.toggle('hidden',!plugin || Boolean(persistentDraft));
-  $('#saveAndConnectPlugin').classList.toggle('hidden',Boolean(restoreCount));
+  $('#savePluginDraft').classList.toggle('hidden',!actionLayout.directDraft);
+  $('#pluginDraftOverflow').classList.toggle('hidden',!actionLayout.overflowDraft);
+  $('#pluginDraftOverflow').open = false;
+  $('#savePluginOnly').classList.toggle('hidden',!actionLayout.saveOnly);
+  $('#saveAndConnectPlugin').classList.toggle('hidden',!actionLayout.saveAndConnect);
   $('#savePlugin').textContent = persistentDraft
     ? restoreCount ? `提升并恢复 ${restoreCount} 个连接` : '保存为正式配置'
     : restoreCount ? `保存并恢复 ${restoreCount} 个连接` : '保存配置';
@@ -2916,11 +2920,16 @@ function mergeDiagnosticProgress(diagnostic, plugin, check) {
 }
 
 function completedDiagnostic(diagnostic, result) {
+  const checks = (result.checks?.length ? result.checks : diagnostic.checks ?? []).map((check) => (
+    ['pending','queued'].includes(check.status)
+      ? {...check,status:'success',elapsedMs:check.elapsedMs ?? null}
+      : check
+  ));
   return {
     ...diagnostic,
     status:'success',
     reused:Boolean(result.reused),
-    checks:result.checks?.length ? result.checks : diagnostic.checks,
+    checks,
     totalElapsedMs:result.totalElapsedMs,
     summary:result.reused ? '已通过当前活动连接完成全部检查。' : '临时连接已在检查完成后释放，可以安全保存或继续使用当前配置。',
   };
@@ -3013,6 +3022,16 @@ function renderPluginFormDiagnostic() {
   $('#cancelPluginValidation')?.classList.toggle('hidden',!pending);
 }
 
+function pluginFormActionLayout({plugin,persistentDraft,restoreCount}) {
+  const formalEdit = Boolean(plugin) && !persistentDraft;
+  return {
+    directDraft:!formalEdit,
+    overflowDraft:formalEdit,
+    saveOnly:formalEdit && restoreCount > 0,
+    saveAndConnect:!restoreCount,
+  };
+}
+
 function applyPluginValidationProgress(message) {
   const session = state.pluginEditSession?.editSessionId
     ? state.pluginEditSession
@@ -3036,9 +3055,11 @@ function applyPluginValidationProgress(message) {
   Object.assign(active,correlated);
   if (message.state === 'running') active.state = 'running';
   if (state.pluginFormDiagnostic?.requestId === active.requestId) {
-    state.pluginFormDiagnostic.status = message.state === 'valid' ? 'success'
-      : ['failed','cancelled'].includes(message.state) ? 'failure' : 'pending';
-    if (message.error?.message) state.pluginFormDiagnostic.summary = message.error.message;
+    state.pluginFormDiagnostic = message.state === 'valid'
+      ? completedDiagnostic(state.pluginFormDiagnostic,message.result ?? message)
+      : ['failed','cancelled'].includes(message.state)
+        ? failedDiagnostic(state.pluginFormDiagnostic,message.error ?? {code:'PLUGIN_VALIDATION_FAILED',message:'连接验证失败。'})
+        : {...state.pluginFormDiagnostic,status:'pending'};
     renderPluginFormDiagnostic();
   }
 }
@@ -4549,14 +4570,18 @@ $('#savePlugin').addEventListener('click', async (event) => {
   event.preventDefault();
   await submitPluginForm(event.currentTarget);
 });
-$('#savePluginDraft').addEventListener('click', async (event) => {
-  const button = event.currentTarget;
+async function savePluginDraftFromButton(button) {
   if (button.disabled) return;
   setElementBusy(button,true);
   clearPluginFormError();
   try { await saveDraftAndExit(); }
   catch (error) { if (pluginFormVisible()) showPluginFormError(error); else showError(error); }
   finally { if (button.isConnected) setElementBusy(button,false); }
+}
+$('#savePluginDraft').addEventListener('click', (event) => savePluginDraftFromButton(event.currentTarget));
+$('#savePluginDraftOverflow').addEventListener('click', (event) => {
+  $('#pluginDraftOverflow').open = false;
+  return savePluginDraftFromButton(event.currentTarget);
 });
 $('#deleteCurrentDraft').addEventListener('click',async () => {
   const draft = state.editingDraft;

@@ -121,7 +121,7 @@ handle('v2:plugin-connection-edit-prepare',({projectId,environmentId,pluginInsta
 }));
 handle('v2:plugin-connection-edit-begin',({prepareToken}) => {
   assert.equal(prepareToken,'prepare-smoke');
-  return {editSessionId:'edit-smoke',plugin:plugins.prod.find((plugin) => plugin.pluginInstanceId === 'mysql-member'),affectedIds:['mysql-member'],preEditConnectedSet:[],draftGeneration:0};
+  return {editSessionId:'edit-smoke',plugin:plugins.prod.find((plugin) => plugin.pluginInstanceId === 'mysql-member'),affectedIds:['mysql-member'],preEditConnectedSet:['mysql-member'],draftGeneration:0};
 });
 handle('v2:plugin-draft-validate',(payload) => {
   if (expectDraftSessionValidation) {
@@ -134,11 +134,7 @@ handle('v2:plugin-draft-validate',(payload) => {
     requestId:payload.requestId,operationId:'validation-smoke',purpose:payload.purpose,
     draftGeneration:payload.draftGeneration,sequence:payload.sequence,
     configDigest:'b'.repeat(64),state:'valid',
-    result:{connected:true,diagnosticOnly:true,reused:false,totalElapsedMs:28,checks:[
-      {id:'configuration',label:'配置与依赖',status:'success',detail:'当前配置有效',elapsedMs:4},
-      {id:'connection',label:'路由、MySQL 与认证',status:'success',detail:'数据库路由与身份认证完成',elapsedMs:21},
-      {id:'protocol',label:'SELECT 1 健康检查',status:'success',detail:'数据库返回有效结果',elapsedMs:3},
-    ]},
+    result:{connected:true,diagnosticOnly:true,reused:false,totalElapsedMs:28},
   };
 });
 handle('v2:plugin-validation-cancel',() => ({state:'cancelled'}));
@@ -224,7 +220,7 @@ async function run() {
     window.confirm=()=>true;
     click('[data-action="edit-plugin"]');
     await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginInlineFormHost .plugin-card'),'fenced configuration editor');
-    const configurationInline={readonlyBeforeEdit,noDialog:!document.querySelector('#pluginDialog'),title:document.querySelector('#pluginInlineFormHost').textContent.includes('编辑连接配置'),namePreserved:document.querySelector('#pluginDisplayName').value==='会员业务库',typeCardsHidden:document.querySelector('#pluginTypeChoices').classList.contains('hidden'),credentialUnchanged:document.querySelector('#primaryCredentialStatus').textContent.includes('未修改')};
+    const configurationInline={readonlyBeforeEdit,noDialog:!document.querySelector('#pluginDialog'),title:document.querySelector('#pluginInlineFormHost').textContent.includes('编辑连接配置'),namePreserved:document.querySelector('#pluginDisplayName').value==='会员业务库',typeCardsHidden:document.querySelector('#pluginTypeChoices').classList.contains('hidden'),credentialUnchanged:document.querySelector('#primaryCredentialStatus').textContent.includes('未修改'),draftActionCollapsed:document.querySelector('#savePluginDraft').classList.contains('hidden')&&!document.querySelector('#pluginDraftOverflow').classList.contains('hidden'),visibleFooterActions:document.querySelectorAll('.plugin-form-actions>button:not(.hidden)').length};
     click('#validateMysqlDatabase');
     await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'),'form connection check');
     const formDiagnostic=!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginFormDiagnostic').querySelectorAll('.diagnostic-step.success').length===3&&document.querySelector('#pluginFormDiagnostic').textContent.includes('28 ms');
@@ -246,7 +242,9 @@ async function run() {
     click('#replacePrimaryCredential');
     document.querySelector('#pluginPassword').value='saved-draft-password';
     document.querySelector('#pluginPassword').dispatchEvent(new Event('input',{bubbles:true}));
-    click('#savePluginDraft');
+    click('#pluginDraftOverflow summary');
+    await wait(()=>document.querySelector('#pluginDraftOverflow').open,'open formal draft actions');
+    click('#savePluginDraftOverflow');
     await wait(()=>Boolean(document.querySelector('[data-resource-draft-id]'))&&!document.querySelector('#runbookView').classList.contains('hidden'),'save mysql draft');
     click('[data-resource-draft-id]');
     await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginFormTitle').textContent.includes('继续配置草稿'),'resume mysql draft');
@@ -288,9 +286,11 @@ async function run() {
   })()`);
   const screenshotPath = process.argv.find((value) => /\.png$/i.test(value)) || process.env.AI_OPS_SCREENSHOT_PATH;
   if (screenshotPath) {
-    const screenshotMode = process.env.AI_OPS_SCREENSHOT_MODE === 'confirmation' ? 'confirmation' : 'permissions';
-    await win.webContents.executeJavaScript(`(async()=>{const wait=async(predicate)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: ${screenshotMode} screenshot');await new Promise(resolve=>setTimeout(resolve,20));}};if('${screenshotMode}'==='confirmation'){document.querySelector('#confirmationButton').click();await wait(()=>!document.querySelector('#confirmationView').classList.contains('hidden')&&document.querySelector('#detailTopTabs').textContent.includes('操作确认')&&document.querySelector('[data-confirmation-card]'));}else{document.querySelector('[data-resource-plugin-id="server-app"]').click();await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('应用服务器'));document.querySelector('[data-detail-tab="permissions"]').click();await wait(()=>Boolean(document.querySelector('#pluginDetail .permissions-page')));}})()`);
-    await new Promise((resolve) => setTimeout(resolve,120));
+    const screenshotMode = ['confirmation','editor'].includes(process.env.AI_OPS_SCREENSHOT_MODE) ? process.env.AI_OPS_SCREENSHOT_MODE : 'permissions';
+    const screenshotState = await win.webContents.executeJavaScript(`(async()=>{const wait=async(predicate)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: ${screenshotMode} screenshot');await new Promise(resolve=>setTimeout(resolve,20));}};const click=(selector)=>{const element=document.querySelector(selector);if(!element)throw new Error('missing screenshot target: '+selector);element.click();};if('${screenshotMode}'==='confirmation'){click('#confirmationButton');await wait(()=>!document.querySelector('#confirmationView').classList.contains('hidden')&&document.querySelector('#detailTopTabs').textContent.includes('操作确认')&&document.querySelector('[data-confirmation-card]'));}else if('${screenshotMode}'==='editor'){if(!document.querySelector('[data-resource-plugin-id="mysql-member"]')){click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('[data-resource-plugin-id="mysql-member"]'));}click('[data-resource-plugin-id="mysql-member"]');await wait(()=>document.querySelector('[data-detail-tab="configuration"]')&&document.querySelector('#pluginDetail')?.textContent.includes('会员业务库'));click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('当前为只读详情'));window.confirm=()=>true;click('[data-action="edit-plugin"]');await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden'));click('#validateMysqlDatabase');await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'));document.querySelector('#pluginFormDiagnostic').scrollIntoView({block:'center'});}else{click('[data-resource-plugin-id="server-app"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('应用服务器'));click('[data-detail-tab="permissions"]');await wait(()=>Boolean(document.querySelector('#pluginDetail .permissions-page')));}await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));return{mode:'${screenshotMode}',editorVisible:!document.querySelector('#pluginConfigView').classList.contains('hidden'),successfulChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.success').length,pendingChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.pending, #pluginFormDiagnostic .diagnostic-step.queued').length,visibleFooterActions:document.querySelectorAll('.plugin-form-actions>button:not(.hidden)').length};})()`);
+    if (screenshotMode === 'editor') assert.deepEqual(screenshotState,{mode:'editor',editorVisible:true,successfulChecks:3,pendingChecks:0,visibleFooterActions:3});
+    win.showInactive();
+    await new Promise((resolve) => setTimeout(resolve,250));
     const image = await win.webContents.capturePage();
     fs.writeFileSync(screenshotPath,image.toPNG());
   }
@@ -311,7 +311,7 @@ async function run() {
   assert.equal(result.projectRenameInline,true);
   assert.equal(result.projectDeleteDirect,true);
   assert.deepEqual(result.confirmationCenter,{globalEntry:true,cards:2,shellInitiallyBlocked:true,shellInlineStrongConfirmation:true,executionLinked:true,countAfterApproval:1});
-  assert.deepEqual(result.configurationInline,{readonlyBeforeEdit:true,noDialog:true,title:true,namePreserved:true,typeCardsHidden:true,credentialUnchanged:true});
+  assert.deepEqual(result.configurationInline,{readonlyBeforeEdit:true,noDialog:true,title:true,namePreserved:true,typeCardsHidden:true,credentialUnchanged:true,draftActionCollapsed:true,visibleFooterActions:3});
   assert.equal(result.diagnosticInline,true);
   assert.equal(result.formDiagnostic,true);
   assert.equal(result.basedDraftValidationUsesDraftSession,true);

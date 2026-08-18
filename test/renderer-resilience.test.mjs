@@ -233,6 +233,45 @@ test('plugin-specific validation actions map to dedicated backend purposes', () 
   assert.equal(vm.runInContext("pluginValidationPurpose('redis','validate')",context),'resource-access');
 });
 
+test('successful validation without step details finalizes every visible check', () => {
+  const context = vm.createContext({});
+  install(context,['diagnosticStepDefinitions','createPendingDiagnostic','completedDiagnostic']);
+  context.plugin = {pluginType:'server'};
+  context.pending = vm.runInContext("createPendingDiagnostic(plugin,'validation-1')",context);
+  context.completed = vm.runInContext('completedDiagnostic(pending,{reused:false,totalElapsedMs:12})',context);
+  assert.equal(context.completed.status,'success');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.completed.checks.map((check) => check.status))),
+    ['success','success','success'],
+  );
+});
+
+test('formal plugin edits move draft persistence out of the primary action row', () => {
+  const context = vm.createContext({});
+  install(context,['pluginFormActionLayout']);
+  context.formal = vm.runInContext('pluginFormActionLayout({plugin:{pluginInstanceId:"server"},persistentDraft:null,restoreCount:1})',context);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.formal)),{
+    directDraft:false,
+    overflowDraft:true,
+    saveOnly:true,
+    saveAndConnect:false,
+  });
+  context.formalDisconnected = vm.runInContext('pluginFormActionLayout({plugin:{pluginInstanceId:"server"},persistentDraft:null,restoreCount:0})',context);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.formalDisconnected)),{
+    directDraft:false,
+    overflowDraft:true,
+    saveOnly:false,
+    saveAndConnect:true,
+  });
+  context.newPlugin = vm.runInContext('pluginFormActionLayout({plugin:null,persistentDraft:null,restoreCount:0})',context);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.newPlugin)),{
+    directDraft:true,
+    overflowDraft:false,
+    saveOnly:false,
+    saveAndConnect:true,
+  });
+});
+
 test('only an explicit TLS unsupported result can offer to disable TLS in the current draft', () => {
   const tls = {value:'verifyIdentity'};
   let confirmed = true;

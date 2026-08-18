@@ -1857,6 +1857,13 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 .plugin-form-diagnostic .diagnostic-overview-icon .icon{width:18px;height:18px}
 .plugin-form-diagnostic .diagnostic-step{padding:9px 2px}
 .plugin-form-actions .action-spacer{flex:1}
+.plugin-draft-overflow{position:relative;flex:0 0 auto}
+.plugin-draft-overflow>summary{list-style:none;cursor:pointer}
+.plugin-draft-overflow>summary::-webkit-details-marker{display:none}
+.plugin-draft-overflow[open]>summary{color:var(--text);border-color:rgba(139,140,255,.55);background:rgba(139,140,255,.12)}
+.plugin-draft-overflow-menu{position:absolute;z-index:6;top:calc(100% + 8px);right:0;width:160px;padding:6px;border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:var(--shadow)}
+.plugin-draft-overflow-menu .button{width:100%;justify-content:flex-start;border-color:transparent;background:transparent}
+.plugin-draft-overflow-menu .button:hover{background:rgba(255,255,255,.06)}
 
 @container (max-width:560px){
   .connection-information{padding:16px}
@@ -2161,6 +2168,7 @@ button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:spin .9s linear
   .plugin-inline-form-host .dialog-head{align-items:flex-start;flex-wrap:wrap;min-height:0;padding:14px}
   .plugin-inline-form-host .plugin-dialog-body{padding:18px 14px 22px}
   .plugin-edit-safety-status{width:100%;margin-left:0;text-align:left}
+  .plugin-draft-overflow{position:absolute;top:10px;right:14px}
   .plugin-validation-section{align-items:stretch;flex-direction:column}
   .plugin-validation-actions{justify-content:flex-start}
   .plugin-form-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:12px 14px}
