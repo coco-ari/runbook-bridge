@@ -1,5 +1,10 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+const requestConnectionIntent = (payload) => ipcRenderer.invoke('v2:connection-intent',payload);
+const legacyConnectionSnapshot = (payload) => requestConnectionIntent(payload).then((result) => (
+  result?.ok ? {...result,data:result.data?.snapshot} : result
+));
+
 contextBridge.exposeInMainWorld('aiOps', {
   v2: {
     listProjects: () => ipcRenderer.invoke('v2:project-list'),
@@ -12,13 +17,14 @@ contextBridge.exposeInMainWorld('aiOps', {
     updateEnvironment: (payload) => ipcRenderer.invoke('v2:environment-update', payload),
     deleteEnvironment: (payload) => ipcRenderer.invoke('v2:environment-delete', payload),
     reorderEnvironments: (payload) => ipcRenderer.invoke('v2:environment-reorder', payload),
-    connectEnvironment: (payload) => ipcRenderer.invoke('v2:environment-connect', payload),
-    retryEnvironment: (payload) => ipcRenderer.invoke('v2:environment-retry', payload),
-    disconnectEnvironment: (payload) => ipcRenderer.invoke('v2:environment-disconnect', payload),
-    cancelEnvironment: (payload) => ipcRenderer.invoke('v2:environment-cancel', payload),
+    requestConnectionIntent,
+    connectEnvironment: (payload) => legacyConnectionSnapshot({...payload,intent:'connect',source:'legacy-environment'}),
+    retryEnvironment: (payload) => legacyConnectionSnapshot({...payload,intent:'retry',source:'legacy-environment'}),
+    disconnectEnvironment: (payload) => legacyConnectionSnapshot({...payload,intent:'disconnect',source:'legacy-environment'}),
+    cancelEnvironment: (payload) => legacyConnectionSnapshot({...payload,intent:'cancel',source:'legacy-environment',legacyScope:true}),
     environmentStatus: (payload) => ipcRenderer.invoke('v2:environment-status', payload),
-    connectPlugin: (payload) => ipcRenderer.invoke('v2:plugin-connect', payload),
-    disconnectPlugin: (payload) => ipcRenderer.invoke('v2:plugin-disconnect', payload),
+    connectPlugin: (payload) => legacyConnectionSnapshot({...payload,intent:'connect',source:'legacy-plugin'}),
+    disconnectPlugin: (payload) => legacyConnectionSnapshot({...payload,intent:'disconnect',source:'legacy-plugin'}),
     readRunbook: (payload) => ipcRenderer.invoke('v2:runbook-read', payload),
     saveRunbook: (payload) => ipcRenderer.invoke('v2:runbook-save', payload),
     listPlugins: (payload) => ipcRenderer.invoke('v2:plugin-list', payload),

@@ -256,13 +256,17 @@ test('a pending environment connect can be cancelled and its late response canno
     inFlightOperations:new Map(),
     runtimeMutationGenerations:new Map(),
     api:{
-      connectEnvironment:() => connect.promise,
-      cancelEnvironment:async () => {
-        cancelCalls += 1;
-        return {ok:true,data:{projectId:'project',environmentId:'environment',sequence:2,updatedAt:'2026-01-01T00:00:02.000Z',phase:'disconnected',plugins:{}}};
+      requestConnectionIntent:(payload) => {
+        if (payload.intent === 'connect') return connect.promise;
+        if (payload.intent === 'cancel') {
+          cancelCalls += 1;
+          return Promise.resolve({ok:true,data:{
+            outcome:'cancelled',planId:payload.planId,operationId:null,actions:[],
+            snapshot:{projectId:'project',environmentId:'environment',sequence:2,updatedAt:'2026-01-01T00:00:02.000Z',phase:'disconnected',plugins:{}},
+          }});
+        }
+        throw new Error(`unexpected ${payload.intent}`);
       },
-      disconnectEnvironment:async () => { throw new Error('unexpected disconnect'); },
-      retryEnvironment:async () => { throw new Error('unexpected retry'); },
     },
     environmentFor:() => ({revision:1}),
     renderRuntimeOperationSurfaces:() => {},
@@ -270,7 +274,8 @@ test('a pending environment connect can be cancelled and its late response canno
   });
   install(context,[
     'call','scopeKey','scopeMatches','pluginStateCoordinates','operationInFlight','beginOperation','finishOperation',
-    'runtimeOperationKey','beginRuntimeOperation','runtimeOperationIsLatest','runtimeTimestamp','runtimeSnapshotIsCurrent',
+    'runtimeOperationKey','connectionIntentOwnerKey','newConnectionCommandId','renewRuntimeConnectionIntent',
+    'beginRuntimeOperation','runtimeOperationIsLatest','runtimeTimestamp','runtimeSnapshotIsCurrent',
     'mergeRuntimeSnapshot','acceptRuntimeSnapshot','scopeDiagnosticPending','handleEnvironmentRuntimeAction',
   ]);
   const connectTask = vm.runInContext("handleEnvironmentRuntimeAction('connect','project','environment')",context);
@@ -278,10 +283,35 @@ test('a pending environment connect can be cancelled and its late response canno
   const cancelTask = vm.runInContext("handleEnvironmentRuntimeAction('cancel','project','environment')",context);
   await cancelTask;
   assert.equal(cancelCalls,1);
-  connect.resolve({ok:true,data:{projectId:'project',environmentId:'environment',sequence:99,updatedAt:'2026-01-01T00:00:99.000Z',phase:'connected',plugins:{}}});
+  connect.resolve({ok:true,data:{
+    outcome:'started',planId:'late-plan',operationId:null,actions:[],
+    snapshot:{projectId:'project',environmentId:'environment',sequence:99,updatedAt:'2026-01-01T00:00:99.000Z',phase:'connected',plugins:{}},
+  }});
   await connectTask;
   assert.equal(state.runtime.phase,'disconnected');
   assert.equal(state.runtime.sequence,2);
+});
+
+test('plugin cancel inherits the active Connect All plan and targets the observed node operation', () => {
+  const context = vm.createContext({
+    state:{
+      runtimeByScope:{'project/environment':{plugins:{orders:{phase:'connecting',operationId:'operation-orders'}}}},
+      connectionIntentOwners:{'project/environment:environment':{requestId:'connect-all',planId:'plan-all',operationId:null}},
+    },
+    inFlightOperations:new Map(),
+    runtimeMutationGenerations:new Map(),
+  });
+  install(context,[
+    'scopeKey','operationInFlight','beginOperation','runtimeOperationKey','connectionIntentOwnerKey',
+    'newConnectionCommandId','renewRuntimeConnectionIntent','beginRuntimeOperation',
+  ]);
+
+  const operation = vm.runInContext("beginRuntimeOperation('project','environment','cancel','orders')",context);
+
+  assert.equal(operation.planId,'plan-all');
+  assert.equal(operation.operationId,'operation-orders');
+  assert.equal(operation.ownerInherited,true);
+  assert.equal(operation.ownerKey,'project/environment:environment');
 });
 
 test('duplicate environment delete confirmation sends one request until its UI transaction finishes', async () => {

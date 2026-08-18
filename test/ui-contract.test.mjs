@@ -70,6 +70,8 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.doesNotMatch(renderer, /data-overview-manage-environment/);
   assert.match(renderer, /data-overview-add-resource/);
   assert.match(renderer, /handleOverviewPluginRuntimeAction/);
+  assert.match(renderer, /api\.requestConnectionIntent/);
+  assert.doesNotMatch(renderer, /api\.(?:connectEnvironment|retryEnvironment|disconnectEnvironment|cancelEnvironment|connectPlugin|disconnectPlugin)/);
   assert.match(renderer, /function runtimeFacts/);
   assert.match(renderer, /USER_DISCONNECTED/);
   assert.match(renderer, /连接未连接项/);
@@ -161,6 +163,8 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(preload, /v2:project-delete/);
   assert.match(preload, /v2:plugin-databases/);
   assert.match(preload, /v2:plugin-test-progress/);
+  assert.match(preload, /requestConnectionIntent/);
+  assert.match(preload, /v2:connection-intent/);
   assert.match(preload, /v2:confirmation-list/);
   assert.match(preload, /v2:audit-clear/);
   assert.doesNotMatch(preload, /project:delete/);
@@ -172,6 +176,7 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(ipc, /配置与依赖/);
   assert.match(ipc, /SELECT 1 健康检查/);
   assert.match(ipc, /totalElapsedMs/);
+  assert.match(ipc, /handle\('connection-intent'/);
 
   const packageJson = JSON.parse(manifest);
   assert.ok(packageJson.build.files.includes('renderer/v2/**/*'));

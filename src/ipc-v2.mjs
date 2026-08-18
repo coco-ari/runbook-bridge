@@ -130,6 +130,38 @@ export function registerV2Ipc(ipcMain, services) {
   const handle = (name, fn) => ipcMain.handle(`v2:${name}`, resultHandler(fn));
   const mutationCoordinator = services.mutationCoordinator ?? new WorkspaceMutationCoordinator();
   const assertProjectAvailable = (projectId) => mutationCoordinator.assertProjectAvailable(projectId);
+  const requestConnectionIntent = (payload) => {
+    if (!payload || !['connect','disconnect','retry','cancel'].includes(payload.intent)) {
+      throw new AppError('CONNECTION_INTENT_INVALID','连接意图无效。');
+    }
+    assertProjectAvailable(payload.projectId);
+    if (typeof connectionManager.requestConnectionIntent === 'function') {
+      return connectionManager.requestConnectionIntent(payload);
+    }
+    if (payload.intent === 'connect' && payload.pluginInstanceId) {
+      return Promise.resolve(connectionManager.connectPlugin(payload.projectId,payload.environmentId,payload.pluginInstanceId))
+        .then((snapshot) => ({outcome:'started',planId:payload.planId ?? null,operationId:payload.operationId ?? null,actions:[],snapshot}));
+    }
+    if (payload.intent === 'connect') {
+      return Promise.resolve(connectionManager.connect(payload.projectId,payload.environmentId,payload))
+        .then((snapshot) => ({outcome:'started',planId:payload.planId ?? null,operationId:payload.operationId ?? null,actions:[],snapshot}));
+    }
+    if (payload.intent === 'retry') {
+      return Promise.resolve(connectionManager.retryFailed(payload.projectId,payload.environmentId,payload))
+        .then((snapshot) => ({outcome:'started',planId:payload.planId ?? null,operationId:payload.operationId ?? null,actions:[],snapshot}));
+    }
+    if (payload.intent === 'disconnect' && payload.pluginInstanceId) {
+      return Promise.resolve(connectionManager.disconnectPlugin(payload.projectId,payload.environmentId,payload.pluginInstanceId))
+        .then((snapshot) => ({outcome:'started',planId:payload.planId ?? null,operationId:payload.operationId ?? null,actions:[],snapshot}));
+    }
+    if (payload.intent === 'disconnect') {
+      return Promise.resolve(connectionManager.disconnect(payload.projectId,payload.environmentId))
+        .then((snapshot) => ({outcome:'started',planId:payload.planId ?? null,operationId:payload.operationId ?? null,actions:[],snapshot}));
+    }
+    const snapshot = connectionManager.cancel(payload.projectId,payload.environmentId);
+    return {outcome:'cancelled',planId:payload.planId ?? null,operationId:payload.operationId ?? null,actions:[],snapshot};
+  };
+  const legacyConnectionSnapshot = async (payload) => (await requestConnectionIntent(payload)).snapshot;
   const enqueuePluginMutation = (projectId,environmentId,operation) => (
     mutationCoordinator.enqueueEnvironmentMutation(projectId,environmentId,operation)
   );
@@ -419,22 +451,32 @@ export function registerV2Ipc(ipcMain, services) {
     assertProjectAvailable(projectId);
     return store.reorderEnvironments(projectId, environmentIds, expectedRevision);
   });
-  handle('environment-connect', ({ projectId, environmentId, expectedRevision, secretsByPlugin }) => {
-    assertProjectAvailable(projectId);
-    return connectionManager.connect(projectId, environmentId, { expectedRevision, secretsByPlugin });
-  });
-  handle('environment-retry', ({ projectId, environmentId, secretsByPlugin }) => {
-    assertProjectAvailable(projectId);
-    return connectionManager.retryFailed(projectId, environmentId, { secretsByPlugin });
-  });
-  handle('environment-disconnect', ({ projectId, environmentId }) => connectionManager.disconnect(projectId, environmentId));
-  handle('environment-cancel', ({ projectId, environmentId }) => connectionManager.cancel(projectId, environmentId));
+  handle('connection-intent', (payload) => requestConnectionIntent(payload));
+  handle('environment-connect', ({ projectId, environmentId, expectedRevision, secretsByPlugin }) => legacyConnectionSnapshot({
+    requestId:crypto.randomUUID(),projectId,environmentId,expectedRevision,secretsByPlugin,
+    intent:'connect',source:'legacy-environment',
+  }));
+  handle('environment-retry', ({ projectId, environmentId, secretsByPlugin }) => legacyConnectionSnapshot({
+    requestId:crypto.randomUUID(),projectId,environmentId,secretsByPlugin,
+    intent:'retry',source:'legacy-environment',
+  }));
+  handle('environment-disconnect', ({ projectId, environmentId }) => legacyConnectionSnapshot({
+    requestId:crypto.randomUUID(),projectId,environmentId,intent:'disconnect',source:'legacy-environment',
+  }));
+  handle('environment-cancel', ({ projectId, environmentId }) => legacyConnectionSnapshot({
+    requestId:crypto.randomUUID(),projectId,environmentId,intent:'cancel',source:'legacy-environment',legacyScope:true,
+  }));
   handle('environment-status', ({ projectId, environmentId }) => environmentAssessmentSnapshot(projectId, environmentId));
   handle('plugin-connect', ({ projectId, environmentId, pluginInstanceId }) => {
-    assertProjectAvailable(projectId);
-    return connectionManager.connectPlugin(projectId, environmentId, pluginInstanceId);
+    return legacyConnectionSnapshot({
+      requestId:crypto.randomUUID(),projectId,environmentId,pluginInstanceId,
+      intent:'connect',source:'legacy-plugin',
+    });
   });
-  handle('plugin-disconnect', ({ projectId, environmentId, pluginInstanceId }) => connectionManager.disconnectPlugin(projectId, environmentId, pluginInstanceId));
+  handle('plugin-disconnect', ({ projectId, environmentId, pluginInstanceId }) => legacyConnectionSnapshot({
+    requestId:crypto.randomUUID(),projectId,environmentId,pluginInstanceId,
+    intent:'disconnect',source:'legacy-plugin',
+  }));
   handle('runbook-read', ({ projectId, environmentId }) => store.readRunbook(projectId, environmentId));
   handle('runbook-save', ({ projectId, environmentId, content, expectedRevision }) => enqueuePluginMutation(projectId, environmentId, async () => {
     const value = await store.saveRunbook(projectId, environmentId, content, expectedRevision);

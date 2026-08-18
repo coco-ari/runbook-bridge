@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { AppError, toPublicError } from './errors.mjs';
+import { ConnectionIntentCoordinator } from './connection-intent-coordinator.mjs';
 import { assessEnvironmentSnapshot } from './plugin-readiness-service.mjs';
 
 const RETRY_DELAYS = [1_000, 2_000, 5_000, 10_000, 30_000];
@@ -95,6 +96,9 @@ export class EnvironmentConnectionManager extends EventEmitter {
     this.configurationMutations = new Map();
     this.configurationJournal = configurationJournal;
     this.pluginCatalogs = new Map();
+    this.connectionIntentCoordinator = new ConnectionIntentCoordinator(this);
+    this.connectionPlans = this.connectionIntentCoordinator.plans;
+    this.connectionOperations = this.connectionIntentCoordinator.operations;
   }
 
   async withConnectPermit(operation, { signal = null } = {}) {
@@ -274,7 +278,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
     assessed.connectedCount = ready.filter((plugin) => assessed.plugins[plugin.pluginInstanceId]?.phase === 'connected').length;
     assessed.errorCount = ready.filter((plugin) => assessed.plugins[plugin.pluginInstanceId]?.phase === 'error').length;
     assessed.blockedCount = ready.filter((plugin) => assessed.plugins[plugin.pluginInstanceId]?.phase === 'blocked').length;
-    if (!assessed.desiredConnected && assessed.connectedCount === 0) assessed.phase = 'disconnected';
+    if (!assessed.desiredConnected && assessed.connectedCount === 0 && assessed.phase !== 'disconnecting') assessed.phase = 'disconnected';
     return assessed;
   }
 
@@ -314,6 +318,10 @@ export class EnvironmentConnectionManager extends EventEmitter {
     return this.assessedState(projectId,environmentId);
   }
 
+  requestConnectionIntent(payload) {
+    return this.connectionIntentCoordinator.request(payload);
+  }
+
   async status(projectId, environmentId, {plugins:providedPlugins = null} = {}) {
     const plugins = this.rememberPlugins(
       projectId,
@@ -337,7 +345,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
     state.connectedCount = ready.filter((plugin) => state.plugins[plugin.pluginInstanceId]?.phase === 'connected').length;
     state.errorCount = ready.filter((plugin) => state.plugins[plugin.pluginInstanceId]?.phase === 'error').length;
     state.blockedCount = ready.filter((plugin) => state.plugins[plugin.pluginInstanceId]?.phase === 'blocked').length;
-    if (!state.desiredConnected && state.connectedCount === 0) state.phase = 'disconnected';
+    if (!state.desiredConnected && state.connectedCount === 0 && state.phase !== 'disconnecting') state.phase = 'disconnected';
     return this.assessedState(projectId,environmentId,state,plugins);
   }
 
@@ -349,6 +357,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
   }
 
   async forgetProject(projectId) {
+    this.connectionIntentCoordinator.forgetProject(projectId);
     const prefix = `${projectId}/`;
     for (const [key, controller] of this.connectControllers) {
       if (key.startsWith(prefix)) controller.abort();
@@ -373,6 +382,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
   }
 
   async forgetEnvironment(projectId, environmentId) {
+    this.connectionIntentCoordinator.forgetEnvironment(projectId,environmentId);
     const key = this.key(projectId, environmentId);
     this.abortConnectAttempt(projectId, environmentId);
     this.clearRetry(projectId, environmentId);
@@ -443,7 +453,14 @@ export class EnvironmentConnectionManager extends EventEmitter {
   }
 
   connect(projectId, environmentId, options = {}) {
-    return this.enqueue(projectId, environmentId, () => this.connectPrepared(projectId, environmentId, options));
+    return Promise.resolve(this.requestConnectionIntent({
+      ...options,
+      requestId:options.requestId ?? crypto.randomUUID(),
+      projectId,
+      environmentId,
+      intent:'connect',
+      source:options.source ?? 'legacy-environment',
+    })).then((result) => result.snapshot);
   }
 
   async connectPrepared(projectId, environmentId, { expectedRevision = null, secretsByPlugin = {}, retryOnly = false, retryableOnly = false, preserveIntent = false, actor = 'user' } = {}) {
@@ -544,7 +561,19 @@ export class EnvironmentConnectionManager extends EventEmitter {
     return structuredClone(state);
   }
 
-  connectPlugin(projectId, environmentId, pluginInstanceId) {
+  connectPlugin(projectId, environmentId, pluginInstanceId, options = {}) {
+    return Promise.resolve(this.requestConnectionIntent({
+      ...options,
+      requestId:options.requestId ?? crypto.randomUUID(),
+      projectId,
+      environmentId,
+      pluginInstanceId,
+      intent:options.intent === 'retry' ? 'retry' : 'connect',
+      source:options.source ?? 'legacy-plugin',
+    })).then((result) => result.snapshot);
+  }
+
+  connectPluginLegacy(projectId, environmentId, pluginInstanceId) {
     return this.enqueue(projectId, environmentId, async () => {
       this.assertConfigurationStable(projectId, environmentId);
       const prepared = await this.prepare(projectId, environmentId);
@@ -608,7 +637,19 @@ export class EnvironmentConnectionManager extends EventEmitter {
     });
   }
 
-  disconnectPlugin(projectId, environmentId, pluginInstanceId) {
+  disconnectPlugin(projectId, environmentId, pluginInstanceId, options = {}) {
+    return Promise.resolve(this.requestConnectionIntent({
+      ...options,
+      requestId:options.requestId ?? crypto.randomUUID(),
+      projectId,
+      environmentId,
+      pluginInstanceId,
+      intent:'disconnect',
+      source:options.source ?? 'legacy-plugin',
+    })).then((result) => result.snapshot);
+  }
+
+  disconnectPluginLegacy(projectId, environmentId, pluginInstanceId) {
     this.abortConnectAttempt(projectId, environmentId);
     return this.enqueue(projectId, environmentId, async () => {
       const plugins = await this.workspaceStore.listPlugins(projectId, environmentId);
@@ -661,7 +702,14 @@ export class EnvironmentConnectionManager extends EventEmitter {
   retryFailed(projectId, environmentId, options = {}) {
     const current = this.state(projectId, environmentId);
     if (!current.desiredConnected) throw new AppError('ENVIRONMENT_NOT_CONNECTED', '环境没有保持连接意图。');
-    return this.enqueue(projectId, environmentId, () => this.connectPrepared(projectId, environmentId, { ...options, retryOnly: true, preserveIntent: true }));
+    return Promise.resolve(this.requestConnectionIntent({
+      ...options,
+      requestId:options.requestId ?? crypto.randomUUID(),
+      projectId,
+      environmentId,
+      intent:'retry',
+      source:options.source ?? 'legacy-environment',
+    })).then((result) => result.snapshot);
   }
 
   async cleanupCancelled(projectId, environmentId) {
@@ -686,12 +734,13 @@ export class EnvironmentConnectionManager extends EventEmitter {
     const key = `${this.key(projectId, environmentId)}\u0000${cancelledAttemptId}`;
     const existing = this.cancelCleanups.get(key);
     if (existing) return existing;
+    const queued = this.enqueue(projectId, environmentId, () => this.cleanupCancelled(projectId, environmentId));
     const cleanup = (async () => {
       try {
         // Queue exactly once behind the aborted connect. Any immediate user
         // reconnect is enqueued after this fence, so stale cleanup cannot tear
         // down the newly established session.
-        return await this.enqueue(projectId, environmentId, () => this.cleanupCancelled(projectId, environmentId));
+        return await queued;
       } finally {
         await Promise.resolve(this.workspaceStore.appendAudit?.(projectId, {
           type:'environment-connect-cancelled', projectId, environmentId,
@@ -702,28 +751,28 @@ export class EnvironmentConnectionManager extends EventEmitter {
       .finally(() => {
         if (this.cancelCleanups.get(key) === cleanup) this.cancelCleanups.delete(key);
       });
+    cleanup.queueComplete = queued;
     this.cancelCleanups.set(key, cleanup);
     return cleanup;
   }
 
   cancel(projectId, environmentId) {
-    const current = this.state(projectId, environmentId);
-    if (!['connecting', 'reconnecting'].includes(current.phase)) return structuredClone(current);
-    const cancelledAttemptId = current.connectAttemptId;
-    current.desiredConnected = false;
-    current.intentGeneration += 1;
-    current.connectAttemptId = crypto.randomUUID();
-    current.phase = 'disconnecting';
-    this.abortConnectAttempt(projectId, environmentId);
-    this.clearRetry(projectId, environmentId);
-    this.publish(current);
-    // One immediate dependency-ordered cleanup is sufficient. Late drivers are
-    // still fenced by connectRuntime's pending-result handler.
-    this.ensureCancelledCleanup(projectId, environmentId, cancelledAttemptId).catch(() => undefined);
-    return structuredClone(current);
+    const result = this.requestConnectionIntent({
+      requestId:crypto.randomUUID(),
+      projectId,
+      environmentId,
+      intent:'cancel',
+      source:'legacy-environment',
+      legacyScope:true,
+    });
+    return result.snapshot;
   }
 
   fenceConfigurationChange(projectId, environmentId, changedPluginInstanceId = null) {
+    this.connectionIntentCoordinator.abortScope(projectId,environmentId,{
+      pluginInstanceId:changedPluginInstanceId,
+      force:true,
+    });
     this.abortConnectAttempt(projectId, environmentId);
     const key = this.key(projectId, environmentId);
     if (changedPluginInstanceId && this.states.has(key)) {
@@ -785,6 +834,17 @@ export class EnvironmentConnectionManager extends EventEmitter {
   }
 
   disconnect(projectId, environmentId, reason = 'user') {
+    return Promise.resolve(this.requestConnectionIntent({
+      requestId:crypto.randomUUID(),
+      projectId,
+      environmentId,
+      intent:'disconnect',
+      source:reason === 'user' ? 'legacy-environment' : 'system',
+      reason,
+    })).then((result) => result.snapshot);
+  }
+
+  disconnectLegacy(projectId, environmentId, reason = 'user') {
     this.abortConnectAttempt(projectId, environmentId);
     return this.enqueue(projectId, environmentId, async () => {
       const state = structuredClone(this.state(projectId, environmentId));
@@ -874,6 +934,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
   }
 
   async disconnectForReconnect(projectId, environmentId, reason) {
+    this.connectionIntentCoordinator.abortScope(projectId,environmentId,{force:true});
     this.abortConnectAttempt(projectId, environmentId);
     return this.enqueue(projectId, environmentId, async () => {
       const state = structuredClone(this.state(projectId, environmentId));
@@ -895,6 +956,9 @@ export class EnvironmentConnectionManager extends EventEmitter {
   }
 
   async closeAll() {
+    for (const operation of this.connectionOperations.values()) {
+      this.connectionIntentCoordinator.forceCancelOperation(operation);
+    }
     for (const controller of this.connectControllers.values()) controller.abort();
     this.connectControllers.clear();
     const active = [...this.states.values()].filter((state) => state.desiredConnected || state.phase !== 'disconnected');

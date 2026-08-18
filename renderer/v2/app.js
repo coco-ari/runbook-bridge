@@ -49,6 +49,8 @@ const state = {
   deletingPluginScope: null,
   clearingAuditScope: null,
   runtimeByScope: {},
+  connectionIntentOwners: {},
+  connectionActionsByScope: {},
   environmentsByProject: {},
   projectOverviewActive: false,
   projectOverviewActivityProjectId: null,
@@ -385,6 +387,25 @@ function scopeMatches(scope, { plugin = false } = {}) {
 function runtimeOperationKey(projectId,environmentId,action,pluginInstanceId = null) {
   return `runtime:${scopeKey(projectId,environmentId)}:${pluginInstanceId ?? 'environment'}:${action}`;
 }
+function connectionIntentOwnerKey(projectId,environmentId,pluginInstanceId = null) {
+  return `${scopeKey(projectId,environmentId)}:${pluginInstanceId ?? 'environment'}`;
+}
+function newConnectionCommandId(prefix) {
+  const suffix = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${suffix}`;
+}
+function renewRuntimeConnectionIntent(operation) {
+  operation.requestId = newConnectionCommandId('request');
+  operation.planId = newConnectionCommandId('plan');
+  operation.operationId = null;
+  state.connectionIntentOwners ??= {};
+  state.connectionIntentOwners[operation.ownerKey] = {
+    requestId:operation.requestId,
+    planId:operation.planId,
+    operationId:null,
+  };
+}
 function runtimeActionInFlight(projectId,environmentId,action,pluginInstanceId = null) {
   return operationInFlight(runtimeOperationKey(projectId,environmentId,action,pluginInstanceId));
 }
@@ -395,7 +416,26 @@ function beginRuntimeOperation(projectId,environmentId,action,pluginInstanceId =
   const generationKey = scopeKey(projectId,environmentId);
   const generation = (runtimeMutationGenerations.get(generationKey) ?? 0) + 1;
   runtimeMutationGenerations.set(generationKey,generation);
-  return {operationKey,token,generationKey,generation};
+  state.connectionIntentOwners ??= {};
+  const targetOwnerKey = connectionIntentOwnerKey(projectId,environmentId,pluginInstanceId);
+  const environmentOwnerKey = connectionIntentOwnerKey(projectId,environmentId);
+  const previousOwnerKey = state.connectionIntentOwners[targetOwnerKey]
+    ? targetOwnerKey
+    : action === 'cancel' ? environmentOwnerKey : targetOwnerKey;
+  const previousOwner = state.connectionIntentOwners[targetOwnerKey]
+    ?? (action === 'cancel' ? state.connectionIntentOwners[environmentOwnerKey] : null);
+  const operation = {
+    operationKey,token,generationKey,generation,ownerKey:previousOwnerKey,
+    ownerInherited:previousOwnerKey !== targetOwnerKey,
+    requestId:newConnectionCommandId('request'),
+    planId:previousOwner?.planId ?? null,
+    operationId:previousOwner?.operationId
+      ?? (action === 'cancel' && pluginInstanceId
+        ? state.runtimeByScope?.[scopeKey(projectId,environmentId)]?.plugins?.[pluginInstanceId]?.operationId ?? null
+        : null),
+  };
+  if (['connect','retry','trust-host'].includes(action)) renewRuntimeConnectionIntent(operation);
+  return operation;
 }
 function runtimeOperationIsLatest(operation) {
   return runtimeMutationGenerations.get(operation.generationKey) === operation.generation;
@@ -491,6 +531,14 @@ function acceptRuntimeSnapshot(runtime) {
   if (!runtimeSnapshotIsCurrent(runtime,current)) return false;
   const merged = mergeRuntimeSnapshot(runtime,current);
   state.runtimeByScope[key] = merged;
+  const transitional = Object.values(merged.plugins ?? {}).some((plugin) => (
+    ['connecting','reconnecting','waitingDependency','disconnecting'].includes(plugin.phase)
+  ));
+  if (!transitional) {
+    for (const ownerKey of Object.keys(state.connectionIntentOwners ?? {})) {
+      if (ownerKey.startsWith(`${key}:`)) delete state.connectionIntentOwners[ownerKey];
+    }
+  }
   if (scopeMatches(runtime) && !state.projectOverviewActive) state.runtime = mergeRuntimeSnapshot(runtime,state.runtime ?? current);
   return true;
 }
@@ -600,6 +648,10 @@ function applyWorkspaceOverview(projects) {
   const validProjectIds = new Set(ordered.map((project) => project.projectId));
   const validScopeKeys = new Set(ordered.flatMap((project) => (project.environments ?? []).map((environment) => scopeKey(project.projectId,environment.environmentId))));
   for (const key of Object.keys(state.runtimeByScope)) if (!validScopeKeys.has(key)) delete state.runtimeByScope[key];
+  for (const key of Object.keys(state.connectionActionsByScope ?? {})) if (!validScopeKeys.has(key)) delete state.connectionActionsByScope[key];
+  for (const key of Object.keys(state.connectionIntentOwners ?? {})) {
+    if (![...validScopeKeys].some((scope) => key.startsWith(`${scope}:`))) delete state.connectionIntentOwners[key];
+  }
   for (const key of runtimeMutationGenerations.keys()) if (!validScopeKeys.has(key)) runtimeMutationGenerations.delete(key);
   for (const projectId of environmentMetadataGenerations.keys()) if (!validProjectIds.has(projectId)) environmentMetadataGenerations.delete(projectId);
   for (const key of Object.keys(state.scopePluginMemory)) if (!validScopeKeys.has(key)) delete state.scopePluginMemory[key];
@@ -3035,26 +3087,39 @@ async function handleEnvironmentRuntimeAction(action,projectId,environmentId) {
   if (!operation) return;
   renderRuntimeOperationSurfaces(projectId,environmentId);
   try {
-    let runtime;
-    if (action === 'cancel') runtime = await call(api.cancelEnvironment(scope));
-    else if (action === 'disconnect') runtime = await call(api.disconnectEnvironment(scope));
-    else if (action === 'retry') runtime = await call(api.retryEnvironment(scope));
+    let result;
+    const request = () => api.requestConnectionIntent({
+      ...scope,
+      requestId:operation.requestId,
+      planId:operation.planId,
+      operationId:operation.operationId,
+      intent:action,
+      source:'renderer-environment',
+      ...(action === 'connect' ? {expectedRevision:environmentFor(projectId,environmentId)?.revision} : {}),
+    });
+    if (action === 'cancel' || action === 'disconnect' || action === 'retry') result = await call(request());
     else if (action === 'connect') {
       try {
-        runtime = await call(api.connectEnvironment({...scope,expectedRevision:environment.revision}));
+        result = await call(request());
       } catch (error) {
         if (error.code !== 'CONFIG_REVISION_CONFLICT') throw error;
         await refreshWorkspaceOverview({render:false});
         if (!runtimeOperationIsLatest(operation)) return;
         const current = environmentFor(projectId,environmentId);
         if (!current) throw new Error('目标环境已经不存在，请刷新后重试。');
-        runtime = await call(api.connectEnvironment({...scope,expectedRevision:current.revision}));
+        renewRuntimeConnectionIntent(operation);
+        result = await call(request());
       }
     } else return;
     if (runtimeOperationIsLatest(operation)) {
+      const runtime = result.snapshot;
+      state.connectionActionsByScope ??= {};
+      state.connectionActionsByScope[scopeKey(projectId,environmentId)] = result.actions ?? [];
       acceptRuntimeSnapshot({...runtime,projectId:runtime.projectId ?? projectId,environmentId:runtime.environmentId ?? environmentId});
     }
   } finally {
+    const owner = state.connectionIntentOwners?.[operation.ownerKey];
+    if (!operation.ownerInherited && owner?.planId === operation.planId && runtimeOperationIsLatest(operation)) delete state.connectionIntentOwners[operation.ownerKey];
     finishOperation(operation.operationKey,operation.token);
     renderRuntimeOperationSurfaces(projectId,environmentId);
   }
@@ -3072,23 +3137,36 @@ async function handleOverviewPluginRuntimeAction(action,projectId,environmentId,
   if (!operation) return;
   renderRuntimeOperationSurfaces(projectId,environmentId);
   try {
-    let runtime;
+    let result;
+    const request = (intent) => api.requestConnectionIntent({
+      ...scope,
+      requestId:operation.requestId,
+      planId:operation.planId,
+      operationId:operation.operationId,
+      intent,
+      source:'renderer-plugin',
+    });
     if (action === 'trust-host') {
       const currentRuntime = state.runtimeByScope[scopeKey(projectId,environmentId)] ?? {};
       if (!await confirmRuntimeObservedHostKey(resource,currentRuntime.plugins?.[pluginInstanceId],scope,operation)) return;
       if (!runtimeOperationIsLatest(operation)) return;
-      runtime = await call(api.connectPlugin(scope));
+      renewRuntimeConnectionIntent(operation);
+      result = await call(request('connect'));
     } else {
-      runtime = action === 'disconnect'
-        ? await call(api.disconnectPlugin(scope))
-        : await call(api.connectPlugin(scope));
+      const intent = ['disconnect','cancel','retry'].includes(action) ? action : 'connect';
+      result = await call(request(intent));
       if (!runtimeOperationIsLatest(operation)) return;
+      let runtime = result.snapshot;
       if (action !== 'disconnect' && await confirmRuntimeObservedHostKey(resource,runtime.plugins?.[pluginInstanceId],scope,operation)) {
         if (!runtimeOperationIsLatest(operation)) return;
-        runtime = await call(api.connectPlugin(scope));
+        renewRuntimeConnectionIntent(operation);
+        result = await call(request('connect'));
       }
     }
     if (!runtimeOperationIsLatest(operation)) return;
+    const runtime = result.snapshot;
+    state.connectionActionsByScope ??= {};
+    state.connectionActionsByScope[scopeKey(projectId,environmentId)] = result.actions ?? [];
     const normalizedRuntime = {...runtime,projectId:runtime.projectId ?? projectId,environmentId:runtime.environmentId ?? environmentId};
     acceptRuntimeSnapshot(normalizedRuntime);
     const latestRuntime = state.runtimeByScope[scopeKey(projectId,environmentId)] ?? normalizedRuntime;
@@ -3097,6 +3175,8 @@ async function handleOverviewPluginRuntimeAction(action,projectId,environmentId,
     else toast(`${resource.displayName}：${phase === 'connected' ? '已连接' : '连接失败'}`,phase !== 'connected');
     loadProjectOverviewActivity(projectId,{force:true}).catch(() => undefined);
   } finally {
+    const owner = state.connectionIntentOwners?.[operation.ownerKey];
+    if (!operation.ownerInherited && owner?.planId === operation.planId && runtimeOperationIsLatest(operation)) delete state.connectionIntentOwners[operation.ownerKey];
     finishOperation(operation.operationKey,operation.token);
     renderRuntimeOperationSurfaces(projectId,environmentId);
   }
