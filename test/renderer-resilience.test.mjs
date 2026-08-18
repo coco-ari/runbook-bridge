@@ -589,13 +589,13 @@ test('environment rename no-op skips persistence and a late save cannot close a 
   };
   let payload = null;
   let refreshes = 0;
-  let resourceRenders = 0;
+  let informationRenders = 0;
   let shellRenders = 0;
   const context = vm.createContext({
     state,
     api:{updateEnvironment:(value) => { payload = JSON.parse(JSON.stringify(value)); return update.promise; }},
     refreshWorkspaceOverview:async () => { refreshes += 1; },
-    renderResourcePane:() => { resourceRenders += 1; },
+    renderScopeInformation:() => { informationRenders += 1; },
     renderShell:() => { shellRenders += 1; },
     toast:() => {},
   });
@@ -605,7 +605,7 @@ test('environment rename no-op skips persistence and a late save cannot close a 
   await vm.runInContext('saveResourceEnvironmentName(form)',context);
   assert.equal(payload,null);
   assert.equal(refreshes,0);
-  assert.equal(resourceRenders,1);
+  assert.equal(informationRenders,1);
   assert.equal(state.resourceEnvironmentEditor,null);
 
   state.resourceEnvironmentEditor = {projectId:'project',environmentId:'environment',name:'Renamed',sequence:2};

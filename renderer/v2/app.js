@@ -76,8 +76,9 @@ const state = {
   detailPaneCollapsed: (() => { try { return localStorage.getItem('ai-ops-detail-pane-collapsed') === '1'; } catch { return false; } })(),
   selectionKind: 'environment',
   expandedEnvironmentId: null,
-  environmentDetailTab: 'runbook',
+  environmentDetailTab: 'information',
   projectTitleEditing: false,
+  projectTitleDraft: '',
   creatingEnvironmentInline: false,
   resourceEnvironmentEditor: null,
   resourceEnvironmentDeletePrompt: null,
@@ -1391,14 +1392,7 @@ function resourceEnvironmentDeletePromptFor(projectId,environmentId) {
 
 function renderResourceEnvironmentEditor(projectId,environment,editor) {
   const environmentLabel = escapeAttr(environment.name);
-  return `<form class="resource-environment-rename-form" data-resource-environment-editor="${escapeAttr(environment.environmentId)}" data-resource-project-id="${escapeAttr(projectId)}" novalidate><span class="resource-environment-icon">${icon('environment')}</span><label><span class="sr-only">环境名称</span><input maxlength="120" autocomplete="off" aria-label="环境名称" value="${escapeAttr(editor.name)}"></label><span class="resource-environment-rename-error" role="alert"></span><button type="submit" class="square-button resource-environment-rename-save" title="保存" aria-label="保存${environmentLabel}的新名称">${icon('check')}</button><button type="button" class="square-button resource-environment-rename-cancel" data-resource-cancel-environment-rename title="取消" aria-label="取消重命名${environmentLabel}">${icon('x')}</button></form>`;
-}
-
-function renderResourceEnvironmentDeletePrompt(projectId,environment,prompt) {
-  const environmentId = escapeAttr(environment.environmentId);
-  const environmentLabel = escapeAttr(environment.name);
-  const deleting = operationInFlight(environmentDeleteOperationKey(projectId,environment.environmentId));
-  return `<div class="resource-environment-delete-prompt ${prompt.confirmable ? '' : 'blocked'}" data-resource-environment-delete-prompt="${environmentId}"><span class="resource-environment-icon">${icon('trash')}</span><span class="resource-environment-delete-copy"><strong>${escapeHtml(environment.name)}</strong><small>${escapeHtml(prompt.message)}</small></span><button type="button" class="square-button" data-resource-cancel-environment-delete title="${prompt.confirmable ? '取消' : '关闭'}" aria-label="${prompt.confirmable ? '取消删除' : '关闭提示'}${environmentLabel}">${icon('x')}</button>${prompt.confirmable ? `<button type="button" class="square-button danger-subtle" data-resource-confirm-environment-delete="${environmentId}" data-resource-project-id="${escapeAttr(projectId)}" title="确认删除" aria-label="确认删除${environmentLabel}"${deleting ? ' disabled aria-busy="true"' : ''}>${icon('trash')}</button>` : ''}</div>`;
+  return `<form class="scope-information-editor resource-environment-rename-form" data-resource-environment-editor="${escapeAttr(environment.environmentId)}" data-resource-project-id="${escapeAttr(projectId)}" novalidate><label class="field full"><span>环境名称</span><input maxlength="120" autocomplete="off" aria-label="环境名称" value="${escapeAttr(editor.name)}"><span class="resource-environment-rename-error field-error" role="alert"></span></label><div class="scope-information-editor-actions"><button type="button" class="button" data-resource-cancel-environment-rename>取消</button><button type="submit" class="button primary" aria-label="保存${environmentLabel}的新名称">保存修改</button></div></form>`;
 }
 
 function renderResourceEnvironment(projectId,environment) {
@@ -1424,11 +1418,7 @@ function renderResourceEnvironment(projectId,environment) {
   const approvalScope = confirmationScopeData('environment',projectId,environment.environmentId);
   const approvals = confirmationCount(approvalScope);
   const approvalButton = approvals ? `<button class="scope-confirmation-badge" ${confirmationScopeAttributes(approvalScope)} title="查看${environment.name}的${approvals}项待确认操作" aria-label="${environment.name}有${approvals}项操作待确认">${icon('shield')}<b>${approvals}</b></button>` : '';
-  const editor = resourceEnvironmentEditorFor(projectId,environment.environmentId);
-  const deletePrompt = resourceEnvironmentDeletePromptFor(projectId,environment.environmentId);
-  const headerContent = editor ? renderResourceEnvironmentEditor(projectId,environment,editor)
-    : deletePrompt ? renderResourceEnvironmentDeletePrompt(projectId,environment,deletePrompt)
-    : `<button class="resource-environment-select" data-resource-environment-id="${escapeAttr(environment.environmentId)}" aria-expanded="${expanded}" title="点击${expanded ? '收起' : '展开'}${environmentLabel}"><span class="resource-environment-icon">${icon('environment')}</span><span class="resource-environment-copy"><strong>${escapeHtml(environment.name)}</strong><small>${Number(environment.pluginCount ?? 0)} 个插件</small></span></button><span class="resource-environment-status" data-state="${escapeAttr(presentationPhase)}"><i></i><span>${escapeHtml(connectionLabel)}</span></span>${approvalButton}<button class="button small resource-runtime-action ${action.primary ? 'primary' : ''} ${action.action === 'disconnect' ? 'danger-subtle' : ''}" data-environment-runtime-action="${escapeAttr(action.action)}" data-action-project-id="${escapeAttr(projectId)}" data-action-environment-id="${escapeAttr(environment.environmentId)}" ${action.disabled || busy || diagnosticPending ? 'disabled aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${escapeHtml(environmentActionLabel(action))}</button><button type="button" class="square-button resource-rename" data-resource-rename-environment="${escapeAttr(environment.environmentId)}" title="重命名环境" aria-label="重命名${environmentLabel}">${icon('edit')}</button><button type="button" class="square-button danger-subtle resource-delete" data-resource-delete-environment="${escapeAttr(environment.environmentId)}" title="删除环境" aria-label="删除${environmentLabel}">${icon('trash')}</button>`;
+  const headerContent = `<button class="resource-environment-select" data-resource-environment-id="${escapeAttr(environment.environmentId)}" aria-expanded="${expanded}" title="点击${expanded ? '收起' : '展开'}${environmentLabel}"><span class="resource-environment-icon">${icon('environment')}</span><span class="resource-environment-copy"><strong>${escapeHtml(environment.name)}</strong><small>${Number(environment.pluginCount ?? 0)} 个插件</small></span></button><span class="resource-environment-status" data-state="${escapeAttr(presentationPhase)}"><i></i><span>${escapeHtml(connectionLabel)}</span></span>${approvalButton}<button class="button small resource-runtime-action ${action.primary ? 'primary' : ''} ${action.action === 'disconnect' ? 'danger-subtle' : ''}" data-environment-runtime-action="${escapeAttr(action.action)}" data-action-project-id="${escapeAttr(projectId)}" data-action-environment-id="${escapeAttr(environment.environmentId)}" ${action.disabled || busy || diagnosticPending ? 'disabled aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${escapeHtml(environmentActionLabel(action))}</button>`;
   return `<article class="resource-environment-card ${expanded ? 'expanded' : ''} ${selectedEnvironment ? 'selected' : ''}" data-state="${escapeAttr(presentationPhase)}"><header class="resource-environment-head">${headerContent}</header>${body}</article>`;
 }
 
@@ -1442,11 +1432,6 @@ function renderInlineEnvironmentCreate(project) {
 function renderResourcePane() {
   const project = activeProject();
   $('#projectTitle').textContent = project?.name ?? '选择项目';
-  $('#projectTitle').classList.toggle('hidden',Boolean(project && state.projectTitleEditing));
-  $('#projectTitleEditor').classList.toggle('hidden',!project || !state.projectTitleEditing);
-  if (project && state.projectTitleEditing && document.activeElement !== $('#projectTitleInput')) $('#projectTitleInput').value = project.name;
-  $('#projectSettingsShortcut').disabled = !project;
-  $('#projectDeleteShortcut').disabled = !project;
   renderInlineEnvironmentCreate(project);
   if (!project) {
     $('#projectResourceSummary').textContent = '0 个环境 · 0 个插件';
@@ -1503,18 +1488,59 @@ async function saveInlineEnvironmentCreate(event) {
   }
 }
 
+function renderProjectInformation(project) {
+  const summary = projectSummary(project.projectId);
+  const title = state.projectTitleEditing
+    ? `<form id="projectTitleEditor" class="scope-information-editor" novalidate><label class="field full"><span>项目名称</span><input id="projectTitleInput" maxlength="120" autocomplete="off" aria-label="项目名称" value="${escapeAttr(state.projectTitleDraft || project.name)}"><span id="projectTitleError" class="field-error" role="alert"></span></label><div class="scope-information-editor-actions"><button id="cancelProjectTitle" type="button" class="button">取消</button><button id="saveProjectTitle" type="submit" class="button primary">保存修改</button></div></form>`
+    : `<div class="scope-information-value"><div><span>项目名称</span><strong>${escapeHtml(project.name)}</strong></div><button id="projectSettingsShortcut" type="button" class="button">${icon('edit')}修改名称</button></div>`;
+  return `<div class="scope-information-page"><header class="scope-information-head"><span class="scope-information-icon">${icon('plan')}</span><div><span class="scope-information-kind">项目</span><h1>项目信息</h1><p>${escapeHtml(project.name)}</p></div></header><section class="scope-information-section"><h2>基本信息</h2>${title}<dl class="scope-information-facts"><div><dt>环境</dt><dd>${summary.environments.length}</dd></div><div><dt>插件</dt><dd>${summary.plugins}</dd></div><div><dt>已连接环境</dt><dd>${summary.connected}</dd></div></dl></section><section class="scope-information-section scope-information-danger"><div><h2>删除项目</h2><p>永久删除项目、环境、插件配置和运维说明。本机加密凭据继续保留。</p></div><button id="projectDeleteShortcut" type="button" class="button danger-subtle">${icon('trash')}删除项目</button></section></div>`;
+}
+
+function renderEnvironmentDeleteDecision(projectId,environment,prompt) {
+  const deleting = operationInFlight(environmentDeleteOperationKey(projectId,environment.environmentId));
+  return `<div class="scope-delete-decision ${prompt.confirmable ? '' : 'blocked'}" data-resource-environment-delete-prompt="${escapeAttr(environment.environmentId)}"><div><strong>${escapeHtml(prompt.message)}</strong><small>${prompt.confirmable ? '删除后本机加密凭据继续保留。' : '处理完成后再删除此环境。'}</small></div><div><button type="button" class="button" data-resource-cancel-environment-delete>${prompt.confirmable ? '取消' : '关闭'}</button>${prompt.confirmable ? `<button type="button" class="button danger" data-resource-confirm-environment-delete="${escapeAttr(environment.environmentId)}" data-resource-project-id="${escapeAttr(projectId)}"${deleting ? ' disabled aria-busy="true"' : ''}>确认删除</button>` : ''}</div></div>`;
+}
+
+function renderEnvironmentInformation(project,environment) {
+  const runtime = environmentRuntime(project.projectId,environment.environmentId);
+  const facts = runtimeFacts(runtime);
+  const editor = resourceEnvironmentEditorFor(project.projectId,environment.environmentId);
+  const prompt = resourceEnvironmentDeletePromptFor(project.projectId,environment.environmentId);
+  const title = editor
+    ? renderResourceEnvironmentEditor(project.projectId,environment,editor)
+    : `<div class="scope-information-value"><div><span>环境名称</span><strong>${escapeHtml(environment.name)}</strong></div><button type="button" class="button" data-resource-rename-environment="${escapeAttr(environment.environmentId)}">${icon('edit')}修改名称</button></div>`;
+  const danger = prompt
+    ? renderEnvironmentDeleteDecision(project.projectId,environment,prompt)
+    : `<button type="button" class="button danger-subtle" data-resource-delete-environment="${escapeAttr(environment.environmentId)}">${icon('trash')}删除环境</button>`;
+  return `<div class="scope-information-page"><header class="scope-information-head"><span class="scope-information-icon">${icon('environment')}</span><div><span class="scope-information-kind">环境</span><h1>环境信息</h1><p>${escapeHtml(project.name)} · ${escapeHtml(environment.name)}</p></div></header><section class="scope-information-section"><h2>基本信息</h2>${title}<dl class="scope-information-facts"><div><dt>运行状态</dt><dd>${escapeHtml(environmentStatusText(project.projectId,environment))}</dd></div><div><dt>插件</dt><dd>${Number(environment.pluginCount ?? 0)}</dd></div><div><dt>已连接插件</dt><dd>${facts.connectedCount}/${facts.eligibleCount}</dd></div></dl></section><section class="scope-information-section scope-information-danger"><div><h2>删除环境</h2><p>删除环境配置与运维说明前，必须先移除插件并断开连接。</p></div>${danger}</section></div>`;
+}
+
+function renderScopeInformation() {
+  const project = activeProject();
+  const content = $('#scopeInfoContent');
+  if (!project) { content.innerHTML = ''; return; }
+  if (state.selectionKind === 'project') {
+    content.innerHTML = renderProjectInformation(project);
+    return;
+  }
+  const environment = activeEnvironment();
+  content.innerHTML = environment ? renderEnvironmentInformation(project,environment) : '';
+}
+
 function beginProjectTitleEdit() {
   const project = activeProject();
   if (!project) return;
   if (projectIsIsolated(project)) { toast(project.configurationError.message,true); return; }
   state.projectTitleEditing = true;
-  renderResourcePane();
-  requestAnimationFrame(() => { $('#projectTitleInput').focus(); $('#projectTitleInput').select(); });
+  state.projectTitleDraft = project.name;
+  renderScopeInformation();
+  requestAnimationFrame(() => { const input = $('#projectTitleInput'); input?.focus(); input?.select(); });
 }
 
 function cancelProjectTitleEdit() {
   state.projectTitleEditing = false;
-  renderResourcePane();
+  state.projectTitleDraft = '';
+  renderScopeInformation();
 }
 
 async function saveProjectTitleEdit() {
@@ -1522,11 +1548,16 @@ async function saveProjectTitleEdit() {
   if (!project || !state.projectTitleEditing) return;
   if (projectIsIsolated(project)) throw new Error(project.configurationError.message);
   const name = $('#projectTitleInput').value.trim();
-  if (!name) throw new Error('项目名称不能为空。');
+  if (!name) {
+    $('#projectTitleError').textContent = '请输入项目名称。';
+    $('#projectTitleInput').focus();
+    return;
+  }
   const operationKey = `project-title-save:${project.projectId}`;
   const token = beginOperation(operationKey);
   if (!token) return;
-  setElementBusy($('#saveProjectTitle'),true);
+  const saveButton = $('#saveProjectTitle');
+  setElementBusy(saveButton,true);
   try {
     if (name !== project.name) {
       const value = await call(api.updateProject({projectId:project.projectId,patch:{name},expectedRevision:project.revision}));
@@ -1535,11 +1566,12 @@ async function saveProjectTitleEdit() {
     }
     if (state.projectId !== project.projectId) return;
     state.projectTitleEditing = false;
+    state.projectTitleDraft = '';
     renderShell();
     toast('项目名称已更新。');
   } finally {
     finishOperation(operationKey,token);
-    if ($('#saveProjectTitle').isConnected) setElementBusy($('#saveProjectTitle'),false);
+    if (saveButton.isConnected) setElementBusy(saveButton,false);
   }
 }
 
@@ -1551,13 +1583,16 @@ function renderDetailTopbar() {
   const plugin = state.selectionKind === 'plugin' ? activePlugin() : null;
   const creatingPlugin = state.selectionKind === 'new-plugin';
   const editingPersistentDraft = state.selectionKind === 'plugin-draft';
-  const tabs = creatingPlugin
+  const projectSelected = state.selectionKind === 'project';
+  const tabs = projectSelected
+    ? [['information','项目信息']]
+    : creatingPlugin
     ? [['configuration','配置']]
     : editingPersistentDraft ? [['configuration','配置']]
     : plugin
     ? [['connection','插件详情'],['configuration','配置'],['permissions','Agent 权限'],['audit','操作记录']]
-    : [['runbook','运维说明'],['audit','环境操作记录']];
-  const active = creatingPlugin || editingPersistentDraft ? 'configuration' : plugin ? detailTab(plugin) : state.environmentDetailTab;
+    : [['information','环境信息'],['runbook','运维说明'],['audit','环境操作记录']];
+  const active = projectSelected ? 'information' : creatingPlugin || editingPersistentDraft ? 'configuration' : plugin ? detailTab(plugin) : state.environmentDetailTab;
   $('#detailTopTabs').innerHTML = tabs.map(([value,label]) => `<button class="detail-top-tab ${active === value ? 'active' : ''}" data-detail-tab="${value}">${label}</button>`).join('');
 }
 
@@ -1568,15 +1603,16 @@ function renderShell() {
   renderConfirmationButton();
   const project = activeProject();
   const environment = activeEnvironment();
-  $('#emptyState').classList.toggle('hidden',Boolean(state.confirmationCenterActive || (project && environment)));
+  const scopeSelected = Boolean(project && (state.selectionKind === 'project' || environment));
+  $('#emptyState').classList.toggle('hidden',Boolean(state.confirmationCenterActive || scopeSelected));
   if (state.confirmationCenterActive) {
     renderDetailTopbar();
     renderView();
     return;
   }
-  if (!project || !environment) {
+  if (!scopeSelected) {
     $('#detailTopTabs').innerHTML = '';
-    ['pluginsView','pluginConfigView','runbookView','auditView','confirmationView'].forEach((id) => $(`#${id}`).classList.add('hidden'));
+    ['pluginsView','pluginConfigView','scopeInfoView','runbookView','auditView','confirmationView'].forEach((id) => $(`#${id}`).classList.add('hidden'));
     return;
   }
   renderDetailTopbar();
@@ -1593,7 +1629,7 @@ function continuitySelector(element) {
 }
 
 function withUiContinuity(render) {
-  const regions = ['projectList','resourceEnvironmentList','pluginDetail','confirmationCenter','auditBody']
+  const regions = ['projectList','resourceEnvironmentList','scopeInfoContent','pluginDetail','confirmationCenter','auditBody']
     .map((id) => document.getElementById(id))
     .filter(Boolean);
   const scrollPositions = regions.map((element) => [element.id,element.scrollTop]);
@@ -1637,26 +1673,30 @@ function renderRuntime() {
   renderResourcePane();
   if (!state.confirmationCenterActive && state.view === 'plugins' && state.selectionKind === 'plugin') renderPluginDetail();
   else if (!state.confirmationCenterActive && state.view === 'plugin-config' && pluginFormVisible()) renderPluginFormDiagnostic();
+  else if (!state.confirmationCenterActive && state.view === 'scope-info') renderScopeInformation();
 }
 
 function renderView() {
   const plugin = state.selectionKind === 'plugin' ? activePlugin() : null;
   if (state.confirmationCenterActive) state.view = 'confirmations';
+  else if (state.selectionKind === 'project') state.view = 'scope-info';
   else if (state.selectionKind === 'new-plugin' || state.selectionKind === 'plugin-draft') state.view = 'plugin-config';
   else if (plugin) state.view = detailTab(plugin) === 'audit'
     ? 'audit'
     : detailTab(plugin) === 'configuration' && state.pluginEditSession?.scope?.pluginInstanceId === plugin.pluginInstanceId
       ? 'plugin-config'
       : 'plugins';
-  else state.view = state.environmentDetailTab;
+  else state.view = state.environmentDetailTab === 'information' ? 'scope-info' : state.environmentDetailTab;
   $('#pluginsView').classList.toggle('hidden',state.view !== 'plugins');
   $('#pluginConfigView').classList.toggle('hidden',state.view !== 'plugin-config');
+  $('#scopeInfoView').classList.toggle('hidden',state.view !== 'scope-info');
   $('#runbookView').classList.toggle('hidden',state.view !== 'runbook');
   $('#auditView').classList.toggle('hidden',state.view !== 'audit');
   $('#confirmationView').classList.toggle('hidden',state.view !== 'confirmations');
   if (state.view === 'confirmations') renderConfirmationCenter();
   else if (state.view === 'plugins') renderPlugins();
   else if (state.view === 'plugin-config') renderInlinePluginConfig();
+  else if (state.view === 'scope-info') renderScopeInformation();
   else if (state.view === 'runbook') {
     if (state.runbookScopeKey === scopeKey()) renderRunbook();
     else loadRunbook().catch(showError);
@@ -2206,7 +2246,7 @@ function beginResourceEnvironmentRename(projectId,environmentId) {
     name:environment.name,
     sequence:++state.resourceEnvironmentEditSequence,
   };
-  renderResourcePane();
+  renderScopeInformation();
   requestAnimationFrame(() => {
     const input = $(`[data-resource-environment-editor="${CSS.escape(environmentId)}"] input`);
     input?.focus();
@@ -2216,7 +2256,7 @@ function beginResourceEnvironmentRename(projectId,environmentId) {
 
 function cancelResourceEnvironmentRename() {
   state.resourceEnvironmentEditor = null;
-  renderResourcePane();
+  renderScopeInformation();
 }
 
 async function saveResourceEnvironmentName(form) {
@@ -2237,7 +2277,7 @@ async function saveResourceEnvironmentName(form) {
   }
   if (name === environment.name) {
     state.resourceEnvironmentEditor = null;
-    renderResourcePane();
+    renderScopeInformation();
     return;
   }
   const sequence = editor.sequence;
@@ -2275,7 +2315,7 @@ function openEnvironmentDelete(projectId,environmentId) {
   if (confirmable && (runtime?.desiredConnected || (runtime && runtime.phase !== 'disconnected'))) { message = '请先断开该环境'; confirmable = false; }
   state.resourceEnvironmentEditor = null;
   state.resourceEnvironmentDeletePrompt = {projectId,environmentId,message,confirmable};
-  renderResourcePane();
+  renderScopeInformation();
 }
 
 async function confirmResourceEnvironmentDelete(target) {
@@ -2303,7 +2343,7 @@ async function confirmResourceEnvironmentDelete(target) {
     if (state.resourceEnvironmentDeletePrompt?.projectId === projectId
       && state.resourceEnvironmentDeletePrompt.environmentId === environmentId) {
       state.resourceEnvironmentDeletePrompt = {projectId,environmentId,message:error?.message ?? '删除失败',confirmable:false};
-      renderResourcePane();
+      renderScopeInformation();
     } else showError(error);
   }
 }
@@ -3509,9 +3549,8 @@ async function showProjectOverview(projectId) {
   if (state.projectId === projectId && state.environmentId) {
     if (!await mayLeaveCurrentScope()) return;
     state.confirmationCenterActive = false;
-    state.selectionKind = 'environment';
+    state.selectionKind = 'project';
     state.pluginId = null;
-    state.environmentDetailTab = 'runbook';
     state.expandedEnvironmentId = state.environmentId;
     renderShell();
     return;
@@ -3520,12 +3559,14 @@ async function showProjectOverview(projectId) {
   state.confirmationCenterActive = false;
   rememberCurrentScope();
   const generation = ++state.navigationGeneration;
+  state.projectTitleEditing = false;
+  state.projectTitleDraft = '';
   state.projectId = projectId;
   state.projectOverviewActive = false;
   state.environmentId = null;
   state.pluginId = null;
-  state.selectionKind = 'environment';
-  state.environmentDetailTab = 'runbook';
+  state.selectionKind = 'project';
+  state.environmentDetailTab = 'information';
   state.environments = state.environmentsByProject[projectId] ?? [];
   state.plugins = [];
   state.pluginDrafts = [];
@@ -3533,6 +3574,10 @@ async function showProjectOverview(projectId) {
   state.loadedScopeKey = null;
   resetScopeUi();
   await loadProject(state.projectEnvironmentMemory[projectId],projectId,generation);
+  if (generation !== state.navigationGeneration || state.projectId !== projectId) return;
+  state.selectionKind = 'project';
+  state.pluginId = null;
+  renderShell();
 }
 
 async function openScope(projectId,environmentId,{ pluginId = null, skipLeaveCheck = false } = {}) {
@@ -3581,14 +3626,14 @@ async function openScope(projectId,environmentId,{ pluginId = null, skipLeaveChe
 
 async function switchProject(id) { await showProjectOverview(id); }
 async function switchEnvironment(id) {
-  const changingSelection = state.environmentId !== id || state.selectionKind === 'plugin';
+  const changingSelection = state.environmentId !== id || state.selectionKind !== 'environment';
   if (changingSelection && !await mayLeaveCurrentScope()) return false;
   state.confirmationCenterActive = false;
   const opened = await openScope(state.projectId,id,{skipLeaveCheck:changingSelection});
   if (!opened) return false;
   state.selectionKind = 'environment';
   state.pluginId = null;
-  state.environmentDetailTab = 'runbook';
+  state.environmentDetailTab = 'information';
   state.expandedEnvironmentId = id;
   renderShell();
   return true;
@@ -3959,6 +4004,11 @@ document.addEventListener('drop',(event) => {
 document.addEventListener('dragend',finishRailDrag);
 
 document.addEventListener('input',(event) => {
+  if (event.target.id === 'projectTitleInput') {
+    state.projectTitleDraft = event.target.value;
+    $('#projectTitleError').textContent = '';
+    return;
+  }
   const form = event.target.closest?.('[data-resource-environment-editor]');
   if (!form || event.target.tagName !== 'INPUT') return;
   const editor = resourceEnvironmentEditorFor(form.dataset.resourceProjectId,form.dataset.resourceEnvironmentEditor);
@@ -3968,6 +4018,11 @@ document.addEventListener('input',(event) => {
 });
 
 document.addEventListener('submit',(event) => {
+  if (event.target.id === 'projectTitleEditor') {
+    event.preventDefault();
+    saveProjectTitleEdit().catch(showError);
+    return;
+  }
   const form = event.target.closest?.('[data-resource-environment-editor]');
   if (!form) return;
   event.preventDefault();
@@ -3975,9 +4030,16 @@ document.addEventListener('submit',(event) => {
 });
 
 document.addEventListener('keydown',(event) => {
-  if (event.key !== 'Escape' || !event.target.closest?.('[data-resource-environment-editor]')) return;
-  event.preventDefault();
-  cancelResourceEnvironmentRename();
+  if (event.key !== 'Escape') return;
+  if (event.target.closest?.('#projectTitleEditor')) {
+    event.preventDefault();
+    cancelProjectTitleEdit();
+    return;
+  }
+  if (event.target.closest?.('[data-resource-environment-editor]')) {
+    event.preventDefault();
+    cancelResourceEnvironmentRename();
+  }
 });
 
 document.addEventListener('click', async (event) => {
@@ -4038,7 +4100,7 @@ document.addEventListener('click', async (event) => {
     }
     if (target.id === 'projectSettingsShortcut') { beginProjectTitleEdit(); return; }
     if (target.id === 'resetWorkspaceWidths') { resetWorkspaceWidths(); return; }
-    if (target.id === 'saveProjectTitle') { await saveProjectTitleEdit(); return; }
+    if (target.id === 'saveProjectTitle') { event.preventDefault(); await saveProjectTitleEdit(); return; }
     if (target.id === 'cancelProjectTitle') { cancelProjectTitleEdit(); return; }
     if (target.id === 'projectDeleteShortcut') {
       const project = activeProject();
@@ -4084,7 +4146,7 @@ document.addEventListener('click', async (event) => {
     if (target.dataset.resourceRenameEnvironment) { beginResourceEnvironmentRename(state.projectId,target.dataset.resourceRenameEnvironment); return; }
     if (target.dataset.resourceDeleteEnvironment) { openEnvironmentDelete(state.projectId,target.dataset.resourceDeleteEnvironment); return; }
     if (target.hasAttribute('data-resource-cancel-environment-rename')) { cancelResourceEnvironmentRename(); return; }
-    if (target.hasAttribute('data-resource-cancel-environment-delete')) { state.resourceEnvironmentDeletePrompt = null; renderResourcePane(); return; }
+    if (target.hasAttribute('data-resource-cancel-environment-delete')) { state.resourceEnvironmentDeletePrompt = null; renderScopeInformation(); return; }
     if (target.dataset.resourceConfirmEnvironmentDelete) { await confirmResourceEnvironmentDelete(target); return; }
     if (target.dataset.overviewPluginAction) {
       setElementBusy(target,true);
@@ -4106,7 +4168,7 @@ document.addEventListener('click', async (event) => {
           state.editingDraft = null;
           state.selectionKind = 'environment';
           state.pluginId = null;
-          state.environmentDetailTab = 'runbook';
+          state.environmentDetailTab = 'information';
           state.inlineConfigPluginId = null;
           renderShell();
           return;
@@ -4463,10 +4525,6 @@ $('#showInlineEnvironmentCreate').addEventListener('click', beginInlineEnvironme
 $('#cancelInlineEnvironmentCreate').addEventListener('click', cancelInlineEnvironmentCreate);
 $('#resourceEnvironmentCreateForm').addEventListener('submit', (event) => saveInlineEnvironmentCreate(event));
 $('#addPlugin').addEventListener('click', () => startAddPlugin().catch(showError));
-$('#projectTitleInput').addEventListener('keydown',(event) => {
-  if (event.key === 'Enter') { event.preventDefault(); saveProjectTitleEdit().catch(showError); }
-  if (event.key === 'Escape') { event.preventDefault(); cancelProjectTitleEdit(); }
-});
 $('#pluginAuthType').addEventListener('change', () => {
   const plugin = state.editingPlugin;
   const select = $('#pluginAuthType');
@@ -4656,7 +4714,7 @@ $('#cancelPluginEdit').addEventListener('click', async () => {
     state.editingDraft = null;
     state.selectionKind = 'environment';
     state.pluginId = null;
-    state.environmentDetailTab = 'runbook';
+    state.environmentDetailTab = 'information';
     renderShell();
     return;
   }
@@ -4688,7 +4746,7 @@ $('#confirmDeletePlugin').addEventListener('click', async () => {
     await refreshEnvironmentMetadata(scope);
     if (!scopeMatches(scope)) return;
     state.selectionKind = 'environment';
-    state.environmentDetailTab = 'runbook';
+    state.environmentDetailTab = 'information';
     await loadEnvironment(null,{projectId:scope.projectId,environmentId:scope.environmentId});
     if (!scopeMatches(scope)) return;
     state.pluginId = null;

@@ -1418,8 +1418,6 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 .resource-environment-status[data-state=partial] i,.resource-environment-status[data-state=failed] i{background:var(--amber)}
 .resource-environment-head>.button{min-height:30px;padding:4px 10px;white-space:nowrap}
 .resource-environment-head>[data-environment-runtime-action]{grid-row:2;grid-column:1;justify-self:end}
-.resource-environment-head>.resource-rename{grid-row:2;grid-column:2}
-.resource-environment-head>.resource-delete{grid-row:2;grid-column:3}
 .danger-subtle{color:var(--red);border-color:rgba(241,123,134,.3);background:rgba(241,123,134,.07)}
 .resource-environment-body{padding:10px 14px 12px;border-top:1px solid var(--soft-line);background:#0d0e12}
 .resource-plugin-group+.resource-plugin-group{margin-top:8px}
@@ -1545,9 +1543,7 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 }
 .resource-environment-icon{width:40px;height:40px}
 .resource-environment-copy strong{font-size:15px}
-.resource-environment-head>[data-environment-runtime-action],
-.resource-environment-head>.resource-rename,
-.resource-environment-head>.resource-delete{
+.resource-environment-head>[data-environment-runtime-action]{
   grid-row:1;
   grid-column:auto;
   justify-self:auto;
@@ -1639,7 +1635,7 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 
 .resource-environment-head{
   min-height:76px;
-  grid-template-columns:minmax(0,1fr) auto auto 30px 30px;
+  grid-template-columns:minmax(0,1fr) auto auto;
   grid-template-rows:auto;
   gap:5px;
   padding:10px 12px;
@@ -1648,10 +1644,6 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 .resource-environment-head>.resource-environment-select{grid-row:1;grid-column:1}
 .resource-environment-head>.resource-environment-status{grid-row:1;grid-column:2}
 .resource-environment-head>.resource-runtime-action{grid-row:1;grid-column:3;justify-self:end}
-.resource-environment-head>.resource-rename{grid-row:1;grid-column:4}
-.resource-environment-head>.resource-delete{grid-row:1;grid-column:5}
-.resource-environment-head>.square-button{width:30px;height:30px}
-.resource-environment-head>.resource-rename{color:#aaa8ff}
 .resource-environment-head:hover .resource-environment-icon{border-color:rgba(139,140,255,.48);background:rgba(139,140,255,.13)}
 .resource-environment-select:focus-visible{border-radius:8px;outline-offset:4px}
 
@@ -1978,11 +1970,9 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 .scope-confirmation-badge.compact{width:28px;height:28px;border-radius:999px}
 .scope-confirmation-badge.compact span{font-size:9px;font-weight:750}
 .resource-plugin-row{grid-template-columns:minmax(0,1fr) auto auto}
-.resource-environment-head:has(>.scope-confirmation-badge){grid-template-columns:minmax(0,1fr) auto 30px auto 30px 30px}
+.resource-environment-head:has(>.scope-confirmation-badge){grid-template-columns:minmax(0,1fr) auto 30px auto}
 .resource-environment-head:has(>.scope-confirmation-badge)>.scope-confirmation-badge{grid-row:1;grid-column:3}
 .resource-environment-head:has(>.scope-confirmation-badge)>.resource-runtime-action{grid-row:1;grid-column:4}
-.resource-environment-head:has(>.scope-confirmation-badge)>.resource-rename{grid-row:1;grid-column:5}
-.resource-environment-head:has(>.scope-confirmation-badge)>.resource-delete{grid-row:1;grid-column:6}
 .detail-confirmation-badge{height:28px;padding:0 9px;border-radius:7px;font-size:11px;white-space:nowrap}
 .detail-confirmation-badge .icon{width:14px;height:14px}
 
@@ -2151,7 +2141,7 @@ button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:spin .9s linear
   .resource-environment-head,
   .resource-environment-head:has(>.scope-confirmation-badge){
     min-height:88px;
-    grid-template-columns:minmax(0,1fr) auto 30px 30px;
+    grid-template-columns:minmax(0,1fr) auto;
     grid-template-rows:auto auto;
     gap:7px 5px;
   }
@@ -2164,56 +2154,83 @@ button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:spin .9s linear
     justify-self:end;
   }
   .resource-environment-head:has(>.scope-confirmation-badge)>.scope-confirmation-badge{grid-row:2;grid-column:2}
-  .resource-environment-head>.resource-rename,
-  .resource-environment-head:has(>.scope-confirmation-badge)>.resource-rename{grid-row:2;grid-column:3}
-  .resource-environment-head>.resource-delete,
-  .resource-environment-head:has(>.scope-confirmation-badge)>.resource-delete{grid-row:2;grid-column:4}
 }
 
-.resource-environment-head:has(>.resource-environment-rename-form),
-.resource-environment-head:has(>.resource-environment-delete-prompt){
-  min-height:88px;
-  grid-template-columns:minmax(0,1fr);
+/* Scope information owns low-frequency rename and delete actions. */
+.scope-info-view{overflow:auto;container-type:inline-size;background:var(--detail)}
+.scope-info-content{min-height:100%}
+.scope-information-page{width:min(920px,100%);margin:0 auto;padding:34px 38px 52px}
+.scope-information-head{display:flex;align-items:center;gap:16px;padding-bottom:26px;border-bottom:1px solid var(--line)}
+.scope-information-icon{width:48px;height:48px;display:grid;place-items:center;flex:none;border:1px solid rgba(139,140,255,.28);border-radius:8px;color:#aaa8ff;background:rgba(139,140,255,.08)}
+.scope-information-icon .icon{width:26px;height:26px}
+.scope-information-kind{display:block;margin-bottom:4px;color:#aaa8ff;font-size:11px;font-weight:700}
+.scope-information-head h1{margin:0;font-size:26px;font-weight:720;letter-spacing:0}
+.scope-information-head p{margin:6px 0 0;color:var(--muted);font-size:13px}
+.scope-information-section{padding:26px 0;border-bottom:1px solid var(--soft-line)}
+.scope-information-section h2{margin:0 0 16px;font-size:15px;font-weight:680;letter-spacing:0}
+.scope-information-value{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:18px}
+.scope-information-value>div{min-width:0}
+.scope-information-value span{display:block;margin-bottom:6px;color:var(--muted);font-size:11px}
+.scope-information-value strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:18px;font-weight:680}
+.scope-information-value .button,.scope-information-danger>.button{flex:none}
+.scope-information-value .icon,.scope-information-danger>.button .icon{width:15px;height:15px}
+.scope-information-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin:22px 0 0;border-top:1px solid var(--soft-line);border-bottom:1px solid var(--soft-line)}
+.scope-information-facts>div{min-width:0;padding:16px 18px}
+.scope-information-facts>div+div{border-left:1px solid var(--soft-line)}
+.scope-information-facts dt{color:var(--muted);font-size:11px}
+.scope-information-facts dd{margin:7px 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px;font-weight:650}
+.scope-information-editor,.scope-information-editor.resource-environment-rename-form{width:min(640px,100%);display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto;gap:14px}
+.scope-information-editor.resource-environment-rename-form>label{grid-row:auto;grid-column:auto}
+.scope-information-editor.resource-environment-rename-form .resource-environment-rename-error{grid-row:auto;grid-column:auto;min-height:16px}
+.scope-information-editor input,.scope-information-editor.resource-environment-rename-form input{height:40px;font-weight:600}
+.scope-information-editor-actions{display:flex;justify-content:flex-end;gap:8px}
+.scope-information-danger{display:flex;align-items:center;justify-content:space-between;gap:24px;border-bottom:0}
+.scope-information-danger>div{min-width:0}
+.scope-information-danger h2{margin-bottom:7px;color:#ff9aa3}
+.scope-information-danger p{margin:0;color:var(--muted);font-size:12px;line-height:1.6}
+.scope-delete-decision{width:min(680px,100%);display:flex;align-items:center;justify-content:space-between;gap:18px;padding:15px 16px;border:1px solid rgba(241,123,134,.28);border-radius:8px;background:rgba(241,123,134,.055)}
+.scope-delete-decision.blocked{border-color:rgba(239,185,104,.28);background:rgba(239,185,104,.05)}
+.scope-delete-decision>div:first-child{min-width:0}
+.scope-delete-decision strong,.scope-delete-decision small{display:block}
+.scope-delete-decision strong{font-size:13px}
+.scope-delete-decision small{margin-top:5px;color:var(--muted);font-size:11px}
+.scope-delete-decision>div:last-child{display:flex;flex:none;gap:8px}
+
+.resource-environment-head,
+.resource-environment-head:has(>.scope-confirmation-badge){
+  min-height:76px;
+  grid-template-columns:minmax(0,1fr) auto auto;
   grid-template-rows:auto;
-  cursor:default;
+  gap:7px;
 }
-.resource-environment-rename-form,
-.resource-environment-delete-prompt{
-  min-width:0;
-  width:100%;
-  display:grid;
-  grid-template-columns:40px minmax(0,1fr) 30px 30px;
-  grid-template-rows:auto auto;
-  align-items:center;
-  gap:5px 7px;
+.resource-environment-head:has(>.scope-confirmation-badge){grid-template-columns:minmax(0,1fr) auto 30px auto}
+.resource-environment-head>.resource-environment-select{grid-row:1;grid-column:1}
+.resource-environment-head>.resource-environment-status{grid-row:1;grid-column:2}
+.resource-environment-head>.resource-runtime-action,
+.resource-environment-head:has(>.scope-confirmation-badge)>.resource-runtime-action{grid-row:1;grid-column:3;justify-self:end}
+.resource-environment-head:has(>.scope-confirmation-badge)>.scope-confirmation-badge{grid-row:1;grid-column:3}
+.resource-environment-head:has(>.scope-confirmation-badge)>.resource-runtime-action{grid-column:4}
+
+@container (max-width:650px){
+  .scope-information-page{padding:26px 22px 42px}
+  .scope-information-head{align-items:flex-start}
+  .scope-information-facts{grid-template-columns:minmax(0,1fr)}
+  .scope-information-facts>div+div{border-top:1px solid var(--soft-line);border-left:0}
+  .scope-information-value,.scope-information-danger,.scope-delete-decision{align-items:stretch;flex-direction:column}
+  .scope-information-value .button,.scope-information-danger>.button{align-self:flex-start}
+  .scope-delete-decision>div:last-child{justify-content:flex-end}
+  .resource-environment-head,
+  .resource-environment-head:has(>.scope-confirmation-badge){
+    min-height:88px;
+    grid-template-columns:minmax(0,1fr) 30px auto;
+    grid-template-rows:auto auto;
+  }
+  .resource-environment-head>.resource-environment-select{grid-row:1;grid-column:1}
+  .resource-environment-head>.resource-environment-status{grid-row:1;grid-column:2/4;justify-self:end}
+  .resource-environment-head>.resource-runtime-action,
+  .resource-environment-head:has(>.scope-confirmation-badge)>.resource-runtime-action{grid-row:2;grid-column:3;justify-self:end}
+  .resource-environment-head:has(>.scope-confirmation-badge)>.scope-confirmation-badge{grid-row:2;grid-column:2}
 }
-.resource-environment-rename-form>.resource-environment-icon,
-.resource-environment-delete-prompt>.resource-environment-icon{grid-row:1/3;grid-column:1}
-.resource-environment-rename-form>label{grid-row:1;grid-column:2;min-width:0}
-.resource-environment-rename-form input{
-  width:100%;
-  height:36px;
-  padding:0 10px;
-  border:1px solid rgba(139,140,255,.58);
-  border-radius:7px;
-  color:var(--text);
-  background:#0d0e12;
-  font-size:14px;
-  font-weight:650;
-  outline:none;
-}
-.resource-environment-rename-form input:focus{box-shadow:0 0 0 3px rgba(139,140,255,.1)}
-.resource-environment-rename-error{grid-row:2;grid-column:2/-1;min-height:14px;color:var(--red);font-size:10.5px}
-.resource-environment-rename-form>.square-button,
-.resource-environment-delete-prompt>.square-button{width:30px;height:30px}
-.resource-environment-rename-save{grid-row:1;grid-column:3;color:var(--green)}
-.resource-environment-rename-cancel{grid-row:1;grid-column:4}
-.resource-environment-delete-copy{grid-row:1/3;grid-column:2;min-width:0}
-.resource-environment-delete-copy strong,
-.resource-environment-delete-copy small{display:block}
-.resource-environment-delete-copy strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
-.resource-environment-delete-copy small{margin-top:4px;color:var(--muted);font-size:10.5px;line-height:1.4;overflow-wrap:anywhere}
-.resource-environment-delete-prompt.blocked>.resource-environment-icon{color:var(--amber);border-color:rgba(239,185,104,.28);background:rgba(239,185,104,.07)}
 
 @media(prefers-reduced-motion:reduce){
   button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:none}

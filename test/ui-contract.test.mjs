@@ -28,8 +28,9 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(html, /id="resourceEnvironmentCreateForm"/);
   assert.doesNotMatch(html, /id="environmentManagerDialog"/);
   assert.doesNotMatch(html, /id="overviewAddEnvironment"|class="action-menu"/);
-  assert.match(html, /id="projectTitleEditor"/);
-  assert.match(html, /id="projectDeleteShortcut"/);
+  assert.match(html, /id="scopeInfoView"/);
+  assert.match(html, /id="scopeInfoContent"/);
+  assert.doesNotMatch(html, /id="projectTitleEditor"|id="projectSettingsShortcut"|id="projectDeleteShortcut"/);
   assert.match(html, /id="pluginConfigView"/);
   assert.match(html, /id="pluginFormDepot"/);
   assert.match(html, /id="validateServerDraft"/);
@@ -136,6 +137,12 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.doesNotMatch(renderer, /diagnostic-facts|结果依据/);
   assert.doesNotMatch(renderer, /diagnosticDialog.*showModal/);
   assert.match(renderer, /saveProjectTitleEdit/);
+  assert.match(renderer, /function renderProjectInformation/);
+  assert.match(renderer, /function renderEnvironmentInformation/);
+  assert.match(renderer, /state\.selectionKind === 'project'/);
+  assert.match(renderer, /\['information','环境信息'\]/);
+  assert.doesNotMatch(renderer, /resource-environment-head[^`]*data-resource-rename-environment/s);
+  assert.doesNotMatch(renderer, /resource-environment-head[^`]*data-resource-delete-environment/s);
   assert.match(renderer, /saveInlineEnvironmentCreate/);
   assert.match(renderer, /data-resource-environment-editor/);
   assert.match(renderer, /data-resource-environment-delete-prompt/);
@@ -181,7 +188,9 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(styles, /\.credential-migration-notice/);
   assert.match(styles, /\.resource-environment-create/);
   assert.match(styles, /\.resource-environment-rename-form/);
-  assert.match(styles, /\.resource-environment-delete-prompt/);
+  assert.match(styles, /\.scope-delete-decision/);
+  assert.match(styles, /\.scope-information-page/);
+  assert.match(styles, /\.scope-information-danger/);
   assert.match(styles, /\.resource-draft-row/);
   assert.match(styles, /\.permission-hero/);
   assert.match(styles, /\.permissions-page \.policy-row/);

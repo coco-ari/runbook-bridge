@@ -31,6 +31,7 @@ const plugins = {
 const drafts = {prod:[],gray:[]};
 let expectDraftSessionValidation = false;
 const environmentUpdateCalls = [];
+const projectUpdateCalls = [];
 const environments = [
   {projectId:'member',environmentId:'prod',name:'正式环境',revision:1,pluginCount:6,readyPluginCount:6,pluginTypeCounts:{server:2,mysql:2,redis:2},resourcePreview:plugins.prod.map((plugin) => ({pluginInstanceId:plugin.pluginInstanceId,pluginType:plugin.pluginType,displayName:plugin.displayName,configState:plugin.configState,resource:plugin.pluginType === 'server' ? {host:plugin.target.host,port:plugin.target.port} : plugin.pluginType === 'mysql' ? {database:plugin.target.database} : {db:plugin.target.db}})),runtime:connectedRuntime('member','prod',6)},
   {projectId:'member',environmentId:'gray',name:'灰度环境',revision:1,pluginCount:1,readyPluginCount:1,pluginTypeCounts:{server:1,mysql:0,redis:0},resourcePreview:[{pluginInstanceId:'gray-server',pluginType:'server',displayName:'灰度服务器',configState:'ready',resource:{host:'10.0.0.8',port:22}}],runtime:runtime('member','gray',1)},
@@ -47,8 +48,10 @@ const ok = (data) => ({ok:true,data});
 const handle = (channel,fn) => ipcMain.handle(channel,async (event,...args) => ok(await fn(...args,event)));
 
 handle('v2:workspace-overview',() => projects);
-handle('v2:project-update',({projectId,patch}) => {
+handle('v2:project-update',(payload) => {
+  const {projectId,patch} = payload;
   const project = projects.find((item) => item.projectId === projectId);
+  projectUpdateCalls.push({projectId,patch:structuredClone(patch),expectedRevision:payload.expectedRevision});
   Object.assign(project,patch,{revision:Number(project.revision ?? 0) + 1});
   return project;
 });
@@ -173,13 +176,13 @@ async function run() {
     const frame=()=>new Promise(resolve=>requestAnimationFrame(()=>resolve()));
     const click=(selector)=>{const element=document.querySelector(selector);if(!element)throw new Error('missing click target: '+selector);element.click();};
     await wait(()=>document.querySelectorAll('.resource-environment-card').length===2,'environment cards');
-    await wait(()=>!document.querySelector('#runbookView').classList.contains('hidden'),'environment runbook');
+    await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent')?.textContent.includes('环境信息'),'environment information');
     const app=document.querySelector('#app'),rail=document.querySelector('.project-rail'),resources=document.querySelector('#resourcePane'),detail=document.querySelector('#detailPane');
     const initialRects=[rail,resources,detail].map(element=>element.getBoundingClientRect());
     const environmentTabs=[...document.querySelectorAll('#detailTopTabs .detail-top-tab')].map(item=>item.textContent.trim());
     const selectedHeaderContinuous=document.querySelector('.resource-environment-card.selected .resource-environment-head')!==null;
-    const compactEnvironmentActions=[...document.querySelectorAll('.resource-environment-head')].every(head=>Boolean(head.querySelector(':scope > [data-environment-runtime-action]'))&&Boolean(head.querySelector(':scope > [data-resource-rename-environment]'))&&Boolean(head.querySelector(':scope > [data-resource-delete-environment]'))&&!head.querySelector('.action-menu'));
-    const environmentActionsWrapCleanly=[...document.querySelectorAll('.resource-environment-head')].every(head=>{const center=control=>{const rect=control.getBoundingClientRect();return Math.round(rect.top+rect.height/2)};const top=[head.querySelector(':scope > .resource-environment-select'),head.querySelector(':scope > .resource-environment-status')].filter(Boolean).map(center);const bottom=[head.querySelector(':scope > .resource-runtime-action'),head.querySelector(':scope > .scope-confirmation-badge'),head.querySelector(':scope > .resource-rename'),head.querySelector(':scope > .resource-delete')].filter(Boolean).map(center);return Math.max(...top)-Math.min(...top)<=2&&Math.max(...bottom)-Math.min(...bottom)<=2&&Math.min(...bottom)>Math.max(...top);});
+    const compactEnvironmentActions=[...document.querySelectorAll('.resource-environment-head')].every(head=>Boolean(head.querySelector(':scope > [data-environment-runtime-action]'))&&!head.querySelector(':scope > [data-resource-rename-environment]')&&!head.querySelector(':scope > [data-resource-delete-environment]')&&!head.querySelector('.action-menu'));
+    const environmentActionsWrapCleanly=[...document.querySelectorAll('.resource-environment-head')].every(head=>{const headRect=head.getBoundingClientRect();return [...head.children].every(control=>{const rect=control.getBoundingClientRect();return rect.left>=headRect.left-1&&rect.right<=headRect.right+1&&rect.top>=headRect.top-1&&rect.bottom<=headRect.bottom+1;});});
     const environmentHeaderHeight=Math.round(document.querySelector('.resource-environment-head').getBoundingClientRect().height);
     const railRefined=!document.querySelector('.rail-brand')&&!document.querySelector('.rail-project-manage')&&Boolean(document.querySelector('.rail-header .logo-mark use[href="#i-app"]'));
     const projectRailWasExpanded=app.classList.contains('rail-expanded');
@@ -197,10 +200,11 @@ async function run() {
       purpleSelection:connectedHeadStyle.boxShadow.includes('131, 124, 246'),
     };
     if(!projectRailWasExpanded){click('#toggleProjectRail');await new Promise(resolve=>setTimeout(resolve,340));}
-    const projectActionsExposed=!document.querySelector('#overviewAddEnvironment')&&!document.querySelector('.resource-project-actions .action-menu')&&['projectSettingsShortcut','resetWorkspaceWidths','projectDeleteShortcut'].every(id=>Boolean(document.querySelector('#'+id)));
+    const secondPaneCommonOnly=Boolean(document.querySelector('.resource-project-actions #resetWorkspaceWidths'))&&!document.querySelector('.resource-pane #projectSettingsShortcut')&&!document.querySelector('.resource-pane #projectDeleteShortcut')&&![...document.querySelectorAll('.resource-environment-head')].some(head=>head.querySelector('[data-resource-rename-environment],[data-resource-delete-environment]'));
     const environmentCaretRemoved=!document.querySelector('.resource-chevron');
+    const environmentInformationPage=!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent').textContent.includes('正式环境')&&document.querySelector('#scopeInfoContent').textContent.includes('环境信息');
     click('[data-resource-rename-environment="prod"]');
-    await wait(()=>Boolean(document.querySelector('[data-resource-environment-editor="prod"]')),'inline environment rename');
+    await wait(()=>Boolean(document.querySelector('#scopeInfoContent [data-resource-environment-editor="prod"]')),'environment information rename');
     const environmentNameInput=document.querySelector('[data-resource-environment-editor="prod"] input');
     await wait(()=>document.activeElement===environmentNameInput,'focus inline environment rename');
     const renameFocused=document.activeElement===environmentNameInput;
@@ -211,18 +215,18 @@ async function run() {
     environmentNameInput.value='生产环境';
     environmentNameInput.dispatchEvent(new Event('input',{bubbles:true}));
     document.querySelector('[data-resource-environment-editor="prod"]').requestSubmit();
-    await wait(()=>document.querySelector('[data-resource-environment-id="prod"] .resource-environment-copy strong')?.textContent==='生产环境'&&document.querySelector('#runbookTitle').textContent.startsWith('生产环境'),'save inline environment rename');
+    await wait(()=>document.querySelector('[data-resource-environment-id="prod"] .resource-environment-copy strong')?.textContent==='生产环境'&&document.querySelector('#scopeInfoContent')?.textContent.includes('生产环境')&&!document.querySelector('[data-resource-environment-editor="prod"]'),'save environment information rename');
     click('[data-resource-rename-environment="prod"]');
-    await wait(()=>Boolean(document.querySelector('[data-resource-environment-editor="prod"]')),'inline environment rename no-op');
+    await wait(()=>Boolean(document.querySelector('#scopeInfoContent [data-resource-environment-editor="prod"]')),'environment information rename no-op');
     document.querySelector('[data-resource-environment-editor="prod"]').requestSubmit();
     await wait(()=>!document.querySelector('[data-resource-environment-editor="prod"]'),'close no-op environment rename');
     click('[data-resource-delete-environment="prod"]');
-    await wait(()=>Boolean(document.querySelector('[data-resource-environment-delete-prompt="prod"]')),'inline environment delete prompt');
-    const environmentDeleteInline=document.querySelector('[data-resource-environment-delete-prompt="prod"]').textContent.includes('请先处理该环境的 6 个插件');
+    await wait(()=>Boolean(document.querySelector('#scopeInfoContent [data-resource-environment-delete-prompt="prod"]')),'environment information delete prompt');
+    const environmentDeleteInInformation=document.querySelector('[data-resource-environment-delete-prompt="prod"]').textContent.includes('请先处理该环境的 6 个插件');
     click('[data-resource-cancel-environment-delete]');
-    const environmentRenameInline=renameFocused&&blankNameRejected&&!document.querySelector('#environmentManagerDialog')&&environmentDeleteInline;
+    const environmentManagementInInformation=environmentInformationPage&&renameFocused&&blankNameRejected&&!document.querySelector('#environmentManagerDialog')&&environmentDeleteInInformation;
     click('.resource-environment-select[data-resource-environment-id="gray"]');
-    await wait(()=>Boolean(document.querySelector('.resource-environment-card.expanded .resource-environment-select[data-resource-environment-id="gray"]'))&&!document.querySelector('.resource-environment-card.expanded .resource-environment-select[data-resource-environment-id="prod"]'),'exclusive environment expand');
+    await wait(()=>Boolean(document.querySelector('.resource-environment-card.expanded .resource-environment-select[data-resource-environment-id="gray"]'))&&!document.querySelector('.resource-environment-card.expanded .resource-environment-select[data-resource-environment-id="prod"]')&&document.querySelector('#scopeInfoContent')?.textContent.includes('灰度环境'),'exclusive environment expand');
     const switchedEnvironmentExclusive=document.querySelectorAll('.resource-environment-card.expanded').length===1;
     click('.resource-environment-select[data-resource-environment-id="gray"]');
     await wait(()=>document.querySelectorAll('.resource-environment-card.expanded').length===0,'collapse selected environment');
@@ -237,15 +241,24 @@ async function run() {
     document.querySelector('#resourceEnvironmentCreateForm').requestSubmit();
     await wait(()=>[...document.querySelectorAll('.resource-environment-card')].some(card=>card.textContent.includes('新增测试环境')),'save inline environment');
     const environmentCreatedInline=environmentCreateInline&&document.querySelector('#resourceEnvironmentCreateForm').classList.contains('hidden')&&!document.querySelector('#showInlineEnvironmentCreate').classList.contains('hidden');
+    click('[data-project-id="member"]');
+    await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent')?.textContent.includes('项目信息'),'project information');
+    const projectTabs=[...document.querySelectorAll('#detailTopTabs .detail-top-tab')].map(item=>item.textContent.trim());
+    const projectInformationPage=document.querySelector('#scopeInfoContent').textContent.includes('澳大利亚-zip')&&!document.querySelector('.resource-pane #projectSettingsShortcut')&&!document.querySelector('.resource-pane #projectDeleteShortcut');
     click('#projectSettingsShortcut');
-    await wait(()=>!document.querySelector('#projectTitleEditor').classList.contains('hidden'),'inline project title editor');
-    document.querySelector('#projectTitleInput').value='澳大利亚-zip · 新版';
+    await wait(()=>Boolean(document.querySelector('#scopeInfoContent #projectTitleEditor')),'project information title editor no-op');
     click('#saveProjectTitle');
-    await wait(()=>document.querySelector('#projectTitle').textContent.includes('新版')&&!document.querySelector('#projectTitle').classList.contains('hidden'),'save inline project title');
-    const projectRenameInline=!document.querySelector('#projectSettingsDialog').open;
+    await wait(()=>!document.querySelector('#projectTitleEditor'),'close project title no-op');
+    click('#projectSettingsShortcut');
+    await wait(()=>Boolean(document.querySelector('#scopeInfoContent #projectTitleEditor')),'project information title editor');
+    document.querySelector('#projectTitleInput').value='澳大利亚-zip · 新版';
+    document.querySelector('#projectTitleInput').dispatchEvent(new Event('input',{bubbles:true}));
+    click('#saveProjectTitle');
+    await wait(()=>document.querySelector('#projectTitle').textContent.includes('新版')&&document.querySelector('#scopeInfoContent')?.textContent.includes('新版')&&!document.querySelector('#projectTitleEditor'),'save project information title');
+    const projectManagementInInformation=projectInformationPage&&!document.querySelector('#projectSettingsDialog').open;
     click('#projectDeleteShortcut');
     await wait(()=>document.querySelector('#deleteProjectDialog').open,'project delete shortcut');
-    const projectDeleteDirect=document.querySelector('#deleteProjectScope').textContent.includes('新版');
+    const projectDeleteFromInformation=document.querySelector('#deleteProjectScope').textContent.includes('新版');
     click('#deleteProjectDialog [data-close="deleteProjectDialog"]');
     await wait(()=>document.querySelector('#confirmationCount').textContent==='2'&&document.querySelector('.resource-environment-head .scope-confirmation-badge'),'confirmation badges');
     const globalConfirmationEntry=Boolean(document.querySelector('.rail-confirmation-button.has-pending'))&&document.querySelectorAll('[data-confirmation-card]').length===0;
@@ -306,15 +319,15 @@ async function run() {
     click('#pluginDraftOverflow summary');
     await wait(()=>document.querySelector('#pluginDraftOverflow').open,'open formal draft actions');
     click('#savePluginDraftOverflow');
-    await wait(()=>Boolean(document.querySelector('[data-resource-draft-id]'))&&!document.querySelector('#runbookView').classList.contains('hidden'),'save mysql draft');
+    await wait(()=>Boolean(document.querySelector('[data-resource-draft-id]'))&&!document.querySelector('#scopeInfoView').classList.contains('hidden'),'save mysql draft');
     click('[data-resource-draft-id]');
     await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginFormTitle').textContent.includes('继续配置草稿'),'resume mysql draft');
     click('#validateMysqlDatabase');
     await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'),'validate resumed mysql draft');
     const basedDraftValidationUsesDraftSession=document.querySelector('#pluginFormDiagnostic').textContent.includes('28 ms');
     click('#deleteCurrentDraft');
-    await wait(()=>!document.querySelector('[data-resource-draft-id]')&&!document.querySelector('#runbookView').classList.contains('hidden'),'delete mysql draft');
-    await wait(()=>!document.querySelector('#runbookView').classList.contains('hidden'),'return to environment');
+    await wait(()=>!document.querySelector('[data-resource-draft-id]')&&!document.querySelector('#scopeInfoView').classList.contains('hidden'),'delete mysql draft');
+    await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden'),'return to environment');
     if (!document.querySelector('[data-resource-add-plugin="prod"]')) {
       click('.resource-environment-select[data-resource-environment-id="prod"]');
       await wait(()=>Boolean(document.querySelector('[data-resource-add-plugin="prod"]')),'expand environment for add plugin');
@@ -329,14 +342,14 @@ async function run() {
     document.querySelector('input[name="pluginTypeChoice"][value="redis"]').click();
     document.querySelector('#pluginHost').value='';
     click('#savePluginDraft');
-    await wait(()=>Boolean(document.querySelector('[data-resource-draft-id]'))&&!document.querySelector('#runbookView').classList.contains('hidden'),'save persistent draft');
+    await wait(()=>Boolean(document.querySelector('[data-resource-draft-id]'))&&!document.querySelector('#scopeInfoView').classList.contains('hidden'),'save persistent draft');
     const savedDraftRow=document.querySelector('[data-resource-draft-id]')?.closest('.resource-draft-row');
     const draftSaved=savedDraftRow?.textContent.includes('未完成 Redis')&&savedDraftRow.textContent.includes('继续配置');
     click('[data-resource-draft-id]');
     await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginDisplayName').value==='未完成 Redis','resume persistent draft');
     const draftResumed=document.querySelector('#pluginFormTitle').textContent.includes('继续配置草稿')&&!document.querySelector('#deleteCurrentDraft').classList.contains('hidden');
     click('#deleteCurrentDraft');
-    await wait(()=>!document.querySelector('[data-resource-draft-id]')&&!document.querySelector('#runbookView').classList.contains('hidden'),'delete persistent draft');
+    await wait(()=>!document.querySelector('[data-resource-draft-id]')&&!document.querySelector('#scopeInfoView').classList.contains('hidden'),'delete persistent draft');
     const draftDeleted=!document.querySelector('[data-resource-draft-id]');
     const resourceList=document.querySelector('#resourceEnvironmentList');
     resourceList.scrollTop=0;
@@ -353,17 +366,17 @@ async function run() {
     const collapsed={active:app.classList.contains('detail-collapsed'),detailWidth:Math.round(detail.getBoundingClientRect().width),resourceWidth:Math.round(resources.getBoundingClientRect().width),buttonVisible:getComputedStyle(document.querySelector('#expandDetailPane')).display!=='none'};
     click('#expandDetailPane');
     await frame();
-    return {environmentTabs,pluginTabs,selectedHeaderContinuous,compactEnvironmentActions,environmentActionsWrapCleanly,environmentCardToggle,environmentHeaderHeight,railRefined,projectConnectionContrast,projectActionsExposed,environmentRenameInline,environmentCreatedInline,confirmationCenter,permissionsRefined,projectRenameInline,projectDeleteDirect,configurationInline,diagnosticInline,formDiagnostic,basedDraftValidationUsesDraftSession,addPluginInline,addPluginOpensDetail,draftSaved,draftResumed,draftDeleted,overflowSelectionVisible,resourceOverflowOwnedByList,auditFiltered,auditConnectionVisible,auditResponsive,auditPendingNamed,auditClearScoped,auditCleared,collapsed,initialRects:initialRects.map(rect=>({left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width)})),expanded:!app.classList.contains('detail-collapsed'),separators:document.querySelectorAll('[role="separator"]').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};
+    return {environmentTabs,projectTabs,pluginTabs,selectedHeaderContinuous,compactEnvironmentActions,environmentActionsWrapCleanly,environmentCardToggle,environmentHeaderHeight,railRefined,projectConnectionContrast,secondPaneCommonOnly,environmentManagementInInformation,environmentCreatedInline,confirmationCenter,permissionsRefined,projectManagementInInformation,projectDeleteFromInformation,configurationInline,diagnosticInline,formDiagnostic,basedDraftValidationUsesDraftSession,addPluginInline,addPluginOpensDetail,draftSaved,draftResumed,draftDeleted,overflowSelectionVisible,resourceOverflowOwnedByList,auditFiltered,auditConnectionVisible,auditResponsive,auditPendingNamed,auditClearScoped,auditCleared,collapsed,initialRects:initialRects.map(rect=>({left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width)})),expanded:!app.classList.contains('detail-collapsed'),separators:document.querySelectorAll('[role="separator"]').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};
   })()`);
   const screenshotPath = process.argv.find((value) => /\.png$/i.test(value)) || process.env.AI_OPS_SCREENSHOT_PATH;
   if (screenshotPath) {
-    const screenshotMode = ['confirmation','editor','configuration','audit','resources','environment','projects'].includes(process.env.AI_OPS_SCREENSHOT_MODE) ? process.env.AI_OPS_SCREENSHOT_MODE : 'permissions';
+    const screenshotMode = ['confirmation','editor','configuration','audit','resources','environment','project','projects'].includes(process.env.AI_OPS_SCREENSHOT_MODE) ? process.env.AI_OPS_SCREENSHOT_MODE : 'permissions';
     if (screenshotMode === 'audit') auditEntries = structuredClone(initialAuditEntries);
     if (screenshotMode === 'resources') {
       win.setContentSize(815,900);
       await new Promise((resolve) => setTimeout(resolve,100));
     }
-    const screenshotState = await win.webContents.executeJavaScript(`(async()=>{const wait=async(predicate)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: ${screenshotMode} screenshot');await new Promise(resolve=>setTimeout(resolve,20));}};const click=(selector)=>{const element=document.querySelector(selector);if(!element)throw new Error('missing screenshot target: '+selector);element.click();};const openMysql=async()=>{if(!document.querySelector('[data-resource-plugin-id="mysql-member"]')){click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('[data-resource-plugin-id="mysql-member"]'));}click('[data-resource-plugin-id="mysql-member"]');await wait(()=>document.querySelector('[data-detail-tab="configuration"]')&&document.querySelector('#pluginDetail')?.textContent.includes('会员业务库'));};if('${screenshotMode}'==='confirmation'){click('#confirmationButton');await wait(()=>!document.querySelector('#confirmationView').classList.contains('hidden')&&document.querySelector('#detailTopTabs').textContent.includes('操作确认')&&document.querySelector('[data-confirmation-card]'));}else if('${screenshotMode}'==='editor'){await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('当前为只读详情'));window.confirm=()=>true;click('[data-action="edit-plugin"]');await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden'));click('#validateMysqlDatabase');await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'));document.querySelector('#pluginFormDiagnostic').scrollIntoView({block:'center'});}else if('${screenshotMode}'==='configuration'){await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('修改名称'));}else if('${screenshotMode}'==='audit'){await openMysql();click('[data-detail-tab="audit"]');await wait(()=>!document.querySelector('#auditView').classList.contains('hidden')&&document.querySelector('#auditBody')?.textContent.includes('连接插件'));}else if('${screenshotMode}'==='resources'){if(!document.querySelector('#app').classList.contains('detail-collapsed'))click('#toggleDetailPane');await wait(()=>document.querySelector('#app').classList.contains('detail-collapsed'));const list=document.querySelector('#resourceEnvironmentList');list.scrollTop=list.scrollHeight;await wait(()=>{const row=document.querySelector('[data-resource-plugin-id="redis-cache-2"]')?.closest('.resource-plugin-row');if(!row)return false;const rowRect=row.getBoundingClientRect(),listRect=list.getBoundingClientRect();return rowRect.bottom<=listRect.bottom&&rowRect.top>=listRect.top;});}else if('${screenshotMode}'==='environment'){click('[data-resource-rename-environment="prod"]');await wait(()=>document.querySelector('[data-resource-environment-editor="prod"]')&&document.activeElement===document.querySelector('[data-resource-environment-editor="prod"] input'));}else if('${screenshotMode}'==='projects'){if(!document.querySelector('#app').classList.contains('rail-expanded')){click('#toggleProjectRail');await new Promise(resolve=>setTimeout(resolve,340));}}else{click('[data-resource-plugin-id="server-app"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('应用服务器'));click('[data-detail-tab="permissions"]');await wait(()=>Boolean(document.querySelector('#pluginDetail .permissions-page')));}await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));return{mode:'${screenshotMode}',editorVisible:!document.querySelector('#pluginConfigView').classList.contains('hidden'),successfulChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.success').length,pendingChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.pending, #pluginFormDiagnostic .diagnostic-step.queued').length,visibleFooterActions:document.querySelectorAll('.plugin-form-actions>button:not(.hidden)').length};})()`);
+    const screenshotState = await win.webContents.executeJavaScript(`(async()=>{const wait=async(predicate)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: ${screenshotMode} screenshot');await new Promise(resolve=>setTimeout(resolve,20));}};const click=(selector)=>{const element=document.querySelector(selector);if(!element)throw new Error('missing screenshot target: '+selector);element.click();};const openMysql=async()=>{if(!document.querySelector('[data-resource-plugin-id="mysql-member"]')){click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('[data-resource-plugin-id="mysql-member"]'));}click('[data-resource-plugin-id="mysql-member"]');await wait(()=>document.querySelector('[data-detail-tab="configuration"]')&&document.querySelector('#pluginDetail')?.textContent.includes('会员业务库'));};if('${screenshotMode}'==='confirmation'){click('#confirmationButton');await wait(()=>!document.querySelector('#confirmationView').classList.contains('hidden')&&document.querySelector('#detailTopTabs').textContent.includes('操作确认')&&document.querySelector('[data-confirmation-card]'));}else if('${screenshotMode}'==='editor'){await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('当前为只读详情'));window.confirm=()=>true;click('[data-action="edit-plugin"]');await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden'));click('#validateMysqlDatabase');await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'));document.querySelector('#pluginFormDiagnostic').scrollIntoView({block:'center'});}else if('${screenshotMode}'==='configuration'){await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('修改名称'));}else if('${screenshotMode}'==='audit'){await openMysql();click('[data-detail-tab="audit"]');await wait(()=>!document.querySelector('#auditView').classList.contains('hidden')&&document.querySelector('#auditBody')?.textContent.includes('连接插件'));}else if('${screenshotMode}'==='resources'){if(!document.querySelector('#app').classList.contains('detail-collapsed'))click('#toggleDetailPane');await wait(()=>document.querySelector('#app').classList.contains('detail-collapsed'));const list=document.querySelector('#resourceEnvironmentList');list.scrollTop=list.scrollHeight;await wait(()=>{const row=document.querySelector('[data-resource-plugin-id="redis-cache-2"]')?.closest('.resource-plugin-row');if(!row)return false;const rowRect=row.getBoundingClientRect(),listRect=list.getBoundingClientRect();return rowRect.bottom<=listRect.bottom&&rowRect.top>=listRect.top;});}else if('${screenshotMode}'==='environment'){click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent')?.textContent.includes('环境信息'));if(!document.querySelector('[data-resource-plugin-id="server-app"]')){click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('[data-resource-plugin-id="server-app"]'));}}else if('${screenshotMode}'==='project'){click('[data-project-id="member"]');await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent')?.textContent.includes('项目信息'));}else if('${screenshotMode}'==='projects'){if(!document.querySelector('#app').classList.contains('rail-expanded')){click('#toggleProjectRail');await new Promise(resolve=>setTimeout(resolve,340));}}else{click('[data-resource-plugin-id="server-app"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('应用服务器'));click('[data-detail-tab="permissions"]');await wait(()=>Boolean(document.querySelector('#pluginDetail .permissions-page')));}await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));return{mode:'${screenshotMode}',editorVisible:!document.querySelector('#pluginConfigView').classList.contains('hidden'),successfulChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.success').length,pendingChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.pending, #pluginFormDiagnostic .diagnostic-step.queued').length,visibleFooterActions:document.querySelectorAll('.plugin-form-actions>button:not(.hidden)').length};})()`);
     if (screenshotMode === 'editor') assert.deepEqual(screenshotState,{mode:'editor',editorVisible:true,successfulChecks:3,pendingChecks:0,visibleFooterActions:3});
     win.showInactive();
     await new Promise((resolve) => setTimeout(resolve,250));
@@ -378,7 +391,8 @@ async function run() {
   win.setContentSize(960,720);
   await new Promise((resolve) => setTimeout(resolve,80));
   const compactLayout = await win.webContents.executeJavaScript(`(async()=>{const wait=async(predicate,label)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: '+label);await new Promise(resolve=>setTimeout(resolve,20));}};const click=(selector)=>{const element=document.querySelector(selector);if(!element)throw new Error('missing compact click target: '+selector);element.click();};const app=document.querySelector('#app'),rail=document.querySelector('.project-rail'),resources=document.querySelector('#resourcePane'),detail=document.querySelector('#detailPane');if(!app.classList.contains('rail-expanded')){click('#toggleProjectRail');await new Promise(resolve=>setTimeout(resolve,340));}click('[data-resource-plugin-id="server-app"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('应用服务器')&&document.querySelector('[data-detail-tab="permissions"]'),'compact plugin detail and tabs');click('[data-detail-tab="permissions"]');await wait(()=>Boolean(document.querySelector('#pluginDetail .permissions-page')),'compact permissions');await new Promise(resolve=>requestAnimationFrame(resolve));const permissionPage=document.querySelector('#pluginDetail .permissions-page'),detailContent=document.querySelector('#pluginDetail .detail-content');const connectedStyle=getComputedStyle(document.querySelector('.project-tree-item.active[data-project-state="connected"]>.project-tree-head')),disconnectedStyle=getComputedStyle(document.querySelector('.project-tree-item[data-tree-project="idle"]>.project-tree-head'));const railRect=rail.getBoundingClientRect(),resourceRect=resources.getBoundingClientRect(),detailRect=detail.getBoundingClientRect();return{expanded:app.classList.contains('rail-expanded'),railWidth:Math.round(railRect.width),resourceLeft:Math.round(resourceRect.left),detailWidth:Math.round(detailRect.width),overlaid:railRect.right>resourceRect.left,projectConnectionContrast:connectedStyle.backgroundImage!==disconnectedStyle.backgroundImage&&connectedStyle.boxShadow.includes('85, 214, 161')&&connectedStyle.boxShadow.includes('131, 124, 246'),projectLabelsFit:[...document.querySelectorAll('.rail-project-copy')].every(copy=>copy.scrollWidth<=copy.clientWidth+1),permissionFits:permissionPage.scrollWidth<=permissionPage.clientWidth&&detailContent.scrollWidth<=detailContent.clientWidth,permissionRows:permissionPage.querySelectorAll('.policy-row').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};})()`);
-  assert.deepEqual(result.environmentTabs,['运维说明','环境操作记录']);
+  assert.deepEqual(result.environmentTabs,['环境信息','运维说明','环境操作记录']);
+  assert.deepEqual(result.projectTabs,['项目信息']);
   assert.deepEqual(result.pluginTabs,['插件详情','配置','Agent 权限','操作记录']);
   assert.equal(result.selectedHeaderContinuous,true);
   assert.equal(result.compactEnvironmentActions,true);
@@ -387,13 +401,14 @@ async function run() {
   assert.ok(result.environmentHeaderHeight>=88&&result.environmentHeaderHeight<=104,'environment header should use two aligned compact rows');
   assert.equal(result.railRefined,true);
   assert.deepEqual(result.projectConnectionContrast,{statesPresent:true,distinctBackground:true,greenStateBar:true,greenSummary:true,purpleSelection:true});
-  assert.equal(result.projectActionsExposed,true);
-  assert.equal(result.environmentRenameInline,true);
+  assert.equal(result.secondPaneCommonOnly,true);
+  assert.equal(result.environmentManagementInInformation,true);
   assert.deepEqual(environmentUpdateCalls,[{projectId:'member',environmentId:'prod',patch:{name:'生产环境'},expectedRevision:1}]);
+  assert.deepEqual(projectUpdateCalls,[{projectId:'member',patch:{name:'澳大利亚-zip · 新版'},expectedRevision:2}]);
   assert.equal(result.environmentCreatedInline,true);
   assert.deepEqual(result.permissionsRefined,{hero:true,summary:4,rows:8,fits:true});
-  assert.equal(result.projectRenameInline,true);
-  assert.equal(result.projectDeleteDirect,true);
+  assert.equal(result.projectManagementInInformation,true);
+  assert.equal(result.projectDeleteFromInformation,true);
   assert.deepEqual(result.confirmationCenter,{globalEntry:true,cards:2,shellInitiallyBlocked:true,shellInlineStrongConfirmation:true,executionLinked:true,countAfterApproval:1});
   assert.deepEqual(result.configurationInline,{readonlyBeforeEdit:true,renameOnlyMetadata:true,noDialog:true,title:true,namePreserved:true,typeCardsHidden:true,credentialUnchanged:true,draftActionCollapsed:true,visibleFooterActions:3});
   assert.equal(result.diagnosticInline,true);
