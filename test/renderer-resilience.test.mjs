@@ -202,14 +202,24 @@ test('field invalidation cancels database discovery locally and ignores its late
 test('partial runtime preserves a full plugin map, while partial-to-partial replaces the preview', () => {
   const context = vm.createContext({result:null});
   install(context,['runtimeTimestamp','runtimeSnapshotIsCurrent','mergeRuntimeSnapshot']);
-  const fullPlugins = Object.fromEntries(Array.from({length:8},(_,index) => [`plugin-${index + 1}`,{phase:'connected'}]));
+  const fullPlugins = Object.fromEntries(Array.from({length:8},(_,index) => [`plugin-${index + 1}`,{
+    phase:'connected',
+    primaryStatus:{kind:'connected',label:'已连接',action:'disconnect'},
+    connectionFingerprint:String(index + 1).padStart(64,'0'),
+  }]));
   context.current = {sequence:7,plugins:fullPlugins,pluginsPartial:false,connectedCount:8};
-  context.incoming = {sequence:7,plugins:{'plugin-1':{phase:'error'},'plugin-2':{phase:'connected'}},pluginsPartial:true,connectedCount:7};
+  context.incoming = {sequence:7,plugins:{
+    'plugin-1':{phase:'error',primaryStatus:{kind:'connection-error',label:'连接失败',action:'retry'}},
+    'plugin-2':{phase:'connected',primaryStatus:{kind:'connected',label:'已连接',action:'disconnect'}},
+  },pluginsPartial:true,connectedCount:7};
   assert.equal(vm.runInContext('runtimeSnapshotIsCurrent(incoming,current)',context),true);
   vm.runInContext('result = mergeRuntimeSnapshot(incoming,current);',context);
   assert.equal(Object.keys(context.result.plugins).length,8);
   assert.equal(context.result.plugins['plugin-1'].phase,'error');
+  assert.equal(context.result.plugins['plugin-1'].primaryStatus.kind,'connection-error');
   assert.equal(context.result.plugins['plugin-8'].phase,'connected');
+  assert.equal(context.result.plugins['plugin-8'].primaryStatus.kind,'connected');
+  assert.equal(context.result.plugins['plugin-8'].connectionFingerprint,'8'.padStart(64,'0'));
   assert.equal(context.result.connectedCount,7);
   assert.equal(context.result.pluginsPartial,false);
 

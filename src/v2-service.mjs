@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { AppError, toPublicError } from './errors.mjs';
 import { OperationGate, capabilityRule } from './operation-gate.mjs';
+import { assessEnvironmentSnapshot, publicPluginAssessment } from './plugin-readiness-service.mjs';
 import { pluginWithRunbookSources } from './runbook-sources.mjs';
 
 const MAX_RUNBOOK_BYTES = 64 * 1024;
@@ -89,6 +90,23 @@ export class V2Service {
     this.operationGate = operationGate ?? new OperationGate(confirmationManager);
   }
 
+  async assessedConnection(projectId,environmentId,plugins) {
+    if (typeof this.connectionManager?.status === 'function') {
+      return this.connectionManager.status(projectId,environmentId,{plugins});
+    }
+    const runtimeSnapshot = typeof this.connectionManager?.snapshot === 'function'
+      ? this.connectionManager.snapshot(projectId,environmentId)
+      : {projectId,environmentId,phase:'disconnected',sequence:0,plugins:{}};
+    return assessEnvironmentSnapshot({plugins,runtimeSnapshot});
+  }
+
+  publicPluginsWithAssessments(plugins,connection) {
+    return plugins.map((plugin) => ({
+      ...this.workspaceStore.publicPlugin(plugin),
+      assessment:publicPluginAssessment(connection?.plugins?.[plugin.pluginInstanceId]),
+    }));
+  }
+
   async listProjects() {
     const projects = await this.workspaceStore.listProjects();
     return { projects: projects.slice(0, 200), truncated: projects.length > 200 };
@@ -111,20 +129,26 @@ export class V2Service {
       this.contextManager.invalidateEnvironment(params.projectId, params.environmentId);
       throw new AppError('RUNBOOK_TOO_LARGE', '当前环境运维说明超过 64 KiB，请精简后再让 Agent 打开环境。', { maxBytes: MAX_RUNBOOK_BYTES });
     }
+    const connection = await this.assessedConnection(
+      params.projectId,
+      params.environmentId,
+      opened.plugins,
+    );
     return {
       projectId: params.projectId,
       environment: { environmentId: opened.environment.environmentId, name: opened.environment.name },
       runbook: { content: openedRunbook.content, hash: opened.runbook.hash, empty: opened.runbook.empty, truncated: false },
-      plugins: opened.plugins.map((plugin) => this.workspaceStore.publicPlugin(plugin)),
+      plugins:this.publicPluginsWithAssessments(opened.plugins,connection),
       contextToken: opened.contextToken,
       expiresAt: opened.expiresAt,
-      connection: await this.connectionManager.status(params.projectId, params.environmentId),
+      connection,
     };
   }
 
   async listEnvironmentPlugins(params) {
     const plugins = await this.workspaceStore.listPlugins(params.projectId, params.environmentId);
-    return { plugins: plugins.map((plugin) => this.workspaceStore.publicPlugin(plugin)), connection: await this.connectionManager.status(params.projectId, params.environmentId) };
+    const connection = await this.assessedConnection(params.projectId,params.environmentId,plugins);
+    return {plugins:this.publicPluginsWithAssessments(plugins,connection),connection};
   }
 
   async addPlugin(params) {
@@ -160,8 +184,15 @@ export class V2Service {
       configState:plugin.configState, operationSummary:plugin.configState === 'ready' ? '已填写非敏感连接配置，保持断开' : '已创建待配置插件草稿',
     }).then(() => false, () => true);
     this.workspaceChanged?.({ type:'plugin-added', projectId:params.projectId, environmentId:params.environmentId, pluginInstanceId:plugin.pluginInstanceId, pluginName:plugin.displayName });
+    const catalog = typeof this.workspaceStore.listPlugins === 'function'
+      ? await this.workspaceStore.listPlugins(params.projectId,params.environmentId)
+      : [plugin];
+    const connection = await this.assessedConnection(params.projectId,params.environmentId,catalog);
     return {
-      plugin:this.workspaceStore.publicPlugin(plugin),
+      plugin:{
+        ...this.workspaceStore.publicPlugin(plugin),
+        assessment:publicPluginAssessment(connection.plugins?.[plugin.pluginInstanceId]),
+      },
       connection:'disconnected',
       contextStale:true,
       message:plugin.configState === 'ready' ? '插件已配置并保持断开，请人工点击连接。' : '插件草稿已创建，请人工补齐配置后连接。',

@@ -12,6 +12,25 @@ const CREDENTIAL_STATES = new Set(['available','missing','unreadable','unknown']
 const CREDENTIAL_INTENTS = new Set(['unchanged','replace','rebind-existing','clear-explicit']);
 const PERSISTENCE_STATES = new Set(['committed','saved-draft','edit-draft']);
 const VALIDATION_STATES = new Set(['untested','running','stale','valid','failed','cancelled']);
+const ASSESSMENT_FIELDS = [
+  'scope',
+  'recordRevision',
+  'connectionFingerprint',
+  'agentFingerprint',
+  'persistence',
+  'configuration',
+  'credential',
+  'dependency',
+  'resourceScope',
+  'validationByPurpose',
+  'runtime',
+  'providerRuntimeBlock',
+  'agent',
+  'edit',
+  'primaryStatus',
+  'configState',
+  'phase',
+];
 
 function normalizedRuntime(plugin,runtimeSnapshot = {}) {
   const source = runtimeSnapshot?.plugins?.[plugin.pluginInstanceId] ?? {};
@@ -253,9 +272,81 @@ export function assessPlugin(input) {
   return defaultAssessmentService.assess(input);
 }
 
+function summaryFor(values, pluginInstanceId) {
+  if (values instanceof Map) return values.get(pluginInstanceId) ?? null;
+  return values?.[pluginInstanceId] ?? null;
+}
+
+function fallbackRuntimeEntry(plugin,runtimeSnapshot) {
+  return {
+    pluginInstanceId:plugin.pluginInstanceId,
+    pluginType:plugin.pluginType,
+    displayName:plugin.displayName,
+    providerPluginInstanceId:plugin.transport?.kind === 'serverTunnel'
+      ? plugin.transport.serverPluginInstanceId ?? null
+      : null,
+    phase:'disconnected',
+    reason:plugin.configState === 'ready' ? null : 'PLUGIN_CONFIG_INCOMPLETE',
+    retryable:false,
+    attempt:0,
+    updatedAt:runtimeSnapshot?.updatedAt ?? null,
+  };
+}
+
+export function assessEnvironmentSnapshot({
+  plugins = [],
+  runtimeSnapshot = {},
+  assessmentService = defaultAssessmentService,
+  credentialSummaries = null,
+  persistenceSummaries = null,
+  validationsByPlugin = null,
+  resourceVerifiedByPlugin = null,
+  agentSummaries = null,
+  editSummaries = null,
+} = {}) {
+  if (!Array.isArray(plugins)) throw new TypeError('Plugins are required for environment assessment');
+  const runtimePlugins = Object.fromEntries(plugins.map((plugin) => [
+    plugin.pluginInstanceId,
+    runtimeSnapshot?.plugins?.[plugin.pluginInstanceId] ?? fallbackRuntimeEntry(plugin,runtimeSnapshot),
+  ]));
+  const completeRuntimeSnapshot = {...runtimeSnapshot,plugins:runtimePlugins};
+  const entries = Object.fromEntries(plugins.map((plugin) => {
+    const raw = runtimePlugins[plugin.pluginInstanceId];
+    const assessment = assessmentService.assess({
+      plugin,
+      environmentPlugins:plugins,
+      credentialSummary:summaryFor(credentialSummaries,plugin.pluginInstanceId),
+      persistenceSummary:summaryFor(persistenceSummaries,plugin.pluginInstanceId),
+      runtimeSnapshot:completeRuntimeSnapshot,
+      validationByPurpose:summaryFor(validationsByPlugin,plugin.pluginInstanceId),
+      resourceVerified:summaryFor(resourceVerifiedByPlugin,plugin.pluginInstanceId) ?? undefined,
+      agentSummary:summaryFor(agentSummaries,plugin.pluginInstanceId),
+      editSummary:summaryFor(editSummaries,plugin.pluginInstanceId),
+    });
+    return [plugin.pluginInstanceId,{
+      ...raw,
+      ...assessment,
+      assessment:publicPluginAssessment(assessment),
+    }];
+  }));
+  return {...runtimeSnapshot,plugins:entries};
+}
+
+export function publicPluginAssessment(value) {
+  const source = value?.assessment ?? value;
+  if (!source?.scope || !source.primaryStatus) return null;
+  return Object.fromEntries(
+    ASSESSMENT_FIELDS
+      .filter((field) => Object.hasOwn(source,field))
+      .map((field) => [field,structuredClone(source[field])]),
+  );
+}
+
 export const pluginReadinessInternals = {
+  ASSESSMENT_FIELDS,
   VALIDATION_PURPOSES,
   assessDependency,
+  fallbackRuntimeEntry,
   normalizedRuntime,
   primaryStatus,
   providerRuntimeBlock,

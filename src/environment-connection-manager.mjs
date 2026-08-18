@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { AppError, toPublicError } from './errors.mjs';
+import { assessEnvironmentSnapshot } from './plugin-readiness-service.mjs';
 
 const RETRY_DELAYS = [1_000, 2_000, 5_000, 10_000, 30_000];
 const MAX_CONNECT_DEADLINE_MS = 65_000;
@@ -70,6 +71,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
     this.workspaceStore = workspaceStore;
     this.pluginManager = pluginManager;
     this.states = new Map();
+    this.idleStates = new Map();
     this.queues = new Map();
     this.retryDelays = [...retryDelays];
     this.retryTimers = new Map();
@@ -92,6 +94,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
     this.runtimeConnectAttempts = new Map();
     this.configurationMutations = new Map();
     this.configurationJournal = configurationJournal;
+    this.pluginCatalogs = new Map();
   }
 
   async withConnectPermit(operation, { signal = null } = {}) {
@@ -247,7 +250,32 @@ export class EnvironmentConnectionManager extends EventEmitter {
   }
 
   state(projectId, environmentId) {
-    return this.states.get(this.key(projectId, environmentId)) ?? emptyState(projectId, environmentId);
+    const key = this.key(projectId,environmentId);
+    if (this.states.has(key)) return this.states.get(key);
+    if (!this.idleStates.has(key)) this.idleStates.set(key,emptyState(projectId,environmentId));
+    return this.idleStates.get(key);
+  }
+
+  rememberPlugins(projectId, environmentId, plugins) {
+    this.pluginCatalogs.set(this.key(projectId,environmentId),plugins.map((plugin) => structuredClone(plugin)));
+    return plugins;
+  }
+
+  assessedState(projectId, environmentId, state = this.state(projectId,environmentId), plugins = null) {
+    const catalog = plugins ?? this.pluginCatalogs.get(this.key(projectId,environmentId));
+    const snapshot = structuredClone(state);
+    if (!catalog) return snapshot;
+    const assessed = assessEnvironmentSnapshot({plugins:catalog,runtimeSnapshot:snapshot});
+    // Stage 3 adds a derived response only. Connection eligibility remains on
+    // the legacy committed configState until the intent coordinator lands.
+    const ready = catalog.filter((plugin) => plugin.configState === 'ready');
+    assessed.eligibleCount = ready.length;
+    assessed.draftCount = catalog.length - ready.length;
+    assessed.connectedCount = ready.filter((plugin) => assessed.plugins[plugin.pluginInstanceId]?.phase === 'connected').length;
+    assessed.errorCount = ready.filter((plugin) => assessed.plugins[plugin.pluginInstanceId]?.phase === 'error').length;
+    assessed.blockedCount = ready.filter((plugin) => assessed.plugins[plugin.pluginInstanceId]?.phase === 'blocked').length;
+    if (!assessed.desiredConnected && assessed.connectedCount === 0) assessed.phase = 'disconnected';
+    return assessed;
   }
 
   beginConfigurationMutation(projectId, environmentId, changedPluginInstanceId = null) {
@@ -255,7 +283,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
     const key = this.key(projectId, environmentId);
     if (this.configurationMutations.has(key)) throw new AppError('CONFIGURATION_UPDATING', '环境配置正在保存，请稍后重试连接。');
     const token = crypto.randomUUID();
-    const previous = this.snapshot(projectId, environmentId);
+    const previous = structuredClone(this.state(projectId, environmentId));
     this.configurationMutations.set(key, {token,previous,fencedSequence:null});
     const fenced = this.fenceConfigurationChange(projectId, environmentId, changedPluginInstanceId);
     const record = this.configurationMutations.get(key);
@@ -283,18 +311,23 @@ export class EnvironmentConnectionManager extends EventEmitter {
   }
 
   snapshot(projectId, environmentId) {
-    return structuredClone(this.state(projectId, environmentId));
+    return this.assessedState(projectId,environmentId);
   }
 
-  async status(projectId, environmentId) {
+  async status(projectId, environmentId, {plugins:providedPlugins = null} = {}) {
+    const plugins = this.rememberPlugins(
+      projectId,
+      environmentId,
+      providedPlugins ?? await this.workspaceStore.listPlugins(projectId, environmentId),
+    );
     const state = structuredClone(this.state(projectId, environmentId));
-    const plugins = await this.workspaceStore.listPlugins(projectId, environmentId);
     const pluginIds = new Set(plugins.map((plugin) => plugin.pluginInstanceId));
     for (const id of Object.keys(state.plugins)) if (!pluginIds.has(id)) delete state.plugins[id];
     for (const plugin of plugins) {
       if (!state.plugins[plugin.pluginInstanceId]) {
         state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'disconnected', {
           reason: plugin.configState === 'ready' ? null : 'PLUGIN_CONFIG_INCOMPLETE',
+          updatedAt:state.updatedAt,
         });
       }
     }
@@ -305,11 +338,14 @@ export class EnvironmentConnectionManager extends EventEmitter {
     state.errorCount = ready.filter((plugin) => state.plugins[plugin.pluginInstanceId]?.phase === 'error').length;
     state.blockedCount = ready.filter((plugin) => state.plugins[plugin.pluginInstanceId]?.phase === 'blocked').length;
     if (!state.desiredConnected && state.connectedCount === 0) state.phase = 'disconnected';
-    return structuredClone(state);
+    return this.assessedState(projectId,environmentId,state,plugins);
   }
 
   listStates() {
-    return Object.fromEntries([...this.states.entries()].map(([key, value]) => [key, structuredClone(value)]));
+    return Object.fromEntries([...this.states.entries()].map(([key, value]) => {
+      const [projectId,environmentId] = key.split('/');
+      return [key,this.assessedState(projectId,environmentId,value)];
+    }));
   }
 
   async forgetProject(projectId) {
@@ -332,6 +368,8 @@ export class EnvironmentConnectionManager extends EventEmitter {
     for (const key of this.cancelCleanups.keys()) if (key.startsWith(prefix)) this.cancelCleanups.delete(key);
     for (const key of this.runtimeConnectAttempts.keys()) if (key.startsWith(prefix)) this.runtimeConnectAttempts.delete(key);
     for (const key of this.configurationMutations.keys()) if (key.startsWith(prefix)) this.configurationMutations.delete(key);
+    for (const key of this.pluginCatalogs.keys()) if (key.startsWith(prefix)) this.pluginCatalogs.delete(key);
+    for (const key of this.idleStates.keys()) if (key.startsWith(prefix)) this.idleStates.delete(key);
   }
 
   async forgetEnvironment(projectId, environmentId) {
@@ -348,6 +386,8 @@ export class EnvironmentConnectionManager extends EventEmitter {
       if (attemptKey.startsWith(`${key}/`)) this.runtimeConnectAttempts.delete(attemptKey);
     }
     this.configurationMutations.delete(key);
+    this.pluginCatalogs.delete(key);
+    this.idleStates.delete(key);
   }
 
   enqueue(projectId, environmentId, operation) {
@@ -364,8 +404,9 @@ export class EnvironmentConnectionManager extends EventEmitter {
     this.publishSequence += 1;
     state.sequence = this.publishSequence;
     state.updatedAt = new Date().toISOString();
+    this.idleStates.delete(this.key(state.projectId,state.environmentId));
     this.states.set(this.key(state.projectId, state.environmentId), state);
-    this.emit('changed', structuredClone(state));
+    this.emit('changed', this.assessedState(state.projectId,state.environmentId,state));
   }
 
   aggregate(state, plugins) {
@@ -385,7 +426,11 @@ export class EnvironmentConnectionManager extends EventEmitter {
   async prepare(projectId, environmentId, expectedRevision = null) {
     const environment = await this.workspaceStore.getEnvironment(projectId, environmentId);
     if (expectedRevision !== null && environment.revision !== expectedRevision) throw new AppError('CONFIG_REVISION_CONFLICT', '环境配置已经变化，请刷新后重试。');
-    const plugins = await this.workspaceStore.listPlugins(projectId, environmentId);
+    const plugins = this.rememberPlugins(
+      projectId,
+      environmentId,
+      await this.workspaceStore.listPlugins(projectId, environmentId),
+    );
     const ready = plugins.filter((plugin) => plugin.configState === 'ready');
     if (!ready.length) throw new AppError('NO_CONNECTABLE_PLUGIN', '当前环境没有配置完整的插件。');
     const byId = new Map(plugins.map((plugin) => [plugin.pluginInstanceId, plugin]));

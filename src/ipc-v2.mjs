@@ -3,6 +3,11 @@ import { AppError, toPublicError } from './errors.mjs';
 import { legacyCredentialConfigForPlugin } from './credential-store.mjs';
 import { CredentialUseResolver } from './credential-use-resolver.mjs';
 import { pluginCredentialInternals } from './plugin-credential-vault.mjs';
+import {
+  assessEnvironmentSnapshot,
+  assessPlugin,
+  publicPluginAssessment,
+} from './plugin-readiness-service.mjs';
 import { workspaceInternals } from './workspace-store.mjs';
 import { WorkspaceMutationCoordinator } from './workspace-mutation-coordinator.mjs';
 
@@ -89,6 +94,36 @@ function assertCredentialFreeUpdate(payload, label) {
   }
 }
 
+const SECRET_DRAFT_FIELDS = new Set([
+  'password',
+  'proxypassword',
+  'privatekeypassphrase',
+  'tlspassphrase',
+  'capem',
+  'clientcertpem',
+  'clientkeypem',
+  'ciphertext',
+  'secrets',
+  'temporarysecrets',
+]);
+
+function assertSecretFreeDraft(draft) {
+  const pending = [draft];
+  const visited = new WeakSet();
+  while (pending.length) {
+    const value = pending.pop();
+    if (!value || typeof value !== 'object') continue;
+    if (visited.has(value)) continue;
+    visited.add(value);
+    for (const [key,item] of Object.entries(value)) {
+      if (SECRET_DRAFT_FIELDS.has(key.toLocaleLowerCase('en-US'))) {
+        throw new AppError('INVALID_ARGUMENT','Assessment draft 不能包含凭据或密文字段。',{field:key});
+      }
+      if (item && typeof item === 'object') pending.push(item);
+    }
+  }
+}
+
 export function registerV2Ipc(ipcMain, services) {
   const { workspaceStore: store, connectionManager, credentialVault, legacyCredentialStore, configTransactionJournal, contextManager, confirmationManager, pluginManager, mysqlRuntime } = services;
   const credentialUseResolver = services.credentialUseResolver ?? new CredentialUseResolver(credentialVault);
@@ -98,6 +133,22 @@ export function registerV2Ipc(ipcMain, services) {
   const enqueuePluginMutation = (projectId,environmentId,operation) => (
     mutationCoordinator.enqueueEnvironmentMutation(projectId,environmentId,operation)
   );
+  const environmentAssessmentSnapshot = async (projectId,environmentId,plugins = null) => {
+    if (typeof connectionManager.status === 'function') {
+      return connectionManager.status(projectId,environmentId,plugins ? {plugins} : undefined);
+    }
+    const catalog = plugins ?? (typeof store.listPlugins === 'function'
+      ? await store.listPlugins(projectId,environmentId)
+      : null);
+    const runtime = typeof connectionManager.snapshot === 'function'
+      ? connectionManager.snapshot(projectId,environmentId)
+      : {projectId,environmentId,phase:'disconnected',sequence:0,plugins:{}};
+    return catalog ? assessEnvironmentSnapshot({plugins:catalog,runtimeSnapshot:runtime}) : runtime;
+  };
+  const pluginWithAssessment = (plugin,snapshot) => ({
+    ...plugin,
+    assessment:publicPluginAssessment(snapshot?.plugins?.[plugin.pluginInstanceId]),
+  });
   const withConfigurationMutation = async (projectId, environmentId, changedPluginInstanceId, operation) => {
     const token = connectionManager.beginConfigurationMutation?.(projectId, environmentId, changedPluginInstanceId) ?? null;
     let restoreOnFailure = false;
@@ -256,13 +307,17 @@ export function registerV2Ipc(ipcMain, services) {
     const projects = typeof store.listProjectOverviews === 'function'
       ? await store.listProjectOverviews()
       : await Promise.all((await store.listProjects()).map(async (project) => ({ ...project, environments:await store.listEnvironments(project.projectId) })));
-    return projects.map((project) => ({
+    return Promise.all(projects.map(async (project) => ({
       ...project,
-      environments: (project.environments ?? []).map((environment) => {
-          const runtime = connectionManager.snapshot(project.projectId, environment.environmentId);
+      environments: await Promise.all((project.environments ?? []).map(async (environment) => {
+          const runtime = await environmentAssessmentSnapshot(project.projectId, environment.environmentId);
           const previewIds = new Set((environment.resourcePreview ?? []).map((plugin) => plugin.pluginInstanceId));
+          const resourcePreview = (environment.resourcePreview ?? []).map((plugin) => (
+            pluginWithAssessment(plugin,runtime)
+          ));
           return {
             ...environment,
+            resourcePreview,
             runtime: {
               ...runtime,
               // Project overview only renders the preview resources. Keep the
@@ -274,8 +329,8 @@ export function registerV2Ipc(ipcMain, services) {
               draftCount: environment.pluginCount - environment.readyPluginCount,
             },
           };
-        }),
-    }));
+        })),
+    })));
   });
   handle('project-create', async (input) => {
     const candidateId = workspaceInternals.normalizeId(input?.projectId ?? input?.name, 'project');
@@ -374,7 +429,7 @@ export function registerV2Ipc(ipcMain, services) {
   });
   handle('environment-disconnect', ({ projectId, environmentId }) => connectionManager.disconnect(projectId, environmentId));
   handle('environment-cancel', ({ projectId, environmentId }) => connectionManager.cancel(projectId, environmentId));
-  handle('environment-status', ({ projectId, environmentId }) => connectionManager.status(projectId, environmentId));
+  handle('environment-status', ({ projectId, environmentId }) => environmentAssessmentSnapshot(projectId, environmentId));
   handle('plugin-connect', ({ projectId, environmentId, pluginInstanceId }) => {
     assertProjectAvailable(projectId);
     return connectionManager.connectPlugin(projectId, environmentId, pluginInstanceId);
@@ -387,7 +442,49 @@ export function registerV2Ipc(ipcMain, services) {
     await store.appendAudit(projectId, { type:'runbook-updated', environmentId, actor:'user', result:'success', bytes:Buffer.byteLength(String(content ?? ''),'utf8') }).catch(() => undefined);
     return value;
   }));
-  handle('plugin-list', ({ projectId, environmentId }) => store.listPlugins(projectId, environmentId));
+  handle('plugin-list', async ({ projectId, environmentId }) => {
+    const plugins = await store.listPlugins(projectId,environmentId);
+    const snapshot = await environmentAssessmentSnapshot(projectId,environmentId,plugins);
+    return plugins.map((plugin) => pluginWithAssessment(plugin,snapshot));
+  });
+  handle('plugin-assess', async ({
+    projectId,
+    environmentId,
+    pluginInstanceId,
+    editSessionId = null,
+    draft = null,
+  }) => {
+    await store.getEnvironment(projectId,environmentId);
+    const plugins = await store.listPlugins(projectId,environmentId);
+    const existing = plugins.find((plugin) => plugin.pluginInstanceId === pluginInstanceId);
+    if (!existing) throw new AppError('PLUGIN_NOT_FOUND','插件不存在。');
+    if (!draft) {
+      const snapshot = await environmentAssessmentSnapshot(projectId,environmentId,plugins);
+      return publicPluginAssessment(snapshot.plugins?.[pluginInstanceId]);
+    }
+    assertSecretFreeDraft(draft);
+    if (draft.pluginType && draft.pluginType !== existing.pluginType) {
+      throw new AppError('INVALID_ARGUMENT','不能修改插件类型。');
+    }
+    const candidate = workspaceInternals.normalizePluginCandidate(
+      {...draft,pluginInstanceId,pluginType:existing.pluginType},
+      {projectId,environmentId},
+      existing,
+    );
+    const environmentPlugins = plugins.map((plugin) => (
+      plugin.pluginInstanceId === pluginInstanceId ? candidate : plugin
+    ));
+    const runtimeSnapshot = typeof connectionManager.snapshot === 'function'
+      ? connectionManager.snapshot(projectId,environmentId)
+      : {projectId,environmentId,phase:'disconnected',sequence:0,plugins:{}};
+    return assessPlugin({
+      plugin:candidate,
+      environmentPlugins,
+      runtimeSnapshot,
+      persistenceSummary:{state:'edit-draft',dirty:true},
+      editSummary:{state:'editing',editSessionId},
+    });
+  });
   handle('plugin-create', ({ projectId, environmentId, input, secrets }) => enqueuePluginMutation(projectId, environmentId, () => withConfigurationMutation(projectId, environmentId, null, async () => {
     const plugin = await store.createPlugin(projectId, environmentId, input);
     try {
@@ -750,7 +847,7 @@ export function registerV2Ipc(ipcMain, services) {
     })
   )));
 
-  connectionManager.on('changed', (state) => services.broadcast?.('v2:environment-status-changed', state));
+  connectionManager.on('changed', (state) => services.broadcast?.('v2:environment-status-changed',state));
   confirmationManager.on('changed', (pending) => services.broadcast?.('v2:confirmations-changed', pending));
   return services;
 }

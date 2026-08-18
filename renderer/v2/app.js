@@ -1,3 +1,5 @@
+import { pluginConnectionViewModel } from './connection-view-model.js';
+
 const api = window.aiOps.v2;
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -1020,16 +1022,21 @@ function resourceTargetText(resource) {
 }
 
 function resourcePhase(resource,runtime) {
-  if (resource.configState !== 'ready') return 'draft';
-  return runtime.plugins?.[resource.pluginInstanceId]?.phase ?? 'disconnected';
+  return pluginConnectionViewModel(
+    resource,
+    runtime.plugins?.[resource.pluginInstanceId] ?? {phase:'disconnected'},
+  ).stateClass;
 }
 
-function resourceAction(resource,phase) {
-  if (resource.configState !== 'ready') return { action:'configure',label:'待完善',disabled:true };
-  if (phase === 'connected') return { action:'disconnect',label:'断开',disabled:false };
-  if (['connecting','waitingDependency','reconnecting'].includes(phase)) return { action:'connect',label:'连接中',disabled:true };
-  if (phase === 'disconnecting') return { action:'disconnect',label:'断开中',disabled:true };
-  if (['failed','error','blocked'].includes(phase)) return { action:'connect',label:'重试',disabled:false };
+function resourceAction(resource,phase,runtimeEntry = null) {
+  const presentation = pluginConnectionViewModel(resource,runtimeEntry ?? {phase});
+  if (presentation.action === 'continue-configuration') return {action:'configure',label:'待完善',disabled:true};
+  if (presentation.action === 'view-provider') return {action:'configure',label:'依赖不可用',disabled:true};
+  if (presentation.action === 'view-recovery') return {action:'configure',label:'需要恢复',disabled:true};
+  if (presentation.action === 'disconnect') return {action:'disconnect',label:'断开',disabled:false};
+  if (presentation.action === 'retry') return {action:'connect',label:'重试',disabled:false};
+  if (presentation.action === 'cancel') return {action:'connect',label:presentation.label,disabled:true};
+  if (!presentation.action) return {action:'connect',label:presentation.label,disabled:true};
   return { action:'connect',label:'连接',disabled:false };
 }
 
@@ -1040,8 +1047,9 @@ function renderEnvironmentResources(projectId,environment,runtime) {
     return `<div class="environment-resource-empty"><span>${message}</span><button class="environment-resource-add" data-overview-project-id="${escapeAttr(projectId)}" data-overview-environment-id="${escapeAttr(environment.environmentId)}" data-overview-add-resource>添加资源</button></div>`;
   }
   const rows = resources.map((resource) => {
+    const runtimeEntry = runtime.plugins?.[resource.pluginInstanceId] ?? {phase:'disconnected'};
     const phase = resourcePhase(resource,runtime);
-    const action = resourceAction(resource,phase);
+    const action = resourceAction(resource,phase,runtimeEntry);
     const actionTitle = action.action === 'disconnect' ? '断开此资源；依赖它的资源也可能同时断开' : '单独连接此资源；需要的隧道会自动建立';
     const busy = runtimeActionInFlight(projectId,environment.environmentId,action.action,resource.pluginInstanceId);
     const diagnosticPending = scopeDiagnosticPending(projectId,environment.environmentId,resource.pluginInstanceId);
@@ -1236,20 +1244,24 @@ function resourcePluginTarget(plugin) {
 }
 
 function resourcePluginPhase(plugin,runtime) {
-  if (plugin.configState !== 'ready') return 'draft';
-  return runtime.plugins?.[plugin.pluginInstanceId]?.phase ?? 'disconnected';
+  return pluginConnectionViewModel(
+    plugin,
+    runtime.plugins?.[plugin.pluginInstanceId] ?? {phase:'disconnected'},
+  ).stateClass;
 }
 
 function renderResourcePlugin(projectId,environment,plugin,runtime) {
+  const runtimeEntry = runtime.plugins?.[plugin.pluginInstanceId] ?? {phase:'disconnected'};
+  const presentation = pluginConnectionViewModel(plugin,runtimeEntry);
   const phase = resourcePluginPhase(plugin,runtime);
-  const action = resourceAction(plugin,phase);
+  const action = resourceAction(plugin,phase,runtimeEntry);
   const selected = state.selectionKind === 'plugin' && environment.environmentId === state.environmentId && plugin.pluginInstanceId === state.pluginId;
   const approvalScope = confirmationScopeData('plugin',projectId,environment.environmentId,plugin.pluginInstanceId);
   const approvals = confirmationCount(approvalScope);
   const busy = runtimeActionInFlight(projectId,environment.environmentId,action.action,plugin.pluginInstanceId);
   const diagnosticPending = scopeDiagnosticPending(projectId,environment.environmentId,plugin.pluginInstanceId);
   const approvalButton = approvals ? `<button class="scope-confirmation-badge compact" ${confirmationScopeAttributes(approvalScope)} title="查看${plugin.displayName}的待确认操作" aria-label="${plugin.displayName}有${approvals}项操作待确认">${icon('shield')}<span>${approvals}</span></button>` : '';
-  return `<div class="resource-plugin-row ${selected ? 'selected' : ''}"><button class="resource-plugin-open" data-resource-project-id="${escapeAttr(projectId)}" data-resource-environment-id="${escapeAttr(environment.environmentId)}" data-resource-plugin-id="${escapeAttr(plugin.pluginInstanceId)}"><span class="resource-plugin-icon ${escapeAttr(plugin.pluginType)}">${icon(typeIcons[plugin.pluginType] ?? 'plug')}</span><span class="resource-plugin-copy"><strong>${escapeHtml(plugin.displayName)}</strong><small>${escapeHtml(resourcePluginTarget(plugin))}</small></span><span class="state-dot ${escapeAttr(phase)}" title="${escapeAttr(plugin.configState === 'ready' ? phaseNames[phase] ?? phase : '待配置')}"></span></button>${approvalButton}<button class="resource-plugin-action ${escapeAttr(phase)}" data-overview-project-id="${escapeAttr(projectId)}" data-overview-environment-id="${escapeAttr(environment.environmentId)}" data-overview-plugin-id="${escapeAttr(plugin.pluginInstanceId)}" data-overview-plugin-action="${escapeAttr(action.action)}" ${action.disabled || busy || diagnosticPending ? 'disabled aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${escapeHtml(action.label)}</button></div>`;
+  return `<div class="resource-plugin-row ${selected ? 'selected' : ''}"><button class="resource-plugin-open" data-resource-project-id="${escapeAttr(projectId)}" data-resource-environment-id="${escapeAttr(environment.environmentId)}" data-resource-plugin-id="${escapeAttr(plugin.pluginInstanceId)}"><span class="resource-plugin-icon ${escapeAttr(plugin.pluginType)}">${icon(typeIcons[plugin.pluginType] ?? 'plug')}</span><span class="resource-plugin-copy"><strong>${escapeHtml(plugin.displayName)}</strong><small>${escapeHtml(resourcePluginTarget(plugin))}</small></span><span class="state-dot ${escapeAttr(phase)}" title="${escapeAttr(presentation.label)}"></span></button>${approvalButton}<button class="resource-plugin-action ${escapeAttr(phase)}" data-overview-project-id="${escapeAttr(projectId)}" data-overview-environment-id="${escapeAttr(environment.environmentId)}" data-overview-plugin-id="${escapeAttr(plugin.pluginInstanceId)}" data-overview-plugin-action="${escapeAttr(action.action)}" ${action.disabled || busy || diagnosticPending ? 'disabled aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${escapeHtml(action.label)}</button></div>`;
 }
 
 function environmentActionLabel(action) {
@@ -1543,8 +1555,9 @@ function renderPlugins() {
 
 function pluginItem(plugin) {
   const runtime = pluginRuntime(plugin.pluginInstanceId);
-  const status = plugin.configState === 'ready' ? (phaseNames[runtime.phase] ?? runtime.phase) : '待配置';
-  const stateClass = plugin.configState === 'ready' ? runtime.phase : 'draft';
+  const presentation = pluginConnectionViewModel(plugin,runtime);
+  const status = presentation.label;
+  const stateClass = presentation.stateClass;
   return `<button class="plugin-item ${plugin.pluginInstanceId === state.pluginId ? 'active' : ''}" data-plugin-id="${escapeAttr(plugin.pluginInstanceId)}"><span class="plugin-icon">${icon(typeIcons[plugin.pluginType])}</span><span class="plugin-copy"><strong>${escapeHtml(plugin.displayName)}</strong><small>${escapeHtml(pluginTarget(plugin))}</small></span><span class="state-dot ${escapeAttr(stateClass)}" title="${escapeAttr(status)}"></span></button>`;
 }
 
@@ -1553,6 +1566,7 @@ function renderPluginDetail() {
   const plugin = activePlugin();
   if (!plugin) { $('#pluginDetail').innerHTML = '<div class="detail-empty"><div>选择一个插件查看详情</div></div>'; return; }
   const runtime = pluginRuntime(plugin.pluginInstanceId);
+  const presentation = pluginConnectionViewModel(plugin,runtime);
   const tab = detailTab(plugin);
   const connectBusy = runtimeActionInFlight(plugin.projectId,plugin.environmentId,'connect',plugin.pluginInstanceId);
   const disconnectBusy = runtimeActionInFlight(plugin.projectId,plugin.environmentId,'disconnect',plugin.pluginInstanceId);
@@ -1560,14 +1574,15 @@ function renderPluginDetail() {
   const diagnosticBusy = state.pluginDiagnostics[pluginStateKey(plugin)]?.status === 'pending';
   state.detailTabs[pluginStateKey(plugin)] = tab;
   const error = runtime.error?.message ? `<div class="inline-error"><span>${escapeHtml(runtime.error.message)}</span>${runtime.reason === 'SSH_HOST_KEY_CONFIRM_REQUIRED' ? `<button class="button small" data-action="trust-host" ${trustBusy || diagnosticBusy ? 'disabled' : ''}${trustBusy ? ' aria-busy="true"' : ''}>确认指纹并重试</button>` : `<button class="button small" data-action="test-plugin" ${runtimeBlocksDiagnostic(plugin) ? 'disabled' : ''}>检查连接</button>`}</div>` : '';
-  const connected = ['connected','connecting','reconnecting','waitingDependency'].includes(runtime.phase);
-  const runtimeAction = plugin.configState !== 'ready'
+  const runtimeAction = presentation.action === 'continue-configuration'
     ? `<button class="button primary" data-action="edit-plugin">${mysqlDatabaseSelectionPending(plugin) ? '选择数据库' : '完善配置'}</button>`
-    : connected
+    : presentation.action === 'disconnect'
     ? `<button class="button" data-action="disconnect-plugin" ${disconnectBusy || diagnosticBusy ? 'disabled' : ''}${disconnectBusy ? ' aria-busy="true"' : ''}>断开</button>`
-    : `<button class="button primary" data-action="connect-plugin" ${connectBusy || diagnosticBusy ? 'disabled' : ''}${connectBusy ? ' aria-busy="true"' : ''}>连接</button>`;
-  const status = plugin.configState === 'ready' ? (phaseNames[runtime.phase] ?? runtime.phase) : '待配置';
-  const stateClass = plugin.configState === 'ready' ? runtime.phase : 'draft';
+    : ['connect','retry'].includes(presentation.action)
+    ? `<button class="button primary" data-action="connect-plugin" ${connectBusy || diagnosticBusy ? 'disabled' : ''}${connectBusy ? ' aria-busy="true"' : ''}>${presentation.action === 'retry' ? '重试' : '连接'}</button>`
+    : `<button class="button" disabled aria-disabled="true">${escapeHtml(presentation.label)}</button>`;
+  const status = presentation.label;
+  const stateClass = presentation.stateClass;
   const approvalScope = confirmationScopeData('plugin',plugin.projectId,plugin.environmentId,plugin.pluginInstanceId);
   const approvals = confirmationCount(approvalScope);
   const approvalButton = approvals ? `<button class="detail-confirmation-badge" ${confirmationScopeAttributes(approvalScope)}>${icon('shield')}<span>${approvals} 项待确认</span></button>` : '';
@@ -1577,8 +1592,9 @@ function renderPluginDetail() {
 
 function renderConfiguration(plugin) {
   const target = plugin.target ?? {};
+  const presentation = pluginConnectionViewModel(plugin,pluginRuntime(plugin.pluginInstanceId));
   const rows = [
-    ['配置完整性',plugin.configState === 'ready' ? '已配置' : '待完善'],
+    ['配置完整性',presentation.configurationState === 'complete' ? '已配置' : '待完善'],
     ['主机',target.host ? `${target.host}:${target.port ?? ''}` : '未配置'],
     ['连接方式',plugin.pluginType === 'server' ? uplinkName(plugin) : transportName(plugin)],
     ['地址族',familyName(target.addressFamily)],
@@ -2388,7 +2404,7 @@ async function savePlugin() {
     const canTestSavedConfiguration = pluginDiagnosticAvailable(plugin);
     state.detailTabs[pluginStateKey(plugin)] = canTestSavedConfiguration ? 'connection' : 'configuration';
     renderShell();
-    toast(runtimeWarningMessage ?? (plugin.configState === 'ready'
+    toast(runtimeWarningMessage ?? (pluginConnectionViewModel(plugin).configurationState === 'complete'
       ? '配置已保存；现在可以测试或连接。'
       : canTestSavedConfiguration
       ? '配置已保存；可以先测试基础连接，再补充业务范围。'
@@ -3000,7 +3016,9 @@ async function handleEnvironmentRuntimeAction(action,projectId,environmentId) {
   if (action === 'configure') {
     const opened = await openScope(projectId,environmentId);
     if (!opened || state.projectId !== projectId || state.environmentId !== environmentId || state.projectOverviewActive) return;
-    const incomplete = state.plugins.find((plugin) => plugin.configState !== 'ready');
+    const incomplete = state.plugins.find((plugin) => (
+      pluginConnectionViewModel(plugin,pluginRuntime(plugin.pluginInstanceId)).configurationState !== 'complete'
+    ));
     if (incomplete) {
       state.pluginId = incomplete.pluginInstanceId;
       state.selectionKind = 'plugin';

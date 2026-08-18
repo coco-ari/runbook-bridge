@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('aiOps', {
     readRunbook: (payload) => ipcRenderer.invoke('v2:runbook-read', payload),
     saveRunbook: (payload) => ipcRenderer.invoke('v2:runbook-save', payload),
     listPlugins: (payload) => ipcRenderer.invoke('v2:plugin-list', payload),
+    assessPlugin: (payload) => ipcRenderer.invoke('v2:plugin-assess', payload),
     createPlugin: (payload) => ipcRenderer.invoke('v2:plugin-create', payload),
     updatePlugin: (payload) => ipcRenderer.invoke('v2:plugin-update', payload),
     updatePluginMetadata: (payload) => ipcRenderer.invoke('v2:plugin-metadata-update', payload),
