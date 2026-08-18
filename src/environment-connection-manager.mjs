@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { AppError, toPublicError } from './errors.mjs';
 
 const RETRY_DELAYS = [1_000, 2_000, 5_000, 10_000, 30_000];
+const MAX_CONNECT_DEADLINE_MS = 65_000;
 const TERMINAL_ERRORS = new Set([
   'AUTHENTICATION_FAILED', 'SSH_AUTH_FAILED', 'SSH_HOST_KEY_CHANGED', 'SSH_HOST_KEY_CONFIRM_REQUIRED',
   'TLS_IDENTITY_FAILED', 'CREDENTIAL_UNAVAILABLE', 'CREDENTIAL_BINDING_MISMATCH',
@@ -52,7 +53,7 @@ function isRetryable(error) {
 }
 
 export class EnvironmentConnectionManager extends EventEmitter {
-  constructor(workspaceStore, pluginManager, { retryDelays = RETRY_DELAYS, maxConcurrency = 4 } = {}) {
+  constructor(workspaceStore, pluginManager, { retryDelays = RETRY_DELAYS, maxConcurrency = 4, connectDeadlineMs = null } = {}) {
     super();
     this.workspaceStore = workspaceStore;
     this.pluginManager = pluginManager;
@@ -62,6 +63,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
     this.retryTimers = new Map();
     this.networkEpoch = 0;
     this.maxConcurrency = Math.max(1, Number(maxConcurrency) || 4);
+    this.connectDeadlineMs = Number.isFinite(connectDeadlineMs) && connectDeadlineMs > 0 ? connectDeadlineMs : null;
     this.activeConnects = 0;
     this.connectWaiters = [];
   }
@@ -73,6 +75,35 @@ export class EnvironmentConnectionManager extends EventEmitter {
     finally {
       this.activeConnects -= 1;
       this.connectWaiters.shift()?.();
+    }
+  }
+
+  async connectRuntime(plugin, secrets = {}) {
+    const configured = Number(plugin.limits?.timeoutMs ?? 10_000);
+    const deadlineMs = this.connectDeadlineMs ?? Math.min(Math.max(configured + 5_000, 5_000), MAX_CONNECT_DEADLINE_MS);
+    let timer = null;
+    let timedOut = false;
+    const pending = Promise.resolve().then(() => this.pluginManager.connect(plugin, secrets));
+    try {
+      return await Promise.race([
+        pending,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            reject(new AppError('CONNECT_TIMEOUT', `连接 ${plugin.displayName} 超时，请检查网络后重试。`));
+          }, deadlineMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (timedOut) {
+        // A driver may finish after its caller has timed out. Fence that late
+        // session so it cannot silently become usable while the UI says failed.
+        void pending.then(
+          () => this.pluginManager.disconnect(plugin, 'late-connect-timeout'),
+          () => this.pluginManager.disconnect(plugin, 'connect-timeout-cleanup'),
+        ).catch(() => undefined);
+      }
     }
   }
 
@@ -222,7 +253,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
         state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'connecting', { attempt: (state.plugins[plugin.pluginInstanceId]?.attempt ?? 0) + 1 });
         this.publish(state);
         try {
-          const result = await this.withConnectPermit(() => this.pluginManager.connect(plugin, secretsByPlugin[plugin.pluginInstanceId] ?? {}));
+          const result = await this.withConnectPermit(() => this.connectRuntime(plugin, secretsByPlugin[plugin.pluginInstanceId] ?? {}));
           if (state.connectAttemptId !== attemptId || !state.desiredConnected) {
             await this.pluginManager.disconnect(plugin, 'stale-connect-result');
             return false;
@@ -293,7 +324,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
         state.plugins[id] = pluginState(plugin, 'connecting', { attempt:(state.plugins[id]?.attempt ?? 0) + 1 });
         this.publish(state);
         try {
-          const result = await this.withConnectPermit(() => this.pluginManager.connect(plugin));
+          const result = await this.withConnectPermit(() => this.connectRuntime(plugin));
           state.plugins[id] = pluginState(plugin, 'connected', { connectedAt:result.connectedAt, routeGeneration:result.routeGeneration ?? result.generation ?? 0 });
         } catch (error) {
           const value = toPublicError(error);

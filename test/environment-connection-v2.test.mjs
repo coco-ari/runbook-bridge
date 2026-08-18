@@ -101,3 +101,26 @@ test('single plugin controls connect tunnel dependencies and preserve manual dis
   assert.equal(disconnected.plugins.mysql.reason,'USER_DISCONNECTED');
   assert.equal(disconnected.desiredConnected,false);
 });
+
+test('a stalled single-plugin connection times out and releases the environment queue', async () => {
+  const mysql={...plugin('mysql','mysql'),limits:{timeoutMs:5000}};
+  const plugins=[mysql];
+  let connectCalls=0;
+  let disconnectCalls=0;
+  const store={getEnvironment:async()=>({revision:1}),listPlugins:async()=>plugins,getPlugin:async()=>mysql,appendAudit:async()=>{}};
+  const runtime={
+    connect:async()=>{ connectCalls+=1; return new Promise(()=>{}); },
+    disconnect:async()=>{ disconnectCalls+=1; },
+    closeAll:async()=>{},
+  };
+  const manager=new EnvironmentConnectionManager(store,runtime,{retryDelays:[],connectDeadlineMs:20});
+  const failed=await manager.connectPlugin('p1','e1','mysql');
+  assert.equal(failed.phase,'failed');
+  assert.equal(failed.plugins.mysql.phase,'error');
+  assert.equal(failed.plugins.mysql.reason,'CONNECT_TIMEOUT');
+  assert.equal(connectCalls,1);
+
+  const disconnected=await manager.disconnectPlugin('p1','e1','mysql');
+  assert.equal(disconnected.phase,'disconnected','the timeout must release the environment queue');
+  assert.equal(disconnectCalls,1);
+});

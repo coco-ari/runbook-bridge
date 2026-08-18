@@ -67,10 +67,17 @@ export class RedisPluginRuntime extends EventEmitter {
     const relay = await this.routeManager.createRelay(plugin);
     const tls = plugin.tls?.mode && plugin.tls.mode !== 'disabled';
     const client = this.factory({
+      // RESP3 starts with HELLO, which Redis < 6 and some compatible servers
+      // do not implement. The exposed operations only need RESP2 semantics.
+      RESP: 2,
+      maintNotifications: 'disabled',
       socket: {
         host: relay.host,
         port: relay.port,
         connectTimeout: plugin.limits.timeoutMs,
+        // EnvironmentConnectionManager owns reconnect intent and backoff. The
+        // driver must return handshake/authentication failures to it promptly.
+        reconnectStrategy: false,
         ...(tls
           ? {
               tls: true,
