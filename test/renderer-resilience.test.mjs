@@ -10,7 +10,7 @@ const rendererPath = path.join(testDirectory,'..','renderer','v2','app.js');
 const renderer = await fs.readFile(rendererPath,'utf8');
 
 function functionSource(name) {
-  const marker = `function ${name}`;
+  const marker = `function ${name}(`;
   let start = renderer.indexOf(marker);
   assert.notEqual(start,-1,`${name} must remain available for renderer regression tests`);
   if (renderer.slice(Math.max(0,start - 6),start) === 'async ') start -= 6;
@@ -84,7 +84,7 @@ function selectElement(optionValues = [''],selectedValue = optionValues[0] ?? ''
   return element;
 }
 
-function databaseRendererHarness(listPluginDatabases,{selectedDatabase = 'orders',savedDatabase = selectedDatabase} = {}) {
+function databaseRendererHarness(validatePluginDraft,{selectedDatabase = 'orders',savedDatabase = selectedDatabase} = {}) {
   const busyElement = (textContent = '') => ({
     disabled:false,textContent,attributes:new Set(),
     setAttribute(name) { this.attributes.add(name); },
@@ -96,27 +96,33 @@ function databaseRendererHarness(listPluginDatabases,{selectedDatabase = 'orders
     pluginTransport:{value:'direct'},pluginProvider:{value:''},pluginVpnAlias:{value:''},pluginTls:{value:'disabled'},
     pluginPassword:{value:'',dataset:{credentialState:'empty'}},
     pluginDatabase:selectElement(selectedDatabase ? ['',selectedDatabase] : [''],selectedDatabase),
-    databaseHint:{textContent:''},queryDatabases:busyElement('查询数据库'),savePlugin:busyElement(),
+    databaseHint:{textContent:''},queryDatabases:busyElement('加载数据库'),savePlugin:busyElement(),
   };
   const state = {
     projectId:'project',environmentId:'environment',
     editingPlugin:{pluginInstanceId:'mysql',pluginType:'mysql',target:{database:savedDatabase}},
     databaseDiscoverySignature:null,databaseCredentialRevision:0,databaseQueryGeneration:0,credentialProbeGeneration:4,
+    pluginValidationSequence:0,
+    pluginEditSession:{editSessionId:'edit-1',draftGeneration:0,validations:{}},
   };
   const context = vm.createContext({
-    state,api:{listPluginDatabases},
+    state,api:{validatePluginDraft,cancelPluginValidation:async () => ({ok:true,data:{state:'cancelled'}})},
     $:(selector) => elements[selector.slice(1)],
+    pluginFormPayload:() => ({
+      input:{pluginType:'mysql',displayName:'Orders',target:{host:elements.pluginHost.value,port:3306,database:elements.pluginDatabase.value,addressFamily:'ipv4Preferred'},auth:{username:'reader'},transport:{kind:'direct'},tls:{mode:'disabled'}},
+      secrets:{},credentialIntent:'unchanged',
+    }),
     clearPluginFormError:() => {},pluginFormActive:() => true,pluginFormVisible:() => true,
     scopeMatches:(scope) => scope.projectId === state.projectId && scope.environmentId === state.environmentId,
     escapeAttr:(value) => String(value),escapeHtml:(value) => String(value),
   });
-  install(context,['call','setElementBusy','editedPasswordValue','databaseConnectionSignature','invalidateDatabaseDiscovery','queryDatabases']);
+  install(context,['call','setElementBusy','editedPasswordValue','pluginValidationPurpose','pluginValidationResultMatches','activePluginValidation','cancelLocalPluginValidation','databaseConnectionSignature','invalidateDatabaseDiscovery','queryDatabases']);
   state.databaseDiscoverySignature = vm.runInContext('databaseConnectionSignature()',context);
   return {context,elements,state};
 }
 
 test('database discovery invalidation preserves the selected database and unlocks local work', () => {
-  const {context,elements,state} = databaseRendererHarness(async () => ({ok:true,data:{databases:[],truncated:false}}));
+  const {context,elements,state} = databaseRendererHarness(async () => ({ok:true,data:{editSessionId:'edit-1',requestId:'validation-1',operationId:'operation-1',purpose:'resource-discovery',draftGeneration:0,configDigest:'digest-1',state:'valid',result:{databases:[],truncated:false}}}));
   elements.queryDatabases.disabled = true;
   elements.queryDatabases.textContent = '查询中…';
   elements.savePlugin.disabled = true;
@@ -127,7 +133,7 @@ test('database discovery invalidation preserves the selected database and unlock
   assert.equal(elements.pluginDatabase.value,'orders');
   assert.equal(elements.pluginDatabase.disabled,false);
   assert.equal(elements.queryDatabases.disabled,false);
-  assert.equal(elements.queryDatabases.textContent,'查询数据库');
+  assert.equal(elements.queryDatabases.textContent,'加载数据库');
   assert.equal(elements.savePlugin.disabled,false);
   assert.equal(state.databaseQueryGeneration,1);
   assert.equal(state.databaseDiscoverySignature,null);
@@ -136,8 +142,8 @@ test('database discovery invalidation preserves the selected database and unlock
 
 test('database candidate refresh preserves the current draft selection for empty and changed lists', async () => {
   const responses = [
-    {ok:true,data:{databases:[],truncated:false}},
-    {ok:true,data:{databases:['analytics'],truncated:false}},
+    {ok:true,data:{editSessionId:'edit-1',requestId:'validation-1',operationId:'operation-1',purpose:'resource-discovery',draftGeneration:0,configDigest:'digest-1',state:'valid',result:{databases:[],truncated:false}}},
+    {ok:true,data:{editSessionId:'edit-1',requestId:'validation-2',operationId:'operation-2',purpose:'resource-discovery',draftGeneration:0,configDigest:'digest-1',state:'valid',result:{databases:['analytics'],truncated:false}}},
   ];
   const {context,elements} = databaseRendererHarness(async () => responses.shift(),{
     selectedDatabase:'orders',savedDatabase:'legacy_orders',
@@ -153,7 +159,7 @@ test('database candidate refresh preserves the current draft selection for empty
 
 test('a single discovered database is not selected without an explicit user choice', async () => {
   const {context,elements} = databaseRendererHarness(async () => ({
-    ok:true,data:{databases:['analytics'],truncated:false},
+    ok:true,data:{editSessionId:'edit-1',requestId:'validation-1',operationId:'operation-1',purpose:'resource-discovery',draftGeneration:0,configDigest:'digest-1',state:'valid',result:{databases:['analytics'],truncated:false}},
   }),{selectedDatabase:'',savedDatabase:''});
 
   await vm.runInContext('queryDatabases()',context);
@@ -172,7 +178,7 @@ test('database discovery failure preserves the selected database and restores fo
 
   assert.equal(elements.pluginDatabase.value,'orders');
   assert.equal(elements.queryDatabases.disabled,false);
-  assert.equal(elements.queryDatabases.textContent,'查询数据库');
+  assert.equal(elements.queryDatabases.textContent,'加载数据库');
   assert.equal(elements.savePlugin.disabled,false);
 });
 
@@ -190,13 +196,89 @@ test('field invalidation cancels database discovery locally and ignores its late
   assert.equal(elements.queryDatabases.disabled,false);
   assert.equal(elements.savePlugin.disabled,false);
 
-  response.resolve({ok:true,data:{databases:['late_database'],truncated:false}});
+  response.resolve({ok:true,data:{editSessionId:'edit-1',requestId:'validation-1',operationId:'operation-1',purpose:'resource-discovery',draftGeneration:0,configDigest:'digest-1',state:'valid',result:{databases:['late_database'],truncated:false}}});
   await pending;
 
   assert.equal(elements.pluginDatabase.value,'orders');
   assert.doesNotMatch(elements.pluginDatabase.innerHTML,/late_database/);
   assert.match(elements.databaseHint.textContent,/重新查询/);
   assert.equal(state.databaseDiscoverySignature,null);
+});
+
+test('plugin-specific validation actions map to dedicated backend purposes', () => {
+  const context = vm.createContext({});
+  install(context,['pluginValidationPurpose']);
+  assert.equal(vm.runInContext("pluginValidationPurpose('server','validate')",context),'server-auth');
+  assert.equal(vm.runInContext("pluginValidationPurpose('mysql','discover')",context),'resource-discovery');
+  assert.equal(vm.runInContext("pluginValidationPurpose('mysql','validate')",context),'resource-access');
+  assert.equal(vm.runInContext("pluginValidationPurpose('redis','validate')",context),'resource-access');
+});
+
+test('validation correlation rejects a late session, generation, digest, operation, or sequence', () => {
+  const context = vm.createContext({});
+  install(context,['pluginValidationResultMatches']);
+  context.active = {
+    editSessionId:'edit-current',requestId:'validation-7',operationId:'operation-current',
+    draftGeneration:4,configDigest:'digest-current',sequence:7,
+  };
+  context.result = {...context.active,state:'valid'};
+  assert.equal(vm.runInContext('pluginValidationResultMatches(active,result)',context),true);
+  for (const [field,value] of [
+    ['editSessionId','edit-old'],['requestId','validation-6'],['operationId','operation-old'],
+    ['draftGeneration',3],['configDigest','digest-old'],['sequence',6],
+  ]) {
+    context.stale = {...context.result,[field]:value};
+    assert.equal(vm.runInContext('pluginValidationResultMatches(active,stale)',context),false,field);
+  }
+});
+
+test('a progress event arriving after immediate local cancel only triggers backend abort', async () => {
+  const cancelled = [];
+  const active = {editSessionId:'edit-1',requestId:'validation-1',purpose:'resource-access',draftGeneration:2,sequence:8,operationId:null,configDigest:null,state:'cancelled'};
+  const state = {pluginEditSession:{editSessionId:'edit-1',validations:{'resource-access':active}},pluginFormDiagnostic:null};
+  const context = vm.createContext({
+    state,
+    api:{cancelPluginValidation:async (payload) => { cancelled.push(payload); return {ok:true,data:{state:'cancelled'}}; }},
+  });
+  install(context,['call','pluginValidationResultMatches','applyPluginValidationProgress']);
+  context.message = {editSessionId:'edit-1',requestId:'validation-1',purpose:'resource-access',draftGeneration:2,operationId:'operation-late',configDigest:'digest-late',state:'running'};
+  vm.runInContext('applyPluginValidationProgress(message)',context);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(active.state,'cancelled');
+  assert.deepEqual(JSON.parse(JSON.stringify(cancelled)),[{editSessionId:'edit-1',operationId:'operation-late'}]);
+});
+
+test('connection editor prepares and confirms impact before beginning the fenced edit session', async () => {
+  const calls = [];
+  const plugin = {projectId:'project',environmentId:'env',pluginInstanceId:'server',revision:5,displayName:'Server'};
+  const state = {projectId:'project',environmentId:'env',pluginId:'server',pluginEditPreparation:null,pluginEditSession:null,pluginValidationSequence:0,detailTabs:{},inlineConfigPluginId:null};
+  const context = vm.createContext({
+    state,
+    api:{
+      preparePluginConnectionEdit:async (payload) => {
+        calls.push(['prepare',payload]);
+        return {ok:true,data:{prepareToken:'prepare-1',affectedIds:['server','orders'],preEditConnectedSet:['server','orders'],activeOperations:{connection:[],workspace:[]}}};
+      },
+      beginPluginConnectionEdit:async (payload) => {
+        calls.push(['begin',payload]);
+        return {ok:true,data:{editSessionId:'edit-1',plugin,affectedIds:['server','orders'],preEditConnectedSet:['server','orders'],draftGeneration:0}};
+      },
+    },
+    confirm:(message) => { calls.push(['confirm',message]); return true; },
+    populatePluginForm:(value) => calls.push(['populate',value]),
+    scopeMatches:(scope) => scope.projectId === state.projectId && scope.environmentId === state.environmentId && scope.pluginInstanceId === state.pluginId,
+    pluginStateKey:() => 'plugin-key',
+    renderShell:() => calls.push(['populate',plugin]),
+  });
+  install(context,['call','pluginEditImpactMessage','beginPluginConnectionEditor']);
+  context.plugin = plugin;
+  assert.equal(await vm.runInContext('beginPluginConnectionEditor(plugin)',context),true);
+  assert.deepEqual(calls.map(([name]) => name),['prepare','confirm','begin','populate']);
+  assert.equal(state.pluginEditPreparation,null);
+  assert.equal(state.pluginEditSession.editSessionId,'edit-1');
+  assert.deepEqual(state.pluginEditSession.preEditConnectedSet,['server','orders']);
+  assert.match(calls[1][1],/2 个连接/);
 });
 
 test('partial runtime preserves a full plugin map, while partial-to-partial replaces the preview', () => {
@@ -493,31 +575,37 @@ test('legacy credential confirmation is scope-bound and never includes plaintext
   assert.equal(vm.runInContext('credentialMigrationBindingLabel(binding)',context),'deploy@old.example:22');
 });
 
-test('the unified leave guard preserves edits on cancel and clears pending form diagnostics only after confirmation', () => {
+test('the unified leave guard preserves edits on cancel and asynchronously releases the owned edit session after confirmation', async () => {
   let allowLeave = false;
   let clearedWith = null;
+  const cancelled = [];
   const state = {
     projectId:'project',environmentId:'env',
     runbookContent:'saved',runbookDraft:'draft',runbookDirty:true,runbookEditing:true,
     pluginFormMode:'inline',pluginFormInitial:'initial',inlineConfigPluginId:'plugin',
     pluginFormDiagnostic:{status:'pending',scope:{projectId:'project',environmentId:'env',pluginInstanceId:'plugin'}},
     pluginDiagnostics:{},diagnosticGeneration:4,
+    pluginEditSession:{editSessionId:'edit-1',phase:'editing'},pluginEditPreparation:null,
   };
   const context = vm.createContext({
     state,
     inFlightOperations:new Map(),
+    api:{cancelPluginConnectionEdit:async (payload) => { cancelled.push(payload); return {ok:true,data:{cancelled:true}}; }},
     confirm:() => allowLeave,
     pluginFormDirty:() => true,
     clearTransientRevealedCredentials:(options) => { clearedWith = options; },
   });
-  install(context,['scopeKey','operationInFlight','currentScopeSaveInFlight','mayLeaveCurrentScope','pluginStateCoordinates','scopeDiagnosticPending']);
-  assert.equal(vm.runInContext('mayLeaveCurrentScope()',context),false);
+  install(context,['call','scopeKey','operationInFlight','currentScopeSaveInFlight','cancelOwnedPluginEditSession','mayLeaveCurrentScope','pluginStateCoordinates','scopeDiagnosticPending']);
+  assert.equal(await vm.runInContext('mayLeaveCurrentScope()',context),false);
   assert.equal(state.runbookDraft,'draft');
   assert.equal(state.pluginFormDiagnostic.status,'pending');
   assert.equal(vm.runInContext("scopeDiagnosticPending('project','env')",context),true);
+  assert.equal(cancelled.length,0);
 
   allowLeave = true;
-  assert.equal(vm.runInContext('mayLeaveCurrentScope()',context),true);
+  assert.equal(await vm.runInContext('mayLeaveCurrentScope()',context),true);
+  assert.deepEqual(JSON.parse(JSON.stringify(cancelled)),[{editSessionId:'edit-1',restorePreEditConnections:true}]);
+  assert.equal(state.pluginEditSession,null);
   assert.equal(state.runbookDraft,'saved');
   assert.equal(state.runbookDirty,false);
   assert.equal(state.pluginFormDiagnostic,null);
@@ -526,7 +614,7 @@ test('the unified leave guard preserves edits on cancel and clears pending form 
   assert.equal(vm.runInContext("scopeDiagnosticPending('project','env')",context),false);
 });
 
-test('navigation is blocked without clearing drafts while the current scope is saving', () => {
+test('navigation is blocked without clearing drafts while the current scope is saving', async () => {
   let confirmations = 0;
   let clears = 0;
   let message = '';
@@ -543,14 +631,14 @@ test('navigation is blocked without clearing drafts while the current scope is s
     toast:(value) => { message = value; },
   });
   install(context,['scopeKey','operationInFlight','currentScopeSaveInFlight','mayLeaveCurrentScope']);
-  assert.equal(vm.runInContext('mayLeaveCurrentScope()',context),false);
+  assert.equal(await vm.runInContext('mayLeaveCurrentScope()',context),false);
   assert.equal(confirmations,0);
   assert.equal(clears,0);
   assert.match(message,/正在保存/);
   assert.equal(state.pluginFormInitial,'saved');
   context.inFlightOperations.clear();
   context.inFlightOperations.set('runbook-save:project/env',{});
-  assert.equal(vm.runInContext('mayLeaveCurrentScope()',context),false);
+  assert.equal(await vm.runInContext('mayLeaveCurrentScope()',context),false);
   assert.equal(confirmations,0);
   assert.equal(clears,0);
 });
@@ -560,12 +648,14 @@ test('a failed plugin save leaves the form draft and credential state untouched'
     projectId:'project',environmentId:'env',
     editingPlugin:{pluginInstanceId:'plugin',revision:3},
     pluginFormInitial:'draft-signature',pluginFormDiagnostic:{status:'failure'},inlineConfigPluginId:'plugin',
+    pluginEditSession:{editSessionId:'edit-1',baseRecordRevision:3,preEditConnectedSet:[],phase:'editing'},
   };
   const context = vm.createContext({
     state,
     inFlightOperations:new Map(),
-    pluginFormPayload:() => ({input:{displayName:'Draft'},secrets:{password:'unsaved-secret'}}),
-    api:{updatePlugin:async () => ({ok:false,error:{message:'save failed'}})},
+    pluginFormPayload:() => ({input:{displayName:'Draft'},patch:{target:{host:'draft'}},secrets:{password:'unsaved-secret'},credentialIntent:'replace'}),
+    api:{savePluginConnectionEdit:async () => ({ok:false,error:{message:'save failed'}})},
+    renderPluginFormDiagnostic:() => {},
     refreshEnvironmentMetadata:async () => { throw new Error('must not refresh after failed save'); },
   });
   install(context,['call','scopeKey','beginOperation','finishOperation','savePlugin']);
@@ -583,17 +673,20 @@ test('a committed plugin save with a runtime warning clears the saved credential
     projectId:'project',environmentId:'env',pluginId:'plugin',selectionKind:'plugin',
     editingPlugin:{projectId:'project',environmentId:'env',pluginInstanceId:'plugin',revision:3},
     pluginFormInitial:'draft-signature',pluginFormDiagnostic:{status:'success'},inlineConfigPluginId:'plugin',detailTabs:{},
+    pluginEditSession:{editSessionId:'edit-1',baseRecordRevision:3,preEditConnectedSet:['plugin'],phase:'editing'},
   };
   const context = vm.createContext({
     state,inFlightOperations:new Map(),
-    pluginFormPayload:() => ({input:{displayName:'Saved'},secrets:{password:'new-secret'}}),
-    api:{updatePlugin:async () => {
+    pluginFormPayload:() => ({input:{displayName:'Saved'},patch:{target:{host:'saved'}},secrets:{password:'new-secret'},credentialIntent:'replace'}),
+    api:{savePluginConnectionEdit:async () => {
       updateCalls += 1;
       return {ok:true,data:{
-        projectId:'project',environmentId:'env',pluginInstanceId:'plugin',revision:4,configState:'ready',
-        runtimeWarning:{code:'RUNTIME_CLEANUP_FAILED'},manualReconnectRequired:true,
+        committed:true,
+        plugin:{projectId:'project',environmentId:'env',pluginInstanceId:'plugin',revision:4,configState:'ready'},
+        runtimeWarning:{code:'RUNTIME_CLEANUP_FAILED'},
       }};
     }},
+    renderPluginFormDiagnostic:() => {},
     clearTransientRevealedCredentials:(options) => { cleared = options; },
     refreshEnvironmentMetadata:async () => {},scopeMatches:() => true,loadEnvironment:async () => true,
     pluginDiagnosticAvailable:() => true,pluginDiagnosticConfigurationIssue:() => null,
@@ -607,7 +700,8 @@ test('a committed plugin save with a runtime warning clears the saved credential
   assert.equal(state.pluginFormDiagnostic,null);
   assert.equal(state.inlineConfigPluginId,null);
   assert.match(message,/配置和密码已保存/);
-  assert.match(message,/手动断开并重新连接/);
+  assert.match(message,/连接失败/);
+  assert.match(message,/不要重新保存/);
 });
 
 test('a committed plugin deletion warning states that deletion succeeded and credentials remain', () => {
@@ -627,14 +721,17 @@ test('a committed plugin save with a pending recovery journal asks for restart w
     projectId:'project',environmentId:'env',pluginId:'plugin',selectionKind:'plugin',
     editingPlugin:{projectId:'project',environmentId:'env',pluginInstanceId:'plugin',revision:3},
     pluginFormInitial:'draft-signature',pluginFormDiagnostic:null,inlineConfigPluginId:'plugin',detailTabs:{},
+    pluginEditSession:{editSessionId:'edit-1',baseRecordRevision:3,preEditConnectedSet:[],phase:'editing'},
   };
   const context = vm.createContext({
     state,inFlightOperations:new Map(),
-    pluginFormPayload:() => ({input:{displayName:'Saved'},secrets:{password:'new-secret'}}),
-    api:{updatePlugin:async () => ({ok:true,data:{
-      projectId:'project',environmentId:'env',pluginInstanceId:'plugin',revision:4,configState:'ready',
+    pluginFormPayload:() => ({input:{displayName:'Saved'},patch:{target:{host:'saved'}},secrets:{password:'new-secret'},credentialIntent:'replace'}),
+    api:{savePluginConnectionEdit:async () => ({ok:true,data:{
+      committed:true,
+      plugin:{projectId:'project',environmentId:'env',pluginInstanceId:'plugin',revision:4,configState:'ready'},
       persistenceWarning:{code:'CONFIG_TRANSACTION_CLEANUP_PENDING',message:'提交记录将在重启后自动完成。'},
     }})},
+    renderPluginFormDiagnostic:() => {},
     clearTransientRevealedCredentials:(options) => { cleared = options; },
     refreshEnvironmentMetadata:async () => {},scopeMatches:() => true,loadEnvironment:async () => true,
     pluginDiagnosticAvailable:() => true,pluginDiagnosticConfigurationIssue:() => null,
@@ -669,41 +766,11 @@ test('diagnostic pending and runtime transitions mutually block conflicting acti
   assert.equal(vm.runInContext('runtimeBlocksDiagnostic(plugin)',context),true);
 });
 
-test('accepting a first-use SSH fingerprint clears the old pending check before retrying', async () => {
-  let testCalls = 0;
-  const plugin = {
-    projectId:'project',environmentId:'env',pluginInstanceId:'server',pluginType:'server',configState:'ready',
-    target:{host:'example.test',port:22},revision:1,
-  };
-  const diagnosticKey = JSON.stringify(['project','env','server']);
-  const state = {
-    projectId:'project',environmentId:'env',pluginId:'server',selectionKind:'plugin',view:'plugins',
-    diagnosticGeneration:0,detailTabs:{},pluginDiagnostics:{},
-  };
-  const context = vm.createContext({
-    state,
-    activePlugin:() => plugin,
-    pluginDiagnosticAvailable:() => true,
-    runtimeBlocksDiagnostic:() => false,
-    scopeDiagnosticPending:() => state.pluginDiagnostics[diagnosticKey]?.status === 'pending',
-    pluginStateKey:() => diagnosticKey,
-    createPendingDiagnostic:(_plugin,requestId) => ({requestId,status:'pending',checks:[]}),
-    withUiContinuity:(render) => render(),renderResourcePane:() => {},renderDetailTopbar:() => {},renderView:() => {},
-    api:{testPlugin:async () => {
-      testCalls += 1;
-      if (testCalls === 1) return {ok:false,error:{code:'SSH_HOST_KEY_CONFIRM_REQUIRED',message:'confirm host key',details:{fingerprint:'SHA256:test'}}};
-      return {ok:true,data:{checks:[],reused:false,totalElapsedMs:1}};
-    }},
-    scopeMatches:() => true,
-    confirmAndSaveObservedHostKey:async () => true,
-    completedDiagnostic:(diagnostic,result) => ({...diagnostic,...result,status:'success'}),
-    failedDiagnostic:(diagnostic,error) => ({...diagnostic,status:'failure',summary:error.message}),
-    renderPluginFormDiagnostic:() => {},renderPluginDetail:() => {},
-  });
-  install(context,['call','testPlugin']);
-  await vm.runInContext('testPlugin()',context);
-  assert.equal(testCalls,2);
-  assert.equal(state.pluginDiagnostics[diagnosticKey].status,'success');
+test('draft SSH validation cannot persist an observed fingerprint through the generic plugin update path', () => {
+  const source = functionSource('validatePluginDraftAction');
+  assert.match(source,/api\.validatePluginDraft/);
+  assert.doesNotMatch(source,/api\.updatePlugin/);
+  assert.doesNotMatch(source,/confirmAndSaveObservedHostKey/);
 });
 
 test('non-current preview resources load the full plugin before host-key confirmation', async () => {

@@ -44,7 +44,28 @@ dialog{width:min(760px,calc(100vw - 32px));max-height:calc(100vh - 32px);padding
 
 /* Stable dialog geometry: changing a plugin type must not recenter or resize the window. */
 .plugin-dialog-body{flex:1;min-height:0;overflow-x:hidden;overflow-y:auto;scrollbar-gutter:stable;overscroll-behavior:contain}
-.plugin-form-grid{transform-origin:top center}
+.plugin-form-grid{min-width:0;display:grid;gap:18px;transform-origin:top center}
+.plugin-form-section{min-width:0;margin:0;padding:0 0 18px;border:0;border-bottom:1px solid var(--soft-line)}
+.plugin-form-section>h3,.plugin-form-section>legend{width:100%;margin:0 0 13px;padding:0;color:var(--text);font-size:13px;font-weight:680}
+.plugin-type-badge{display:inline-flex;align-items:center;gap:7px;flex:none;padding:6px 9px;border:1px solid var(--line);border-radius:7px;color:#d9d8ff;background:rgba(139,140,255,.08)}
+.plugin-type-badge .icon{width:15px;height:15px}.plugin-type-badge strong{font-size:12px}
+.plugin-edit-safety-status{min-width:0;margin-left:auto;color:var(--green);font-size:11px;text-align:right;overflow-wrap:anywhere}
+.plugin-advanced-settings{min-width:0;border-bottom:1px solid var(--soft-line)}
+.plugin-advanced-settings>summary{padding:0 0 15px;color:var(--text);font-size:13px;font-weight:680;cursor:pointer}
+.plugin-advanced-settings[open]>summary{padding-bottom:13px}
+.advanced-form-grid{padding:0 0 18px}
+.credential-component{min-width:0}
+.credential-status-row{min-width:0;min-height:40px;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 4px 4px 11px;border:1px solid var(--line);border-radius:7px;background:#0d0e11}
+.credential-status{min-width:0;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.credential-status[data-state="stored"]{color:var(--green)}.credential-status[data-state="replace"]{color:var(--amber)}
+.plugin-validation-section{min-width:0;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.plugin-validation-section h3{margin:0;font-size:13px}.plugin-validation-section p{margin:4px 0 0;color:var(--muted);font-size:11px;line-height:1.5}
+.plugin-validation-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.inline-settings-form,.agent-settings-editor{min-width:0;padding:14px;border:1px solid var(--soft-line);border-radius:8px;background:rgba(255,255,255,.018)}
+.inline-settings-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.inline-settings-form .field.full{grid-column:1/-1}
+.inline-settings-form textarea{height:auto;min-height:76px;padding:9px 11px;resize:vertical}
+.inline-settings-actions{grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+.agent-settings-editor{margin-bottom:16px}.agent-settings-editor .inline-settings-actions{margin-top:12px}
 .plugin-form-grid.form-switch-out{opacity:.2;transform:translateY(3px);transition:opacity .06s ease,transform .06s ease}
 .plugin-form-grid.form-switch-in{animation:plugin-form-enter .14s cubic-bezier(.2,.75,.25,1) both}
 .type-choice{transition:border-color .14s ease,background-color .14s ease,transform .14s ease}
@@ -1577,6 +1598,7 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
   min-height:100%;
   margin:0 auto;
   padding:28px 32px 48px;
+  container-type:inline-size;
 }
 .plugin-inline-form-host:empty{display:none}
 .plugin-inline-form-host .plugin-card{
@@ -1605,7 +1627,8 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 .plugin-inline-form-host .dialog-actions{
   position:sticky;
   z-index:3;
-  bottom:-48px;
+  bottom:0;
+  flex-wrap:wrap;
   padding:14px 20px;
   border-top:1px solid var(--line);
   background:rgba(19,20,25,.96);
@@ -1834,7 +1857,6 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 .plugin-form-diagnostic .diagnostic-overview-icon .icon{width:18px;height:18px}
 .plugin-form-diagnostic .diagnostic-step{padding:9px 2px}
 .plugin-form-actions .action-spacer{flex:1}
-.plugin-form-actions>#testPluginFromForm{margin-right:auto}
 
 @container (max-width:560px){
   .connection-section-head{align-items:flex-start;padding:16px}
@@ -1849,7 +1871,6 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
   .plugin-form-diagnostic{margin:0 14px 12px}
   .plugin-form-actions{flex-wrap:wrap}
   .plugin-form-actions .action-spacer{display:none}
-  .plugin-form-actions>#testPluginFromForm{margin-right:auto}
 }
 @keyframes spin{to{transform:rotate(360deg)}}
 
@@ -2082,16 +2103,10 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
  * Keep transient work legible, reserve destructive color for destructive
  * actions, and make the resource header's compact layout authoritative.
  */
-.connection-section-head [data-action="test-plugin"]:disabled{opacity:.72}
-.connection-check-section:has(.diagnostic-overview.pending) .connection-section-head [data-action="test-plugin"]:disabled{
-  cursor:progress;
-  opacity:1;
-}
-.plugin-card:has(.plugin-form-diagnostic .diagnostic-overview.pending) .plugin-form-actions>#testPluginFromForm:disabled,
-#queryDatabases:disabled{cursor:progress;opacity:1}
+.plugin-validation-actions button:disabled[aria-busy="true"],
+#queryDatabases:disabled[data-busy="true"]{cursor:progress;opacity:1}
 button:disabled:is([data-busy="true"],[aria-busy="true"]){cursor:progress;opacity:1}
-button:is([data-busy="true"],[aria-busy="true"]) .icon,
-.plugin-card:has(.plugin-form-diagnostic .diagnostic-overview.pending) #testPluginFromForm:disabled .icon{animation:spin .9s linear infinite}
+button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:spin .9s linear infinite}
 
 [data-environment-runtime-action="disconnect"].danger-subtle,
 [data-overview-plugin-action="disconnect"].resource-plugin-action{
@@ -2144,6 +2159,16 @@ button:is([data-busy="true"],[aria-busy="true"]) .icon,
 .connection-route-card{border-color:transparent;background:rgba(255,255,255,.025)}
 
 @container (max-width:650px){
+  .plugin-inline-form-host{padding:16px 14px 28px}
+  .plugin-inline-form-host .dialog-head{align-items:flex-start;flex-wrap:wrap;min-height:0;padding:14px}
+  .plugin-inline-form-host .plugin-dialog-body{padding:18px 14px 22px}
+  .plugin-edit-safety-status{width:100%;margin-left:0;text-align:left}
+  .plugin-validation-section{align-items:stretch;flex-direction:column}
+  .plugin-validation-actions{justify-content:flex-start}
+  .plugin-form-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:12px 14px}
+  .plugin-form-actions .action-spacer{display:none}
+  .plugin-form-actions .button{width:100%;min-width:0;white-space:normal}
+  .plugin-form-actions #savePlugin{grid-column:1/-1}
   .resource-environment-head,
   .resource-environment-head:has(>.scope-confirmation-badge){
     min-height:88px;
@@ -2167,6 +2192,5 @@ button:is([data-busy="true"],[aria-busy="true"]) .icon,
 }
 
 @media(prefers-reduced-motion:reduce){
-  button:is([data-busy="true"],[aria-busy="true"]) .icon,
-  .plugin-card:has(.plugin-form-diagnostic .diagnostic-overview.pending) #testPluginFromForm:disabled .icon{animation:none}
+  button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:none}
 }
