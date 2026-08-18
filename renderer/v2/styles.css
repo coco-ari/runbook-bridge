@@ -2091,7 +2091,8 @@ button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:spin .9s linear
 }
 
 .rail-expanded .project-tree-item:not(.active)[data-project-state="connected"]>.project-tree-head{
-  background:linear-gradient(90deg,rgba(85,214,161,.035),rgba(85,214,161,.01) 72%,transparent);
+  background:linear-gradient(90deg,rgba(85,214,161,.14),rgba(85,214,161,.045) 78%,transparent);
+  box-shadow:inset 3px 0 #55d6a1;
 }
 .rail-expanded .project-tree-item:not(.active)[data-project-state="attention"]>.project-tree-head{
   background:linear-gradient(90deg,rgba(239,185,104,.04),rgba(239,185,104,.012) 72%,transparent);
@@ -2108,6 +2109,14 @@ button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:spin .9s linear
 .rail-expanded .project-tree-item.active>.project-tree-head{
   background:linear-gradient(90deg,rgba(131,124,246,.15),rgba(131,124,246,.045) 78%,transparent);
   box-shadow:inset 2px 0 var(--accent),0 0 0 1px rgba(131,124,246,.14);
+}
+.rail-expanded .project-tree-item[data-project-state="connected"] .rail-project-copy small{
+  color:#72dcb0;
+  font-weight:500;
+}
+.rail-expanded .project-tree-item.active[data-project-state="connected"]>.project-tree-head{
+  background:linear-gradient(90deg,rgba(85,214,161,.17),rgba(85,214,161,.06) 78%,rgba(131,124,246,.035));
+  box-shadow:inset 3px 0 #55d6a1,0 0 0 1px rgba(131,124,246,.56);
 }
 
 .rail-expanded .project-rail .rail-add{

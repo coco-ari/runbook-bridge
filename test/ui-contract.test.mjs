@@ -193,6 +193,9 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(styles, /\[data-overview-plugin-action="disconnect"\]\.resource-plugin-action/);
   assert.match(styles, /--faint:#82848e/);
   assert.match(styles, /\.rail-expanded \.project-tree-item\.active>\.project-tree-head/);
+  assert.match(styles, /\.rail-expanded \.project-tree-item:not\(\.active\)\[data-project-state="connected"\]>\.project-tree-head\{[^}]*box-shadow:inset 3px 0 #55d6a1/s);
+  assert.match(styles, /\.rail-expanded \.project-tree-item\[data-project-state="connected"\] \.rail-project-copy small\{[^}]*color:#72dcb0/s);
+  assert.match(styles, /\.rail-expanded \.project-tree-item\.active\[data-project-state="connected"\]>\.project-tree-head\{[^}]*box-shadow:inset 3px 0 #55d6a1,[^}]*rgba\(131,124,246,/s);
   assert.ok(
     styles.lastIndexOf('@container (max-width:650px)')
       > styles.lastIndexOf('.resource-environment-head:has(>.scope-confirmation-badge){grid-template-columns'),
