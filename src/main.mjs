@@ -24,6 +24,9 @@ import { registerV2Ipc } from './ipc-v2.mjs';
 import { NetworkChangeWatcher } from './network-change-watcher.mjs';
 import { PluginConfigTransactionJournal } from './plugin-config-transaction.mjs';
 import { WorkspaceMutationCoordinator } from './workspace-mutation-coordinator.mjs';
+import { CredentialUseResolver } from './credential-use-resolver.mjs';
+import { PluginValidationRuntime } from './plugin-validation-runtime.mjs';
+import { PluginEditSessionManager } from './plugin-edit-session-manager.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataRoot = defaultDataRoot();
@@ -163,8 +166,10 @@ if (process.argv.includes('--mcp')) {
         const mysqlRuntime = new MysqlPluginRuntime(routeManager, pluginCredentialVault);
         const redisRuntime = new RedisPluginRuntime(routeManager, pluginCredentialVault);
         const pluginManager = new PluginManager({ serverRuntime, mysqlRuntime, redisRuntime });
+        const mutationCoordinator = new WorkspaceMutationCoordinator();
         const environmentConnectionManager = new EnvironmentConnectionManager(workspaceStore, pluginManager, {
           configurationJournal:configTransactionJournal,
+          mutationCoordinator,
         });
         const networkWatcher = new NetworkChangeWatcher((reason) => environmentConnectionManager.networkChanged(reason));
         environmentConnectionManager.on('changed', () => networkWatcher.setActive(Object.values(environmentConnectionManager.listStates()).some((item) => item.desiredConnected)));
@@ -180,7 +185,15 @@ if (process.argv.includes('--mcp')) {
         const serverOperations = new ServerOperations(serverRuntime, workspaceStore);
         const contextManager = new EnvironmentContextManager(workspaceStore);
         const confirmationManager = new ConfirmationManager();
-        const mutationCoordinator = new WorkspaceMutationCoordinator();
+        const credentialUseResolver = new CredentialUseResolver(pluginCredentialVault);
+        const validationRuntime = new PluginValidationRuntime({pluginManager,mysqlRuntime});
+        const pluginEditSessionManager = new PluginEditSessionManager({
+          workspaceStore,
+          connectionManager:environmentConnectionManager,
+          mutationCoordinator,
+          credentialUseResolver,
+          validationRuntime,
+        });
         const broadcast = (channel, payload) => {
           for (const window of BrowserWindow.getAllWindows()) {
             if (window.isDestroyed() || window.webContents.isDestroyed()) continue;
@@ -188,7 +201,7 @@ if (process.argv.includes('--mcp')) {
           }
         };
         const v2Service = new V2Service({ workspaceStore, connectionManager: environmentConnectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault: pluginCredentialVault, mutationCoordinator, workspaceChanged:(payload) => broadcast('v2:workspace-changed', payload) });
-        v2 = { workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, mutationCoordinator, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
+        v2 = { workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, mutationCoordinator, credentialUseResolver, validationRuntime, pluginEditSessionManager, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
         const token = await rotateBrokerToken(dataRoot);
         brokerServer = new BrokerServer({ dataRoot, token, v2Service, appVersion: app.getVersion() });
         await brokerServer.start();
@@ -212,6 +225,7 @@ if (process.argv.includes('--mcp')) {
       event.preventDefault();
       app.__aiOpsClosing = true;
       v2?.networkWatcher?.stop();
+      v2?.pluginEditSessionManager?.invalidateAll?.({allowSaving:true});
       const watchdog = setTimeout(() => app.quit(), SHUTDOWN_WATCHDOG_MS);
       Promise.all([v2?.connectionManager?.closeAll(), brokerServer?.stop()])
         .catch(() => undefined)

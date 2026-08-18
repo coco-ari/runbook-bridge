@@ -67,6 +67,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
     closeDeadlineMs = DEFAULT_CLOSE_DEADLINE_MS,
     networkDebounceMs = 100,
     configurationJournal = null,
+    mutationCoordinator = null,
   } = {}) {
     super();
     this.workspaceStore = workspaceStore;
@@ -95,6 +96,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
     this.runtimeConnectAttempts = new Map();
     this.configurationMutations = new Map();
     this.configurationJournal = configurationJournal;
+    this.mutationCoordinator = mutationCoordinator;
     this.pluginCatalogs = new Map();
     this.connectionIntentCoordinator = new ConnectionIntentCoordinator(this);
     this.connectionPlans = this.connectionIntentCoordinator.plans;
@@ -282,7 +284,8 @@ export class EnvironmentConnectionManager extends EventEmitter {
     return assessed;
   }
 
-  beginConfigurationMutation(projectId, environmentId, changedPluginInstanceId = null) {
+  beginConfigurationMutation(projectId, environmentId, changedPluginInstanceId = null, {ownerId = null} = {}) {
+    this.mutationCoordinator?.assertEnvironmentAvailable(projectId,environmentId,{ownerId});
     this.configurationJournal?.assertEnvironmentAvailable(projectId, environmentId);
     const key = this.key(projectId, environmentId);
     if (this.configurationMutations.has(key)) throw new AppError('CONFIGURATION_UPDATING', '环境配置正在保存，请稍后重试连接。');
@@ -307,7 +310,8 @@ export class EnvironmentConnectionManager extends EventEmitter {
     return true;
   }
 
-  assertConfigurationStable(projectId, environmentId) {
+  assertConfigurationStable(projectId, environmentId, {ownerId = null} = {}) {
+    this.mutationCoordinator?.assertEnvironmentAvailable(projectId,environmentId,{ownerId});
     this.configurationJournal?.assertEnvironmentAvailable(projectId, environmentId);
     if (this.configurationMutations.has(this.key(projectId, environmentId))) {
       throw new AppError('CONFIGURATION_UPDATING', '环境配置正在保存，请等待完成后再连接。');
@@ -320,6 +324,56 @@ export class EnvironmentConnectionManager extends EventEmitter {
 
   requestConnectionIntent(payload) {
     return this.connectionIntentCoordinator.request(payload);
+  }
+
+  activeConnectionOperations(projectId,environmentId,affectedPluginInstanceIds = null) {
+    const affected = affectedPluginInstanceIds ? new Set(affectedPluginInstanceIds) : null;
+    return [...this.connectionOperations.values()]
+      .filter((operation) => operation.projectId === projectId
+        && operation.environmentId === environmentId
+        && ['running','cancelling'].includes(operation.status)
+        && (!affected || affected.has(operation.pluginInstanceId)))
+      .map((operation) => ({
+        operationId:operation.operationId,
+        planId:operation.planId,
+        pluginInstanceId:operation.pluginInstanceId,
+        generation:operation.generation,
+        digest:operation.digest,
+        status:operation.status,
+        subscriberCount:operation.subscribers.size,
+      }));
+  }
+
+  async waitForConnectionOperations(projectId,environmentId,affectedPluginInstanceIds,{timeoutMs = 10_000,signal = null} = {}) {
+    const startedAt = Date.now();
+    while (true) {
+      if (signal?.aborted) throw new AppError('PLUGIN_EDIT_DRAIN_CANCELLED','已取消等待连接操作。');
+      const activeIds = new Set(this.activeConnectionOperations(projectId,environmentId,affectedPluginInstanceIds).map((item) => item.operationId));
+      const pending = [...this.connectionOperations.values()]
+        .filter((operation) => activeIds.has(operation.operationId))
+        .map((operation) => operation.promise.catch(() => false));
+      if (!pending.length) return {drained:true,waitedMs:Date.now() - startedAt};
+      const remaining = Math.max(0,Number(timeoutMs) - (Date.now() - startedAt));
+      if (!remaining) throw new AppError('PLUGIN_EDIT_DRAIN_TIMEOUT','等待正在进行的连接操作超时。',{activeOperations:[...activeIds]});
+      let timer;
+      let onAbort;
+      try {
+        await Promise.race([
+          Promise.all(pending),
+          new Promise((_,reject) => {
+            timer = setTimeout(() => reject(new AppError('PLUGIN_EDIT_DRAIN_TIMEOUT','等待正在进行的连接操作超时。',{activeOperations:[...activeIds]})),remaining);
+            timer.unref?.();
+          }),
+          ...(signal ? [new Promise((_,reject) => {
+            onAbort = () => reject(new AppError('PLUGIN_EDIT_DRAIN_CANCELLED','已取消等待连接操作。'));
+            signal.addEventListener('abort',onAbort,{once:true});
+          })] : []),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+        if (onAbort) signal.removeEventListener('abort',onAbort);
+      }
+    }
   }
 
   async status(projectId, environmentId, {plugins:providedPlugins = null} = {}) {
@@ -766,6 +820,45 @@ export class EnvironmentConnectionManager extends EventEmitter {
       legacyScope:true,
     });
     return result.snapshot;
+  }
+
+  disconnectForConfigurationEdit(projectId,environmentId,affectedPluginInstanceIds,{ownerId = null} = {}) {
+    return this.enqueue(projectId,environmentId,async () => {
+      this.assertConfigurationStable(projectId,environmentId,{ownerId});
+      const plugins = this.rememberPlugins(
+        projectId,
+        environmentId,
+        await this.workspaceStore.listPlugins(projectId,environmentId),
+      );
+      this.assertConfigurationStable(projectId,environmentId,{ownerId});
+      const affected = new Set(affectedPluginInstanceIds);
+      const state = structuredClone(this.state(projectId,environmentId));
+      const connectedBefore = plugins
+        .filter((plugin) => affected.has(plugin.pluginInstanceId)
+          && state.plugins[plugin.pluginInstanceId]?.phase === 'connected')
+        .map((plugin) => plugin.pluginInstanceId);
+      this.clearRetry(projectId,environmentId);
+      for (const plugin of plugins) {
+        if (!affected.has(plugin.pluginInstanceId)) continue;
+        state.plugins[plugin.pluginInstanceId] = pluginState(plugin,'disconnecting');
+      }
+      if (affected.size) this.publish(state);
+      await this.disconnectPluginsInDependencyOrder(
+        plugins,
+        'configuration-edit',
+        (plugin) => affected.has(plugin.pluginInstanceId),
+      );
+      for (const plugin of plugins) {
+        if (!affected.has(plugin.pluginInstanceId)) continue;
+        state.plugins[plugin.pluginInstanceId] = pluginState(plugin,'disconnected',{reason:'CONFIGURATION_EDIT'});
+      }
+      const unaffectedConnected = plugins.some((plugin) => !affected.has(plugin.pluginInstanceId)
+        && state.plugins[plugin.pluginInstanceId]?.phase === 'connected');
+      state.desiredConnected = unaffectedConnected;
+      this.aggregate(state,plugins);
+      this.publish(state);
+      return {snapshot:structuredClone(state),connectedBefore};
+    });
   }
 
   fenceConfigurationChange(projectId, environmentId, changedPluginInstanceId = null) {

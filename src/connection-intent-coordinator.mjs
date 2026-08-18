@@ -81,7 +81,7 @@ export class ConnectionIntentCoordinator {
   }
 
   async buildConnectionPlan(payload) {
-    this.manager.assertConfigurationStable(payload.projectId,payload.environmentId);
+    this.manager.assertConfigurationStable(payload.projectId,payload.environmentId,{ownerId:payload.fenceOwnerId ?? null});
     const environment = await this.manager.workspaceStore.getEnvironment(payload.projectId,payload.environmentId);
     if (payload.expectedRevision !== undefined && payload.expectedRevision !== null && environment.revision !== payload.expectedRevision) {
       throw new AppError('CONFIG_REVISION_CONFLICT','环境配置已经变化，请刷新后重试。');
@@ -91,12 +91,20 @@ export class ConnectionIntentCoordinator {
       payload.environmentId,
       await this.manager.workspaceStore.listPlugins(payload.projectId,payload.environmentId),
     );
-    this.manager.assertConfigurationStable(payload.projectId,payload.environmentId);
+    this.manager.assertConfigurationStable(payload.projectId,payload.environmentId,{ownerId:payload.fenceOwnerId ?? null});
     const byId = new Map(plugins.map((plugin) => [plugin.pluginInstanceId,plugin]));
+    const requestedIds = Array.isArray(payload.pluginInstanceIds)
+      ? [...new Set(payload.pluginInstanceIds.map((value) => String(value)))]
+      : null;
     let selected = payload.pluginInstanceId
       ? [byId.get(payload.pluginInstanceId)].filter(Boolean)
-      : plugins;
+      : requestedIds
+        ? requestedIds.map((pluginInstanceId) => byId.get(pluginInstanceId)).filter(Boolean)
+        : plugins;
     if (payload.pluginInstanceId && !selected.length) throw new AppError('PLUGIN_NOT_FOUND','插件不存在。');
+    if (requestedIds && selected.length !== requestedIds.length) {
+      throw new AppError('PLUGIN_NOT_FOUND','恢复连接集合中包含已经不存在的插件。');
+    }
     if (payload.intent === 'retry' && !payload.pluginInstanceId) {
       const manualDisconnected = this.manager.state(payload.projectId,payload.environmentId).manualDisconnected ?? {};
       selected = selected.filter((plugin) => !manualDisconnected[plugin.pluginInstanceId]);
@@ -237,6 +245,7 @@ export class ConnectionIntentCoordinator {
     plan.cancelPromise = new Promise((resolve) => { plan.cancelResolve = resolve; });
     this.initializePlanState(plan);
 
+    payload.onPlanStarted?.(plan);
     const work = Promise.all([...plan.nodes.keys()].map((pluginInstanceId) => this.connectNode(plan,pluginInstanceId)))
       .catch(() => []);
     plan.workPromise = work;

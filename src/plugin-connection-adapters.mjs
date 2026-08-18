@@ -96,11 +96,17 @@ function targetIdentity(target = {}, {excludeDatabase = false, excludeDb = false
 }
 
 function adapterValidate(pluginType) {
-  return async ({draft,purpose,resolvedSecrets = {},runtimeFacade,signal}) => {
+  return async ({
+    draft,purpose,resolvedSecrets = {},runtimeFacade,signal,
+    editSessionId,operationId,draftGeneration,configDigest,requestId,
+  }) => {
     if (!runtimeFacade || typeof runtimeFacade.validate !== 'function') {
       throw new AppError('PLUGIN_VALIDATION_UNAVAILABLE', `${pluginType} 临时验证运行时不可用。`);
     }
-    return runtimeFacade.validate({pluginType,draft,purpose,resolvedSecrets,signal});
+    return runtimeFacade.validate({
+      pluginType,draft,purpose,resolvedSecrets,signal,
+      editSessionId,operationId,draftGeneration,configDigest,requestId,
+    });
   };
 }
 

@@ -184,3 +184,26 @@ test('dependency references and changed-path classification use the shared domai
   assert.equal(adapter.classifyChangedPath('target.database',{before:direct,after:direct}),'session-affecting');
   assert.equal(adapter.classifyChangedPath('transport.kind',{before:direct,after:tunneled}),'dependency-affecting');
 });
+
+test('validation adapters preserve edit-session ownership metadata through the runtime boundary', async () => {
+  const draft = mysql();
+  let received;
+  const metadata = {
+    editSessionId:'edit-1',operationId:'operation-1',draftGeneration:7,
+    configDigest:'a'.repeat(64),requestId:'request-1',
+  };
+  const result = await getPluginConnectionAdapter('mysql').validate({
+    draft,
+    purpose:'resource-access',
+    resolvedSecrets:{password:'temporary'},
+    signal:new AbortController().signal,
+    runtimeFacade:{validate:async (payload) => { received = payload; return {ok:true}; }},
+    ...metadata,
+  });
+
+  assert.deepEqual(result,{ok:true});
+  assert.equal(received.pluginType,'mysql');
+  assert.equal(received.draft,draft);
+  assert.deepEqual(received.resolvedSecrets,{password:'temporary'});
+  for (const [key,value] of Object.entries(metadata)) assert.equal(received[key],value);
+});

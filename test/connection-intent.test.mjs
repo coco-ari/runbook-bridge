@@ -271,6 +271,28 @@ test('environment retry preserves plugins that the user manually disconnected', 
   assert.equal(manager.snapshot('p1','e1').plugins.cache.reason,'USER_DISCONNECTED');
 });
 
+test('an edit restore plan connects only the exact pre-edit set plus required providers', async () => {
+  const provider = plugin('server','server');
+  const restoredLeaf = plugin('orders','mysql',{transport:{kind:'serverTunnel',serverPluginInstanceId:'server'}});
+  const unrelated = plugin('cache','redis');
+  const calls = [];
+  const manager = fixture([provider,restoredLeaf,unrelated],{
+    connect:async (item) => { calls.push(item.pluginInstanceId); return {connectedAt:'now'}; },
+    disconnect:async () => ({connected:false}),
+    closeAll:async () => undefined,
+  });
+
+  const result = await manager.requestConnectionIntent({
+    requestId:'restore-request',planId:'restore-plan',projectId:'p1',environmentId:'e1',
+    pluginInstanceIds:['orders'],intent:'connect',source:'edit-cancel-restore',
+  });
+
+  assert.equal(result.outcome,'started');
+  assert.deepEqual(calls,['server','orders']);
+  assert.equal(result.snapshot.plugins.orders.phase,'connected');
+  assert.notEqual(result.snapshot.plugins.cache.phase,'connected');
+});
+
 test('stale operation ids cannot cancel a newer owner and force cancel terminates all current subscribers', async () => {
   const target = plugin('orders');
   const signals = [];

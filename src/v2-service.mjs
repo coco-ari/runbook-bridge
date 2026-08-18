@@ -118,11 +118,13 @@ export class V2Service {
   }
 
   async openEnvironment(params) {
+    this.mutationCoordinator?.assertEnvironmentAvailable(params.projectId,params.environmentId);
     const runbook = await this.workspaceStore.readRunbook(params.projectId, params.environmentId);
     const boundedRunbook = takeUtf8(runbook.content, MAX_RUNBOOK_BYTES);
     if (boundedRunbook.truncated) {
       throw new AppError('RUNBOOK_TOO_LARGE', '当前环境运维说明超过 64 KiB，请精简后再让 Agent 打开环境。', { maxBytes: MAX_RUNBOOK_BYTES });
     }
+    this.mutationCoordinator?.assertEnvironmentAvailable(params.projectId,params.environmentId);
     const opened = await this.contextManager.open(params.projectId, params.environmentId, params.clientInstanceId);
     const openedRunbook = takeUtf8(opened.runbook.content, MAX_RUNBOOK_BYTES);
     if (openedRunbook.truncated) {

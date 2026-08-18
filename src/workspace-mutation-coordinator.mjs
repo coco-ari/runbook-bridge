@@ -8,6 +8,7 @@ export class WorkspaceMutationCoordinator {
   constructor() {
     this.environmentQueues = new Map();
     this.environmentActivity = new Map();
+    this.environmentFences = new Map();
     this.projectsDeleting = new Set();
   }
 
@@ -15,6 +16,68 @@ export class WorkspaceMutationCoordinator {
     if (this.projectsDeleting.has(projectId)) {
       throw new AppError('PROJECT_DELETING', '项目正在删除，当前操作已取消。');
     }
+  }
+
+  assertEnvironmentAvailable(projectId,environmentId,{ownerId = null} = {}) {
+    this.assertProjectAvailable(projectId);
+    const fence = this.environmentFences.get(environmentKey(projectId,environmentId));
+    if (fence && fence.ownerId !== ownerId) {
+      throw new AppError('PLUGIN_EDIT_BUSY','插件连接配置正在编辑，请等待编辑结束后再操作。',{
+        editSessionId:fence.kind === 'edit' ? fence.ownerId : null,
+        affectedPluginInstanceIds:[...fence.affectedPluginInstanceIds],
+      });
+    }
+  }
+
+  installEnvironmentEditFence(projectId,environmentId,editSessionId,affectedPluginInstanceIds = []) {
+    this.assertProjectAvailable(projectId);
+    const key = environmentKey(projectId,environmentId);
+    if (this.environmentFences.has(key)) throw new AppError('PLUGIN_EDIT_BUSY','当前环境已有连接配置编辑会话。');
+    const fence = {
+      kind:'edit',
+      ownerId:String(editSessionId),
+      projectId,
+      environmentId,
+      affectedPluginInstanceIds:[...new Set(affectedPluginInstanceIds)],
+      installedAt:new Date().toISOString(),
+    };
+    this.environmentFences.set(key,fence);
+    return structuredClone(fence);
+  }
+
+  handoffEnvironmentEditFence(editSessionId,planId) {
+    for (const [key,fence] of this.environmentFences) {
+      if (fence.kind !== 'edit' || fence.ownerId !== String(editSessionId)) continue;
+      const handed = {...fence,kind:'connection-plan',ownerId:String(planId),editSessionId:String(editSessionId)};
+      this.environmentFences.set(key,handed);
+      return structuredClone(handed);
+    }
+    throw new AppError('PLUGIN_EDIT_SESSION_STALE','编辑会话已经结束或不再拥有连接门禁。');
+  }
+
+  releaseEnvironmentFence(ownerId) {
+    for (const [key,fence] of this.environmentFences) {
+      if (fence.ownerId === String(ownerId)) {
+        this.environmentFences.delete(key);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  environmentFence(projectId,environmentId) {
+    const fence = this.environmentFences.get(environmentKey(projectId,environmentId));
+    return fence ? structuredClone(fence) : null;
+  }
+
+  environmentActivitySnapshot(projectId,environmentId) {
+    const key = environmentKey(projectId,environmentId);
+    const state = this.environmentActivity.get(key);
+    return {
+      readers:state?.readers ?? 0,
+      writers:state?.writers ?? 0,
+      fenced:Boolean(this.environmentFences.get(key)),
+    };
   }
 
   activity(key) {
@@ -40,8 +103,8 @@ export class WorkspaceMutationCoordinator {
     await state.drainPromise;
   }
 
-  enqueueEnvironmentMutation(projectId,environmentId,operation) {
-    try { this.assertProjectAvailable(projectId); }
+  enqueueEnvironmentMutation(projectId,environmentId,operation,{ownerId = null} = {}) {
+    try { this.assertEnvironmentAvailable(projectId,environmentId,{ownerId}); }
     catch (error) { return Promise.reject(error); }
     const key = environmentKey(projectId,environmentId);
     const state = this.activity(key);
@@ -59,8 +122,8 @@ export class WorkspaceMutationCoordinator {
     });
   }
 
-  async runEnvironmentOperation(projectId,environmentId,operation) {
-    this.assertProjectAvailable(projectId);
+  async runEnvironmentOperation(projectId,environmentId,operation,{ownerId = null} = {}) {
+    this.assertEnvironmentAvailable(projectId,environmentId,{ownerId});
     const key = environmentKey(projectId,environmentId);
     const state = this.activity(key);
     if (state.writers > 0) {
@@ -78,6 +141,49 @@ export class WorkspaceMutationCoordinator {
         resolve();
       }
       this.cleanupActivity(key,state);
+    }
+  }
+
+  async waitEnvironmentDrain(projectId,environmentId,{timeoutMs = 10_000,signal = null} = {}) {
+    const key = environmentKey(projectId,environmentId);
+    const startedAt = Date.now();
+    while (true) {
+      if (signal?.aborted) throw new AppError('PLUGIN_EDIT_DRAIN_CANCELLED','已取消等待正在进行的操作。');
+      const state = this.environmentActivity.get(key);
+      const pendingWriter = this.environmentQueues.get(key);
+      const readers = state?.readers ?? 0;
+      const writers = state?.writers ?? 0;
+      if (!readers && !writers && !pendingWriter) return {drained:true,waitedMs:Date.now() - startedAt};
+      const remaining = Math.max(0,Number(timeoutMs) - (Date.now() - startedAt));
+      if (!remaining) {
+        throw new AppError('PLUGIN_EDIT_DRAIN_TIMEOUT','等待正在进行的 Agent 或配置操作超时。',{
+          activeOperations:{readers,writers},
+        });
+      }
+      const pending = [
+        ...(readers && state ? [this.waitReaders(state)] : []),
+        ...(pendingWriter ? [Promise.resolve(pendingWriter).catch(() => undefined)] : []),
+      ];
+      let timer;
+      let onAbort;
+      try {
+        await Promise.race([
+          Promise.all(pending),
+          new Promise((_,reject) => {
+            timer = setTimeout(() => reject(new AppError('PLUGIN_EDIT_DRAIN_TIMEOUT','等待正在进行的 Agent 或配置操作超时。',{
+              activeOperations:{readers,writers},
+            })),remaining);
+            timer.unref?.();
+          }),
+          ...(signal ? [new Promise((_,reject) => {
+            onAbort = () => reject(new AppError('PLUGIN_EDIT_DRAIN_CANCELLED','已取消等待正在进行的操作。'));
+            signal.addEventListener('abort',onAbort,{once:true});
+          })] : []),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+        if (onAbort) signal.removeEventListener('abort',onAbort);
+      }
     }
   }
 

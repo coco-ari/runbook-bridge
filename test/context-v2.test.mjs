@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { EnvironmentContextManager } from '../src/context-manager.mjs';
 import { ConfirmationManager } from '../src/confirmation-manager.mjs';
 import { V2Service } from '../src/v2-service.mjs';
+import { WorkspaceMutationCoordinator } from '../src/workspace-mutation-coordinator.mjs';
 
 test('environment context binds runbook and exact plugin configuration', async () => {
   let hash='docs-1'; let revision=1;
@@ -116,4 +117,36 @@ test('an oversized runbook is rejected before a context token is issued', async 
   });
   await assert.rejects(() => service.openEnvironment({ projectId:'p1', environmentId:'e1', clientInstanceId:'c1' }), (error) => error.code === 'RUNBOOK_TOO_LARGE');
   assert.equal(opened, false);
+});
+
+test('an edit fence blocks new Agent context, operations, and plugin creation before they can touch runtime or storage', async () => {
+  const mutationCoordinator = new WorkspaceMutationCoordinator();
+  mutationCoordinator.installEnvironmentEditFence('p1','e1','edit-1',['db1']);
+  const touched = {open:0,verify:0,create:0};
+  const service = new V2Service({
+    workspaceStore:{
+      readRunbook:async () => ({content:'runbook',hash:'h1',empty:false}),
+      createPlugin:async () => { touched.create += 1; },
+    },
+    contextManager:{
+      open:async () => { touched.open += 1; },
+      verifyEnvironment:async () => { touched.verify += 1; },
+    },
+    connectionManager:{assertConfigurationStable:() => undefined},
+    mutationCoordinator,
+  });
+
+  await assert.rejects(
+    () => service.openEnvironment({projectId:'p1',environmentId:'e1',clientInstanceId:'agent-a'}),
+    (error) => error.code === 'PLUGIN_EDIT_BUSY',
+  );
+  await assert.rejects(
+    () => service.invoke({projectId:'p1',environmentId:'e1'},'describe',{}),
+    (error) => error.code === 'PLUGIN_EDIT_BUSY',
+  );
+  await assert.rejects(
+    () => service.addPlugin({projectId:'p1',environmentId:'e1'}),
+    (error) => error.code === 'PLUGIN_EDIT_BUSY',
+  );
+  assert.deepEqual(touched,{open:0,verify:0,create:0});
 });

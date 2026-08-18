@@ -10,6 +10,7 @@ import {
 } from './plugin-readiness-service.mjs';
 import { workspaceInternals } from './workspace-store.mjs';
 import { WorkspaceMutationCoordinator } from './workspace-mutation-coordinator.mjs';
+import { getPluginConnectionAdapter } from './plugin-connection-adapters.mjs';
 
 function resultHandler(handler) {
   return async (_event, ...args) => {
@@ -125,10 +126,21 @@ function assertSecretFreeDraft(draft) {
 }
 
 export function registerV2Ipc(ipcMain, services) {
-  const { workspaceStore: store, connectionManager, credentialVault, legacyCredentialStore, configTransactionJournal, contextManager, confirmationManager, pluginManager, mysqlRuntime } = services;
+  const { workspaceStore: store, connectionManager, credentialVault, legacyCredentialStore, configTransactionJournal, contextManager, confirmationManager, pluginManager, mysqlRuntime, pluginEditSessionManager } = services;
   const credentialUseResolver = services.credentialUseResolver ?? new CredentialUseResolver(credentialVault);
   const handle = (name, fn) => ipcMain.handle(`v2:${name}`, resultHandler(fn));
+  const handleWithEvent = (name, fn) => ipcMain.handle(`v2:${name}`, resultHandlerWithEvent(fn));
   const mutationCoordinator = services.mutationCoordinator ?? new WorkspaceMutationCoordinator();
+  const rendererCleanupInstalled = new WeakSet();
+  const rendererOwner = (event) => {
+    const sender = event?.sender;
+    const ownerId = `renderer:${String(sender?.id ?? 'unknown')}`;
+    if (sender && typeof sender === 'object' && !rendererCleanupInstalled.has(sender)) {
+      rendererCleanupInstalled.add(sender);
+      sender.once?.('destroyed',() => pluginEditSessionManager?.invalidateOwner?.(ownerId));
+    }
+    return ownerId;
+  };
   const assertProjectAvailable = (projectId) => mutationCoordinator.assertProjectAvailable(projectId);
   const requestConnectionIntent = (payload) => {
     if (!payload || !['connect','disconnect','retry','cancel'].includes(payload.intent)) {
@@ -162,8 +174,8 @@ export function registerV2Ipc(ipcMain, services) {
     return {outcome:'cancelled',planId:payload.planId ?? null,operationId:payload.operationId ?? null,actions:[],snapshot};
   };
   const legacyConnectionSnapshot = async (payload) => (await requestConnectionIntent(payload)).snapshot;
-  const enqueuePluginMutation = (projectId,environmentId,operation) => (
-    mutationCoordinator.enqueueEnvironmentMutation(projectId,environmentId,operation)
+  const enqueuePluginMutation = (projectId,environmentId,operation,ownerId = null) => (
+    mutationCoordinator.enqueueEnvironmentMutation(projectId,environmentId,operation,{ownerId})
   );
   const environmentAssessmentSnapshot = async (projectId,environmentId,plugins = null) => {
     if (typeof connectionManager.status === 'function') {
@@ -181,8 +193,10 @@ export function registerV2Ipc(ipcMain, services) {
     ...plugin,
     assessment:publicPluginAssessment(snapshot?.plugins?.[plugin.pluginInstanceId]),
   });
-  const withConfigurationMutation = async (projectId, environmentId, changedPluginInstanceId, operation) => {
-    const token = connectionManager.beginConfigurationMutation?.(projectId, environmentId, changedPluginInstanceId) ?? null;
+  const withConfigurationMutation = async (projectId, environmentId, changedPluginInstanceId, operation, ownerId = null) => {
+    const token = connectionManager.beginConfigurationMutation?.(
+      projectId, environmentId, changedPluginInstanceId, {ownerId},
+    ) ?? null;
     let restoreOnFailure = false;
     let ended = false;
     try { return await operation({restoreOnFailure:() => { restoreOnFailure = true; }}); }
@@ -254,7 +268,7 @@ export function registerV2Ipc(ipcMain, services) {
     }
     return plugin;
   };
-  const commitConnectionPluginUpdate = (prepared, payload) => withConfigurationMutation(
+  const commitConnectionPluginUpdate = (prepared, payload, {ownerId = null} = {}) => withConfigurationMutation(
     payload.projectId,payload.environmentId,payload.pluginInstanceId,
     async ({restoreOnFailure}) => {
       let transaction = null;
@@ -330,9 +344,130 @@ export function registerV2Ipc(ipcMain, services) {
         ...(runtimeWarning ? {runtimeWarning,manualReconnectRequired:true} : {}),
         ...(journalWarning ? {persistenceWarning:journalWarning} : {}),
       };
-    },
+    },ownerId,
   );
   ipcMain.on('v2:network-changed', () => connectionManager.networkChanged('renderer-network-change').catch(() => undefined));
+
+  const requirePluginEditSessionManager = () => {
+    if (!pluginEditSessionManager) {
+      throw new AppError('PLUGIN_EDIT_SESSION_UNAVAILABLE','插件连接配置编辑服务不可用。');
+    }
+    return pluginEditSessionManager;
+  };
+  const restoreRuntimeWarning = (connectionPlan) => {
+    if (!connectionPlan || (connectionPlan.outcome !== 'needs-action' && !connectionPlan.actions?.length)) return null;
+    const first = connectionPlan.actions?.[0];
+    return {
+      code:first?.code ?? 'CONNECTION_FAILED_AFTER_SAVE',
+      message:`配置和密码已保存，但连接失败。${first?.message ? ` ${first.message}` : ''}`,
+      details:{planId:connectionPlan.planId ?? null},
+    };
+  };
+
+  handleWithEvent('plugin-connection-edit-prepare',(event,payload) => (
+    requirePluginEditSessionManager().preparePluginConnectionEdit({
+      ...payload,ownerId:rendererOwner(event),
+    })
+  ));
+  handleWithEvent('plugin-connection-edit-begin',(event,payload) => (
+    requirePluginEditSessionManager().beginPluginConnectionEdit({
+      ...payload,ownerId:rendererOwner(event),
+    })
+  ));
+  handleWithEvent('plugin-draft-validate',(event,payload) => {
+    const ownerId = rendererOwner(event);
+    return requirePluginEditSessionManager().validatePluginDraft({
+      ...payload,
+      ownerId,
+      onProgress:(progress) => {
+        if (event.sender.isDestroyed?.()) return;
+        event.sender.send?.('v2:plugin-validation-progress',progress);
+      },
+    });
+  });
+  handleWithEvent('plugin-validation-cancel',(event,payload) => (
+    requirePluginEditSessionManager().cancelPluginValidation({
+      ...payload,ownerId:rendererOwner(event),
+    })
+  ));
+  handleWithEvent('plugin-connection-edit-cancel',(event,payload) => {
+    const ownerId = rendererOwner(event);
+    const manager = requirePluginEditSessionManager();
+    if (payload?.prepareToken && !payload?.editSessionId) {
+      return manager.cancelPreparation(payload.prepareToken,{ownerId});
+    }
+    return manager.cancelPluginConnectionEdit({...payload,ownerId});
+  });
+  handleWithEvent('plugin-connection-edit-save',async (event,payload = {}) => {
+    const ownerId = rendererOwner(event);
+    const manager = requirePluginEditSessionManager();
+    manager.captureCredentialIntent?.(payload.editSessionId,{...payload,ownerId});
+    manager.beginSave(payload.editSessionId,{ownerId});
+    const material = manager.commitMaterial(payload.editSessionId,{ownerId});
+    const {projectId,environmentId,pluginInstanceId} = material.scope;
+    const scopedPayload = {
+      ...payload,
+      projectId,environmentId,pluginInstanceId,
+      credentialIntent:material.credentialIntent,
+      temporarySecrets:material.temporarySecrets,
+    };
+    let committed = false;
+    try {
+      return await enqueuePluginMutation(projectId,environmentId,async () => {
+        if (payload.expectedRevision !== material.baseRecordRevision) {
+          throw new AppError('CONFIG_REVISION_CONFLICT','插件配置已经变化，请刷新后重试。');
+        }
+        const prepared = await preparePluginUpdate(scopedPayload,'connection');
+        const adapter = getPluginConnectionAdapter(prepared.before.pluginType);
+        const identityChanged = JSON.stringify(adapter.credentialIdentity(prepared.before))
+          !== JSON.stringify(adapter.credentialIdentity(prepared.after ?? prepared.before));
+        if (identityChanged && prepared.credentialMutation === 'none') {
+          throw new AppError(
+            'PLUGIN_CREDENTIAL_REBIND_REQUIRED',
+            '认证目标或安全路径已经变化，请输入新凭据或明确沿用已保存凭据。',
+          );
+        }
+
+        let plugin = prepared.before;
+        let persistenceWarning = null;
+        let runtimeWarning = null;
+        if (prepared.change.kind !== 'none') {
+          const value = await commitConnectionPluginUpdate(prepared,scopedPayload,{ownerId});
+          ({persistenceWarning = null,runtimeWarning = null,...plugin} = value);
+        }
+        committed = true;
+
+        let connectionPlan = null;
+        try {
+          connectionPlan = await manager.completeSave(payload.editSessionId,{
+            afterCommit:payload.afterCommit ?? 'stay-disconnected',ownerId,
+          });
+          runtimeWarning ??= restoreRuntimeWarning(connectionPlan);
+        } catch (error) {
+          const value = toPublicError(error);
+          runtimeWarning ??= {
+            code:value.code,
+            message:`配置和密码已保存，但连接失败。 ${value.message}`,
+          };
+        }
+        return {
+          committed:true,
+          changed:prepared.change.kind !== 'none',
+          changeKind:prepared.change.kind,
+          plugin:typeof store.publicPlugin === 'function' ? store.publicPlugin(plugin) : plugin,
+          persistenceWarning,
+          connectionPlan,
+          runtimeWarning,
+        };
+      },ownerId);
+    } catch (error) {
+      if (!committed) {
+        try { manager.saveFailed(payload.editSessionId); }
+        catch { /* Preserve the original storage or revision failure. */ }
+      }
+      throw error;
+    }
+  });
 
   handle('project-list', () => store.listProjects());
   handle('workspace-overview', async () => {
@@ -381,6 +516,7 @@ export function registerV2Ipc(ipcMain, services) {
     mutationCoordinator.beginProjectDelete(projectId);
     const mutationTokens = [];
     try {
+      pluginEditSessionManager?.invalidateProject?.(projectId);
       let environments = await store.listEnvironments(projectId);
       const findActive = (values) => values.filter((environment) => {
         const runtime = connectionManager.snapshot(projectId, environment.environmentId);
@@ -391,6 +527,7 @@ export function registerV2Ipc(ipcMain, services) {
         throw new AppError('PROJECT_CONNECTED', `请先断开项目中的环境：${active.map((item) => item.name).join('、')}。`);
       }
       await mutationCoordinator.waitProjectActivity(projectId);
+      pluginEditSessionManager?.invalidateProject?.(projectId);
       // A mutation/operation that was already active when deletion began may
       // have changed environment/runtime state. Re-read before the commit.
       environments = await store.listEnvironments(projectId);
@@ -429,6 +566,7 @@ export function registerV2Ipc(ipcMain, services) {
   }));
   handle('environment-delete', ({ projectId, environmentId }) => {
     assertProjectAvailable(projectId);
+    pluginEditSessionManager?.invalidateEnvironment?.(projectId,environmentId);
     const immediate = connectionManager.snapshot(projectId,environmentId);
     if (immediate.desiredConnected || immediate.phase !== 'disconnected') {
       throw new AppError('ENVIRONMENT_CONNECTED', '请先断开环境后再删除。');
@@ -588,7 +726,9 @@ export function registerV2Ipc(ipcMain, services) {
       return commitConnectionPluginUpdate(prepared,payload);
     },
   ));
-  handle('plugin-delete', ({ projectId, environmentId, pluginInstanceId }) => enqueuePluginMutation(projectId, environmentId, () => withConfigurationMutation(projectId, environmentId, pluginInstanceId, async ({restoreOnFailure}) => {
+  handle('plugin-delete', ({ projectId, environmentId, pluginInstanceId }) => {
+    pluginEditSessionManager?.invalidatePlugin?.(projectId,environmentId,pluginInstanceId);
+    return enqueuePluginMutation(projectId, environmentId, () => withConfigurationMutation(projectId, environmentId, pluginInstanceId, async ({restoreOnFailure}) => {
     let plugin;
     try { ({plugin} = await store.preflightDeletePlugin(projectId, environmentId, pluginInstanceId)); }
     catch (error) { restoreOnFailure(); throw error; }
@@ -609,7 +749,8 @@ export function registerV2Ipc(ipcMain, services) {
     contextManager.invalidateEnvironment(projectId, environmentId);
     confirmationManager.invalidatePlugin?.(projectId, environmentId, pluginInstanceId);
     return { ...value, credentialsPreserved:true,...(runtimeWarning ? {runtimeWarning} : {}) };
-  })));
+    }));
+  });
   handle('plugin-credential-status', async ({ projectId, environmentId, pluginInstanceId }) => {
     const plugin = await store.getPlugin(projectId, environmentId, pluginInstanceId);
     const secrets = await credentialVault.load(plugin) ?? {};

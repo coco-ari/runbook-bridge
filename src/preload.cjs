@@ -34,6 +34,17 @@ contextBridge.exposeInMainWorld('aiOps', {
     updatePluginMetadata: (payload) => ipcRenderer.invoke('v2:plugin-metadata-update', payload),
     updatePluginAgentConfiguration: (payload) => ipcRenderer.invoke('v2:plugin-agent-configuration-update', payload),
     updatePluginConnection: (payload) => ipcRenderer.invoke('v2:plugin-connection-update', payload),
+    preparePluginConnectionEdit: (payload) => ipcRenderer.invoke('v2:plugin-connection-edit-prepare', payload),
+    beginPluginConnectionEdit: (payload) => ipcRenderer.invoke('v2:plugin-connection-edit-begin', payload),
+    validatePluginDraft: (payload) => ipcRenderer.invoke('v2:plugin-draft-validate', payload),
+    cancelPluginValidation: (payload) => ipcRenderer.invoke('v2:plugin-validation-cancel', payload),
+    savePluginConnectionEdit: (payload) => ipcRenderer.invoke('v2:plugin-connection-edit-save', payload),
+    cancelPluginConnectionEdit: (payload) => ipcRenderer.invoke('v2:plugin-connection-edit-cancel', payload),
+    onPluginValidationProgress: (callback) => {
+      const listener = (_event, value) => callback(value);
+      ipcRenderer.on('v2:plugin-validation-progress', listener);
+      return () => ipcRenderer.removeListener('v2:plugin-validation-progress', listener);
+    },
     deletePlugin: (payload) => ipcRenderer.invoke('v2:plugin-delete', payload),
     credentialStatus: (payload) => ipcRenderer.invoke('v2:plugin-credential-status', payload),
     confirmCredentialMigration: (payload) => ipcRenderer.invoke('v2:plugin-credential-migration-confirm', payload),

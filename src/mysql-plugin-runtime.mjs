@@ -266,17 +266,25 @@ export class MysqlPluginRuntime extends EventEmitter {
     }
   }
 
-  async listDatabases(plugin, suppliedSecrets = {}) {
+  async listDatabases(plugin, suppliedSecrets = {}, {signal = null} = {}) {
     if (plugin.pluginType !== 'mysql' || !plugin.target?.host || !plugin.auth?.username) {
       throw new AppError('PLUGIN_CONFIG_INCOMPLETE', '请先填写 MySQL 主机地址、用户名和连接方式。');
     }
     const secrets = { ...suppliedSecrets };
     if (!secrets.password) throw new AppError('CREDENTIAL_UNAVAILABLE', '请先填写 MySQL 密码。');
-    const relay = await createMysqlRoute(this.routeManager, plugin);
+    if (signal?.aborted) throw new AppError('PLUGIN_VALIDATION_CANCELLED','数据库发现已取消。');
+    const relay = await createMysqlRoute(this.routeManager, plugin, {signal});
     let connection;
+    const abort = () => {
+      const raw = connection?.connection ?? connection;
+      try { raw?.destroy?.(); } catch { /* Driver may already be closed. */ }
+    };
+    signal?.addEventListener('abort',abort,{once:true});
     try {
       connection = await this.client.createConnection(mysqlConnectionOptions(plugin, secrets, relay));
+      if (signal?.aborted) throw new AppError('PLUGIN_VALIDATION_CANCELLED','数据库发现已取消。');
       const [rows] = await connection.query({ sql: 'SHOW DATABASES', timeout: plugin.limits.timeoutMs });
+      if (signal?.aborted) throw new AppError('PLUGIN_VALIDATION_CANCELLED','数据库发现已取消。');
       const visible = [...new Set(rows
         .flatMap((row) => Object.values(row).slice(0, 1))
         .map((value) => String(value ?? '').trim())
@@ -286,6 +294,7 @@ export class MysqlPluginRuntime extends EventEmitter {
     } catch (error) {
       throw mysqlConnectError(error,plugin,'无法连接 MySQL 并查询数据库列表。');
     } finally {
+      signal?.removeEventListener('abort',abort);
       await connection?.end().catch(() => undefined);
       await this.routeManager.closeRelay(plugin, relay.generation);
     }
