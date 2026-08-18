@@ -52,11 +52,11 @@ test('database discovery uses a newly entered password when the saved credential
   assert.deepEqual(harness.getReceivedSecrets(), { password:'new-secret' });
 });
 
-test('database discovery still reports a stale saved credential when no replacement password was entered', async () => {
+test('database discovery requires an explicit rebind when the credential identity changed', async () => {
   const harness = createHarness();
   const result = await harness.handlers.get('v2:plugin-databases')({}, { ...payload, secrets:{} });
   assert.equal(result.ok, false);
-  assert.equal(result.error.code, 'CREDENTIAL_BINDING_MISMATCH');
+  assert.equal(result.error.code, 'CREDENTIAL_REBIND_REQUIRED');
 });
 
 test('deleting a provider with dependents has no connection or credential side effects', async () => {

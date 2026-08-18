@@ -62,6 +62,143 @@ function deferred() {
   return {promise,resolve,reject};
 }
 
+function selectElement(optionValues = [''],selectedValue = optionValues[0] ?? '') {
+  let values = optionValues.map(String);
+  let value = values.includes(String(selectedValue)) ? String(selectedValue) : '';
+  let html = values.map((item) => `<option value="${item}">${item}</option>`).join('');
+  const element = {disabled:false};
+  Object.defineProperties(element,{
+    innerHTML:{
+      get:() => html,
+      set(next) {
+        html = String(next);
+        values = [...html.matchAll(/<option[^>]*value="([^"]*)"[^>]*>/g)].map((match) => match[1]);
+        value = values[0] ?? '';
+      },
+    },
+    value:{
+      get:() => value,
+      set(next) { value = values.includes(String(next)) ? String(next) : ''; },
+    },
+  });
+  return element;
+}
+
+function databaseRendererHarness(listPluginDatabases,{selectedDatabase = 'orders',savedDatabase = selectedDatabase} = {}) {
+  const busyElement = (textContent = '') => ({
+    disabled:false,textContent,attributes:new Set(),
+    setAttribute(name) { this.attributes.add(name); },
+    removeAttribute(name) { this.attributes.delete(name); },
+  });
+  const elements = {
+    pluginType:{value:'mysql'},pluginDisplayName:{value:'Orders'},pluginHost:{value:'db.internal'},
+    pluginPort:{value:'3306'},pluginUsername:{value:'reader'},pluginAddressFamily:{value:'ipv4Preferred'},
+    pluginTransport:{value:'direct'},pluginProvider:{value:''},pluginVpnAlias:{value:''},pluginTls:{value:'disabled'},
+    pluginPassword:{value:'',dataset:{credentialState:'empty'}},
+    pluginDatabase:selectElement(selectedDatabase ? ['',selectedDatabase] : [''],selectedDatabase),
+    databaseHint:{textContent:''},queryDatabases:busyElement('查询数据库'),savePlugin:busyElement(),
+  };
+  const state = {
+    projectId:'project',environmentId:'environment',
+    editingPlugin:{pluginInstanceId:'mysql',pluginType:'mysql',target:{database:savedDatabase}},
+    databaseDiscoverySignature:null,databaseCredentialRevision:0,databaseQueryGeneration:0,credentialProbeGeneration:4,
+  };
+  const context = vm.createContext({
+    state,api:{listPluginDatabases},
+    $:(selector) => elements[selector.slice(1)],
+    clearPluginFormError:() => {},pluginFormActive:() => true,pluginFormVisible:() => true,
+    scopeMatches:(scope) => scope.projectId === state.projectId && scope.environmentId === state.environmentId,
+    escapeAttr:(value) => String(value),escapeHtml:(value) => String(value),
+  });
+  install(context,['call','setElementBusy','editedPasswordValue','databaseConnectionSignature','invalidateDatabaseDiscovery','queryDatabases']);
+  state.databaseDiscoverySignature = vm.runInContext('databaseConnectionSignature()',context);
+  return {context,elements,state};
+}
+
+test('database discovery invalidation preserves the selected database and unlocks local work', () => {
+  const {context,elements,state} = databaseRendererHarness(async () => ({ok:true,data:{databases:[],truncated:false}}));
+  elements.queryDatabases.disabled = true;
+  elements.queryDatabases.textContent = '查询中…';
+  elements.savePlugin.disabled = true;
+  elements.pluginHost.value = 'new-db.internal';
+
+  vm.runInContext('invalidateDatabaseDiscovery()',context);
+
+  assert.equal(elements.pluginDatabase.value,'orders');
+  assert.equal(elements.pluginDatabase.disabled,false);
+  assert.equal(elements.queryDatabases.disabled,false);
+  assert.equal(elements.queryDatabases.textContent,'查询数据库');
+  assert.equal(elements.savePlugin.disabled,false);
+  assert.equal(state.databaseQueryGeneration,1);
+  assert.equal(state.databaseDiscoverySignature,null);
+  assert.match(elements.databaseHint.textContent,/重新查询/);
+});
+
+test('database candidate refresh preserves the current draft selection for empty and changed lists', async () => {
+  const responses = [
+    {ok:true,data:{databases:[],truncated:false}},
+    {ok:true,data:{databases:['analytics'],truncated:false}},
+  ];
+  const {context,elements} = databaseRendererHarness(async () => responses.shift(),{
+    selectedDatabase:'orders',savedDatabase:'legacy_orders',
+  });
+
+  await vm.runInContext('queryDatabases()',context);
+  assert.equal(elements.pluginDatabase.value,'orders');
+
+  await vm.runInContext('queryDatabases()',context);
+  assert.equal(elements.pluginDatabase.value,'orders');
+  assert.match(elements.pluginDatabase.innerHTML,/analytics/);
+});
+
+test('a single discovered database is not selected without an explicit user choice', async () => {
+  const {context,elements} = databaseRendererHarness(async () => ({
+    ok:true,data:{databases:['analytics'],truncated:false},
+  }),{selectedDatabase:'',savedDatabase:''});
+
+  await vm.runInContext('queryDatabases()',context);
+
+  assert.equal(elements.pluginDatabase.value,'');
+  assert.equal(elements.pluginDatabase.disabled,false);
+  assert.match(elements.pluginDatabase.innerHTML,/analytics/);
+});
+
+test('database discovery failure preserves the selected database and restores form actions', async () => {
+  const {context,elements} = databaseRendererHarness(async () => ({
+    ok:false,error:{code:'DATABASE_DISCOVERY_FAILED',message:'database discovery denied'},
+  }));
+
+  await assert.rejects(vm.runInContext('queryDatabases()',context),/database discovery denied/);
+
+  assert.equal(elements.pluginDatabase.value,'orders');
+  assert.equal(elements.queryDatabases.disabled,false);
+  assert.equal(elements.queryDatabases.textContent,'查询数据库');
+  assert.equal(elements.savePlugin.disabled,false);
+});
+
+test('field invalidation cancels database discovery locally and ignores its late result', async () => {
+  const response = deferred();
+  const {context,elements,state} = databaseRendererHarness(() => response.promise);
+  const pending = vm.runInContext('queryDatabases()',context);
+  await Promise.resolve();
+  assert.equal(elements.queryDatabases.disabled,true);
+  assert.equal(elements.savePlugin.disabled,true);
+
+  elements.pluginHost.value = 'new-db.internal';
+  vm.runInContext('invalidateDatabaseDiscovery()',context);
+  assert.equal(elements.pluginDatabase.value,'orders');
+  assert.equal(elements.queryDatabases.disabled,false);
+  assert.equal(elements.savePlugin.disabled,false);
+
+  response.resolve({ok:true,data:{databases:['late_database'],truncated:false}});
+  await pending;
+
+  assert.equal(elements.pluginDatabase.value,'orders');
+  assert.doesNotMatch(elements.pluginDatabase.innerHTML,/late_database/);
+  assert.match(elements.databaseHint.textContent,/重新查询/);
+  assert.equal(state.databaseDiscoverySignature,null);
+});
+
 test('partial runtime preserves a full plugin map, while partial-to-partial replaces the preview', () => {
   const context = vm.createContext({result:null});
   install(context,['runtimeTimestamp','runtimeSnapshotIsCurrent','mergeRuntimeSnapshot']);

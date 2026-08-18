@@ -3,8 +3,10 @@ import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
+import { isDeepStrictEqual } from 'node:util';
 import YAML from 'yaml';
 import { AppError } from './errors.mjs';
+import { classifyPluginChange } from './plugin-change-classifier.mjs';
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{1,62}$/;
 const CONTROL_RE = /[\u0000-\u001f\u007f]/;
@@ -12,6 +14,38 @@ const PLUGIN_TYPES = new Set(['server', 'mysql', 'redis']);
 const ADDRESS_FAMILIES = new Set(['ipv4Preferred', 'ipv4Only', 'ipv6Preferred', 'ipv6Only']);
 const TRANSPORTS = new Set(['direct', 'windowsVpn', 'serverTunnel']);
 const POLICY_MODES = new Set(['auto', 'confirm', 'deny']);
+const PLUGIN_METADATA_FIELDS = new Set(['displayName', 'description', 'tags', 'displayOrder']);
+const PLUGIN_AGENT_FIELDS = new Set(['policy', 'sources', 'actions', 'patterns', 'limits']);
+const PLUGIN_CONNECTION_FIELDS = Object.freeze({
+  server:new Set(['target', 'auth', 'uplink', 'tunnelProvider']),
+  mysql:new Set(['target', 'auth', 'transport', 'tls']),
+  redis:new Set(['target', 'auth', 'transport', 'tls', 'mode', 'cluster']),
+});
+const PLUGIN_CONNECTION_NESTED_FIELDS = Object.freeze({
+  server:Object.freeze({
+    target:new Set(['host', 'port', 'addressFamily', 'hostKeyFingerprint']),
+    auth:new Set(['type', 'username', 'privateKeyPath', 'agentSocket']),
+    uplink:new Set(['type', 'host', 'port', 'username', 'remoteDns', 'interfaceAlias']),
+  }),
+  mysql:Object.freeze({
+    target:new Set(['host', 'port', 'database', 'addressFamily']),
+    auth:new Set(['username']),
+    transport:new Set(['kind', 'serverPluginInstanceId', 'interfaceAlias']),
+    tls:new Set(['mode']),
+  }),
+  redis:Object.freeze({
+    target:new Set(['host', 'port', 'db', 'addressFamily']),
+    auth:new Set(['username']),
+    transport:new Set(['kind', 'serverPluginInstanceId', 'interfaceAlias']),
+    tls:new Set(['mode']),
+  }),
+});
+const NORMALIZATION_ROOT_GROUPS = Object.freeze([
+  ['displayName'],['description'],['tags'],['displayOrder'],
+  ['target'],['auth'],['transport'],['uplink'],['tls'],
+  ['policy'],['sources'],['actions'],['patterns'],['limits'],
+  ['tunnelProvider'],['mode','cluster'],['legacyProjectId'],['configState'],
+]);
 const FILE_READ_CONCURRENCY = 8;
 const AUDIT_READ_CHUNK_BYTES = 64 * 1024;
 const MAX_AUDIT_LINE_BYTES = 1024 * 1024;
@@ -57,6 +91,83 @@ function normalizeName(value, label = '名称') {
     throw new AppError('INVALID_ARGUMENT', `${label}不能为空、不能超过 120 字符或包含控制字符。`);
   }
   return name;
+}
+
+function normalizeDescription(value) {
+  const description = String(value ?? '').normalize('NFKC').trim();
+  if (description.length > 4096 || CONTROL_RE.test(description)) {
+    throw new AppError('INVALID_ARGUMENT', '插件说明不能超过 4096 字符或包含控制字符。');
+  }
+  return description;
+}
+
+function normalizeTags(value) {
+  if (!Array.isArray(value) || value.length > 32) {
+    throw new AppError('INVALID_ARGUMENT', '插件标签必须是最多 32 项的数组。');
+  }
+  const tags = value.map((item) => String(item ?? '').normalize('NFKC').trim());
+  if (tags.some((item) => !item || item.length > 64 || CONTROL_RE.test(item))) {
+    throw new AppError('INVALID_ARGUMENT', '插件标签不能为空、不能超过 64 字符或包含控制字符。');
+  }
+  return [...new Set(tags)];
+}
+
+function normalizeDisplayOrder(value) {
+  const order = Number(value);
+  if (!Number.isInteger(order) || order < 0 || order > 1_000_000) {
+    throw new AppError('INVALID_ARGUMENT', '插件展示顺序必须是 0 到 1000000 的整数。');
+  }
+  return order;
+}
+
+function assertPluginPatchScope(patch, allowed, label) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+    throw new AppError('INVALID_ARGUMENT', `${label}更新内容无效。`);
+  }
+  const unexpected = Object.keys(patch).filter((key) => !allowed.has(key));
+  if (unexpected.length) {
+    throw new AppError('INVALID_ARGUMENT', `${label}更新包含不允许的字段：${unexpected.join(', ')}。`, {
+      fields:unexpected,
+    });
+  }
+}
+
+function assertPluginNestedPatchScope(patch, schema, label) {
+  for (const [root,allowed] of Object.entries(schema ?? {})) {
+    if (!Object.hasOwn(patch,root)) continue;
+    const value = patch[root];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new AppError('INVALID_ARGUMENT', `${label}字段 ${root} 必须是对象。`);
+    }
+    const unexpected = Object.keys(value).filter((key) => !allowed.has(key));
+    if (unexpected.length) {
+      throw new AppError(
+        'INVALID_ARGUMENT',
+        `${label}字段 ${root} 包含不允许的子字段：${unexpected.join(', ')}。`,
+        {fields:unexpected.map((key) => `${root}.${key}`)},
+      );
+    }
+  }
+}
+
+function rootGroupProjection(value, roots) {
+  return Object.fromEntries(
+    roots.flatMap((root) => (Object.hasOwn(value ?? {},root) ? [[root,value[root]]] : [])),
+  );
+}
+
+function preserveNormalizationOnlyRoots(before, normalizedBaseline, normalizedCandidate) {
+  const candidate = {...normalizedCandidate};
+  for (const roots of NORMALIZATION_ROOT_GROUPS) {
+    const baselineProjection = rootGroupProjection(normalizedBaseline,roots);
+    const candidateProjection = rootGroupProjection(normalizedCandidate,roots);
+    if (!isDeepStrictEqual(baselineProjection,candidateProjection)) continue;
+    const beforeProjection = rootGroupProjection(before,roots);
+    if (isDeepStrictEqual(beforeProjection,baselineProjection)) continue;
+    for (const root of roots) delete candidate[root];
+    for (const [root,value] of Object.entries(beforeProjection)) candidate[root] = clone(value);
+  }
+  return candidate;
 }
 
 function normalizeId(value, prefix) {
@@ -187,6 +298,7 @@ function normalizePlugin(input, scope, existing = null) {
   if (!PLUGIN_TYPES.has(pluginType)) throw new AppError('INVALID_ARGUMENT', '插件类型无效。');
   if (existing && existing.pluginType !== pluginType) throw new AppError('INVALID_ARGUMENT', '不能修改插件类型。');
   const pluginInstanceId = existing?.pluginInstanceId ?? normalizeId(input.pluginInstanceId ?? input.displayName, pluginType);
+  const metadata = {...(existing ?? {}),...input};
   const base = {
     schemaVersion: 1,
     projectId: scope.projectId,
@@ -194,6 +306,15 @@ function normalizePlugin(input, scope, existing = null) {
     pluginInstanceId,
     pluginType,
     displayName: normalizeName(input.displayName ?? existing?.displayName ?? pluginType, '插件名称'),
+    ...((Object.hasOwn(existing ?? {}, 'description') || Object.hasOwn(input, 'description'))
+      ? {description:normalizeDescription(metadata.description)}
+      : {}),
+    ...((Object.hasOwn(existing ?? {}, 'tags') || Object.hasOwn(input, 'tags'))
+      ? {tags:normalizeTags(metadata.tags ?? [])}
+      : {}),
+    ...((Object.hasOwn(existing ?? {}, 'displayOrder') || Object.hasOwn(input, 'displayOrder'))
+      ? {displayOrder:normalizeDisplayOrder(metadata.displayOrder ?? 0)}
+      : {}),
     revision: (existing?.revision ?? 0) + 1,
     updatedAt: now(),
   };
@@ -218,14 +339,19 @@ function normalizePlugin(input, scope, existing = null) {
     if (vpnAlias.length > 128 || CONTROL_RE.test(vpnAlias)) throw new AppError('INVALID_ARGUMENT', 'Windows VPN 网卡名称无效。');
     const authReady = Boolean(username) && (authType !== 'privateKey' || Boolean(auth.privateKeyPath));
     const uplinkReady = uplinkType === 'direct' || (['socks5','http'].includes(uplinkType) ? Boolean(proxyHost) : Boolean(vpnAlias));
+    const port = normalizePort(target.port, 22);
+    const addressUnchanged = !existing
+      || (existing.target?.host === host && Number(existing.target?.port) === port);
     const plugin = {
       ...base,
       configState: host && authReady && uplinkReady ? 'ready' : 'draft',
       target: {
         host,
-        port: normalizePort(target.port, 22),
+        port,
         addressFamily: normalizeAddressFamily(target.addressFamily),
-        ...(target.hostKeyFingerprint ? { hostKeyFingerprint: String(target.hostKeyFingerprint) } : {}),
+        ...(addressUnchanged && target.hostKeyFingerprint
+          ? { hostKeyFingerprint: String(target.hostKeyFingerprint) }
+          : {}),
       },
       auth: {
         type: authType,
@@ -332,6 +458,18 @@ function normalizePlugin(input, scope, existing = null) {
     }
   }
   const transport = normalizeTransport({ ...(existing?.transport ?? {}), ...(input.transport ?? {}) });
+  let redisMode = null;
+  if (Object.hasOwn(input,'mode')) {
+    if (!['standalone','cluster'].includes(input.mode)) throw new AppError('INVALID_ARGUMENT', 'Redis 运行模式无效。');
+    redisMode = input.mode;
+  } else if (Object.hasOwn(input,'cluster')) {
+    if (typeof input.cluster !== 'boolean') throw new AppError('INVALID_ARGUMENT', 'Redis Cluster 标志无效。');
+    redisMode = input.cluster ? 'cluster' : 'standalone';
+  } else if (['standalone','cluster'].includes(existing?.mode)) {
+    redisMode = existing.mode;
+  } else if (typeof existing?.cluster === 'boolean') {
+    redisMode = existing.cluster ? 'cluster' : 'standalone';
+  }
   return {
     ...base,
     configState: host && transportReady(transport) ? 'ready' : 'draft',
@@ -344,6 +482,7 @@ function normalizePlugin(input, scope, existing = null) {
     auth: { username },
     transport,
     tls: { mode: ['disabled', 'preferred', 'required', 'verifyIdentity'].includes(source.tls?.mode) ? source.tls.mode : 'disabled' },
+    ...(redisMode ? {mode:redisMode} : {}),
     patterns,
     policy: normalizePolicy(source.policy, { scan: 'auto', read: 'auto', ttl: 'auto' }),
     limits: {
@@ -352,6 +491,24 @@ function normalizePlugin(input, scope, existing = null) {
       timeoutMs: Math.min(Math.max(Number(source.limits?.timeoutMs ?? 5_000), 500), 30_000),
       maxConcurrency: 1,
     },
+  };
+}
+
+function normalizePluginCandidate(input, scope, existing) {
+  if (!existing) throw new AppError('PLUGIN_NOT_FOUND', '缺少候选配置的现有插件。');
+  const normalized = normalizePlugin(input,scope,existing);
+  return {
+    ...normalized,
+    revision:existing.revision,
+    updatedAt:existing.updatedAt,
+  };
+}
+
+function materializePluginCandidate(candidate, existing) {
+  return {
+    ...candidate,
+    revision:existing.revision + 1,
+    updatedAt:now(),
   };
 }
 
@@ -1004,24 +1161,76 @@ export class WorkspaceStore {
   }
 
   async updatePlugin(projectId, environmentId, pluginInstanceId, patch, expectedRevision = null) {
-    return this.enqueue(`environment:${projectId}:${environmentId}`, async () => {
-      const current = await this.getPlugin(projectId, environmentId, pluginInstanceId);
-      if (expectedRevision !== null && current.revision !== expectedRevision) throw new AppError('CONFIG_REVISION_CONFLICT', '插件配置已经变化，请刷新后重试。');
-      const next = normalizePlugin({ ...patch, pluginInstanceId, pluginType: current.pluginType }, { projectId, environmentId }, current);
-      await this.assertPluginReferences(next);
-      await this.writeYaml(this.pluginPath(projectId, environmentId, pluginInstanceId), next);
-      return next;
-    });
+    const prepared = await this.preparePluginUpdate(projectId,environmentId,pluginInstanceId,patch,expectedRevision);
+    if (prepared.change.kind === 'none') return prepared.before;
+    return this.commitPluginSnapshot(prepared.after,prepared.before.revision);
   }
 
-  async preparePluginUpdate(projectId, environmentId, pluginInstanceId, patch, expectedRevision = null) {
+  async preparePluginUpdate(projectId, environmentId, pluginInstanceId, patch, expectedRevision = null, {
+    credentialMutation = 'none',
+    patchScope = null,
+  } = {}) {
     const before = await this.getPlugin(projectId, environmentId, pluginInstanceId);
     if (expectedRevision !== null && expectedRevision !== undefined && before.revision !== expectedRevision) {
       throw new AppError('CONFIG_REVISION_CONFLICT', '插件配置已经变化，请刷新后重试。');
     }
-    const after = normalizePlugin({ ...patch, pluginInstanceId, pluginType:before.pluginType }, {projectId,environmentId}, before);
-    await this.assertPluginReferences(after);
-    return {before,after};
+    if (patchScope === 'metadata') assertPluginPatchScope(patch,PLUGIN_METADATA_FIELDS,'插件基本信息');
+    if (patchScope === 'agent-policy-scope') assertPluginPatchScope(patch,PLUGIN_AGENT_FIELDS,'Agent 配置');
+    if (patchScope === 'connection') {
+      assertPluginPatchScope(patch,PLUGIN_CONNECTION_FIELDS[before.pluginType] ?? new Set(),'连接配置');
+      assertPluginNestedPatchScope(
+        patch,
+        PLUGIN_CONNECTION_NESTED_FIELDS[before.pluginType],
+        '连接配置',
+      );
+    }
+    const normalizedBaseline = normalizePluginCandidate(
+      {pluginInstanceId,pluginType:before.pluginType},
+      {projectId,environmentId},
+      before,
+    );
+    const normalizedCandidate = normalizePluginCandidate(
+      {...patch,pluginInstanceId,pluginType:before.pluginType},
+      {projectId,environmentId},
+      before,
+    );
+    const candidate = preserveNormalizationOnlyRoots(
+      before,normalizedBaseline,normalizedCandidate,
+    );
+    await this.assertPluginReferences(candidate);
+    const dependentPluginInstanceIds = before.pluginType === 'server'
+      ? (await this.listPlugins(projectId,environmentId))
+          .filter((plugin) => plugin.transport?.kind === 'serverTunnel'
+            && plugin.transport.serverPluginInstanceId === pluginInstanceId)
+          .map((plugin) => plugin.pluginInstanceId)
+      : [];
+    const change = classifyPluginChange({
+      before:normalizedBaseline,
+      after:normalizedCandidate,
+      credentialMutation,
+      dependentPluginInstanceIds,
+    });
+    const after = change.kind === 'none' ? before : materializePluginCandidate(candidate,before);
+    return {before,candidate,after,change};
+  }
+
+  preparePluginMetadataUpdate(projectId,environmentId,pluginInstanceId,patch,expectedRevision) {
+    return this.preparePluginUpdate(projectId,environmentId,pluginInstanceId,patch,expectedRevision,{
+      patchScope:'metadata',
+    });
+  }
+
+  preparePluginAgentConfigurationUpdate(projectId,environmentId,pluginInstanceId,patch,expectedRevision) {
+    return this.preparePluginUpdate(projectId,environmentId,pluginInstanceId,patch,expectedRevision,{
+      patchScope:'agent-policy-scope',
+    });
+  }
+
+  preparePluginConnectionUpdate(projectId,environmentId,pluginInstanceId,patch,expectedRevision,credentialMutation = 'none') {
+    return this.preparePluginUpdate(projectId,environmentId,pluginInstanceId,patch,expectedRevision,{
+      patchScope:'connection',
+      credentialMutation,
+    });
   }
 
   async commitPluginSnapshot(plugin, expectedCurrentRevision) {
@@ -1162,4 +1371,13 @@ export class WorkspaceStore {
   }
 }
 
-export const workspaceInternals = { normalizePlugin, sanitizePluginSnapshot, normalizeId, normalizeName, readLinesReverse, rewriteJsonLines };
+export const workspaceInternals = {
+  normalizePlugin,
+  normalizePluginCandidate,
+  materializePluginCandidate,
+  sanitizePluginSnapshot,
+  normalizeId,
+  normalizeName,
+  readLinesReverse,
+  rewriteJsonLines,
+};

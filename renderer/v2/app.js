@@ -2217,14 +2217,21 @@ function pluginFormDirty() {
 function invalidateDatabaseDiscovery() {
   if ($('#pluginType').value !== 'mysql' || !pluginFormActive()) return;
   if (state.databaseDiscoverySignature === databaseConnectionSignature()) return;
+  const databaseSelect = $('#pluginDatabase');
+  const selectedDatabase = databaseSelect.value;
   state.databaseQueryGeneration += 1;
   state.databaseDiscoverySignature = null;
   setElementBusy($('#queryDatabases'),false);
   $('#queryDatabases').textContent = '查询数据库';
   $('#savePlugin').disabled = false;
-  $('#pluginDatabase').innerHTML = '<option value="">连接信息已变化，请重新查询</option>';
-  $('#pluginDatabase').disabled = true;
-  $('#databaseHint').textContent = '数据库列表已失效，请重新查询';
+  databaseSelect.innerHTML = selectedDatabase
+    ? `<option value="${escapeAttr(selectedDatabase)}">${escapeHtml(selectedDatabase)}</option>`
+    : '<option value="">连接信息已变化，请重新查询</option>';
+  databaseSelect.value = selectedDatabase;
+  databaseSelect.disabled = !selectedDatabase;
+  $('#databaseHint').textContent = selectedDatabase
+    ? '当前数据库已保留；连接信息已变化，请重新查询并验证'
+    : '数据库列表已失效，请重新查询';
 }
 
 async function queryDatabases() {
@@ -2259,15 +2266,24 @@ async function queryDatabases() {
     }));
     if (queryGeneration !== state.databaseQueryGeneration || dialogGeneration !== state.credentialProbeGeneration || !pluginFormActive() || requestedScope.projectId !== state.projectId || requestedScope.environmentId !== state.environmentId || requestedScope.pluginInstanceId !== (state.editingPlugin?.pluginInstanceId ?? null) || requestedSignature !== databaseConnectionSignature()) return;
     const databases = result.databases ?? [];
-    $('#pluginDatabase').innerHTML = databases.length
-      ? `<option value="">请选择数据库</option>${databases.map((name) => `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`).join('')}`
-      : '<option value="">没有可选择的数据库</option>';
-    $('#pluginDatabase').disabled = !databases.length;
-    const previous = state.editingPlugin?.target?.database;
-    if (previous && databases.includes(previous)) $('#pluginDatabase').value = previous;
-    else if (databases.length === 1) $('#pluginDatabase').value = databases[0];
+    const databaseSelect = $('#pluginDatabase');
+    const selectedDatabase = databaseSelect.value;
+    const selectionListed = Boolean(selectedDatabase) && databases.includes(selectedDatabase);
+    const retainedSelection = selectedDatabase && !selectionListed
+      ? `<option value="${escapeAttr(selectedDatabase)}">${escapeHtml(selectedDatabase)}（当前选择）</option>`
+      : '';
+    databaseSelect.innerHTML = databases.length
+      ? `<option value="">请选择数据库</option>${retainedSelection}${databases.map((name) => `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`).join('')}`
+      : `<option value="">没有可选择的数据库</option>${retainedSelection}`;
+    databaseSelect.value = selectedDatabase;
+    databaseSelect.disabled = !selectedDatabase && !databases.length;
     state.databaseDiscoverySignature = requestedSignature;
-    $('#databaseHint').textContent = databases.length ? `已查询到 ${databases.length} 个数据库${result.truncated ? '（仅显示前 200 个）' : ''}` : '当前账号没有可见的普通数据库';
+    const discoverySummary = databases.length
+      ? `已查询到 ${databases.length} 个数据库${result.truncated ? '（仅显示前 200 个）' : ''}`
+      : '当前账号没有可见的普通数据库';
+    $('#databaseHint').textContent = selectedDatabase && !selectionListed
+      ? `${discoverySummary}；当前选择未在列表中返回，连接时将再次验证`
+      : discoverySummary;
   } catch (error) {
     if (queryGeneration === state.databaseQueryGeneration
       && dialogGeneration === state.credentialProbeGeneration

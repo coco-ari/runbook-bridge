@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { AppError, toPublicError } from './errors.mjs';
 import { legacyCredentialConfigForPlugin } from './credential-store.mjs';
+import { CredentialUseResolver } from './credential-use-resolver.mjs';
 import { pluginCredentialInternals } from './plugin-credential-vault.mjs';
 import { workspaceInternals } from './workspace-store.mjs';
 import { WorkspaceMutationCoordinator } from './workspace-mutation-coordinator.mjs';
@@ -50,8 +51,47 @@ function promoteMysqlConnectionDiagnostic(plugin, scope) {
   return {plugin:{...plugin,configState:'ready'},databaseSelectionPending:true};
 }
 
+function nonEmptySecrets(input) {
+  return Object.fromEntries(
+    Object.entries(input ?? {}).filter(([,value]) => String(value ?? '').length > 0),
+  );
+}
+
+function credentialMutationFromPayload(payload = {}) {
+  const replacements = nonEmptySecrets(payload.temporarySecrets ?? payload.secrets);
+  if (Object.keys(replacements).length) return {credentialMutation:'replace',replacements};
+  const intent = payload.credentialIntent;
+  const mode = typeof intent === 'string'
+    ? intent
+    : intent?.mutation ?? intent?.mode ?? 'unchanged';
+  if (mode === 'unchanged' || mode === 'none' || mode === 'replace') {
+    return {credentialMutation:'none',replacements:{}};
+  }
+  if (mode === 'rebind-existing' || mode === 'clear-explicit') {
+    return {credentialMutation:mode,replacements:{}};
+  }
+  throw new AppError('INVALID_ARGUMENT', '凭据更新意图无效。');
+}
+
+function assertExpectedPluginRevision(expectedRevision) {
+  if (!Number.isInteger(expectedRevision) || expectedRevision < 1) {
+    throw new AppError('INVALID_ARGUMENT', '插件更新必须提供有效的 expectedRevision。');
+  }
+}
+
+function assertCredentialFreeUpdate(payload, label) {
+  const unexpected = ['secrets','temporarySecrets','credentialIntent','oneTimeGrant']
+    .filter((key) => Object.hasOwn(payload ?? {},key));
+  if (unexpected.length) {
+    throw new AppError('INVALID_ARGUMENT', `${label}更新不能携带连接凭据字段。`, {
+      fields:unexpected,
+    });
+  }
+}
+
 export function registerV2Ipc(ipcMain, services) {
   const { workspaceStore: store, connectionManager, credentialVault, legacyCredentialStore, configTransactionJournal, contextManager, confirmationManager, pluginManager, mysqlRuntime } = services;
+  const credentialUseResolver = services.credentialUseResolver ?? new CredentialUseResolver(credentialVault);
   const handle = (name, fn) => ipcMain.handle(`v2:${name}`, resultHandler(fn));
   const mutationCoordinator = services.mutationCoordinator ?? new WorkspaceMutationCoordinator();
   const assertProjectAvailable = (projectId) => mutationCoordinator.assertProjectAvailable(projectId);
@@ -74,6 +114,141 @@ export function registerV2Ipc(ipcMain, services) {
       if (token !== null && !ended) connectionManager.endConfigurationMutation?.(projectId, environmentId, token);
     }
   };
+  const preparePluginUpdate = async (payload, patchScope = null) => {
+    const {
+      projectId,environmentId,pluginInstanceId,patch,expectedRevision,
+    } = payload;
+    const {credentialMutation,replacements} = credentialMutationFromPayload(payload);
+    const method = patchScope === 'metadata'
+      ? store.preparePluginMetadataUpdate
+      : patchScope === 'agent-policy-scope'
+        ? store.preparePluginAgentConfigurationUpdate
+        : patchScope === 'connection'
+          ? store.preparePluginConnectionUpdate
+          : null;
+    let prepared;
+    if (typeof method === 'function') {
+      prepared = patchScope === 'connection'
+        ? await method.call(store,projectId,environmentId,pluginInstanceId,patch,expectedRevision,credentialMutation)
+        : await method.call(store,projectId,environmentId,pluginInstanceId,patch,expectedRevision);
+    } else if (typeof store.preparePluginUpdate === 'function') {
+      prepared = await store.preparePluginUpdate(
+        projectId,environmentId,pluginInstanceId,patch,expectedRevision,
+        {credentialMutation,patchScope},
+      );
+    } else {
+      const before = await store.getPlugin(projectId,environmentId,pluginInstanceId);
+      prepared = {before,after:null,change:{kind:'session-affecting',credentialMutation}};
+    }
+    if (expectedRevision !== null && expectedRevision !== undefined
+      && prepared.before.revision !== expectedRevision) {
+      throw new AppError('CONFIG_REVISION_CONFLICT', '插件配置已经变化，请刷新后重试。');
+    }
+    return {
+      ...prepared,
+      change:prepared.change ?? {kind:'session-affecting',credentialMutation},
+      credentialMutation,
+      replacements,
+    };
+  };
+  const commitPreparedPlugin = (prepared, payload) => {
+    if (prepared.change.kind === 'none') return prepared.before;
+    if (prepared.after && typeof store.commitPluginSnapshot === 'function') {
+      return store.commitPluginSnapshot(prepared.after,prepared.before.revision);
+    }
+    return store.updatePlugin(
+      payload.projectId,payload.environmentId,payload.pluginInstanceId,
+      payload.patch,payload.expectedRevision,
+    );
+  };
+  const commitAgentPluginUpdate = async (prepared, payload) => {
+    const plugin = await commitPreparedPlugin(prepared,payload);
+    if (prepared.change.kind !== 'none') {
+      contextManager.invalidateEnvironment?.(payload.projectId,payload.environmentId);
+      confirmationManager.invalidatePlugin?.(
+        payload.projectId,payload.environmentId,payload.pluginInstanceId,
+      );
+    }
+    return plugin;
+  };
+  const commitConnectionPluginUpdate = (prepared, payload) => withConfigurationMutation(
+    payload.projectId,payload.environmentId,payload.pluginInstanceId,
+    async ({restoreOnFailure}) => {
+      let transaction = null;
+      let journalWarning = null;
+      const bindingChanged = prepared.after
+        ? pluginCredentialInternals.bindingHash(prepared.before)
+          !== pluginCredentialInternals.bindingHash(prepared.after)
+        : true;
+      const needsCredentialTransaction = bindingChanged
+        || prepared.credentialMutation !== 'none';
+      if (configTransactionJournal && needsCredentialTransaction) {
+        try {
+          transaction = await configTransactionJournal.prepare(
+            prepared.before,prepared.after,
+            {hasExplicitSecrets:Object.keys(prepared.replacements).length > 0},
+          );
+        } catch (error) {
+          restoreOnFailure();
+          throw error;
+        }
+      }
+      let plugin;
+      try {
+        plugin = await commitPreparedPlugin(prepared,payload);
+      } catch (error) {
+        if (transaction) await configTransactionJournal.complete(transaction).catch(() => undefined);
+        restoreOnFailure();
+        throw error;
+      }
+      try {
+        await credentialVault.saveMerged(prepared.before,plugin,prepared.replacements);
+      } catch (error) {
+        try {
+          await store.restorePluginSnapshot(prepared.before,plugin.revision);
+        } catch (rollbackError) {
+          throw new AppError(
+            'CONFIG_CREDENTIAL_TRANSACTION_INCOMPLETE',
+            '凭据保存失败，且插件配置未能自动回滚。现有凭据仍被保留，请不要重复保存并先修复本地存储后重试。',
+            {
+              projectId:payload.projectId,
+              environmentId:payload.environmentId,
+              pluginInstanceId:payload.pluginInstanceId,
+              previousRevision:prepared.before.revision,
+              attemptedRevision:plugin.revision,
+              credentialError:toPublicError(error),
+              rollbackError:toPublicError(rollbackError),
+            },
+          );
+        }
+        if (transaction) await configTransactionJournal.complete(transaction).catch(() => undefined);
+        restoreOnFailure();
+        throw error;
+      }
+      if (transaction) {
+        try { await configTransactionJournal.complete(transaction); }
+        catch (error) { journalWarning = toPublicError(error); }
+      }
+      let runtimeWarning = null;
+      try {
+        const runtimeResult = await connectionManager.configurationChanged(
+          payload.projectId,payload.environmentId,payload.pluginInstanceId,
+        );
+        runtimeWarning = runtimeResult?.runtimeWarning ?? null;
+      } catch (error) {
+        runtimeWarning = toPublicError(error);
+      }
+      contextManager.invalidateEnvironment?.(payload.projectId,payload.environmentId);
+      confirmationManager.invalidatePlugin?.(
+        payload.projectId,payload.environmentId,payload.pluginInstanceId,
+      );
+      return {
+        ...plugin,
+        ...(runtimeWarning ? {runtimeWarning,manualReconnectRequired:true} : {}),
+        ...(journalWarning ? {persistenceWarning:journalWarning} : {}),
+      };
+    },
+  );
   ipcMain.on('v2:network-changed', () => connectionManager.networkChanged('renderer-network-change').catch(() => undefined));
 
   handle('project-list', () => store.listProjects());
@@ -237,72 +412,43 @@ export function registerV2Ipc(ipcMain, services) {
     contextManager.invalidateEnvironment(projectId, environmentId);
     return {...plugin,...(runtimeWarning ? {runtimeWarning,manualReconnectRequired:true} : {})};
   })));
-  handle('plugin-update', ({ projectId, environmentId, pluginInstanceId, patch, expectedRevision, secrets }) => enqueuePluginMutation(projectId, environmentId, async () => {
-    const prepared = typeof store.preparePluginUpdate === 'function'
-      ? await store.preparePluginUpdate(projectId, environmentId, pluginInstanceId, patch, expectedRevision)
-      : {before:await store.getPlugin(projectId, environmentId, pluginInstanceId),after:null};
-    const {before} = prepared;
-    if (expectedRevision !== null && expectedRevision !== undefined && before.revision !== expectedRevision) throw new AppError('CONFIG_REVISION_CONFLICT', '插件配置已经变化，请刷新后重试。');
-    return withConfigurationMutation(projectId, environmentId, pluginInstanceId, async ({restoreOnFailure}) => {
-    let transaction = null;
-    let journalWarning = null;
-    const hasExplicitSecrets = Object.values(secrets ?? {}).some((value) => String(value ?? '').length > 0);
-    const bindingChanged = prepared.after
-      ? pluginCredentialInternals.bindingHash(before) !== pluginCredentialInternals.bindingHash(prepared.after)
-      : true;
-    if (configTransactionJournal && (bindingChanged || hasExplicitSecrets)) {
-      try { transaction = await configTransactionJournal.prepare(before, prepared.after, {hasExplicitSecrets}); }
-      catch (error) { restoreOnFailure(); throw error; }
-    }
-    let plugin;
-    try {
-      plugin = transaction
-        ? await store.commitPluginSnapshot(prepared.after, before.revision)
-        : await store.updatePlugin(projectId, environmentId, pluginInstanceId, patch, expectedRevision);
-    } catch (error) {
-      if (transaction) await configTransactionJournal.complete(transaction).catch(() => undefined);
-      restoreOnFailure();
-      throw error;
-    }
-    try {
-      await credentialVault.saveMerged(before, plugin, secrets ?? {});
-    } catch (error) {
-      try {
-        await store.restorePluginSnapshot(before, plugin.revision);
-      } catch (rollbackError) {
-        throw new AppError(
-          'CONFIG_CREDENTIAL_TRANSACTION_INCOMPLETE',
-          '凭据保存失败，且插件配置未能自动回滚。现有凭据仍被保留，请不要重复保存并先修复本地存储后重试。',
-          {
-            projectId, environmentId, pluginInstanceId,
-            previousRevision:before.revision,
-            attemptedRevision:plugin.revision,
-            credentialError:toPublicError(error),
-            rollbackError:toPublicError(rollbackError),
-          },
-        );
-      }
-      if (transaction) await configTransactionJournal.complete(transaction).catch(() => undefined);
-      restoreOnFailure();
-      throw error;
-    }
-    if (transaction) {
-      try { await configTransactionJournal.complete(transaction); }
-      catch (error) { journalWarning = toPublicError(error); }
-    }
-    let runtimeWarning = null;
-    try {
-      const runtimeResult = await connectionManager.configurationChanged(projectId, environmentId, plugin.pluginInstanceId);
-      runtimeWarning = runtimeResult?.runtimeWarning ?? null;
-    } catch (error) { runtimeWarning = toPublicError(error); }
-    contextManager.invalidateEnvironment(projectId, environmentId);
-    return {
-      ...plugin,
-      ...(runtimeWarning ? {runtimeWarning,manualReconnectRequired:true} : {}),
-      ...(journalWarning ? {persistenceWarning:journalWarning} : {}),
-    };
+  handle('plugin-metadata-update', (payload) => {
+    assertExpectedPluginRevision(payload?.expectedRevision);
+    assertCredentialFreeUpdate(payload,'插件基本信息');
+    return enqueuePluginMutation(payload.projectId,payload.environmentId,async () => {
+      const prepared = await preparePluginUpdate(payload,'metadata');
+      return commitPreparedPlugin(prepared,payload);
     });
-  }));
+  });
+  handle('plugin-agent-configuration-update', (payload) => {
+    assertExpectedPluginRevision(payload?.expectedRevision);
+    assertCredentialFreeUpdate(payload,'Agent 配置');
+    return enqueuePluginMutation(payload.projectId,payload.environmentId,async () => {
+      const prepared = await preparePluginUpdate(payload,'agent-policy-scope');
+      return commitAgentPluginUpdate(prepared,payload);
+    });
+  });
+  handle('plugin-connection-update', (payload) => {
+    assertExpectedPluginRevision(payload?.expectedRevision);
+    return enqueuePluginMutation(payload.projectId,payload.environmentId,async () => {
+      const prepared = await preparePluginUpdate(payload,'connection');
+      if (prepared.change.kind === 'none') return prepared.before;
+      return commitConnectionPluginUpdate(prepared,payload);
+    });
+  });
+  // One-version compatibility shim. The backend still normalizes and
+  // classifies the patch, then delegates to the narrow semantic path.
+  handle('plugin-update', (payload) => enqueuePluginMutation(
+    payload.projectId,payload.environmentId,async () => {
+      const prepared = await preparePluginUpdate(payload);
+      if (prepared.change.kind === 'none') return prepared.before;
+      if (prepared.change.kind === 'metadata') return commitPreparedPlugin(prepared,payload);
+      if (prepared.change.kind === 'agent-policy-scope') {
+        return commitAgentPluginUpdate(prepared,payload);
+      }
+      return commitConnectionPluginUpdate(prepared,payload);
+    },
+  ));
   handle('plugin-delete', ({ projectId, environmentId, pluginInstanceId }) => enqueuePluginMutation(projectId, environmentId, () => withConfigurationMutation(projectId, environmentId, pluginInstanceId, async ({restoreOnFailure}) => {
     let plugin;
     try { ({plugin} = await store.preflightDeletePlugin(projectId, environmentId, pluginInstanceId)); }
@@ -393,7 +539,18 @@ export function registerV2Ipc(ipcMain, services) {
     if (!secrets[field]) throw new AppError('CREDENTIAL_NOT_FOUND', '该密码尚未保存。');
     return { value: secrets[field] };
   });
-  handle('plugin-databases', ({ projectId, environmentId, pluginInstanceId, input, secrets }) => (
+  handle('plugin-databases', ({
+    projectId,
+    environmentId,
+    pluginInstanceId,
+    input,
+    secrets,
+    temporarySecrets,
+    credentialIntent,
+    oneTimeGrant,
+    editSessionId,
+    draftGeneration,
+  }) => (
     mutationCoordinator.runEnvironmentOperation(projectId,environmentId,async () => {
     assertProjectAvailable(projectId);
     if (pluginInstanceId) configTransactionJournal?.assertPluginAvailable(projectId,environmentId,pluginInstanceId);
@@ -401,21 +558,24 @@ export function registerV2Ipc(ipcMain, services) {
     await store.getEnvironment(projectId, environmentId);
     const existing = pluginInstanceId ? await store.getPlugin(projectId, environmentId, pluginInstanceId) : null;
     if (existing && existing.pluginType !== 'mysql') throw new AppError('INVALID_ARGUMENT', '只有 MySQL 插件可以查询数据库列表。');
-    const providedSecrets = secrets ?? {};
-    let savedSecrets = {};
-    if (existing) {
-      try { savedSecrets = await credentialVault.load(existing) ?? {}; }
-      catch (error) {
-        if (!providedSecrets.password) throw error;
-      }
-    }
     const transient = workspaceInternals.normalizePlugin({
       ...input,
       pluginType: 'mysql',
       pluginInstanceId: `mysql-discovery-${crypto.randomBytes(5).toString('hex')}`,
       target: { ...(input?.target ?? {}), database: '' },
     }, { projectId, environmentId });
-      return mysqlRuntime.listDatabases(transient, { ...savedSecrets, ...providedSecrets });
+    const resolved = await credentialUseResolver.resolve({
+      committedPlugin:existing,
+      draft:transient,
+      credentialIntent,
+      temporarySecrets:temporarySecrets ?? secrets,
+      oneTimeGrant,
+      editSessionId,
+      draftGeneration,
+      purpose:'resource-discovery',
+      caller:'main',
+    });
+      return mysqlRuntime.listDatabases(transient,resolved.secrets);
     })
   ));
   handle('audit-list', ({ projectId, ...filters }) => store.listAudit(projectId, filters));
@@ -433,7 +593,19 @@ export function registerV2Ipc(ipcMain, services) {
     if (pending) await store.appendAudit(pending.projectId, { type:'confirmation-rejected', environmentId:pending.environmentId, pluginInstanceId:pending.pluginInstanceId, pluginNameSnapshot:pending.pluginNameSnapshot, actor:'user', capability:pending.capability, operationSummary:pending.summary, confirmationId:requestId, result:'blocked' }).catch(() => undefined);
     return result;
   });
-  ipcMain.handle('v2:plugin-test', resultHandlerWithEvent(async (event, { projectId, environmentId, pluginInstanceId, input, secrets, requestId }) => (
+  ipcMain.handle('v2:plugin-test', resultHandlerWithEvent(async (event, {
+    projectId,
+    environmentId,
+    pluginInstanceId,
+    input,
+    secrets,
+    temporarySecrets,
+    credentialIntent,
+    oneTimeGrant,
+    editSessionId,
+    draftGeneration,
+    requestId,
+  }) => (
     mutationCoordinator.runEnvironmentOperation(projectId,environmentId,async () => {
     assertProjectAvailable(projectId);
     if (pluginInstanceId) configTransactionJournal?.assertPluginAvailable(projectId,environmentId,pluginInstanceId);
@@ -493,7 +665,7 @@ export function registerV2Ipc(ipcMain, services) {
     let plugin = null;
     let activeState = null;
     let mysqlDatabaseSelectionPending = false;
-    let diagnosticSecrets = {...(secrets ?? {})};
+    let diagnosticSecrets = {};
     await runCheck('configuration','配置与依赖',async () => {
       await store.getEnvironment(projectId,environmentId);
       if (pluginInstanceId) existing = await store.getPlugin(projectId,environmentId,pluginInstanceId);
@@ -516,14 +688,22 @@ export function registerV2Ipc(ipcMain, services) {
         if (['connecting','disconnecting','reconnecting','waitingDependency'].includes(activeState?.phase)) {
           throw new AppError('PLUGIN_BUSY','该插件正在切换连接状态，请等待当前操作完成后再检查。');
         }
-        const rebound = {...plugin,pluginInstanceId:existing.pluginInstanceId};
-        if (pluginCredentialInternals.bindingHash(existing) === pluginCredentialInternals.bindingHash(rebound)) {
-          diagnosticSecrets = {...(await credentialVault.load(existing) ?? {}),...diagnosticSecrets};
-        }
         if (!input && activeState?.phase !== 'connected') {
           plugin = {...plugin,pluginInstanceId:`diagnostic-${crypto.randomBytes(5).toString('hex')}`};
         }
       }
+      const resolved = await credentialUseResolver.resolve({
+        committedPlugin:existing,
+        draft:plugin,
+        credentialIntent,
+        temporarySecrets:temporarySecrets ?? secrets,
+        oneTimeGrant,
+        editSessionId,
+        draftGeneration,
+        purpose:'health-check',
+        caller:'main',
+      });
+      diagnosticSecrets = resolved.secrets;
       return plugin;
     },() => mysqlDatabaseSelectionPending
       ? '基础连接配置有效；连接验证后请查询并选择固定数据库'
