@@ -2,7 +2,7 @@
 
 面向个人运维场景的 Windows 本地 Agent 运维工具。桌面应用统一管理项目、环境、服务器、MySQL、Redis、连接状态和加密凭据；Codex 等 Agent 通过本地 MCP 使用结构化运维能力。
 
-当前正式版本：`1.0.28`
+当前正式版本：`1.0.37`
 
 ## 设计目标
 
@@ -24,6 +24,16 @@
 - MySQL、Redis 可以直连，也可以复用同环境 Server 插件建立 SSH 隧道。
 - 打开项目或环境不会自动联网；用户必须在桌面端主动连接。
 - 环境允许部分连接成功，Agent 只能使用状态为 `connected` 的插件。
+
+### 配置、验证与连接
+
+- 插件详情默认只读。基本信息和 Agent 策略使用独立轻量编辑，不会断开现有网络连接。
+- 点击“修改连接配置”后，应用会先显示影响范围，等待正在进行的操作结束，再断开受影响连接并进入受保护的编辑会话。
+- Server 使用 SSH 专属验证，MySQL 使用数据库发现与固定库验证，Redis 使用 Logical DB 验证；TLS 另有显式探测。所有验证只使用当前草稿，不改变正式连接或 Agent context。
+- “保存配置”只提交配置和凭据；“保存并恢复连接”在提交成功后按进入编辑前的连接集合恢复。配置保存成功但连接失败时，无需再次保存。
+- 正式连接只读取已提交配置和 active 凭据。MySQL 只修改数据库、Redis 只修改 Logical DB 时会沿用同一账号的已保存凭据。
+- 密码控件显示“已保存 · 未修改”“未设置 · 未修改”或“将替换”。空密码、未填写密码和未点击“更换密码”都表示保持原凭据，不会清空旧密码。
+- 新插件或未完成编辑只有明确点击“保存草稿”后才会跨重启保留。持久草稿不参与正式连接、Connect All 或 Agent 操作。
 
 ### Server
 
@@ -85,6 +95,8 @@
 
 Agent 调用不会建立首次连接。插件未连接时，应在桌面应用中点击“连接环境”或单独连接目标插件。
 
+Agent 的“连接并继续”也必须由用户明确触发；连接成功后会重新获取最新 context 并重新评估请求，不会直接重放旧 tool call 或旧审批。写入、删除、重启等危险操作仍需独立确认。
+
 ## 安装与升级
 
 从 [GitHub Releases](https://github.com/coco-ari/runbook-bridge/releases) 下载最新 Windows 安装包并运行。支持覆盖安装升级和自选安装目录。
@@ -95,19 +107,24 @@ Agent 调用不会建立首次连接。插件未连接时，应在桌面应用�
 %LOCALAPPDATA%\AIOpsTool\
 ├── credentials\
 │   ├── plugins.enc.json
-│   └── plugins.enc.backup.json
+│   ├── plugins.enc.backup.json
+│   ├── plugin-drafts.enc.json
+│   └── plugin-drafts.enc.backup.json
+├── runtime\
+│   └── plugin-draft-promotions\
 └── projects\<projectId>\
     ├── project.yaml
     ├── workspace.yaml
     ├── environments\<environmentId>\
     │   ├── environment.yaml
     │   ├── README.md
-    │   └── plugins\<pluginInstanceId>.yaml
+    │   ├── plugins\<pluginInstanceId>.yaml
+    │   └── plugin-drafts\<draftId>.json
     ├── downloads\<environmentId>\<pluginInstanceId>\
     └── audit\operations-v3.jsonl
 ```
 
-密码、私钥口令和代理密码通过 Electron `safeStorage` 与 Windows DPAPI 加密保存，不写入 YAML、README 或审计日志。软件升级、覆盖安装、卸载后重装、删除项目和删除插件都不会由应用主动删除凭据文件；凭据同时维护独立加密备份。
+密码、私钥口令和代理密码通过 Electron `safeStorage` 与 Windows DPAPI 加密保存，不写入 YAML、README、草稿 sidecar 或审计日志。active vault 和 draft vault 相互隔离并各自维护加密备份；草稿提升通过恢复 journal 提交。软件升级、覆盖安装、卸载后重装、删除项目、删除插件和删除草稿都不会由应用主动永久删除凭据文件。旧凭据不可读时，应用保留原密文字节并阻止普通保存覆盖。
 
 请勿手工删除 `%LOCALAPPDATA%\AIOpsTool`。Windows 用户账户被删除、DPAPI 主密钥损坏或数据目录被外部清理时，加密凭据可能无法恢复。
 
@@ -128,12 +145,13 @@ codex mcp add --env ELECTRON_RUN_AS_NODE=1 agent-ops -- `
 ## 使用流程
 
 1. 在桌面应用中新建项目和环境。
-2. 为环境添加 Server、MySQL 或 Redis 插件并填写连接信息。
-3. 在环境 `README.md` 中维护真实、准确的服务器手册。
-4. 点击“连接环境”，确认目标插件显示为已连接。
-5. 在 Codex 中描述运维目标，Agent 会先打开环境，再调用对应结构化工具。
-6. 普通读取直接执行；危险操作在桌面端显示参数并等待确认。
-7. 在项目“最近操作”中检查用户、Agent 和系统审计记录。
+2. 为环境添加 Server、MySQL 或 Redis 插件并填写连接信息；未完成时可明确保存为草稿。
+3. 在连接编辑器中执行插件专属验证，然后选择“保存配置”或“保存并恢复连接”。
+4. 在环境 `README.md` 中维护真实、准确的服务器手册。
+5. 点击“连接环境”或单独连接插件，确认目标插件显示为已连接；待处理插件不会阻止其它独立分支连接。
+6. 在 Codex 中描述运维目标，Agent 会先打开环境，再调用对应结构化工具。
+7. 普通读取直接执行；危险操作在桌面端显示参数并等待确认。
+8. 在项目“最近操作”中检查用户、Agent 和系统审计记录。
 
 ## 环境 README 模板
 
@@ -202,6 +220,8 @@ Agent 不会替用户建立首次连接。打开桌面应用，在目标环境�
 ### 升级后密码是否保留
 
 会保留。安装器配置为不删除应用数据，应用的软件清理、项目删除和插件删除流程也不会清除加密凭据。不要手动清理 `%LOCALAPPDATA%\AIOpsTool`。
+
+编辑已有插件时，密码输入框为空表示“未修改”。只有点击“更换密码”并输入新值后才会替换；只改 MySQL 数据库或 Redis Logical DB 不需要重新输入同一账号的密码。
 
 ### 为什么读取仍然有上限
 

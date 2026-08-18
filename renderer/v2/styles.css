@@ -1798,16 +1798,12 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
   .audit-event-title span{display:block;margin-top:2px}
 }
 
-/* Plugin connection details: test first, then the saved facts needed for operations. */
+/* Plugin connection details and edit-session validation. */
 .connection-page{min-width:0;display:grid;gap:22px}
-.connection-check-section,
 .connection-information{min-width:0;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.012)}
-.connection-check-section{overflow:hidden;border-color:rgba(139,140,255,.38);background:linear-gradient(145deg,rgba(139,140,255,.10),rgba(19,20,25,.78) 42%,rgba(19,20,25,.96))}
-.connection-section-head{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 20px;border-bottom:1px solid rgba(139,140,255,.18)}
-.connection-section-head h3,.connection-section-heading h3{margin:2px 0 0;font-size:17px;font-weight:680}
-.connection-section-head p,.connection-section-heading p{margin:5px 0 0;color:var(--muted);font-size:11px;line-height:1.5}
+.connection-section-heading h3{margin:2px 0 0;font-size:17px;font-weight:680}
+.connection-section-heading p{margin:5px 0 0;color:var(--muted);font-size:11px;line-height:1.5}
 .connection-section-eyebrow{display:block;color:#aaa8ff;font-size:10px;font-weight:720;letter-spacing:.09em;text-transform:uppercase}
-.connection-diagnostic{padding:16px 20px 18px}
 .diagnostic-overview{min-width:0;display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:13px;padding-bottom:15px;border-bottom:1px solid var(--soft-line)}
 .diagnostic-overview-icon{width:42px;height:42px;display:grid;place-items:center;border-radius:11px;color:#aaa8ff;background:rgba(139,140,255,.12)}
 .diagnostic-overview-icon .icon{width:21px;height:21px}
@@ -1863,9 +1859,7 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 .plugin-form-actions .action-spacer{flex:1}
 
 @container (max-width:560px){
-  .connection-section-head{align-items:flex-start;padding:16px}
-  .connection-section-head .button{flex:none}
-  .connection-diagnostic,.connection-information{padding:16px}
+  .connection-information{padding:16px}
   .connection-overview{grid-template-columns:minmax(0,1fr)}
   .connection-fact-card.wide{grid-column:auto}
   .connection-route-card{grid-template-columns:minmax(0,1fr)}

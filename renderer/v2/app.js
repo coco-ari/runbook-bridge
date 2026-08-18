@@ -83,9 +83,7 @@ const state = {
   creatingEnvironmentInline: false,
   pluginFormMode: 'inline',
   inlineConfigPluginId: null,
-  pluginDiagnostics: {},
   pluginFormDiagnostic: null,
-  diagnosticGeneration: 0,
   pluginEditPreparation: null,
   pluginEditSession: null,
   editingDraft: null,
@@ -491,29 +489,12 @@ function beginRuntimeOperation(projectId,environmentId,action,pluginInstanceId =
 function runtimeOperationIsLatest(operation) {
   return runtimeMutationGenerations.get(operation.generationKey) === operation.generation;
 }
-function runtimeScopeOperationInFlight(projectId,environmentId) {
-  const prefix = `runtime:${scopeKey(projectId,environmentId)}:`;
-  return [...inFlightOperations.keys()].some((key) => key.startsWith(prefix));
-}
 function scopeDiagnosticPending(projectId,environmentId,pluginInstanceId = null) {
   const formDiagnostic = state.pluginFormDiagnostic;
-  if (formDiagnostic?.status === 'pending'
+  return Boolean(formDiagnostic?.status === 'pending'
     && formDiagnostic.scope?.projectId === projectId
     && formDiagnostic.scope?.environmentId === environmentId
-    && (!pluginInstanceId || formDiagnostic.scope?.pluginInstanceId === pluginInstanceId)) return true;
-  return Object.entries(state.pluginDiagnostics).some(([key,diagnostic]) => {
-    const coordinates = pluginStateCoordinates(key);
-    return diagnostic?.status === 'pending'
-      && coordinates.projectId === projectId
-      && coordinates.environmentId === environmentId
-      && (!pluginInstanceId || coordinates.pluginInstanceId === pluginInstanceId);
-  });
-}
-function runtimeBlocksDiagnostic(plugin) {
-  if (!plugin) return false;
-  const runtime = state.runtimeByScope[scopeKey(plugin.projectId,plugin.environmentId)]?.plugins?.[plugin.pluginInstanceId];
-  return runtimeScopeOperationInFlight(plugin.projectId,plugin.environmentId)
-    || ['connecting','disconnecting','reconnecting','waitingDependency'].includes(runtime?.phase);
+    && (!pluginInstanceId || formDiagnostic.scope?.pluginInstanceId === pluginInstanceId));
 }
 function operationInFlight(key) { return inFlightOperations.has(key); }
 function beginOperation(key) {
@@ -707,23 +688,19 @@ function applyWorkspaceOverview(projects) {
   for (const projectId of environmentMetadataGenerations.keys()) if (!validProjectIds.has(projectId)) environmentMetadataGenerations.delete(projectId);
   for (const key of Object.keys(state.scopePluginMemory)) if (!validScopeKeys.has(key)) delete state.scopePluginMemory[key];
   for (const projectId of Object.keys(state.projectEnvironmentMemory)) if (!validProjectIds.has(projectId)) delete state.projectEnvironmentMemory[projectId];
-  for (const cache of [state.pluginDiagnostics,state.detailTabs]) {
-    for (const key of Object.keys(cache)) {
-      const coordinates = pluginStateCoordinates(key);
-      if (!validScopeKeys.has(scopeKey(coordinates.projectId,coordinates.environmentId))) delete cache[key];
-    }
+  for (const key of Object.keys(state.detailTabs)) {
+    const coordinates = pluginStateCoordinates(key);
+    if (!validScopeKeys.has(scopeKey(coordinates.projectId,coordinates.environmentId))) delete state.detailTabs[key];
   }
 }
 
 function prunePluginScopeCaches(scope,plugins) {
   const validPluginIds = new Set(plugins.map((plugin) => plugin.pluginInstanceId));
-  for (const cache of [state.pluginDiagnostics,state.detailTabs]) {
-    for (const key of Object.keys(cache)) {
-      const coordinates = pluginStateCoordinates(key);
-      if (coordinates.projectId === scope.projectId
-        && coordinates.environmentId === scope.environmentId
-        && !validPluginIds.has(coordinates.pluginInstanceId)) delete cache[key];
-    }
+  for (const key of Object.keys(state.detailTabs)) {
+    const coordinates = pluginStateCoordinates(key);
+    if (coordinates.projectId === scope.projectId
+      && coordinates.environmentId === scope.environmentId
+      && !validPluginIds.has(coordinates.pluginInstanceId)) delete state.detailTabs[key];
   }
 }
 
@@ -1705,7 +1682,7 @@ function renderPluginDetail() {
   const connectBusy = runtimeActionInFlight(plugin.projectId,plugin.environmentId,'connect',plugin.pluginInstanceId);
   const disconnectBusy = runtimeActionInFlight(plugin.projectId,plugin.environmentId,'disconnect',plugin.pluginInstanceId);
   const trustBusy = runtimeActionInFlight(plugin.projectId,plugin.environmentId,'trust-host',plugin.pluginInstanceId);
-  const diagnosticBusy = state.pluginDiagnostics[pluginStateKey(plugin)]?.status === 'pending';
+  const diagnosticBusy = scopeDiagnosticPending(plugin.projectId,plugin.environmentId,plugin.pluginInstanceId);
   state.detailTabs[pluginStateKey(plugin)] = tab;
   const error = runtime.error?.message ? `<div class="inline-error"><span>${escapeHtml(runtime.error.message)}</span>${runtime.reason === 'SSH_HOST_KEY_CONFIRM_REQUIRED' ? `<button class="button small" data-action="trust-host" ${trustBusy || diagnosticBusy ? 'disabled' : ''}${trustBusy ? ' aria-busy="true"' : ''}>确认指纹并重试</button>` : '<button class="button small" data-action="edit-plugin">检查配置</button>'}</div>` : '';
   const runtimeAction = presentation.action === 'continue-configuration'
@@ -1799,16 +1776,6 @@ function renderDiagnosticContent(plugin, diagnostic) {
     : diagnostic.summary;
   const summary = summaryText ? `<p class="diagnostic-message ${escapeAttr(status)}">${escapeHtml(summaryText)}</p>` : '';
   return `<div class="diagnostic-overview ${escapeAttr(status)}"><span class="diagnostic-overview-icon">${icon(status === 'success' ? 'check' : status === 'failure' ? 'x' : status === 'pending' ? 'loader' : 'route')}</span><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(subtitle)}</small></span>${total ? `<b>${escapeHtml(total)}</b>` : ''}</div><div class="diagnostic-steps">${steps}</div>${summary}`;
-}
-
-function renderDiagnosticPanel(plugin) {
-  const diagnostic = state.pluginDiagnostics[pluginStateKey(plugin)] ?? { status:'idle',summary:'检查只建立临时连接，不会连接或断开当前环境。',checks:[] };
-  const configurationIssue = pluginDiagnosticConfigurationIssue(plugin);
-  const unavailable = Boolean(configurationIssue);
-  const runtimeBlocked = runtimeBlocksDiagnostic(plugin);
-  const actionLabel = unavailable ? '完善配置后测试' : diagnostic.status === 'pending' ? '测试中…' : runtimeBlocked ? '连接状态变化中…' : mysqlDatabaseSelectionPending(plugin) ? '测试基础连接' : diagnostic.status === 'idle' ? '测试连接' : '重新测试';
-  const effectiveDiagnostic = unavailable ? {...diagnostic,summary:`请先修正：${configurationIssue}。`} : diagnostic;
-  return `<section id="connectionCheckPanel" class="connection-check-section"><div class="connection-section-head"><div><span class="connection-section-eyebrow">最近验证结果</span><h3>连接检查</h3><p>验证只能在受保护的连接配置编辑会话中发起</p></div><button class="button" data-action="edit-plugin">进入验证</button></div><div class="connection-diagnostic" aria-live="polite">${renderDiagnosticContent(plugin,effectiveDiagnostic)}</div></section>`;
 }
 
 function serverAuthName(plugin) {
@@ -3103,6 +3070,7 @@ async function validatePluginDraftAction(action = 'validate') {
   session.validations[purpose] = active;
   state.pluginFormDiagnostic = {
     ...createPendingDiagnostic(plugin,requestId),plugin,testedSignature,purpose,
+    scope:{projectId:state.projectId,environmentId:state.environmentId,pluginInstanceId:plugin.pluginInstanceId},
     title:purpose === 'tls-probe' ? 'TLS 探测' : input.pluginType === 'server' ? 'SSH 验证' : input.pluginType === 'mysql' ? '所选数据库验证' : 'Redis 验证',
   };
   renderPluginFormDiagnostic();
@@ -3396,7 +3364,6 @@ async function mayLeaveCurrentScope() {
   state.metadataEditingPluginId = null;
   state.agentEditingPluginId = null;
   if (state.pluginFormMode === 'inline') {
-    state.diagnosticGeneration += 1;
     state.pluginFormDiagnostic = null;
     state.pluginFormInitial = null;
     state.inlineConfigPluginId = null;

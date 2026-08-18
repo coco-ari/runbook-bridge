@@ -716,122 +716,6 @@ test('plugin credential transactions serialize config revisions and never expose
   assert.deepEqual(await vault.load(current), {password:'v1-password'});
 });
 
-test('diagnostic timeout closes a late connection but does not force-close a reused active session', async () => {
-  const plugin = {
-    ...connectionPlugin('mysql-1'),pluginType:'mysql',target:{host:'db.internal',port:3306,database:'app'},
-    auth:{username:'reader'},transport:{kind:'direct'},tls:{mode:'disabled'},
-  };
-  const createHarness = ({reused = false} = {}) => {
-    const handlers = new Map();
-    let releaseConnect;
-    let forceDisconnects = 0;
-    let healthCalls = 0;
-    const connectPending = new Promise((resolve) => { releaseConnect = resolve; });
-    registerV2Ipc({handle:(name, handler) => handlers.set(name, handler),on:() => undefined}, {
-      diagnosticTimeoutMs:50,
-      workspaceStore:{getEnvironment:async () => ({projectId:'p1',environmentId:'e1'}),getPlugin:async () => plugin},
-      connectionManager:{on:() => undefined,snapshot:() => ({plugins:{'mysql-1':{phase:reused ? 'connected' : 'disconnected'}}})},
-      credentialVault:{load:async () => ({password:'saved'})},contextManager:{},confirmationManager:{on:() => undefined},mysqlRuntime:{},
-      pluginManager:{
-        connect:async () => { await connectPending; return {connected:true}; },
-        health:async () => { healthCalls += 1; return new Promise(() => undefined); },
-        disconnect:async () => ({connected:false}),
-        forceDisconnect:async () => { forceDisconnects += 1; return {connected:false,forced:true}; },
-      },
-    });
-    const event = {sender:{isDestroyed:() => false,send:() => undefined}};
-    return {handlers,event,releaseConnect,getForceDisconnects:() => forceDisconnects,getHealthCalls:() => healthCalls};
-  };
-
-  const late = createHarness();
-  const lateResult = await late.handlers.get('v2:plugin-test')(late.event,{projectId:'p1',environmentId:'e1',pluginInstanceId:'mysql-1',requestId:1});
-  assert.equal(lateResult.ok,false);
-  assert.equal(lateResult.error.code,'CONNECT_TIMEOUT');
-  const forcedAtTimeout = late.getForceDisconnects();
-  late.releaseConnect();
-  for (let index = 0; index < 50 && late.getForceDisconnects() === forcedAtTimeout; index += 1) await delay(2);
-  assert.ok(late.getForceDisconnects() > forcedAtTimeout, 'late successful diagnostic connect must be fenced');
-
-  const active = createHarness({reused:true});
-  const activeResult = await active.handlers.get('v2:plugin-test')(active.event,{projectId:'p1',environmentId:'e1',pluginInstanceId:'mysql-1',requestId:2});
-  assert.equal(activeResult.ok,false);
-  assert.equal(activeResult.error.code,'PLUGIN_TIMEOUT');
-  assert.equal(active.getHealthCalls(),1);
-  assert.equal(active.getForceDisconnects(),0,'bounded health failure must not destroy a reused environment session');
-});
-
-test('saved disconnected diagnostics use a transient resource and busy plugins reject checks', async () => {
-  const plugin = {
-    ...connectionPlugin('mysql-1'),pluginType:'mysql',target:{host:'db.internal',port:3306,database:'app'},
-    auth:{username:'reader'},transport:{kind:'direct'},tls:{mode:'disabled'},
-  };
-  const run = async (phase) => {
-    const handlers = new Map();
-    const calls = [];
-    registerV2Ipc({handle:(name,handler) => handlers.set(name,handler),on:() => undefined},{
-      workspaceStore:{getEnvironment:async () => ({projectId:'p1',environmentId:'e1'}),getPlugin:async () => plugin},
-      connectionManager:{on:() => undefined,snapshot:() => ({plugins:{'mysql-1':{phase}}})},
-      credentialVault:{load:async () => ({password:'saved'})},contextManager:{},confirmationManager:{on:() => undefined},mysqlRuntime:{},
-      pluginManager:{
-        connect:async (value) => { calls.push(['connect',value.pluginInstanceId]); return {connected:true}; },
-        health:async (value) => { calls.push(['health',value.pluginInstanceId]); return {connected:true}; },
-        disconnect:async (value) => { calls.push(['disconnect',value.pluginInstanceId]); return {connected:false}; },
-      },
-    });
-    const event={sender:{isDestroyed:() => false,send:() => undefined}};
-    const result=await handlers.get('v2:plugin-test')(event,{projectId:'p1',environmentId:'e1',pluginInstanceId:'mysql-1',requestId:3});
-    return {result,calls};
-  };
-  const disconnected = await run('disconnected');
-  assert.equal(disconnected.result.ok,true);
-  assert.ok(disconnected.calls.every(([,id]) => id.startsWith('diagnostic-')));
-  assert.deepEqual(disconnected.calls.map(([action]) => action),['connect','health','disconnect']);
-  const busy = await run('connecting');
-  assert.equal(busy.result.ok,false);
-  assert.equal(busy.result.error.code,'PLUGIN_BUSY');
-  assert.deepEqual(busy.calls,[]);
-});
-
-test('mysql form diagnostic validates connectivity before a fixed database is selected', async () => {
-  const handlers = new Map();
-  let connectedPlugin = null;
-  const savedDraft = {
-    ...connectionPlugin('mysql-draft'),pluginType:'mysql',configState:'draft',
-    target:{host:'db.example.test',port:3306,database:'',addressFamily:'ipv4Only'},
-    auth:{username:'reader'},transport:{kind:'direct'},tls:{mode:'preferred'},
-  };
-  registerV2Ipc({handle:(name,handler) => handlers.set(name,handler),on:() => undefined},{
-    workspaceStore:{getEnvironment:async () => ({projectId:'p1',environmentId:'e1'}),getPlugin:async () => savedDraft},
-    connectionManager:{on:() => undefined,snapshot:() => ({plugins:{}})},
-    credentialVault:{load:async () => ({password:'saved'})},contextManager:{},confirmationManager:{on:() => undefined},mysqlRuntime:{},
-    pluginManager:{
-      connect:async (plugin) => { connectedPlugin = plugin; return {connected:true}; },
-      health:async () => ({connected:true}),
-      disconnect:async () => ({connected:false}),
-    },
-  });
-  const event={sender:{isDestroyed:() => false,send:() => undefined}};
-  const result = await handlers.get('v2:plugin-test')(event,{
-    projectId:'p1',environmentId:'e1',requestId:4,secrets:{password:'saved'},
-    input:{
-      pluginType:'mysql',displayName:'Orders DB',
-      target:{host:'db.example.test',port:3306,database:'',addressFamily:'ipv4Only'},
-      auth:{username:'reader'},transport:{kind:'direct'},tls:{mode:'preferred'},
-    },
-  });
-  assert.equal(result.ok,true);
-  assert.equal(connectedPlugin.configState,'ready','diagnostic runtime may connect without a default database');
-  assert.equal(connectedPlugin.target.database,'','the saved plugin remains incomplete until a database is selected');
-  assert.match(result.data.checks[0].detail,/查询并选择固定数据库/);
-  const savedResult = await handlers.get('v2:plugin-test')(event,{
-    projectId:'p1',environmentId:'e1',pluginInstanceId:'mysql-draft',requestId:5,
-  });
-  assert.equal(savedResult.ok,true,'a saved base configuration can be tested before database selection');
-  assert.equal(connectedPlugin.configState,'ready');
-  assert.equal(connectedPlugin.target.database,'');
-  assert.match(connectedPlugin.pluginInstanceId,/^diagnostic-/);
-});
-
 test('directory pagination stops at the 10k cap while still reporting source truncation', async () => {
   let maxResolved = 0;
   const runtime = {
@@ -989,13 +873,6 @@ test('ambiguous crash recovery preserves every byte and blocks connection and di
     connectionManager:manager,contextManager:{},confirmationManager:{on:() => undefined},
     pluginManager:{connect:async () => { runtimeConnects += 1; }},mysqlRuntime:{listDatabases:async () => { runtimeConnects += 1; }},
   });
-  const event={sender:{isDestroyed:() => false,send:() => undefined}};
-  const diagnostic = await handlers.get('v2:plugin-test')(event,{
-    projectId:fixture.project.projectId,environmentId:fixture.environment.environmentId,
-    pluginInstanceId:fixture.before.pluginInstanceId,requestId:'blocked',
-  });
-  assert.equal(diagnostic.ok,false);
-  assert.equal(diagnostic.error.code,'CONFIG_TRANSACTION_RECOVERY_REQUIRED');
   const databases = await handlers.get('v2:plugin-databases')({}, {
     projectId:fixture.project.projectId,environmentId:fixture.environment.environmentId,
     pluginInstanceId:fixture.before.pluginInstanceId,input:{},secrets:{},
@@ -1186,10 +1063,6 @@ test('project deletion gate rejects new connections and writes after preflight a
   const runbook = await handlers.get('v2:runbook-save')({}, {projectId:project.projectId,environmentId:environment.environmentId,content:'late'});
   assert.equal(runbook.ok,false);
   assert.equal(runbook.error.code,'PROJECT_DELETING');
-  const event={sender:{isDestroyed:() => false,send:() => undefined}};
-  const diagnostic = await handlers.get('v2:plugin-test')(event,{projectId:project.projectId,environmentId:environment.environmentId,input:{pluginType:'server'},requestId:'late'});
-  assert.equal(diagnostic.ok,false);
-  assert.equal(diagnostic.error.code,'PROJECT_DELETING');
   assert.equal(runtimeConnects,0);
   releaseCleanup();
   const deleted = await deleting;
@@ -1582,59 +1455,6 @@ test('project deletion drains an active database discovery and rejects later tra
   releaseDiscovery();
   assert.deepEqual((await discovery).data,['orders']);
   assert.equal((await deleting).ok,true);
-});
-
-test('plugin diagnostics hold a configuration reader until temporary cleanup completes', async (t) => {
-  const root = await tempRoot(t,'ai-ops-diagnostic-operation-gate-');
-  const store = new WorkspaceStore(root);
-  await store.init({migrateLegacy:false});
-  const project = await store.createProject({name:'Diagnostic gate'});
-  const [environment] = await store.listEnvironments(project.projectId);
-  const plugin = await store.createPlugin(project.projectId,environment.environmentId,{
-    pluginType:'server',displayName:'Application server',target:{host:'server.internal'},
-    auth:{type:'password',username:'deploy'},uplink:{type:'direct'},
-  });
-  const coordinator = new WorkspaceMutationCoordinator();
-  let announceConnect;
-  const connectStarted = new Promise((resolve) => { announceConnect = resolve; });
-  let releaseConnect;
-  const connectRelease = new Promise((resolve) => { releaseConnect = resolve; });
-  const connectionManager = {
-    on:() => undefined,
-    snapshot:() => ({desiredConnected:false,phase:'disconnected',plugins:{[plugin.pluginInstanceId]:{phase:'disconnected'}}}),
-    beginConfigurationMutation:() => 'update-token',endConfigurationMutation:() => undefined,
-    configurationChanged:async () => ({}),disconnectRuntime:async () => undefined,
-  };
-  const pluginManager = {
-    connect:async () => { announceConnect(); await connectRelease; return {connectedAt:'now'}; },
-    health:async () => ({ok:true}),disconnect:async () => undefined,forceDisconnect:async () => undefined,
-  };
-  const handlers = new Map();
-  registerV2Ipc({handle:(name,handler) => handlers.set(name,handler),on:() => undefined},{
-    workspaceStore:store,connectionManager,credentialVault:{load:async () => null,saveMerged:async () => ({saved:false})},
-    contextManager:{invalidateEnvironment:() => undefined},confirmationManager:{on:() => undefined},
-    pluginManager,mysqlRuntime:{},mutationCoordinator:coordinator,diagnosticTimeoutMs:2_000,
-  });
-  const event = {sender:{isDestroyed:() => false,send:() => undefined}};
-  const payload = {
-    projectId:project.projectId,environmentId:environment.environmentId,pluginInstanceId:plugin.pluginInstanceId,
-    requestId:'diagnostic-reader',secrets:{},
-  };
-  const diagnostic = handlers.get('v2:plugin-test')(event,payload);
-  await connectStarted;
-  let updateSettled = false;
-  const updating = handlers.get('v2:plugin-update')({}, {
-    projectId:project.projectId,environmentId:environment.environmentId,pluginInstanceId:plugin.pluginInstanceId,
-    patch:{displayName:'Application server 2'},expectedRevision:plugin.revision,secrets:{},
-  }).finally(() => { updateSettled = true; });
-  await delay(10);
-  assert.equal(updateSettled,false,'the config writer waits for diagnostic cleanup');
-  const blocked = await handlers.get('v2:plugin-test')(event,{...payload,requestId:'late-diagnostic'});
-  assert.equal(blocked.ok,false);
-  assert.equal(blocked.error.code,'CONFIGURATION_UPDATING');
-  releaseConnect();
-  assert.equal((await diagnostic).ok,true);
-  assert.equal((await updating).ok,true);
 });
 
 test('active project and environment deletion preflights do not wait behind a long Agent reader', async () => {

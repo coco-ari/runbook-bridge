@@ -119,6 +119,9 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(renderer, /api\.promotePluginDraft/);
   assert.match(renderer, /resourcePaneDrafts/);
   assert.doesNotMatch(renderer, /api\.testPlugin/);
+  assert.doesNotMatch(renderer, /renderDiagnosticPanel|pluginDiagnostics|connectionCheckPanel/);
+  assert.doesNotMatch(preload, /testPlugin|onPluginTestProgress|v2:plugin-test/);
+  assert.doesNotMatch(ipc, /v2:plugin-test|plugin-test-progress/);
   assert.match(renderer, /api\.updatePluginMetadata/);
   assert.match(renderer, /api\.updatePluginAgentConfiguration/);
   assert.match(renderer, /\$\('#pluginType'\)\.setAttribute\('tabindex','-1'\)/);
@@ -163,7 +166,7 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(styles, /\.environment-overview-issue\.empty/);
   assert.match(styles, /\.plugin-inline-form-host/);
   assert.match(styles, /\.audit-record/);
-  assert.doesNotMatch(styles, /\.connection-check-section[^\n]*\[data-action="test-plugin"\]/);
+  assert.doesNotMatch(styles, /\.connection-check-section|\.connection-section-head(?!ing)|\.connection-diagnostic/);
   assert.match(styles, /\.diagnostic-steps/);
   assert.match(styles, /\.connection-overview/);
   assert.match(styles, /\.plugin-form-diagnostic/);
@@ -211,9 +214,6 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.doesNotMatch(preload, /project:download/);
   assert.doesNotMatch(main, /registerIpc\(/);
   assert.doesNotMatch(main, /new SshBroker/);
-  assert.match(ipc, /配置与依赖/);
-  assert.match(ipc, /SELECT 1 健康检查/);
-  assert.match(ipc, /totalElapsedMs/);
   assert.match(ipc, /handle\('connection-intent'/);
 
   const packageJson = JSON.parse(manifest);

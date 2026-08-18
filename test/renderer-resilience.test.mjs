@@ -359,7 +359,7 @@ test('partial runtime preserves a full plugin map, while partial-to-partial repl
   assert.equal(vm.runInContext('runtimeSnapshotIsCurrent(incoming,current)',context),false);
 });
 
-test('plugin detail and diagnostic cache keys isolate identical plugin ids across scopes', () => {
+test('plugin detail cache keys isolate identical plugin ids across scopes', () => {
   const context = vm.createContext({state:{projectId:'project-a',environmentId:'env',detailTabs:{}}});
   install(context,['pluginStateKey','detailTab']);
   const first = vm.runInContext("pluginStateKey('shared','project-a','env')",context);
@@ -375,7 +375,7 @@ test('a pending environment connect can be cancelled and its late response canno
   let cancelCalls = 0;
   const state = {
     projectId:'project',environmentId:'environment',projectOverviewActive:false,
-    runtimeByScope:{},runtime:null,pluginFormDiagnostic:null,pluginDiagnostics:{},
+    runtimeByScope:{},runtime:null,pluginFormDiagnostic:null,
   };
   const context = vm.createContext({
     state,
@@ -628,7 +628,6 @@ test('the unified leave guard preserves edits on cancel and asynchronously relea
     runbookContent:'saved',runbookDraft:'draft',runbookDirty:true,runbookEditing:true,
     pluginFormMode:'inline',pluginFormInitial:'initial',inlineConfigPluginId:'plugin',
     pluginFormDiagnostic:{status:'pending',scope:{projectId:'project',environmentId:'env',pluginInstanceId:'plugin'}},
-    pluginDiagnostics:{},diagnosticGeneration:4,
     pluginEditSession:{editSessionId:'edit-1',phase:'editing'},pluginEditPreparation:null,
   };
   const context = vm.createContext({
@@ -639,7 +638,7 @@ test('the unified leave guard preserves edits on cancel and asynchronously relea
     pluginFormDirty:() => true,
     clearTransientRevealedCredentials:(options) => { clearedWith = options; },
   });
-  install(context,['call','scopeKey','operationInFlight','currentScopeSaveInFlight','cancelOwnedPluginEditSession','mayLeaveCurrentScope','pluginStateCoordinates','scopeDiagnosticPending']);
+  install(context,['call','scopeKey','operationInFlight','currentScopeSaveInFlight','cancelOwnedPluginEditSession','mayLeaveCurrentScope','scopeDiagnosticPending']);
   assert.equal(await vm.runInContext('mayLeaveCurrentScope()',context),false);
   assert.equal(state.runbookDraft,'draft');
   assert.equal(state.pluginFormDiagnostic.status,'pending');
@@ -653,7 +652,6 @@ test('the unified leave guard preserves edits on cancel and asynchronously relea
   assert.equal(state.runbookDraft,'saved');
   assert.equal(state.runbookDirty,false);
   assert.equal(state.pluginFormDiagnostic,null);
-  assert.equal(state.diagnosticGeneration,5);
   assert.equal(clearedWith.discardEdited,true);
   assert.equal(vm.runInContext("scopeDiagnosticPending('project','env')",context),false);
 });
@@ -791,23 +789,16 @@ test('a committed plugin save with a pending recovery journal asks for restart w
   assert.doesNotMatch(message,/手动断开|重新连接/);
 });
 
-test('diagnostic pending and runtime transitions mutually block conflicting actions', () => {
-  const key = JSON.stringify(['project','env','plugin']);
+test('draft validation pending state is scoped to its plugin and blocks formal connection actions', () => {
   const state = {
-    pluginFormDiagnostic:null,
-    pluginDiagnostics:{[key]:{status:'pending'}},
-    runtimeByScope:{'project/env':{plugins:{plugin:{phase:'disconnected'}}}},
+    pluginFormDiagnostic:{status:'pending',scope:{projectId:'project',environmentId:'env',pluginInstanceId:'plugin'}},
   };
-  const context = vm.createContext({state,inFlightOperations:new Map()});
-  install(context,['scopeKey','pluginStateCoordinates','scopeDiagnosticPending','runtimeScopeOperationInFlight','runtimeBlocksDiagnostic']);
-  context.plugin = {projectId:'project',environmentId:'env',pluginInstanceId:'plugin'};
+  const context = vm.createContext({state});
+  install(context,['scopeDiagnosticPending']);
   assert.equal(vm.runInContext("scopeDiagnosticPending('project','env','plugin')",context),true);
-  state.pluginDiagnostics[key].status = 'success';
-  state.runtimeByScope['project/env'].plugins.plugin.phase = 'connecting';
-  assert.equal(vm.runInContext('runtimeBlocksDiagnostic(plugin)',context),true);
-  state.runtimeByScope['project/env'].plugins.plugin.phase = 'disconnected';
-  context.inFlightOperations.set('runtime:project/env:plugin:connect',{});
-  assert.equal(vm.runInContext('runtimeBlocksDiagnostic(plugin)',context),true);
+  assert.equal(vm.runInContext("scopeDiagnosticPending('project','env','other')",context),false);
+  state.pluginFormDiagnostic.status = 'success';
+  assert.equal(vm.runInContext("scopeDiagnosticPending('project','env','plugin')",context),false);
 });
 
 test('draft SSH validation cannot persist an observed fingerprint through the generic plugin update path', () => {
