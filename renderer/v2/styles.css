@@ -1427,7 +1427,7 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 .resource-project-actions{display:flex;gap:8px;margin-left:auto}
 .resource-pane-label{height:44px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 24px;color:var(--muted);font-size:11px;font-weight:650;letter-spacing:.08em;text-transform:uppercase}
 .resource-pane-label span:last-child{color:var(--faint);font-weight:500;letter-spacing:0;text-transform:none}
-.resource-environment-list{min-height:0;flex:1 1 auto;display:grid;align-content:start;gap:12px;padding:0 16px 20px;overflow:auto}
+.resource-environment-list{min-height:0;flex:1 1 auto;display:grid;grid-auto-rows:max-content;align-content:start;gap:12px;padding:0 16px 20px;overflow-x:hidden;overflow-y:auto;scrollbar-gutter:stable;overscroll-behavior:contain}
 .resource-pane-empty{padding:40px 22px;color:var(--muted);text-align:center}
 .resource-environment-card{overflow:hidden;border:1px solid var(--soft-line);border-radius:12px;background:#0e0f13;transition:border-color .16s ease,background .16s ease}
 .resource-environment-card:hover{border-color:rgba(255,255,255,.13)}
