@@ -17,6 +17,35 @@ test('MySQL connection failures identify the field or network layer that needs c
   const unsupportedTls = mysqlRuntimeInternals.mysqlConnectError(Object.assign(new Error('server does not support secure connection'),{code:'HANDSHAKE_NO_SSL_SUPPORT'}),plugin);
   assert.equal(unsupportedTls.code,'MYSQL_TLS_NOT_SUPPORTED');
   assert.match(unsupportedTls.message,/TLS.*关闭/);
+  const invalidCertificate = mysqlRuntimeInternals.mysqlConnectError(Object.assign(new Error('certificate expired'),{code:'CERT_HAS_EXPIRED'}),plugin);
+  assert.equal(invalidCertificate.code,'TLS_CERTIFICATE_INVALID');
+});
+
+test('MySQL TLS probe does not require a database and never retries in plaintext', async () => {
+  const attempts = [];
+  const routeManager = {
+    createRelay:async () => ({host:'127.0.0.1',port:41240,generation:10}),
+    closeRelay:async () => undefined,
+  };
+  const runtime = new MysqlPluginRuntime(routeManager,{load:async()=>null},{
+    client:{createConnection:async (options) => {
+      attempts.push(options);
+      throw Object.assign(new Error('no secure transport'),{code:'HANDSHAKE_NO_SSL_SUPPORT'});
+    }},
+  });
+  const draft = {
+    projectId:'p1',environmentId:'e1',pluginInstanceId:'diagnostic-edit-tls',pluginType:'mysql',configState:'draft',
+    target:{host:'db.internal',port:3306,database:'',addressFamily:'ipv4Only'},auth:{username:'reader'},
+    transport:{kind:'direct'},tls:{mode:'required'},limits:{timeoutMs:5000},
+  };
+
+  await assert.rejects(
+    () => runtime.connect(draft,{password:'secret'},{validationPurpose:'tls-probe',attemptToken:'tls-1'}),
+    (error) => error.code === 'MYSQL_TLS_NOT_SUPPORTED',
+  );
+  assert.equal(attempts.length,1);
+  assert.equal(attempts[0].database,undefined);
+  assert.equal(typeof attempts[0].ssl,'object');
 });
 
 test('MySQL database discovery returns visible non-system databases and releases the temporary route', async () => {
@@ -89,6 +118,94 @@ test('MySQL direct discovery uses the resolved target stream without a loopback 
   assert.deepEqual(calls,['stream:create','connection:end','route:close:9']);
 });
 
+test('SHOW DATABASES denial is a manual-selection outcome and never hides route cleanup', async () => {
+  const calls = [];
+  const routeManager = {
+    createRelay:async () => ({host:'127.0.0.1',port:41237,generation:7}),
+    closeRelay:async (_plugin,generation) => { calls.push(`route:close:${generation}`); },
+  };
+  const runtime = new MysqlPluginRuntime(routeManager,{load:async()=>null},{
+    client:{createConnection:async () => ({
+      query:async ({sql}) => {
+        calls.push(sql);
+        throw Object.assign(new Error('command denied'),{code:'ER_SPECIFIC_ACCESS_DENIED_ERROR'});
+      },
+      end:async () => { calls.push('connection:end'); },
+    })},
+  });
+  const plugin = {
+    projectId:'p1',environmentId:'e1',pluginInstanceId:'mysql-manual',pluginType:'mysql',configState:'draft',
+    target:{host:'db.internal',port:3306,database:'orders',addressFamily:'ipv4Only'},auth:{username:'reader'},
+    transport:{kind:'direct'},tls:{mode:'required'},limits:{timeoutMs:5000},
+  };
+
+  await assert.rejects(
+    () => runtime.listDatabases(plugin,{password:'secret'}),
+    (error) => error.code === 'MYSQL_DATABASE_LIST_FORBIDDEN'
+      && error.details?.manualInputAllowed === true,
+  );
+  assert.deepEqual(calls,['SHOW DATABASES','connection:end','route:close:7']);
+});
+
+test('formal MySQL connect verifies the driver-selected database without interpolating its name', async () => {
+  const database = "orders`; USE mysql; --";
+  const calls = [];
+  let connectionOptions;
+  const routeManager = {
+    createRelay:async () => ({host:'127.0.0.1',port:41238,generation:8}),
+    closeRelay:async () => undefined,
+  };
+  const runtime = new MysqlPluginRuntime(routeManager,{load:async()=>({password:'secret'})},{
+    client:{createConnection:async (options) => {
+      connectionOptions = options;
+      return {
+        query:async ({sql}) => {
+          calls.push(sql);
+          if (sql === 'SELECT DATABASE() AS ai_ops_database') return [[{ai_ops_database:database}],[]];
+          return [[{ai_ops_health:1}],[]];
+        },
+        end:async () => undefined,
+      };
+    }},
+  });
+  const plugin = {
+    projectId:'p1',environmentId:'e1',pluginInstanceId:'mysql-fixed',pluginType:'mysql',configState:'ready',revision:1,
+    target:{host:'db.internal',port:3306,database,addressFamily:'ipv4Only'},auth:{username:'reader'},
+    transport:{kind:'direct'},tls:{mode:'required'},limits:{timeoutMs:5000,maxRows:100,maxBytes:1048576},
+  };
+
+  assert.equal((await runtime.connect(plugin)).connected,true);
+  assert.equal(connectionOptions.database,database);
+  assert.deepEqual(calls,['SELECT DATABASE() AS ai_ops_database','SELECT 1 AS ai_ops_health']);
+  assert.equal(calls.some((sql) => /\bUSE\b/iu.test(sql)),false);
+});
+
+test('formal MySQL connect rejects a driver session bound to a different database', async () => {
+  const routeManager = {
+    createRelay:async () => ({host:'127.0.0.1',port:41239,generation:9}),
+    closeRelay:async () => undefined,
+  };
+  const runtime = new MysqlPluginRuntime(routeManager,{load:async()=>({password:'secret'})},{
+    client:{createConnection:async () => ({
+      query:async ({sql}) => sql === 'SELECT DATABASE() AS ai_ops_database'
+        ? [[{ai_ops_database:'wrong_database'}],[]]
+        : [[{ai_ops_health:1}],[]],
+      end:async () => undefined,
+    })},
+  });
+  const plugin = {
+    projectId:'p1',environmentId:'e1',pluginInstanceId:'mysql-fixed-mismatch',pluginType:'mysql',configState:'ready',revision:1,
+    target:{host:'db.internal',port:3306,database:'orders',addressFamily:'ipv4Only'},auth:{username:'reader'},
+    transport:{kind:'direct'},tls:{mode:'required'},limits:{timeoutMs:5000,maxRows:100,maxBytes:1048576},
+  };
+
+  await assert.rejects(
+    () => runtime.connect(plugin),
+    (error) => error.code === 'MYSQL_DATABASE_ACCESS_DENIED',
+  );
+  assert.equal(runtime.status(plugin).connected,false);
+});
+
 test('MySQL runtime accepts a write-capable account while Agent SQL remains read-only', async () => {
   const calls = [];
   const routeManager = {
@@ -99,6 +216,7 @@ test('MySQL runtime accepts a write-capable account while Agent SQL remains read
     query: async ({ sql }) => {
       calls.push(sql);
       if (sql === 'SHOW GRANTS FOR CURRENT_USER') throw new Error('grant inspection must not run');
+      if (sql === 'SELECT DATABASE() AS ai_ops_database') return [[{ai_ops_database:'app'}],[]];
       return [[], []];
     },
     end: async () => { calls.push('connection:end'); },
@@ -111,10 +229,10 @@ test('MySQL runtime accepts a write-capable account while Agent SQL remains read
     transport:{kind:'direct'}, tls:{mode:'disabled'}, limits:{timeoutMs:5000,maxRows:100,maxBytes:1048576},
   };
   assert.equal((await runtime.connect(plugin)).connected, true);
-  assert.deepEqual(calls, ['relay:close','SELECT 1 AS ai_ops_health']);
+  assert.deepEqual(calls, ['relay:close','SELECT DATABASE() AS ai_ops_database','SELECT 1 AS ai_ops_health']);
   await assert.rejects(() => runtime.queryReadonly(plugin, 'UPDATE users SET admin = 1'), (error) => error.code === 'HARD_POLICY_DENIED');
   await runtime.disconnect(plugin);
-  assert.deepEqual(calls, ['relay:close','SELECT 1 AS ai_ops_health','connection:end','relay:close']);
+  assert.deepEqual(calls, ['relay:close','SELECT DATABASE() AS ai_ops_database','SELECT 1 AS ai_ops_health','connection:end','relay:close']);
 });
 
 test('MySQL query timeout evicts the dead session and reports the connection loss', async () => {
@@ -132,7 +250,8 @@ test('MySQL query timeout evicts the dead session and reports the connection los
     query: async ({ sql }) => {
       calls.push(sql);
       queryCount += 1;
-      if (queryCount === 1) return [[], []];
+      if (queryCount === 1) return [[{ai_ops_database:'app'}], []];
+      if (queryCount === 2) return [[], []];
       const error = new Error('Query inactivity timeout');
       error.code = 'PROTOCOL_SEQUENCE_TIMEOUT';
       throw error;

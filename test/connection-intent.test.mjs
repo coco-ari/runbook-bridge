@@ -70,6 +70,127 @@ test('Connect All connects independent ready branches and returns incomplete plu
   assert.deepEqual(result.actions[0].affectedPluginInstanceIds,['server-draft']);
 });
 
+test('formal SSH host-key challenge is operation-bound and resumes the same plan after trust commit', async () => {
+  let server = plugin('server','server');
+  const calls = [];
+  const store = {
+    getEnvironment:async () => ({revision:1}),
+    listPlugins:async () => [server],
+    getPlugin:async () => server,
+    appendAudit:async () => undefined,
+  };
+  const manager = new EnvironmentConnectionManager(store,{
+    connect:async (value) => {
+      calls.push(value.target.hostKeyFingerprint ?? null);
+      if (!value.target.hostKeyFingerprint) {
+        throw new AppError('SSH_HOST_KEY_CONFIRM_REQUIRED','confirm host key',{
+          fingerprint:'SHA256:observed',algorithm:'ssh-ed25519',
+        });
+      }
+      return {connectedAt:'now'};
+    },
+    disconnect:async () => ({connected:false}),
+    closeAll:async () => undefined,
+  },{retryDelays:[]});
+
+  const first = await manager.requestConnectionIntent({
+    requestId:'host-key-request',planId:'host-key-plan',projectId:'p1',environmentId:'e1',
+    pluginInstanceId:'server',intent:'connect',source:'renderer-plugin',
+  });
+  assert.equal(first.outcome,'needs-action');
+  const action = first.actions[0];
+  assert.equal(action.action,'confirm-host-key');
+  assert.equal(action.code,'SSH_HOST_KEY_CONFIRM_REQUIRED');
+  assert.deepEqual(action.details.hostKeyChallenge,{
+    challengeId:action.details.hostKeyChallenge.challengeId,
+    planId:'host-key-plan',
+    operationId:first.operationId,
+    projectId:'p1',environmentId:'e1',pluginInstanceId:'server',
+    expectedRevision:1,
+    generation:1,
+    digest:action.details.hostKeyChallenge.digest,
+    host:'server.internal',port:22,algorithm:'ssh-ed25519',fingerprint:'SHA256:observed',
+    expiresAt:action.details.hostKeyChallenge.expiresAt,
+  });
+
+  await assert.rejects(
+    () => manager.validateConnectionChallenge({
+      ...action.details.hostKeyChallenge,
+      operationId:'stale-operation',
+      decision:'trust-host-key',
+    }),
+    (error) => error.code === 'CONNECTION_CHALLENGE_STALE',
+  );
+  for (const stale of [
+    {digest:'stale-digest'},
+    {host:'other.internal'},
+    {port:2222},
+    {expectedRevision:2},
+    {generation:2},
+  ]) {
+    await assert.rejects(
+      () => manager.validateConnectionChallenge({
+        ...action.details.hostKeyChallenge,
+        ...stale,
+        decision:'trust-host-key',
+      }),
+      (error) => error.code === 'CONNECTION_CHALLENGE_STALE',
+    );
+  }
+
+  const challenge = await manager.validateConnectionChallenge({
+    ...action.details.hostKeyChallenge,
+    decision:'trust-host-key',
+  });
+  server = {
+    ...server,
+    revision:2,
+    target:{...server.target,hostKeyFingerprint:challenge.fingerprint},
+  };
+  const resumed = await manager.resumeConnectionChallenge({
+    ...action.details.hostKeyChallenge,
+    decision:'trust-host-key',
+  },{plugin:server});
+
+  assert.equal(resumed.planId,'host-key-plan');
+  assert.equal(resumed.outcome,'started');
+  assert.equal(resumed.snapshot.plugins.server.phase,'connected');
+  assert.deepEqual(calls,[null,'SHA256:observed']);
+  await assert.rejects(
+    () => manager.resumeConnectionChallenge({
+      ...action.details.hostKeyChallenge,
+      decision:'trust-host-key',
+    },{plugin:server}),
+    (error) => error.code === 'CONNECTION_CHALLENGE_STALE',
+  );
+});
+
+test('a newer connection plan invalidates an unconsumed host-key challenge in the same scope', async () => {
+  const server = plugin('server','server');
+  const manager = fixture([server],{
+    connect:async () => {
+      throw new AppError('SSH_HOST_KEY_CONFIRM_REQUIRED','confirm host key',{
+        fingerprint:'SHA256:observed',algorithm:'ssh-ed25519',
+      });
+    },
+    disconnect:async () => ({connected:false}),
+    closeAll:async () => undefined,
+  });
+  const first = await manager.requestConnectionIntent({
+    requestId:'challenge-first',planId:'challenge-plan-first',projectId:'p1',environmentId:'e1',
+    pluginInstanceId:'server',intent:'connect',source:'renderer-plugin',
+  });
+  const firstChallenge = first.actions[0].details.hostKeyChallenge;
+  await manager.requestConnectionIntent({
+    requestId:'challenge-second',planId:'challenge-plan-second',projectId:'p1',environmentId:'e1',
+    pluginInstanceId:'server',intent:'connect',source:'renderer-plugin',
+  });
+  await assert.rejects(
+    () => manager.validateConnectionChallenge({...firstChallenge,decision:'trust-host-key'}),
+    (error) => error.code === 'CONNECTION_CHALLENGE_STALE',
+  );
+});
+
 test('an unavailable tunnel provider blocks only its dependency subtree and is grouped as one root cause', async () => {
   const provider = plugin('server','server',{configState:'draft',target:{host:'',port:22,addressFamily:'ipv4Only'}});
   const dependent = plugin('orders','mysql',{transport:{kind:'serverTunnel',serverPluginInstanceId:'server'}});

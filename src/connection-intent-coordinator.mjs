@@ -4,6 +4,8 @@ import { pluginConnectionFingerprint } from './plugin-change-classifier.mjs';
 
 const VALID_INTENTS = new Set(['connect','disconnect','retry','cancel']);
 const HISTORY_LIMIT = 512;
+const CONNECTION_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const CONNECTION_CHALLENGE_LIMIT = 256;
 
 function operationKey(projectId,environmentId,pluginInstanceId) {
   return `${projectId}/${environmentId}/${pluginInstanceId}`;
@@ -29,18 +31,40 @@ function runtimePluginState(plugin,phase = 'disconnected',extra = {}) {
 function terminalConnectionError(error) {
   return new Set([
     'AUTHENTICATION_FAILED','SSH_AUTH_FAILED','SSH_HOST_KEY_CHANGED','SSH_HOST_KEY_CONFIRM_REQUIRED',
-    'TLS_IDENTITY_FAILED','CREDENTIAL_UNAVAILABLE','CREDENTIAL_BINDING_MISMATCH',
+    'TLS_IDENTITY_FAILED','TLS_CERTIFICATE_INVALID','TLS_PROTOCOL_ERROR','TLS_NOT_SUPPORTED',
+    'MYSQL_TLS_NOT_SUPPORTED','CREDENTIAL_UNAVAILABLE','CREDENTIAL_BINDING_MISMATCH',
     'PLUGIN_CONFIG_INCOMPLETE','MANUAL_RECONNECT_REQUIRED',
   ]).has(error?.code);
 }
 
-function publicAction({rootPluginInstanceId,affectedPluginInstanceIds,code,message,action = 'configure'}) {
-  return {
+function publicAction({rootPluginInstanceId,affectedPluginInstanceIds,code,message,action = 'configure',details}) {
+  const value = {
     rootPluginInstanceId,
     affectedPluginInstanceIds:[...new Set(affectedPluginInstanceIds)],
     code,
     message,
     action,
+  };
+  if (details !== undefined) value.details = structuredClone(details);
+  return value;
+}
+
+function publicConnectionChallenge(challenge) {
+  return {
+    challengeId:challenge.challengeId,
+    planId:challenge.planId,
+    operationId:challenge.operationId,
+    projectId:challenge.projectId,
+    environmentId:challenge.environmentId,
+    pluginInstanceId:challenge.pluginInstanceId,
+    expectedRevision:challenge.expectedRevision,
+    generation:challenge.generation,
+    digest:challenge.digest,
+    host:challenge.host,
+    port:challenge.port,
+    algorithm:challenge.algorithm,
+    fingerprint:challenge.fingerprint,
+    expiresAt:challenge.expiresAt,
   };
 }
 
@@ -55,6 +79,7 @@ export class ConnectionIntentCoordinator {
     this.reservedPlanIds = new Set();
     this.legacyCancelFences = new Map();
     this.operationGenerations = new Map();
+    this.connectionChallenges = new Map();
   }
 
   request(payload = {}) {
@@ -241,6 +266,7 @@ export class ConnectionIntentCoordinator {
     const legacyFence = this.legacyCancelFences.get(fenceKey);
     if (legacyFence) await legacyFence.catch(() => undefined);
     const plan = await this.buildConnectionPlan(payload);
+    this.invalidateConnectionChallenges(payload.projectId,payload.environmentId);
     this.plans.set(plan.planId,plan);
     plan.cancelPromise = new Promise((resolve) => { plan.cancelResolve = resolve; });
     this.initializePlanState(plan);
@@ -326,15 +352,21 @@ export class ConnectionIntentCoordinator {
     return connected;
   }
 
-  addPlanAction(plan,{rootPluginInstanceId,affectedPluginInstanceIds,code,message,action}) {
+  addPlanAction(plan,{rootPluginInstanceId,affectedPluginInstanceIds,code,message,action,details}) {
     const existing = plan.actionGroups.get(rootPluginInstanceId);
     if (existing) {
       for (const id of affectedPluginInstanceIds) {
         if (!existing.affectedPluginInstanceIds.includes(id)) existing.affectedPluginInstanceIds.push(id);
       }
+      if (details?.hostKeyChallenge) {
+        existing.code = code;
+        existing.message = message;
+        existing.action = action;
+        existing.details = structuredClone(details);
+      }
     } else {
       plan.actionGroups.set(rootPluginInstanceId,publicAction({
-        rootPluginInstanceId,affectedPluginInstanceIds,code,message,action,
+        rootPluginInstanceId,affectedPluginInstanceIds,code,message,action,details,
       }));
     }
     plan.actions = [...plan.actionGroups.values()];
@@ -344,6 +376,9 @@ export class ConnectionIntentCoordinator {
     const runtime = this.manager.state(plan.projectId,plan.environmentId).plugins[node.pluginInstanceId];
     const code = runtime?.reason ?? 'CONNECTION_FAILED';
     const credentialFailure = ['AUTHENTICATION_FAILED','SSH_AUTH_FAILED','CREDENTIAL_UNAVAILABLE','CREDENTIAL_BINDING_MISMATCH'].includes(code);
+    const hostKeyChallenge = code === 'SSH_HOST_KEY_CONFIRM_REQUIRED'
+      ? this.ensureHostKeyChallenge(plan,node,runtime)
+      : null;
     this.addPlanAction(plan,{
       rootPluginInstanceId:node.pluginInstanceId,
       affectedPluginInstanceIds:[node.pluginInstanceId],
@@ -352,7 +387,43 @@ export class ConnectionIntentCoordinator {
       action:code === 'SSH_HOST_KEY_CONFIRM_REQUIRED'
         ? 'confirm-host-key'
         : credentialFailure ? 'configure-credential' : 'retry',
+      ...(hostKeyChallenge ? {details:{hostKeyChallenge}} : {}),
     });
+  }
+
+  ensureHostKeyChallenge(plan,node,runtime) {
+    const operation = this.operationsById.get(node.operationId);
+    const observed = runtime?.error?.details ?? {};
+    if (!operation || operation.pluginInstanceId !== node.pluginInstanceId
+      || node.plugin.pluginType !== 'server' || !observed.fingerprint) return null;
+    const existing = [...this.connectionChallenges.values()].find((challenge) => (
+      challenge.status === 'pending'
+      && challenge.planId === plan.planId
+      && challenge.operationId === operation.operationId
+    ));
+    if (existing) return publicConnectionChallenge(existing);
+    const createdAt = Date.now();
+    const challenge = {
+      challengeId:crypto.randomUUID(),
+      planId:plan.planId,
+      operationId:operation.operationId,
+      projectId:plan.projectId,
+      environmentId:plan.environmentId,
+      pluginInstanceId:node.pluginInstanceId,
+      expectedRevision:node.plugin.revision,
+      generation:operation.generation,
+      digest:operation.digest,
+      host:node.plugin.target?.host ?? null,
+      port:Number(node.plugin.target?.port),
+      algorithm:observed.algorithm ?? null,
+      fingerprint:observed.fingerprint,
+      createdAt,
+      expiresAt:new Date(createdAt + CONNECTION_CHALLENGE_TTL_MS).toISOString(),
+      status:'pending',
+    };
+    this.connectionChallenges.set(challenge.challengeId,challenge);
+    this.pruneHistory();
+    return publicConnectionChallenge(challenge);
   }
 
   publishBlockedNode(plan,node) {
@@ -513,6 +584,7 @@ export class ConnectionIntentCoordinator {
 
   publishOperationError(operation,error) {
     const value = toPublicError(error);
+    operation.error = value;
     const state = structuredClone(this.manager.state(operation.projectId,operation.environmentId));
     state.plugins[operation.pluginInstanceId] = runtimePluginState(operation.plugin,'error',{
       reason:value.code,
@@ -526,6 +598,175 @@ export class ConnectionIntentCoordinator {
     const plugins = this.manager.pluginCatalogs.get(this.manager.key(operation.projectId,operation.environmentId)) ?? [operation.plugin];
     this.manager.aggregate(state,plugins);
     this.manager.publish(state);
+  }
+
+  staleConnectionChallenge() {
+    return new AppError('CONNECTION_CHALLENGE_STALE','连接确认已经过期或不再属于当前配置，请重新连接。');
+  }
+
+  assertConnectionChallengePayload(challenge,payload,{allowCommitted = false} = {}) {
+    const expiresAt = Date.parse(challenge?.expiresAt ?? '');
+    if (!challenge || challenge.status !== 'pending' || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      throw this.staleConnectionChallenge();
+    }
+    if (payload?.decision !== 'trust-host-key'
+      || payload.challengeId !== challenge.challengeId
+      || payload.planId !== challenge.planId
+      || payload.operationId !== challenge.operationId
+      || Number(payload.expectedRevision) !== challenge.expectedRevision) {
+      throw this.staleConnectionChallenge();
+    }
+    for (const field of [
+      'projectId','environmentId','pluginInstanceId','generation','digest',
+      'host','port','algorithm','fingerprint','expiresAt',
+    ]) {
+      if (payload[field] !== undefined && payload[field] !== challenge[field]) {
+        throw this.staleConnectionChallenge();
+      }
+    }
+    const operation = this.operationsById.get(challenge.operationId);
+    const plan = this.plans.get(challenge.planId);
+    if (!operation || !plan
+      || operation.projectId !== challenge.projectId
+      || operation.environmentId !== challenge.environmentId
+      || operation.pluginInstanceId !== challenge.pluginInstanceId
+      || operation.generation !== challenge.generation
+      || operation.digest !== challenge.digest
+      || (!allowCommitted && operation.status !== 'failed')
+      || plan.projectId !== challenge.projectId
+      || plan.environmentId !== challenge.environmentId) {
+      throw this.staleConnectionChallenge();
+    }
+    return {operation,plan};
+  }
+
+  async validateConnectionChallenge(payload = {}) {
+    const challenge = this.connectionChallenges.get(payload.challengeId);
+    this.assertConnectionChallengePayload(challenge,payload);
+    const plugin = await this.manager.workspaceStore.getPlugin(
+      challenge.projectId,challenge.environmentId,challenge.pluginInstanceId,
+    ).catch(() => null);
+    if (!plugin || plugin.revision !== challenge.expectedRevision
+      || plugin.pluginType !== 'server'
+      || plugin.target?.host !== challenge.host
+      || Number(plugin.target?.port) !== challenge.port
+      || pluginConnectionFingerprint(plugin) !== challenge.digest) {
+      challenge.status = 'stale';
+      throw this.staleConnectionChallenge();
+    }
+    return publicConnectionChallenge(challenge);
+  }
+
+  async resumeConnectionChallenge(payload = {},{plugin} = {}) {
+    const challenge = this.connectionChallenges.get(payload.challengeId);
+    const {plan} = this.assertConnectionChallengePayload(challenge,payload,{allowCommitted:true});
+    const committed = await this.manager.workspaceStore.getPlugin(
+      challenge.projectId,challenge.environmentId,challenge.pluginInstanceId,
+    ).catch(() => null);
+    const trusted = plugin ?? committed;
+    if (!committed || !trusted
+      || committed.projectId !== challenge.projectId
+      || committed.environmentId !== challenge.environmentId
+      || committed.pluginInstanceId !== challenge.pluginInstanceId
+      || trusted.projectId !== committed.projectId
+      || trusted.environmentId !== committed.environmentId
+      || trusted.pluginInstanceId !== committed.pluginInstanceId
+      || committed.revision !== trusted.revision
+      || committed.revision <= challenge.expectedRevision
+      || committed.pluginType !== 'server'
+      || committed.target?.host !== challenge.host
+      || Number(committed.target?.port) !== challenge.port
+      || committed.target?.hostKeyFingerprint !== challenge.fingerprint) {
+      challenge.status = 'stale';
+      throw this.staleConnectionChallenge();
+    }
+
+    const latestPlugins = await this.manager.workspaceStore.listPlugins(challenge.projectId,challenge.environmentId);
+    const byId = new Map(latestPlugins.map((item) => [item.pluginInstanceId,item]));
+    byId.set(trusted.pluginInstanceId,trusted);
+    const affected = new Set([challenge.pluginInstanceId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const node of plan.nodes.values()) {
+        if (node.dependencyId && affected.has(node.dependencyId) && !affected.has(node.pluginInstanceId)) {
+          affected.add(node.pluginInstanceId);
+          changed = true;
+        }
+      }
+    }
+    for (const pluginInstanceId of affected) {
+      const node = plan.nodes.get(pluginInstanceId);
+      const current = byId.get(pluginInstanceId);
+      if (!node || !current || current.configState !== 'ready') continue;
+      node.plugin = current;
+      node.connectionFingerprint = pluginConnectionFingerprint(current);
+      node.requestedOperationId = null;
+      node.operationId = null;
+      node.status = 'pending';
+    }
+    plan.plugins = latestPlugins.map((item) => byId.get(item.pluginInstanceId) ?? item);
+    plan.byId = byId;
+    plan.environment = await this.manager.workspaceStore.getEnvironment(challenge.projectId,challenge.environmentId);
+    plan.secretsByPlugin = {};
+    plan.cancelled = false;
+    plan.completed = false;
+    plan.startedOperations = 0;
+    for (const [rootPluginInstanceId,action] of plan.actionGroups) {
+      if (affected.has(rootPluginInstanceId)
+        || action.details?.hostKeyChallenge?.challengeId === challenge.challengeId) {
+        plan.actionGroups.delete(rootPluginInstanceId);
+      }
+    }
+    plan.actions = [...plan.actionGroups.values()];
+    plan.cancelPromise = new Promise((resolve) => { plan.cancelResolve = resolve; });
+    challenge.status = 'consumed';
+    for (const candidate of this.connectionChallenges.values()) {
+      if (candidate !== challenge
+        && candidate.projectId === challenge.projectId
+        && candidate.environmentId === challenge.environmentId
+        && candidate.pluginInstanceId === challenge.pluginInstanceId) candidate.status = 'stale';
+    }
+
+    this.manager.rememberPlugins(plan.projectId,plan.environmentId,plan.plugins);
+    this.initializePlanState(plan);
+    const roots = [...affected].filter((pluginInstanceId) => plan.nodes.has(pluginInstanceId));
+    const work = Promise.all(roots.map((pluginInstanceId) => this.connectNode(plan,pluginInstanceId))).catch(() => []);
+    plan.workPromise = work;
+    plan.resultPromise = (async () => {
+      await Promise.race([work,plan.cancelPromise]);
+      if (!plan.cancelled) {
+        await work;
+        plan.completed = true;
+        this.publishAggregate(plan);
+        await Promise.resolve(this.manager.workspaceStore.appendAudit?.(plan.projectId,{
+          type:'connection-plan-resumed',
+          projectId:plan.projectId,
+          environmentId:plan.environmentId,
+          pluginInstanceId:challenge.pluginInstanceId,
+          planId:plan.planId,
+          operationId:challenge.operationId,
+          actor:plan.actor,
+          result:plan.actions.length ? 'needs-action' : 'completed',
+        })).catch(() => undefined);
+      }
+      const result = this.result(plan,plan.cancelled
+        ? 'cancelled'
+        : plan.actions.length
+          ? 'needs-action'
+          : plan.startedOperations > 0 ? 'started' : 'already-satisfied');
+      this.pruneHistory();
+      return result;
+    })();
+    return plan.resultPromise;
+  }
+
+  invalidateConnectionChallenges(projectId,environmentId = null) {
+    for (const challenge of this.connectionChallenges.values()) {
+      if (challenge.projectId === projectId
+        && (environmentId === null || challenge.environmentId === environmentId)
+        && challenge.status === 'pending') challenge.status = 'stale';
+    }
   }
 
   cancel(payload) {
@@ -695,8 +936,8 @@ export class ConnectionIntentCoordinator {
   }
 
   pruneHistory() {
-    const removeOldest = (map,canRemove) => {
-      while (map.size > HISTORY_LIMIT) {
+    const removeOldest = (map,canRemove,limit = HISTORY_LIMIT) => {
+      while (map.size > limit) {
         const removable = [...map.entries()].find(([key,value]) => canRemove(value,key));
         if (!removable) break;
         map.delete(removable[0]);
@@ -711,9 +952,17 @@ export class ConnectionIntentCoordinator {
     for (const requestKey of this.requestPlans.keys()) {
       if (!this.requests.has(requestKey)) this.requestPlans.delete(requestKey);
     }
+    const now = Date.now();
+    for (const [challengeId,challenge] of this.connectionChallenges) {
+      if (challenge.status !== 'pending' || Date.parse(challenge.expiresAt) <= now) {
+        this.connectionChallenges.delete(challengeId);
+      }
+    }
+    removeOldest(this.connectionChallenges,() => true,CONNECTION_CHALLENGE_LIMIT);
   }
 
   forgetProject(projectId) {
+    this.invalidateConnectionChallenges(projectId);
     for (const operation of this.operations.values()) {
       if (operation.projectId === projectId) this.forceCancelOperation(operation);
     }
@@ -725,9 +974,13 @@ export class ConnectionIntentCoordinator {
     for (const key of this.requestPlans.keys()) if (key.startsWith(`${projectId}/`)) this.requestPlans.delete(key);
     for (const key of this.legacyCancelFences.keys()) if (key.startsWith(`${projectId}/`)) this.legacyCancelFences.delete(key);
     for (const key of this.operationGenerations.keys()) if (key.startsWith(`${projectId}/`)) this.operationGenerations.delete(key);
+    for (const [challengeId,challenge] of this.connectionChallenges) {
+      if (challenge.projectId === projectId) this.connectionChallenges.delete(challengeId);
+    }
   }
 
   forgetEnvironment(projectId,environmentId) {
+    this.invalidateConnectionChallenges(projectId,environmentId);
     this.abortScope(projectId,environmentId,{force:true});
     for (const [planId,plan] of this.plans) {
       if (plan.projectId === projectId && plan.environmentId === environmentId) this.plans.delete(planId);
@@ -740,11 +993,17 @@ export class ConnectionIntentCoordinator {
     }
     for (const key of this.operationGenerations.keys()) if (key.startsWith(prefix)) this.operationGenerations.delete(key);
     this.legacyCancelFences.delete(`${projectId}/${environmentId}`);
+    for (const [challengeId,challenge] of this.connectionChallenges) {
+      if (challenge.projectId === projectId && challenge.environmentId === environmentId) {
+        this.connectionChallenges.delete(challengeId);
+      }
+    }
   }
 }
 
 export const connectionIntentInternals = {
   operationKey,
   publicAction,
+  publicConnectionChallenge,
   runtimePluginState,
 };

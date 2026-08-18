@@ -36,7 +36,9 @@ export class PluginValidationRuntime {
     if (!CONNECTION_PURPOSES.has(purpose)) {
       throw new AppError('INVALID_ARGUMENT','验证用途无效。');
     }
-    await this.pluginManager.connect(draft,resolvedSecrets,{signal,attemptToken:operationId});
+    await this.pluginManager.connect(draft,resolvedSecrets,{
+      signal,attemptToken:operationId,validationPurpose:purpose,
+    });
     operation.connected = true;
     if (signal?.aborted) throw new AppError('PLUGIN_VALIDATION_CANCELLED','验证已取消。');
     const health = await this.pluginManager.health(draft);

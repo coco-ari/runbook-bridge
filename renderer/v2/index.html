@@ -75,7 +75,7 @@
           <fieldset id="operationTargetSection" class="plugin-form-section">
             <legend>操作目标</legend>
             <div class="form-grid">
-              <div id="databaseField" class="field full"><span>数据库</span><span class="database-picker"><select id="pluginDatabase" aria-label="数据库" disabled><option value="">先填写连接信息并加载</option></select><button id="queryDatabases" type="button" class="button">加载数据库</button></span><span id="databaseHint" class="field-hint">只显示当前账号实际可见的普通数据库</span></div>
+              <div id="databaseField" class="field full"><span>数据库</span><span class="database-picker"><input id="pluginDatabase" list="pluginDatabaseOptions" aria-label="数据库" maxlength="128" autocomplete="off" placeholder="选择或手工输入准确库名"><datalist id="pluginDatabaseOptions"></datalist><button id="queryDatabases" type="button" class="button">加载数据库</button></span><span id="databaseHint" class="field-hint">可加载当前账号可见数据库，也可手工输入准确名称</span></div>
               <label id="redisDbField" class="field full hidden">Logical DB<input id="pluginRedisDb" type="number" min="0" max="15" value="0"><span class="field-hint">0（默认）</span><span class="field-error"></span></label>
             </div>
           </fieldset>
@@ -97,7 +97,7 @@
           </details>
           <section class="plugin-validation-section" aria-labelledby="pluginValidationTitle">
             <div><h3 id="pluginValidationTitle">连接验证</h3><p id="pluginValidationHint">验证使用临时连接，不改变正式运行状态。</p></div>
-            <div class="plugin-validation-actions"><button id="validateServerDraft" type="button" class="button"><svg class="icon"><use href="#i-route"/></svg>验证 SSH</button><button id="validateMysqlDatabase" type="button" class="button"><svg class="icon"><use href="#i-route"/></svg>验证所选数据库</button><button id="validateRedisDraft" type="button" class="button"><svg class="icon"><use href="#i-route"/></svg>验证 Redis</button><button id="cancelPluginValidation" type="button" class="button hidden">取消验证</button></div>
+            <div class="plugin-validation-actions"><button id="validateServerDraft" type="button" class="button"><svg class="icon"><use href="#i-route"/></svg>验证 SSH</button><button id="validateMysqlDatabase" type="button" class="button"><svg class="icon"><use href="#i-route"/></svg>验证所选数据库</button><button id="validateRedisDraft" type="button" class="button"><svg class="icon"><use href="#i-route"/></svg>验证 Redis</button><button id="validateTlsDraft" type="button" class="button hidden"><svg class="icon"><use href="#i-shield"/></svg>探测 TLS</button><button id="cancelPluginValidation" type="button" class="button hidden">取消验证</button></div>
           </section>
         </div>
       </div>

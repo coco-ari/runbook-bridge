@@ -484,7 +484,7 @@ function beginRuntimeOperation(projectId,environmentId,action,pluginInstanceId =
         ? state.runtimeByScope?.[scopeKey(projectId,environmentId)]?.plugins?.[pluginInstanceId]?.operationId ?? null
         : null),
   };
-  if (['connect','retry','trust-host'].includes(action)) renewRuntimeConnectionIntent(operation);
+  if (['connect','retry'].includes(action)) renewRuntimeConnectionIntent(operation);
   return operation;
 }
 function runtimeOperationIsLatest(operation) {
@@ -2425,10 +2425,13 @@ function populatePluginForm(plugin = null) {
   $('#pluginHost').value = plugin?.target?.host ?? '';
   $('#pluginPort').value = plugin?.target?.port ?? (type === 'server' ? 22 : type === 'mysql' ? 3306 : 6379);
   const database = plugin?.target?.database ?? '';
-  $('#pluginDatabase').innerHTML = database ? `<option value="${escapeAttr(database)}">${escapeHtml(database)}</option>` : '<option value="">先填写连接信息并查询</option>';
   $('#pluginDatabase').value = database;
-  $('#pluginDatabase').disabled = !database;
-  $('#databaseHint').textContent = database ? '当前已保存数据库；连接信息变化后请重新查询' : '只显示当前账号实际可见的普通数据库';
+  $('#pluginDatabase').disabled = false;
+  $('#pluginDatabase').dataset.selectionSource = database ? 'saved' : 'manual';
+  $('#pluginDatabaseOptions').innerHTML = database
+    ? `<option value="${escapeAttr(database)}"></option>`
+    : '';
+  $('#databaseHint').textContent = database ? '当前已保存数据库；连接信息变化后请重新加载并验证' : '可加载当前账号可见数据库，也可手工输入准确名称';
   state.databaseCredentialRevision = 0;
   $('#pluginRedisDb').value = plugin?.target?.db ?? 0;
   $('#pluginUsername').value = plugin?.auth?.username ?? '';
@@ -2527,11 +2530,9 @@ function invalidateDatabaseDiscovery() {
   $('#queryDatabases').disabled = !state.pluginEditSession?.editSessionId;
   $('#queryDatabases').textContent = '加载数据库';
   $('#savePlugin').disabled = false;
-  databaseSelect.innerHTML = selectedDatabase
-    ? `<option value="${escapeAttr(selectedDatabase)}">${escapeHtml(selectedDatabase)}</option>`
-    : '<option value="">连接信息已变化，请重新查询</option>';
+  $('#pluginDatabaseOptions').innerHTML = '';
   databaseSelect.value = selectedDatabase;
-  databaseSelect.disabled = !selectedDatabase;
+  databaseSelect.disabled = false;
   $('#databaseHint').textContent = selectedDatabase
     ? '当前数据库已保留；连接信息已变化，请重新查询并验证'
     : '数据库列表已失效，请重新查询';
@@ -2585,14 +2586,12 @@ async function queryDatabases() {
     const databaseSelect = $('#pluginDatabase');
     const selectedDatabase = databaseSelect.value;
     const selectionListed = Boolean(selectedDatabase) && databases.includes(selectedDatabase);
-    const retainedSelection = selectedDatabase && !selectionListed
-      ? `<option value="${escapeAttr(selectedDatabase)}">${escapeHtml(selectedDatabase)}（当前选择）</option>`
-      : '';
-    databaseSelect.innerHTML = databases.length
-      ? `<option value="">请选择数据库</option>${retainedSelection}${databases.map((name) => `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`).join('')}`
-      : `<option value="">没有可选择的数据库</option>${retainedSelection}`;
+    $('#pluginDatabaseOptions').innerHTML = databases
+      .map((name) => `<option value="${escapeAttr(name)}"></option>`)
+      .join('');
     databaseSelect.value = selectedDatabase;
-    databaseSelect.disabled = !selectedDatabase && !databases.length;
+    databaseSelect.disabled = false;
+    if (selectedDatabase && selectionListed) databaseSelect.dataset.selectionSource = 'discovered';
     state.databaseDiscoverySignature = requestedSignature;
     const discoverySummary = databases.length
       ? `已查询到 ${databases.length} 个数据库${result.truncated ? '（仅显示前 200 个）' : ''}`
@@ -2607,6 +2606,15 @@ async function queryDatabases() {
         operationId:error.details?.operationId ?? validation.operationId,
         configDigest:error.details?.configDigest ?? validation.configDigest,
       });
+    }
+    if (error.code === 'MYSQL_DATABASE_LIST_FORBIDDEN' && error.details?.manualInputAllowed === true
+      && queryGeneration === state.databaseQueryGeneration
+      && dialogGeneration === state.credentialProbeGeneration
+      && pluginFormVisible()
+      && scopeMatches(requestedScope)) {
+      $('#pluginDatabase').disabled = false;
+      $('#databaseHint').textContent = '当前账号无权加载列表，请手工输入准确数据库名称并点击“验证所选数据库”';
+      return;
     }
     if (queryGeneration === state.databaseQueryGeneration
       && dialogGeneration === state.credentialProbeGeneration
@@ -2651,8 +2659,9 @@ function renderPluginForm() {
   $('#validateServerDraft').classList.toggle('hidden',type !== 'server');
   $('#validateMysqlDatabase').classList.toggle('hidden',type !== 'mysql');
   $('#validateRedisDraft').classList.toggle('hidden',type !== 'redis');
+  $('#validateTlsDraft').classList.toggle('hidden',!data || $('#pluginTls').value === 'disabled');
   const hasSession = Boolean(state.pluginEditSession?.editSessionId);
-  for (const id of ['validateServerDraft','validateMysqlDatabase','validateRedisDraft','queryDatabases']) {
+  for (const id of ['validateServerDraft','validateMysqlDatabase','validateRedisDraft','validateTlsDraft','queryDatabases']) {
     const button = $(`#${id}`);
     if (button && !button.classList.contains('hidden')) button.disabled = !hasSession;
   }
@@ -2804,51 +2813,61 @@ function failedDiagnostic(diagnostic, error) {
       return check;
     });
   }
-  return {...diagnostic,status:'failure',checks,totalElapsedMs:details?.totalElapsedMs,summary:error?.message ?? '连接检查失败。'};
+  return {
+    ...diagnostic,
+    status:'failure',
+    errorCode:error?.code ?? 'CONNECTION_FAILED',
+    checks,
+    totalElapsedMs:details?.totalElapsedMs,
+    summary:error?.message ?? '连接检查失败。',
+  };
 }
 
-function observedHostKey(source) {
-  const code = source?.code ?? source?.reason ?? source?.error?.code;
-  const fingerprint = source?.details?.fingerprint ?? source?.error?.details?.fingerprint;
-  return code === 'SSH_HOST_KEY_CONFIRM_REQUIRED' && fingerprint ? fingerprint : null;
+function tlsDisableAvailable(diagnostic = state.pluginFormDiagnostic) {
+  return ['TLS_NOT_SUPPORTED','MYSQL_TLS_NOT_SUPPORTED'].includes(diagnostic?.errorCode);
 }
 
-async function confirmAndSaveObservedHostKey(plugin, source) {
-  const fingerprint = observedHostKey(source);
-  if (!fingerprint || plugin?.pluginType !== 'server') return false;
-  if (!plugin.projectId || !plugin.environmentId || !plugin.pluginInstanceId || !plugin.target?.host || !Number.isFinite(Number(plugin.target?.port)) || !Number.isFinite(Number(plugin.revision))) {
-    throw new Error('无法确认服务器指纹：完整插件配置尚未加载。');
-  }
-  const accepted = confirm(`首次连接需要确认服务器身份。\n\n主机：${plugin.target.host}:${plugin.target.port}\n指纹：${fingerprint}\n\n确认信任并保存此指纹吗？`);
-  if (!accepted) return false;
-  const value = await call(api.updatePlugin({
-    projectId:plugin.projectId,
-    environmentId:plugin.environmentId,
-    pluginInstanceId:plugin.pluginInstanceId,
-    patch:{target:{...plugin.target,hostKeyFingerprint:fingerprint}},
-    expectedRevision:plugin.revision,
-  }));
-  Object.assign(plugin,value);
+function disableTlsInCurrentDraft() {
+  if (!tlsDisableAvailable()) return false;
+  const tls = $('#pluginTls');
+  if (!tls || tls.value === 'disabled') return false;
+  if (!confirm('仅将当前草稿的 TLS 调整为“关闭”？正式配置在保存前不会改变。')) return false;
+  tls.value = 'disabled';
+  markPluginDraftChanged();
+  renderPluginForm();
+  renderPluginFormDiagnostic();
   return true;
 }
 
-async function fullPluginForRuntimeAction(resource,scope) {
-  if (resource?.projectId === scope.projectId
-    && resource?.environmentId === scope.environmentId
-    && resource?.pluginInstanceId === scope.pluginInstanceId
-    && resource?.target?.host
-    && Number.isFinite(Number(resource.revision))) return resource;
-  const plugins = await call(api.listPlugins({projectId:scope.projectId,environmentId:scope.environmentId}));
-  const plugin = plugins.find((item) => item.pluginInstanceId === scope.pluginInstanceId);
-  if (!plugin) throw new Error('目标插件已经不存在，请刷新后重试。');
-  return plugin;
+function connectionHostKeyChallenge(scope,source = null) {
+  const actions = [
+    ...(source?.actions ?? []),
+    ...(state.connectionActionsByScope?.[scopeKey(scope.projectId,scope.environmentId)] ?? []),
+  ];
+  const action = actions.find((item) => (
+    item?.code === 'SSH_HOST_KEY_CONFIRM_REQUIRED'
+    && (item.rootPluginInstanceId === scope.pluginInstanceId
+      || item.affectedPluginInstanceIds?.includes(scope.pluginInstanceId))
+    && item.details?.hostKeyChallenge
+  ));
+  return action?.details?.hostKeyChallenge ?? null;
 }
 
-async function confirmRuntimeObservedHostKey(resource,source,scope,operation) {
-  if (!observedHostKey(source)) return false;
-  const plugin = await fullPluginForRuntimeAction(resource,scope);
-  if (operation && !runtimeOperationIsLatest(operation)) return false;
-  return confirmAndSaveObservedHostKey(plugin,source);
+async function confirmRuntimeHostKeyChallenge(scope,operation,source = null) {
+  const challenge = connectionHostKeyChallenge(scope,source);
+  if (!challenge) return null;
+  if (operation && !runtimeOperationIsLatest(operation)) return null;
+  const algorithm = challenge.algorithm ? `\n算法：${challenge.algorithm}` : '';
+  const accepted = confirm(`首次连接需要确认服务器身份。\n\n主机：${challenge.host}:${challenge.port}${algorithm}\n指纹：${challenge.fingerprint}\n\n确认信任并保存此指纹吗？`);
+  if (!accepted) return null;
+  if (operation && !runtimeOperationIsLatest(operation)) return null;
+  return call(api.confirmConnectionChallenge({
+    challengeId:challenge.challengeId,
+    planId:challenge.planId,
+    operationId:challenge.operationId,
+    expectedRevision:challenge.expectedRevision,
+    decision:'trust-host-key',
+  }));
 }
 
 function renderPluginFormDiagnostic() {
@@ -2856,9 +2875,13 @@ function renderPluginFormDiagnostic() {
   if (!host) return;
   const diagnostic = state.pluginFormDiagnostic;
   host.classList.toggle('hidden',!diagnostic);
-  host.innerHTML = diagnostic ? `<div class="plugin-form-diagnostic-head"><div><span class="connection-section-eyebrow">临时验证</span><strong>${escapeHtml(diagnostic.title ?? '连接验证')}</strong></div></div>${renderDiagnosticContent(diagnostic.plugin,diagnostic)}` : '';
+  const tlsAction = tlsDisableAvailable(diagnostic)
+    ? '<div class="plugin-form-diagnostic-action"><button id="disableTlsInDraft" type="button" class="button">在当前草稿关闭 TLS</button></div>'
+    : '';
+  host.innerHTML = diagnostic ? `<div class="plugin-form-diagnostic-head"><div><span class="connection-section-eyebrow">临时验证</span><strong>${escapeHtml(diagnostic.title ?? '连接验证')}</strong></div></div>${renderDiagnosticContent(diagnostic.plugin,diagnostic)}${tlsAction}` : '';
+  $('#disableTlsInDraft')?.addEventListener('click',disableTlsInCurrentDraft);
   const pending = Boolean(activePluginValidation());
-  for (const id of ['validateServerDraft','validateMysqlDatabase','validateRedisDraft']) {
+  for (const id of ['validateServerDraft','validateMysqlDatabase','validateRedisDraft','validateTlsDraft']) {
     const button = $(`#${id}`);
     if (!button || button.classList.contains('hidden')) continue;
     setElementBusy(button,pending);
@@ -2915,7 +2938,7 @@ async function validatePluginDraftAction(action = 'validate') {
   session.validations[purpose] = active;
   state.pluginFormDiagnostic = {
     ...createPendingDiagnostic(plugin,requestId),plugin,testedSignature,purpose,
-    title:input.pluginType === 'server' ? 'SSH 验证' : input.pluginType === 'mysql' ? '所选数据库验证' : 'Redis 验证',
+    title:purpose === 'tls-probe' ? 'TLS 探测' : input.pluginType === 'server' ? 'SSH 验证' : input.pluginType === 'mysql' ? '所选数据库验证' : 'Redis 验证',
   };
   renderPluginFormDiagnostic();
   try {
@@ -3436,6 +3459,7 @@ async function handleOverviewPluginRuntimeAction(action,projectId,environmentId,
   renderRuntimeOperationSurfaces(projectId,environmentId);
   try {
     let result;
+    let completionWarning = null;
     const request = (intent) => api.requestConnectionIntent({
       ...scope,
       requestId:operation.requestId,
@@ -3445,20 +3469,37 @@ async function handleOverviewPluginRuntimeAction(action,projectId,environmentId,
       source:'renderer-plugin',
     });
     if (action === 'trust-host') {
-      const currentRuntime = state.runtimeByScope[scopeKey(projectId,environmentId)] ?? {};
-      if (!await confirmRuntimeObservedHostKey(resource,currentRuntime.plugins?.[pluginInstanceId],scope,operation)) return;
-      if (!runtimeOperationIsLatest(operation)) return;
-      renewRuntimeConnectionIntent(operation);
-      result = await call(request('connect'));
+      if (!connectionHostKeyChallenge(scope)) throw new Error('服务器指纹确认已经失效，请重新连接以获取新的指纹。');
+      const confirmation = await confirmRuntimeHostKeyChallenge(scope,operation);
+      if (!confirmation || !runtimeOperationIsLatest(operation)) return;
+      if (confirmation.plugin) {
+        Object.assign(resource,confirmation.plugin);
+        const loaded = state.plugins.find((item) => item.pluginInstanceId === pluginInstanceId);
+        if (loaded && loaded !== resource) Object.assign(loaded,confirmation.plugin);
+      }
+      completionWarning = confirmation.runtimeWarning?.message ?? confirmation.persistenceWarning?.message ?? null;
+      result = confirmation.connectionPlan ?? {
+        outcome:'needs-action',actions:[],
+        snapshot:await call(api.environmentStatus({projectId,environmentId})),
+      };
     } else {
       const intent = ['disconnect','cancel','retry'].includes(action) ? action : 'connect';
       result = await call(request(intent));
       if (!runtimeOperationIsLatest(operation)) return;
-      let runtime = result.snapshot;
-      if (action !== 'disconnect' && await confirmRuntimeObservedHostKey(resource,runtime.plugins?.[pluginInstanceId],scope,operation)) {
-        if (!runtimeOperationIsLatest(operation)) return;
-        renewRuntimeConnectionIntent(operation);
-        result = await call(request('connect'));
+      if (action !== 'disconnect' && connectionHostKeyChallenge(scope,result)) {
+        const confirmation = await confirmRuntimeHostKeyChallenge(scope,operation,result);
+        if (confirmation && runtimeOperationIsLatest(operation)) {
+          if (confirmation.plugin) {
+            Object.assign(resource,confirmation.plugin);
+            const loaded = state.plugins.find((item) => item.pluginInstanceId === pluginInstanceId);
+            if (loaded && loaded !== resource) Object.assign(loaded,confirmation.plugin);
+          }
+          completionWarning = confirmation.runtimeWarning?.message ?? confirmation.persistenceWarning?.message ?? null;
+          result = confirmation.connectionPlan ?? {
+            outcome:'needs-action',actions:[],
+            snapshot:await call(api.environmentStatus({projectId,environmentId})),
+          };
+        }
       }
     }
     if (!runtimeOperationIsLatest(operation)) return;
@@ -3469,7 +3510,8 @@ async function handleOverviewPluginRuntimeAction(action,projectId,environmentId,
     acceptRuntimeSnapshot(normalizedRuntime);
     const latestRuntime = state.runtimeByScope[scopeKey(projectId,environmentId)] ?? normalizedRuntime;
     const phase = latestRuntime.plugins?.[pluginInstanceId]?.phase ?? 'disconnected';
-    if (action === 'disconnect') toast(`${resource.displayName}已断开。`);
+    if (completionWarning) toast(completionWarning,true);
+    else if (action === 'disconnect') toast(`${resource.displayName}已断开。`);
     else toast(`${resource.displayName}：${phase === 'connected' ? '已连接' : '连接失败'}`,phase !== 'connected');
     loadProjectOverviewActivity(projectId,{force:true}).catch(() => undefined);
   } finally {
@@ -4157,6 +4199,10 @@ $('#pluginAuthType').addEventListener('change', () => {
 $('#pluginTransport').addEventListener('change', () => transitionPluginForm(renderPluginForm));
 $('#pluginUplink').addEventListener('change', () => transitionPluginForm(renderPluginForm));
 $('#queryDatabases').addEventListener('click', () => queryDatabases().catch(showPluginFormError));
+$('#pluginDatabase').addEventListener('input', () => {
+  $('#pluginDatabase').dataset.selectionSource = 'manual';
+  markPluginDraftChanged();
+});
 $('#replacePrimaryCredential').addEventListener('click', () => {
   toggleCredentialReplacement('pluginPassword');
   state.databaseCredentialRevision += 1;
@@ -4171,6 +4217,7 @@ $('#replaceProxyCredential').addEventListener('click', () => {
   $(`#${id}`).addEventListener(id === 'pluginHost' || id === 'pluginUsername' || id === 'pluginVpnAlias' ? 'input' : 'change', () => {
     invalidateDatabaseDiscovery();
     markPluginDraftChanged();
+    if (id === 'pluginTls') renderPluginForm();
   });
 });
 ['pluginPassword','pluginProxyPassword'].forEach((id) => {
@@ -4288,6 +4335,7 @@ $('#saveAndConnectPlugin').addEventListener('click', (event) => submitPluginForm
 $('#validateServerDraft').addEventListener('click', () => validatePluginDraftAction('validate').catch(showPluginFormError));
 $('#validateMysqlDatabase').addEventListener('click', () => validatePluginDraftAction('validate').catch(showPluginFormError));
 $('#validateRedisDraft').addEventListener('click', () => validatePluginDraftAction('validate').catch(showPluginFormError));
+$('#validateTlsDraft').addEventListener('click', () => validatePluginDraftAction('tls').catch(showPluginFormError));
 $('#cancelPluginValidation').addEventListener('click', () => cancelPluginValidationAction().catch(showPluginFormError));
 $('#cancelPluginEdit').addEventListener('click', async () => {
   if (!await mayLeaveCurrentScope()) return;

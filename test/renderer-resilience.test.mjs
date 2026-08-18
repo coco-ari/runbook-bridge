@@ -96,6 +96,7 @@ function databaseRendererHarness(validatePluginDraft,{selectedDatabase = 'orders
     pluginTransport:{value:'direct'},pluginProvider:{value:''},pluginVpnAlias:{value:''},pluginTls:{value:'disabled'},
     pluginPassword:{value:'',dataset:{credentialState:'empty'}},
     pluginDatabase:selectElement(selectedDatabase ? ['',selectedDatabase] : [''],selectedDatabase),
+    pluginDatabaseOptions:{innerHTML:''},
     databaseHint:{textContent:''},queryDatabases:busyElement('加载数据库'),savePlugin:busyElement(),
   };
   const state = {
@@ -154,7 +155,7 @@ test('database candidate refresh preserves the current draft selection for empty
 
   await vm.runInContext('queryDatabases()',context);
   assert.equal(elements.pluginDatabase.value,'orders');
-  assert.match(elements.pluginDatabase.innerHTML,/analytics/);
+  assert.match(elements.pluginDatabaseOptions.innerHTML,/analytics/);
 });
 
 test('a single discovered database is not selected without an explicit user choice', async () => {
@@ -166,7 +167,25 @@ test('a single discovered database is not selected without an explicit user choi
 
   assert.equal(elements.pluginDatabase.value,'');
   assert.equal(elements.pluginDatabase.disabled,false);
-  assert.match(elements.pluginDatabase.innerHTML,/analytics/);
+  assert.match(elements.pluginDatabaseOptions.innerHTML,/analytics/);
+});
+
+test('database list permission denial preserves manual input and does not block saving', async () => {
+  const {context,elements} = databaseRendererHarness(async () => ({
+    ok:false,
+    error:{
+      code:'MYSQL_DATABASE_LIST_FORBIDDEN',
+      message:'database list denied',
+      details:{manualInputAllowed:true},
+    },
+  }),{selectedDatabase:'manual_orders',savedDatabase:'orders'});
+
+  await vm.runInContext('queryDatabases()',context);
+
+  assert.equal(elements.pluginDatabase.value,'manual_orders');
+  assert.equal(elements.pluginDatabase.disabled,false);
+  assert.equal(elements.savePlugin.disabled,false);
+  assert.match(elements.databaseHint.textContent,/手工输入/);
 });
 
 test('database discovery failure preserves the selected database and restores form actions', async () => {
@@ -200,7 +219,7 @@ test('field invalidation cancels database discovery locally and ignores its late
   await pending;
 
   assert.equal(elements.pluginDatabase.value,'orders');
-  assert.doesNotMatch(elements.pluginDatabase.innerHTML,/late_database/);
+  assert.doesNotMatch(elements.pluginDatabaseOptions.innerHTML,/late_database/);
   assert.match(elements.databaseHint.textContent,/重新查询/);
   assert.equal(state.databaseDiscoverySignature,null);
 });
@@ -212,6 +231,31 @@ test('plugin-specific validation actions map to dedicated backend purposes', () 
   assert.equal(vm.runInContext("pluginValidationPurpose('mysql','discover')",context),'resource-discovery');
   assert.equal(vm.runInContext("pluginValidationPurpose('mysql','validate')",context),'resource-access');
   assert.equal(vm.runInContext("pluginValidationPurpose('redis','validate')",context),'resource-access');
+});
+
+test('only an explicit TLS unsupported result can offer to disable TLS in the current draft', () => {
+  const tls = {value:'verifyIdentity'};
+  let confirmed = true;
+  let changed = 0;
+  const context = vm.createContext({
+    state:{pluginFormDiagnostic:{errorCode:'TLS_CERTIFICATE_INVALID'}},
+    $:(selector) => selector === '#pluginTls' ? tls : null,
+    confirm:() => confirmed,
+    markPluginDraftChanged:() => { changed += 1; },
+    renderPluginForm:() => undefined,
+    renderPluginFormDiagnostic:() => undefined,
+  });
+  install(context,['tlsDisableAvailable','disableTlsInCurrentDraft']);
+  assert.equal(vm.runInContext('disableTlsInCurrentDraft()',context),false);
+  assert.equal(tls.value,'verifyIdentity');
+  context.state.pluginFormDiagnostic.errorCode = 'MYSQL_TLS_NOT_SUPPORTED';
+  confirmed = false;
+  assert.equal(vm.runInContext('disableTlsInCurrentDraft()',context),false);
+  assert.equal(tls.value,'verifyIdentity');
+  confirmed = true;
+  assert.equal(vm.runInContext('disableTlsInCurrentDraft()',context),true);
+  assert.equal(tls.value,'disabled');
+  assert.equal(changed,1);
 });
 
 test('validation correlation rejects a late session, generation, digest, operation, or sequence', () => {
@@ -773,23 +817,36 @@ test('draft SSH validation cannot persist an observed fingerprint through the ge
   assert.doesNotMatch(source,/confirmAndSaveObservedHostKey/);
 });
 
-test('non-current preview resources load the full plugin before host-key confirmation', async () => {
-  let listedScope = null;
-  let confirmedPlugin = null;
-  const full = {projectId:'project',environmentId:'env',pluginInstanceId:'server',pluginType:'server',revision:4,target:{host:'example.test',port:22}};
+test('formal host-key confirmation consumes the operation-bound challenge without a second connection plan', async () => {
+  let confirmationPayload = null;
+  const challenge = {
+    challengeId:'challenge-1',planId:'plan-1',operationId:'operation-1',expectedRevision:4,
+    projectId:'project',environmentId:'env',pluginInstanceId:'server',
+    host:'example.test',port:22,algorithm:'ssh-ed25519',fingerprint:'SHA256:test',
+  };
   const context = vm.createContext({
-    api:{listPlugins:async (scope) => { listedScope = scope; return {ok:true,data:[full]}; }},
-    observedHostKey:() => 'SHA256:test',
+    state:{connectionActionsByScope:{'project/env':[{code:'SSH_HOST_KEY_CONFIRM_REQUIRED',rootPluginInstanceId:'server',affectedPluginInstanceIds:['server'],details:{hostKeyChallenge:challenge}}]}},
+    api:{
+      confirmConnectionChallenge:async (payload) => {
+        confirmationPayload = payload;
+        return {ok:true,data:{committed:true,connectionPlan:{planId:'plan-1',outcome:'started'}}};
+      },
+      requestConnectionIntent:async () => { throw new Error('must not create a second connection plan'); },
+      updatePlugin:async () => { throw new Error('must not use generic plugin update'); },
+    },
+    confirm:() => true,
     runtimeOperationIsLatest:() => true,
-    confirmAndSaveObservedHostKey:async (plugin) => { confirmedPlugin = plugin; return true; },
   });
-  install(context,['call','fullPluginForRuntimeAction','confirmRuntimeObservedHostKey']);
-  context.preview = {pluginInstanceId:'server',pluginType:'server',displayName:'Preview only'};
+  install(context,['call','scopeKey','connectionHostKeyChallenge','confirmRuntimeHostKeyChallenge']);
   context.scope = {projectId:'project',environmentId:'env',pluginInstanceId:'server'};
-  const confirmed = await vm.runInContext('confirmRuntimeObservedHostKey(preview,{reason:"SSH_HOST_KEY_CONFIRM_REQUIRED"},scope,{})',context);
-  assert.equal(confirmed,true);
-  assert.equal(JSON.stringify(listedScope),JSON.stringify({projectId:'project',environmentId:'env'}));
-  assert.equal(confirmedPlugin,full);
+  const result = await vm.runInContext('confirmRuntimeHostKeyChallenge(scope,{})',context);
+  assert.equal(result.connectionPlan.planId,'plan-1');
+  assert.deepEqual({...confirmationPayload},{
+    challengeId:'challenge-1',planId:'plan-1',operationId:'operation-1',
+    expectedRevision:4,decision:'trust-host-key',
+  });
+  const source = functionSource('confirmRuntimeHostKeyChallenge');
+  assert.doesNotMatch(source,/requestConnectionIntent|updatePlugin/u);
 });
 
 test('runtime status rendering is coalesced to one animation frame', () => {

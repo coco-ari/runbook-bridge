@@ -590,6 +590,73 @@ export function registerV2Ipc(ipcMain, services) {
     return store.reorderEnvironments(projectId, environmentIds, expectedRevision);
   });
   handle('connection-intent', (payload) => requestConnectionIntent(payload));
+  handle('connection-challenge-confirm', async (payload = {}) => {
+    if (typeof connectionManager.validateConnectionChallenge !== 'function'
+      || typeof connectionManager.resumeConnectionChallenge !== 'function') {
+      throw new AppError('CONNECTION_CHALLENGE_UNAVAILABLE','连接确认服务不可用。');
+    }
+    const initial = await connectionManager.validateConnectionChallenge(payload);
+    assertProjectAvailable(initial.projectId);
+    return enqueuePluginMutation(initial.projectId,initial.environmentId,async () => {
+      const challenge = await connectionManager.validateConnectionChallenge(payload);
+      const before = await store.getPlugin?.(
+        challenge.projectId,challenge.environmentId,challenge.pluginInstanceId,
+      );
+      const target = before?.target ?? {host:challenge.host,port:challenge.port};
+      const trustPayload = {
+        projectId:challenge.projectId,
+        environmentId:challenge.environmentId,
+        pluginInstanceId:challenge.pluginInstanceId,
+        expectedRevision:challenge.expectedRevision,
+        patch:{target:{...target,hostKeyFingerprint:challenge.fingerprint}},
+        credentialIntent:'rebind-existing',
+      };
+      const prepared = await preparePluginUpdate(trustPayload,'connection');
+      if (prepared.before.pluginType !== 'server'
+        || prepared.before.target?.host !== challenge.host
+        || Number(prepared.before.target?.port) !== challenge.port) {
+        throw new AppError('CONNECTION_CHALLENGE_STALE','连接目标已经变化，请重新连接。');
+      }
+
+      let persistenceWarning = null;
+      let runtimeWarning = null;
+      let plugin;
+      const committed = await commitConnectionPluginUpdate(prepared,trustPayload);
+      ({persistenceWarning = null,runtimeWarning = null,...plugin} = committed);
+      await Promise.resolve(store.appendAudit?.(challenge.projectId,{
+        type:'server-host-key-trusted',
+        projectId:challenge.projectId,
+        environmentId:challenge.environmentId,
+        pluginInstanceId:challenge.pluginInstanceId,
+        pluginNameSnapshot:plugin.displayName,
+        planId:challenge.planId,
+        operationId:challenge.operationId,
+        algorithm:challenge.algorithm,
+        fingerprint:challenge.fingerprint,
+        actor:'user',
+        result:'success',
+      })).catch((error) => { persistenceWarning ??= toPublicError(error); });
+
+      let connectionPlan = null;
+      try {
+        connectionPlan = await connectionManager.resumeConnectionChallenge(payload,{plugin});
+        runtimeWarning ??= restoreRuntimeWarning(connectionPlan);
+      } catch (error) {
+        const value = toPublicError(error);
+        runtimeWarning ??= {
+          code:value.code,
+          message:`配置和密码已保存，但连接失败。 ${value.message}`,
+        };
+      }
+      return {
+        committed:true,
+        plugin:typeof store.publicPlugin === 'function' ? store.publicPlugin(plugin) : plugin,
+        persistenceWarning,
+        connectionPlan,
+        runtimeWarning,
+      };
+    });
+  });
   handle('environment-connect', ({ projectId, environmentId, expectedRevision, secretsByPlugin }) => legacyConnectionSnapshot({
     requestId:crypto.randomUUID(),projectId,environmentId,expectedRevision,secretsByPlugin,
     intent:'connect',source:'legacy-environment',

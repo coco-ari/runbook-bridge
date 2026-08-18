@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 import { AppError } from './errors.mjs';
+import { pluginAgentFingerprint, pluginConnectionFingerprint } from './plugin-change-classifier.mjs';
+import { getPluginConnectionAdapter } from './plugin-connection-adapters.mjs';
 
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
 
@@ -25,13 +27,17 @@ export class EnvironmentContextManager {
     ]);
     const pluginBindings = Object.fromEntries(plugins.map((plugin) => [
       plugin.pluginInstanceId,
-      this.workspaceStore.pluginBindingHash(plugin),
+      {
+        connectionFingerprint:pluginConnectionFingerprint(plugin),
+        agentFingerprint:pluginAgentFingerprint(plugin),
+        resourceScope:getPluginConnectionAdapter(plugin.pluginType).resourceScope(plugin),
+      },
     ]));
     const bindingHash = crypto.createHash('sha256').update(JSON.stringify({
       projectId,
       environmentId,
-      environmentRevision: environment.revision,
       runbookHash: runbook.hash,
+      pluginBindings,
     })).digest('hex');
     return { environment, runbook, plugins, pluginBindings, bindingHash };
   }
@@ -83,7 +89,7 @@ export class EnvironmentContextManager {
     if (!plugin) {
       throw new AppError('CAPABILITY_NOT_GRANTED', '该插件不在当前环境上下文中。');
     }
-    if (current.context.pluginBindings[pluginInstanceId] !== current.pluginBindings[pluginInstanceId]) {
+    if (JSON.stringify(current.context.pluginBindings[pluginInstanceId]) !== JSON.stringify(current.pluginBindings[pluginInstanceId])) {
       throw new AppError('CONTEXT_STALE', '目标插件连接配置已变化，请重新打开环境。', { pluginInstanceId });
     }
     return { context:current.context, plugin, runbook:current.runbook, environment:current.environment };

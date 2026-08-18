@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('aiOps', {
     deleteEnvironment: (payload) => ipcRenderer.invoke('v2:environment-delete', payload),
     reorderEnvironments: (payload) => ipcRenderer.invoke('v2:environment-reorder', payload),
     requestConnectionIntent,
+    confirmConnectionChallenge: (payload) => ipcRenderer.invoke('v2:connection-challenge-confirm',payload),
     connectEnvironment: (payload) => legacyConnectionSnapshot({...payload,intent:'connect',source:'legacy-environment'}),
     retryEnvironment: (payload) => legacyConnectionSnapshot({...payload,intent:'retry',source:'legacy-environment'}),
     disconnectEnvironment: (payload) => legacyConnectionSnapshot({...payload,intent:'disconnect',source:'legacy-environment'}),

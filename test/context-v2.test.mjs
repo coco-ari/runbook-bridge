@@ -18,6 +18,76 @@ test('environment context binds runbook and exact plugin configuration', async (
   await assert.rejects(()=>manager.verify('p1','e1','db1',opened.contextToken,'test'),(error)=>error.code==='CONTEXT_STALE');
 });
 
+test('Agent context ignores record-only metadata but binds connection, resource, and Agent fingerprints', async () => {
+  let plugin = {
+    projectId:'p1',environmentId:'e1',pluginInstanceId:'db1',pluginType:'mysql',displayName:'Orders',revision:1,
+    target:{host:'db.internal',port:3306,database:'orders',addressFamily:'ipv4Only'},
+    auth:{username:'reader'},transport:{kind:'direct'},tls:{mode:'required'},
+    policy:{select:'auto'},limits:{maxRows:100,timeoutMs:5000},
+  };
+  let environmentRevision = 1;
+  const store = {
+    getEnvironment:async () => ({projectId:'p1',environmentId:'e1',revision:environmentRevision}),
+    readRunbook:async () => ({content:'runbook',hash:'runbook-1',empty:false}),
+    listPlugins:async () => [plugin],
+    pluginBindingHash:() => { throw new Error('legacy vault binding must not define Agent context'); },
+  };
+  const manager = new EnvironmentContextManager(store);
+  const metadataContext = await manager.open('p1','e1','agent-a');
+
+  environmentRevision += 1;
+  plugin = {...plugin,displayName:'Orders renamed',revision:2};
+  assert.equal(
+    (await manager.verify('p1','e1','db1',metadataContext.contextToken,'agent-a')).plugin.displayName,
+    'Orders renamed',
+  );
+
+  plugin = {...plugin,target:{...plugin.target,database:'orders_archive'},revision:3};
+  await assert.rejects(
+    () => manager.verify('p1','e1','db1',metadataContext.contextToken,'agent-a'),
+    (error) => error.code === 'CONTEXT_STALE',
+  );
+
+  const agentContext = await manager.open('p1','e1','agent-a');
+  plugin = {...plugin,policy:{select:'confirm'},revision:4};
+  await assert.rejects(
+    () => manager.verify('p1','e1','db1',agentContext.contextToken,'agent-a'),
+    (error) => error.code === 'CONTEXT_STALE',
+  );
+});
+
+test('repeated Agent calls return connect-and-continue without starting network work or allowing replay', async () => {
+  const plugin = {
+    projectId:'p1',environmentId:'e1',pluginInstanceId:'db1',pluginType:'mysql',displayName:'Orders',
+    target:{database:'orders'},policy:{},limits:{},
+  };
+  let connectCalls = 0;
+  const service = new V2Service({
+    workspaceStore:{getPlugin:async()=>plugin,appendAudit:async()=>undefined},
+    contextManager:{verify:async()=>({plugin,environment:{name:'Production'},runbook:{content:''}})},
+    connectionManager:{
+      snapshot:() => ({plugins:{db1:{phase:'disconnected',assessment:{configuration:{state:'complete'},resourceScope:{state:'selected-unverified'}}}}}),
+      requestConnectionIntent:async () => { connectCalls += 1; },
+    },
+  });
+
+  const invoke = () => service.invoke({
+    projectId:'p1',environmentId:'e1',pluginInstanceId:'db1',
+    contextToken:'context',clientInstanceId:'agent-a',requestId:'old-agent-request',
+  },'describe',{});
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await assert.rejects(
+      invoke,
+      (error) => error.code === 'PLUGIN_RESOURCE_VALIDATION_REQUIRED'
+        && error.details?.action === 'connect-and-continue'
+        && error.details?.replayAllowed === false
+        && error.details?.contextRefreshRequired === true
+        && JSON.stringify(error.details?.requiredPluginInstanceIds) === JSON.stringify(['db1']),
+    );
+  }
+  assert.equal(connectCalls,0);
+});
+
 test('Agent can add one disconnected plugin without credentials or network activity', async () => {
   let createdInput; let createdOptions; let changed = false; let invalidated = false; const audits = [];
   const plugin = { projectId:'p1', environmentId:'e1', pluginInstanceId:'orders-db', pluginType:'mysql', displayName:'订单库', configState:'ready', revision:1, target:{ database:'orders' }, policy:{}, limits:{} };

@@ -1274,7 +1274,9 @@ test('a timed-out MySQL attempt cannot overwrite or close the retry session and 
   const makeConnection = (name) => {
     const connection = {
       name,destroyed:false,ended:false,
-      query:async () => [[{ai_ops_health:1}]],
+      query:async ({sql}) => sql === 'SELECT DATABASE() AS ai_ops_database'
+        ? [[{ai_ops_database:'app'}]]
+        : [[{ai_ops_health:1}]],
       end:async () => { connection.ended = true; },
       destroy:() => { connection.destroyed = true; },
       on:() => undefined,
@@ -1341,7 +1343,9 @@ test('a permanently pending MySQL graceful disconnect is force-owned and a later
     createCalls += 1;
     const connection = {
       name:createCalls === 1 ? 'closing-A' : 'reconnect-C',destroyed:false,
-      query:async () => [[{ai_ops_health:1}]],on:() => undefined,
+      query:async ({sql}) => sql === 'SELECT DATABASE() AS ai_ops_database'
+        ? [[{ai_ops_database:'app'}]]
+        : [[{ai_ops_health:1}]],on:() => undefined,
       destroy:() => { connection.destroyed = true; },
       end:createCalls === 1 ? async () => new Promise(() => undefined) : async () => undefined,
     };

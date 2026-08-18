@@ -66,7 +66,143 @@ test('edit IPC methods bind every request to its renderer owner and expose match
   for (const method of [
     'preparePluginConnectionEdit','beginPluginConnectionEdit','validatePluginDraft',
     'cancelPluginValidation','savePluginConnectionEdit','cancelPluginConnectionEdit',
+    'confirmConnectionChallenge',
   ]) assert.match(preload,new RegExp(`${method}:`,'u'));
+});
+
+test('host-key challenge commits trust with saved credentials before resuming the original plan', async () => {
+  const before = {
+    projectId:'p1',environmentId:'e1',pluginInstanceId:'server',pluginType:'server',displayName:'Server',
+    revision:4,configState:'ready',target:{host:'server.internal',port:22,addressFamily:'ipv4Only'},
+    auth:{type:'password',username:'root'},transport:{kind:'direct'},
+  };
+  const after = {...before,revision:5,target:{...before.target,hostKeyFingerprint:'SHA256:observed'}};
+  const challenge = {
+    challengeId:'challenge-1',planId:'plan-1',operationId:'operation-1',
+    projectId:'p1',environmentId:'e1',pluginInstanceId:'server',expectedRevision:4,
+    generation:1,digest:'digest-1',host:'server.internal',port:22,
+    algorithm:'ssh-ed25519',fingerprint:'SHA256:observed',expiresAt:'2026-08-18T12:00:00.000Z',
+  };
+  const calls = {validate:0,prepare:0,commit:0,vault:0,resume:0,audit:0};
+  const handlers = ipcHarness({
+    workspaceStore:{
+      preparePluginConnectionUpdate:async (_projectId,_environmentId,_pluginInstanceId,patch,expectedRevision,credentialMutation) => {
+        calls.prepare += 1;
+        assert.equal(expectedRevision,4);
+        assert.equal(credentialMutation,'rebind-existing');
+        assert.equal(patch.target.hostKeyFingerprint,'SHA256:observed');
+        return {before,after,change:{kind:'session-affecting',credentialMutation}};
+      },
+      commitPluginSnapshot:async () => { calls.commit += 1; return after; },
+      restorePluginSnapshot:async () => before,
+      publicPlugin:(value) => value,
+      appendAudit:async (_projectId,entry) => {
+        calls.audit += 1;
+        assert.equal(entry.type,'server-host-key-trusted');
+        assert.equal(JSON.stringify(entry).includes('password'),false);
+      },
+    },
+    credentialVault:{
+      saveMerged:async (previous,next,secrets) => {
+        calls.vault += 1;
+        assert.equal(previous,before);
+        assert.equal(next,after);
+        assert.deepEqual(secrets,{});
+      },
+    },
+    connectionManager:{
+      on:() => undefined,
+      validateConnectionChallenge:async (payload) => {
+        calls.validate += 1;
+        assert.equal(payload.decision,'trust-host-key');
+        return challenge;
+      },
+      resumeConnectionChallenge:async (payload,options) => {
+        calls.resume += 1;
+        assert.equal(payload.challengeId,'challenge-1');
+        assert.deepEqual(options.plugin,after);
+        return {outcome:'started',planId:'plan-1',actions:[],snapshot:{phase:'connected',plugins:{}}};
+      },
+      beginConfigurationMutation:() => 'mutation-1',
+      endConfigurationMutation:() => true,
+      configurationChanged:async () => ({}),
+    },
+  });
+
+  const result = await handlers.get('v2:connection-challenge-confirm')({}, {
+    challengeId:'challenge-1',planId:'plan-1',operationId:'operation-1',
+    expectedRevision:4,decision:'trust-host-key',
+  });
+
+  assert.equal(result.ok,true);
+  assert.equal(result.data.committed,true);
+  assert.equal(result.data.plugin.revision,5);
+  assert.equal(result.data.connectionPlan.planId,'plan-1');
+  assert.equal(result.data.runtimeWarning,null);
+  assert.equal(calls.validate,2);
+  assert.deepEqual({...calls,validate:0},{validate:0,prepare:1,commit:1,vault:1,resume:1,audit:1});
+});
+
+test('host-key trust storage failure preserves retryability and post-commit connection failure is explicit', async () => {
+  const before = {
+    projectId:'p1',environmentId:'e1',pluginInstanceId:'server',pluginType:'server',displayName:'Server',
+    revision:4,configState:'ready',target:{host:'server.internal',port:22,addressFamily:'ipv4Only'},
+    auth:{type:'password',username:'root'},transport:{kind:'direct'},
+  };
+  const after = {...before,revision:5,target:{...before.target,hostKeyFingerprint:'SHA256:observed'}};
+  const challenge = {
+    challengeId:'challenge-1',planId:'plan-1',operationId:'operation-1',
+    projectId:'p1',environmentId:'e1',pluginInstanceId:'server',expectedRevision:4,
+    generation:1,digest:'digest-1',host:'server.internal',port:22,
+    algorithm:'ssh-ed25519',fingerprint:'SHA256:observed',expiresAt:'2026-08-18T12:00:00.000Z',
+  };
+  let failVault = true;
+  let resumeCalls = 0;
+  let rollbackCalls = 0;
+  const handlers = ipcHarness({
+    workspaceStore:{
+      preparePluginConnectionUpdate:async () => ({before,after,change:{kind:'session-affecting',credentialMutation:'rebind-existing'}}),
+      commitPluginSnapshot:async () => after,
+      restorePluginSnapshot:async () => { rollbackCalls += 1; return before; },
+      publicPlugin:(value) => value,
+      appendAudit:async () => undefined,
+    },
+    credentialVault:{saveMerged:async () => {
+      if (failVault) throw Object.assign(new Error('vault unavailable'),{code:'EIO'});
+    }},
+    connectionManager:{
+      on:() => undefined,
+      validateConnectionChallenge:async () => challenge,
+      resumeConnectionChallenge:async () => {
+        resumeCalls += 1;
+        return {
+          outcome:'needs-action',planId:'plan-1',
+          actions:[{code:'SSH_AUTH_FAILED',message:'saved credential rejected'}],
+          snapshot:{phase:'error',plugins:{}},
+        };
+      },
+      beginConfigurationMutation:() => 'mutation-1',
+      endConfigurationMutation:() => true,
+      configurationChanged:async () => ({}),
+    },
+  });
+  const payload = {
+    challengeId:'challenge-1',planId:'plan-1',operationId:'operation-1',
+    expectedRevision:4,decision:'trust-host-key',
+  };
+
+  const failed = await handlers.get('v2:connection-challenge-confirm')({},payload);
+  assert.equal(failed.ok,false);
+  assert.equal(resumeCalls,0,'a failed trust transaction must not consume the challenge');
+  assert.equal(rollbackCalls,1);
+
+  failVault = false;
+  const saved = await handlers.get('v2:connection-challenge-confirm')({},payload);
+  assert.equal(saved.ok,true);
+  assert.equal(saved.data.committed,true);
+  assert.equal(saved.data.connectionPlan.planId,'plan-1');
+  assert.match(saved.data.runtimeWarning.message,/配置和密码已保存，但连接失败/u);
+  assert.equal(resumeCalls,1);
 });
 
 function committedPlugin(overrides = {}) {

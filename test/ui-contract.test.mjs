@@ -34,6 +34,10 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(html, /id="validateServerDraft"/);
   assert.match(html, /id="validateMysqlDatabase"/);
   assert.match(html, /id="validateRedisDraft"/);
+  assert.match(html, /id="validateTlsDraft"/);
+  assert.match(html, /<input id="pluginDatabase"[^>]*list="pluginDatabaseOptions"/);
+  assert.match(html, /<datalist id="pluginDatabaseOptions"/);
+  assert.doesNotMatch(html, /<select id="pluginDatabase"/);
   assert.match(html, /id="pluginAdvancedSettings"/);
   assert.match(html, /id="primaryCredentialStatus"/);
   assert.match(html, /id="pluginFormDiagnostic"/);
@@ -93,13 +97,16 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(renderer, /startAddPlugin/);
   assert.match(renderer, /pluginInlineFormHost/);
   assert.doesNotMatch(renderer, /data-action="test-plugin"/);
-  assert.match(renderer, /function confirmAndSaveObservedHostKey/);
+  assert.match(renderer, /function confirmRuntimeHostKeyChallenge/);
+  assert.match(renderer, /api\.confirmConnectionChallenge/);
+  assert.doesNotMatch(renderer, /function confirmAndSaveObservedHostKey/);
   assert.match(renderer, /确认信任并保存此指纹吗/);
   assert.match(renderer, /function diagnosticStepDefinitions/);
   assert.match(renderer, /totalElapsedMs/);
   assert.match(renderer, /api\.preparePluginConnectionEdit/);
   assert.match(renderer, /api\.beginPluginConnectionEdit/);
   assert.match(renderer, /api\.validatePluginDraft/);
+  assert.match(renderer, /validatePluginDraftAction\(['"]tls['"]\)/);
   assert.match(renderer, /api\.cancelPluginValidation/);
   assert.match(renderer, /api\.savePluginConnectionEdit/);
   assert.match(renderer, /api\.cancelPluginConnectionEdit/);

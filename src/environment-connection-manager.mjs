@@ -10,7 +10,8 @@ const DEFAULT_DISCONNECT_DEADLINE_MS = 5_000;
 const DEFAULT_CLOSE_DEADLINE_MS = 12_000;
 const TERMINAL_ERRORS = new Set([
   'AUTHENTICATION_FAILED', 'SSH_AUTH_FAILED', 'SSH_HOST_KEY_CHANGED', 'SSH_HOST_KEY_CONFIRM_REQUIRED',
-  'TLS_IDENTITY_FAILED', 'CREDENTIAL_UNAVAILABLE', 'CREDENTIAL_BINDING_MISMATCH',
+  'TLS_IDENTITY_FAILED', 'TLS_CERTIFICATE_INVALID', 'TLS_PROTOCOL_ERROR', 'TLS_NOT_SUPPORTED',
+  'MYSQL_TLS_NOT_SUPPORTED', 'CREDENTIAL_UNAVAILABLE', 'CREDENTIAL_BINDING_MISMATCH',
   'PLUGIN_CONFIG_INCOMPLETE', 'MANUAL_RECONNECT_REQUIRED',
 ]);
 
@@ -324,6 +325,14 @@ export class EnvironmentConnectionManager extends EventEmitter {
 
   requestConnectionIntent(payload) {
     return this.connectionIntentCoordinator.request(payload);
+  }
+
+  validateConnectionChallenge(payload) {
+    return this.connectionIntentCoordinator.validateConnectionChallenge(payload);
+  }
+
+  resumeConnectionChallenge(payload,options) {
+    return this.connectionIntentCoordinator.resumeConnectionChallenge(payload,options);
   }
 
   activeConnectionOperations(projectId,environmentId,affectedPluginInstanceIds = null) {

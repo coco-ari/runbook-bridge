@@ -149,7 +149,15 @@ export class RedisPluginRuntime extends EventEmitter {
       if (relay?.generation !== undefined) await this.routeManager.closeRelay(plugin, relay.generation).catch(() => undefined);
       if (error instanceof AppError) throw error;
       if (/wrongpass|noauth|authentication/i.test(String(error?.message ?? ''))) throw new AppError('AUTHENTICATION_FAILED', 'Redis 用户名或密码认证失败。');
-      if (['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID'].includes(error?.code)) throw new AppError('TLS_IDENTITY_FAILED', 'Redis TLS 身份校验失败。');
+      if (['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID'].includes(error?.code)) {
+        throw new AppError('TLS_CERTIFICATE_INVALID', 'Redis TLS 证书校验失败。');
+      }
+      if (['ERR_SSL_WRONG_VERSION_NUMBER','ERR_SSL_UNKNOWN_PROTOCOL'].includes(error?.code)) {
+        throw new AppError('TLS_NOT_SUPPORTED', '目标 Redis 端点不支持当前 TLS 连接。');
+      }
+      if (['ETIMEDOUT','ESOCKETTIMEDOUT'].includes(error?.code)) {
+        throw new AppError('CONNECT_TIMEOUT', 'Redis TLS 连接超时。');
+      }
       throw new AppError('PLUGIN_UNAVAILABLE', 'Redis 连接失败。');
     } finally {}
     } finally {

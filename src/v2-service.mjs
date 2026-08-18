@@ -267,8 +267,28 @@ export class V2Service {
     const verified = await this.contextManager.verify(scope.projectId, scope.environmentId, scope.pluginInstanceId, params.contextToken, scope.clientInstanceId);
     const runtime = this.connectionManager.snapshot(scope.projectId, scope.environmentId).plugins[scope.pluginInstanceId];
     if (runtime?.phase !== 'connected') {
-      const code = runtime?.phase === 'reconnecting' ? 'PLUGIN_RECONNECTING' : runtime?.phase === 'blocked' || runtime?.phase === 'error' ? 'PLUGIN_UNAVAILABLE' : 'PLUGIN_NOT_CONNECTED';
-      throw new AppError(code, runtime?.error?.message ?? '目标插件当前不可用。', { phase: runtime?.phase ?? 'disconnected', reason: runtime?.reason ?? null });
+      const assessment = runtime?.assessment ?? {};
+      const resourceState = assessment.resourceScope?.state ?? null;
+      const configurationState = assessment.configuration?.state ?? null;
+      const code = configurationState && configurationState !== 'complete'
+        ? 'PLUGIN_CONFIGURATION_INCOMPLETE'
+        : resourceState === 'missing'
+          ? 'PLUGIN_RESOURCE_SELECTION_REQUIRED'
+          : runtime?.phase === 'blocked' || runtime?.phase === 'error'
+            ? 'PLUGIN_UNAVAILABLE'
+            : resourceState === 'selected-unverified'
+              ? 'PLUGIN_RESOURCE_VALIDATION_REQUIRED'
+              : runtime?.phase === 'reconnecting'
+                ? 'PLUGIN_RECONNECTING'
+                : 'PLUGIN_NOT_CONNECTED';
+      throw new AppError(code, runtime?.error?.message ?? `${verified.plugin.displayName ?? '目标插件'}尚未连接，请在桌面端选择“连接并继续”。`, {
+        phase:runtime?.phase ?? 'disconnected',
+        reason:runtime?.reason ?? null,
+        action:'connect-and-continue',
+        requiredPluginInstanceIds:[scope.pluginInstanceId],
+        replayAllowed:false,
+        contextRefreshRequired:true,
+      });
     }
     return { plugin:pluginWithRunbookSources(verified.plugin, verified.runbook.content), environment:verified.environment };
   }

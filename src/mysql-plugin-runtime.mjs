@@ -10,13 +10,19 @@ const MYSQL_CONNECTION_CODES = new Set([
   'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH',
 ]);
 const MYSQL_TLS_CODES = new Set(['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID']);
+const MYSQL_DATABASE_LIST_DENIED_CODES = new Set([
+  'ER_DBACCESS_DENIED_ERROR',
+  'ER_TABLEACCESS_DENIED_ERROR',
+  'ER_SPECIFIC_ACCESS_DENIED_ERROR',
+  'ER_ACCESS_DENIED_ERROR',
+]);
 
 function mysqlError(error, fallbackMessage = 'MySQL 操作失败。') {
   if (error instanceof AppError) return error;
   const code = String(error?.code ?? '');
   const message = String(error?.message ?? '');
   if (code === 'ER_ACCESS_DENIED_ERROR') return new AppError('AUTHENTICATION_FAILED', 'MySQL 用户名或密码认证失败。');
-  if (MYSQL_TLS_CODES.has(code)) return new AppError('TLS_IDENTITY_FAILED', 'MySQL TLS 身份校验失败。');
+  if (MYSQL_TLS_CODES.has(code)) return new AppError('TLS_CERTIFICATE_INVALID', 'MySQL TLS 证书校验失败。');
   if (MYSQL_TIMEOUT_CODES.has(code) || /(?:query|operation|socket).*tim(?:e|ed) ?out/i.test(message)) {
     return new AppError('DATABASE_QUERY_TIMEOUT', 'MySQL 操作超时，当前连接已关闭并将按环境策略重新建立。');
   }
@@ -40,14 +46,20 @@ function mysqlConnectError(error, plugin, fallbackMessage = 'MySQL 连接初始�
   if (['ETIMEDOUT','ESOCKETTIMEDOUT','EHOSTUNREACH','ENETUNREACH'].includes(code)) {
     return new AppError('CONNECT_TIMEOUT',`无法访问 ${host}:${port}，请检查公网/内网地址、VPN、RDS 白名单和防火墙。`);
   }
-  if (code === 'ER_BAD_DB_ERROR' || code === 'ER_DBACCESS_DENIED_ERROR') {
+  if (code === 'ER_BAD_DB_ERROR') {
     return new AppError('DATABASE_NOT_FOUND',`数据库 ${plugin?.target?.database || '当前选择'} 不存在或当前账号无权访问，请重新查询数据库。`);
+  }
+  if (code === 'ER_DBACCESS_DENIED_ERROR') {
+    return new AppError('MYSQL_DATABASE_ACCESS_DENIED',`当前账号无权访问数据库 ${plugin?.target?.database || '当前选择'}。`);
   }
   if (code === 'HANDSHAKE_NO_SSL_SUPPORT') {
     return new AppError('MYSQL_TLS_NOT_SUPPORTED','目标 MySQL 不支持 TLS，请将 TLS 调整为“关闭”后重试。');
   }
   if (MYSQL_TLS_CODES.has(code) || /(?:ssl|tls|certificate|certificate verify)/i.test(String(error?.message ?? ''))) {
-    return new AppError('TLS_IDENTITY_FAILED','MySQL TLS 协商失败，请核对 TLS 模式和证书配置。');
+    return new AppError(
+      MYSQL_TLS_CODES.has(code) ? 'TLS_CERTIFICATE_INVALID' : 'TLS_PROTOCOL_ERROR',
+      MYSQL_TLS_CODES.has(code) ? 'MySQL TLS 证书校验失败。' : 'MySQL TLS 协商失败，请核对 TLS 模式和证书配置。',
+    );
   }
   const mapped = mysqlError(error,fallbackMessage);
   if (mapped.code !== 'DATABASE_OPERATION_FAILED') return mapped;
@@ -88,14 +100,14 @@ async function createMysqlRoute(routeManager, plugin, options = {}) {
   return routeManager.createRelay(plugin, options);
 }
 
-function mysqlConnectionOptions(plugin, secrets, route) {
+function mysqlConnectionOptions(plugin, secrets, route, {includeDatabase = true} = {}) {
   return {
     host: route.stream ? plugin.target.host : route.host,
     port: route.stream ? plugin.target.port : route.port,
     ...(route.stream ? { stream:route.stream } : {}),
     user: plugin.auth.username,
     password: secrets.password,
-    database: plugin.target.database || undefined,
+    database: includeDatabase ? plugin.target.database || undefined : undefined,
     connectTimeout: Math.min(plugin.limits.timeoutMs, 20_000),
     multipleStatements: false,
     namedPlaceholders: false,
@@ -197,8 +209,9 @@ export class MysqlPluginRuntime extends EventEmitter {
     }
   }
 
-  async connect(plugin, suppliedSecrets = {}, { signal = null, attemptToken = null } = {}) {
-    if (plugin.pluginType !== 'mysql' || plugin.configState !== 'ready') throw new AppError('PLUGIN_CONFIG_INCOMPLETE', 'MySQL 插件配置不完整。');
+  async connect(plugin, suppliedSecrets = {}, { signal = null, attemptToken = null, validationPurpose = null } = {}) {
+    const includeResource = !['tls-probe','server-auth'].includes(validationPurpose);
+    if (plugin.pluginType !== 'mysql' || (includeResource && plugin.configState !== 'ready')) throw new AppError('PLUGIN_CONFIG_INCOMPLETE', 'MySQL 插件配置不完整。');
     if (signal?.aborted) throw new AppError('CONNECT_CANCELLED', '连接已取消。');
     const resource = key(plugin);
     const owner = attemptToken ?? Symbol('mysql-connect');
@@ -240,8 +253,22 @@ export class MysqlPluginRuntime extends EventEmitter {
       if (signal?.aborted) throw new AppError('CONNECT_CANCELLED', '连接已取消。');
       relay = await createMysqlRoute(this.routeManager, plugin, {signal});
       assertOwned();
-      connection = await this.client.createConnection(mysqlConnectionOptions(plugin, secrets, relay));
+      connection = await this.client.createConnection(mysqlConnectionOptions(plugin, secrets, relay,{includeDatabase:includeResource}));
       assertOwned();
+      if (includeResource) {
+        const [selectedRows] = await connection.query({
+          sql:'SELECT DATABASE() AS ai_ops_database',
+          timeout:plugin.limits.timeoutMs,
+        });
+        const selectedDatabase = String(selectedRows?.[0]?.ai_ops_database ?? '');
+        if (selectedDatabase !== plugin.target.database) {
+          throw new AppError(
+            'MYSQL_DATABASE_ACCESS_DENIED',
+            `MySQL 会话未进入固定数据库 ${plugin.target.database}，已拒绝建立正式连接。`,
+          );
+        }
+        assertOwned();
+      }
       await connection.query({ sql: 'SELECT 1 AS ai_ops_health', timeout: plugin.limits.timeoutMs });
       assertOwned();
       const session = { connection, connectedAt: new Date().toISOString(), routeGeneration: relay.generation, bindingHash: plugin.revision, closing:false, attemptToken:owner };
@@ -283,7 +310,19 @@ export class MysqlPluginRuntime extends EventEmitter {
     try {
       connection = await this.client.createConnection(mysqlConnectionOptions(plugin, secrets, relay));
       if (signal?.aborted) throw new AppError('PLUGIN_VALIDATION_CANCELLED','数据库发现已取消。');
-      const [rows] = await connection.query({ sql: 'SHOW DATABASES', timeout: plugin.limits.timeoutMs });
+      let rows;
+      try {
+        [rows] = await connection.query({ sql: 'SHOW DATABASES', timeout: plugin.limits.timeoutMs });
+      } catch (error) {
+        if (MYSQL_DATABASE_LIST_DENIED_CODES.has(String(error?.code ?? ''))) {
+          throw new AppError(
+            'MYSQL_DATABASE_LIST_FORBIDDEN',
+            '当前账号无权加载数据库列表，请手工输入准确数据库名称并验证。',
+            {manualInputAllowed:true},
+          );
+        }
+        throw error;
+      }
       if (signal?.aborted) throw new AppError('PLUGIN_VALIDATION_CANCELLED','数据库发现已取消。');
       const visible = [...new Set(rows
         .flatMap((row) => Object.values(row).slice(0, 1))
