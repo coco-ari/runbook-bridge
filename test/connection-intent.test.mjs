@@ -27,12 +27,12 @@ function plugin(id,type = 'mysql',overrides = {}) {
   };
 }
 
-function fixture(plugins,runtime) {
+function fixture(plugins,runtime,{audits = null} = {}) {
   const store = {
     getEnvironment:async () => ({revision:1}),
     listPlugins:async () => plugins,
     getPlugin:async (_projectId,_environmentId,id) => plugins.find((item) => item.pluginInstanceId === id),
-    appendAudit:async () => undefined,
+    appendAudit:async (_projectId,entry) => { audits?.push(structuredClone(entry)); },
   };
   return new EnvironmentConnectionManager(store,runtime,{retryDelays:[]});
 }
@@ -68,6 +68,31 @@ test('Connect All connects independent ready branches and returns incomplete plu
   assert.equal(result.snapshot.plugins['server-draft'].phase,'disconnected');
   assert.deepEqual(result.actions.map((action) => action.rootPluginInstanceId),['server-draft']);
   assert.deepEqual(result.actions[0].affectedPluginInstanceIds,['server-draft']);
+});
+
+test('unified connection plans audit every terminal plugin operation with correlation ids', async () => {
+  const target = plugin('orders');
+  const audits = [];
+  const manager = fixture([target],{
+    connect:async () => ({connectedAt:'now'}),
+    disconnect:async () => ({connected:false}),
+    closeAll:async () => undefined,
+  },{audits});
+
+  const result = await manager.requestConnectionIntent({
+    requestId:'audit-request',planId:'audit-plan',operationId:'audit-operation',
+    projectId:'p1',environmentId:'e1',pluginInstanceId:'orders',intent:'connect',source:'renderer-plugin',
+  });
+
+  assert.equal(result.outcome,'started');
+  const terminal = audits.find((entry) => entry.type === 'plugin-connected');
+  assert.deepEqual(terminal,{
+    type:'plugin-connected',projectId:'p1',environmentId:'e1',pluginInstanceId:'orders',
+    pluginNameSnapshot:'orders',actor:'user',planId:'audit-plan',operationId:'audit-operation',
+    result:'success',durationMs:terminal.durationMs,
+  });
+  assert.ok(Number.isFinite(terminal.durationMs));
+  assert.ok(audits.some((entry) => entry.type === 'connection-plan-completed' && entry.planId === 'audit-plan'));
 });
 
 test('formal SSH host-key challenge is operation-bound and resumes the same plan after trust commit', async () => {

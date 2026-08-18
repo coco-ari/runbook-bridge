@@ -1345,6 +1345,7 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 .overview-activity-dot{width:6px;height:6px;border-radius:50%;background:var(--muted)}
 .overview-activity-dot.success{background:var(--green)}
 .overview-activity-dot.warning{background:var(--amber)}
+.overview-activity-dot.cancelled{background:var(--amber)}
 .overview-activity-dot.blocked,
 .overview-activity-dot.error{background:var(--red)}
 .overview-activity-copy{min-width:0}
@@ -1782,6 +1783,8 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 }
 .audit-record .result.success{background:rgba(85,214,161,.06)}
 .audit-record .result.pending,.audit-record .result.warning,.audit-record .result.blocked{background:rgba(239,185,104,.06)}
+.result.cancelled{color:var(--amber)}
+.audit-record .result.cancelled{background:rgba(239,185,104,.06)}
 .audit-record .result.error{background:rgba(241,123,134,.06)}
 
 @container (max-width:720px){

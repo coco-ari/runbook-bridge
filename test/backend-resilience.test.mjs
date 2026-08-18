@@ -94,7 +94,11 @@ test('cancelling an environment removes queued connection permits before they st
   while (manager.cancelCleanups.size) await delay(1);
   assert.equal(manager.connectWaiters.length, 0);
   assert.deepEqual([...disconnects.values()], [1,1,1,1,1,1]);
-  assert.deepEqual(audits.map((entry) => entry.type), ['environment-connect-cancelled']);
+  const cancellationAudits = audits.filter((entry) => entry.type === 'environment-connect-cancelled');
+  const nodeAudits = audits.filter((entry) => entry.type === 'plugin-connected');
+  assert.equal(cancellationAudits.length, 1);
+  assert.equal(nodeAudits.length, plugins.length);
+  assert.ok(nodeAudits.every((entry) => entry.planId && entry.operationId));
   releaseFirst();
   await delay(5);
   assert.deepEqual([...disconnects.values()], [1,1,1,1,1,1], 'late success uses the force fence, not a second graceful cleanup');
@@ -145,7 +149,7 @@ test('a slow cancellation audit cannot suppress cleanup for a later cancelled at
   const secondStarted = new Promise((resolve) => { announceSecondStarted = resolve; });
   let releaseFirstAudit;
   const firstAuditPending = new Promise((resolve) => { releaseFirstAudit = resolve; });
-  const audits = [];
+  const cancellationAudits = [];
   const disconnectReasons = [];
   const runtime = {
     connect:async (_plugin, _secrets, {signal} = {}) => {
@@ -171,8 +175,9 @@ test('a slow cancellation audit cannot suppress cleanup for a later cancelled at
   const store = {
     getEnvironment:async () => ({revision:1}),listPlugins:async () => [plugin],getPlugin:async () => plugin,
     appendAudit:async (_projectId, entry) => {
-      audits.push(entry);
-      if (audits.length === 1) await firstAuditPending;
+      if (entry.type !== 'environment-connect-cancelled') return;
+      cancellationAudits.push(entry);
+      if (cancellationAudits.length === 1) await firstAuditPending;
     },
   };
   const manager = new EnvironmentConnectionManager(store, runtime, {retryDelays:[]});
@@ -189,9 +194,8 @@ test('a slow cancellation audit cannot suppress cleanup for a later cancelled at
   assert.deepEqual(disconnectReasons, ['user-cancel','user-cancel']);
   releaseFirstAudit();
   while (manager.cancelCleanups.size) await delay(1);
-  assert.equal(audits.length, 2);
-  assert.deepEqual(audits.map((entry) => entry.type), ['environment-connect-cancelled','environment-connect-cancelled']);
-  assert.notEqual(audits[0].connectAttemptId, audits[1].connectAttemptId);
+  assert.equal(cancellationAudits.length, 2);
+  assert.notEqual(cancellationAudits[0].connectAttemptId, cancellationAudits[1].connectAttemptId);
 });
 
 test('disconnect has a hard deadline and published snapshots have monotonic sequence numbers', async () => {

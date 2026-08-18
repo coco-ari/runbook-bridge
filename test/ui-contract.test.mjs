@@ -106,6 +106,10 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(renderer, /function diagnosticStepDefinitions/);
   assert.match(renderer, /totalElapsedMs/);
   assert.match(renderer, /api\.preparePluginConnectionEdit/);
+  assert.match(renderer, /修改名称/);
+  assert.doesNotMatch(renderer, /pluginMetadataDescription/);
+  assert.doesNotMatch(renderer, /pluginMetadataTags/);
+  assert.doesNotMatch(renderer, /pluginMetadataOrder/);
   assert.match(renderer, /api\.beginPluginConnectionEdit/);
   assert.match(renderer, /api\.validatePluginDraft/);
   assert.match(renderer, /validatePluginDraftAction\(['"]tls['"]\)/);

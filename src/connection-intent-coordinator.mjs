@@ -281,15 +281,8 @@ export class ConnectionIntentCoordinator {
         await work;
         plan.completed = true;
         this.publishAggregate(plan);
-        await Promise.resolve(this.manager.workspaceStore.appendAudit?.(plan.projectId,{
-          type:'connection-plan-completed',
-          projectId:plan.projectId,
-          environmentId:plan.environmentId,
-          planId:plan.planId,
-          actor:plan.actor,
-          result:plan.actions.length ? 'needs-action' : 'completed',
-        })).catch(() => undefined);
       }
+      this.appendPlanAudit(plan,'connection-plan-completed').catch(() => undefined);
       const result = this.result(plan,plan.cancelled
         ? 'cancelled'
         : plan.actions.length
@@ -305,6 +298,55 @@ export class ConnectionIntentCoordinator {
     const state = structuredClone(this.manager.state(plan.projectId,plan.environmentId));
     this.manager.aggregate(state,plan.plugins);
     this.manager.publish(state);
+  }
+
+  planAuditEntry(plan,type) {
+    const snapshot = this.manager.snapshot(plan.projectId,plan.environmentId);
+    const plannedCount = plan.nodes.size;
+    const connectedCount = [...plan.nodes.keys()].filter((pluginInstanceId) => (
+      snapshot.plugins[pluginInstanceId]?.phase === 'connected'
+    )).length;
+    const needsActionCount = plan.actions.length;
+    return {
+      type,
+      projectId:plan.projectId,
+      environmentId:plan.environmentId,
+      planId:plan.planId,
+      actor:plan.actor,
+      source:plan.source,
+      result:plan.cancelled ? 'cancelled' : needsActionCount ? 'needs-action' : 'completed',
+      connectedCount,
+      eligibleCount:plannedCount,
+      needsActionCount,
+      operationSummary:plan.cancelled
+        ? '连接计划已取消'
+        : `${connectedCount}/${plannedCount} 个计划节点已连接${needsActionCount ? `，${needsActionCount} 项需要处理` : ''}`,
+    };
+  }
+
+  async appendPlanAudit(plan,type) {
+    await Promise.resolve(this.manager.workspaceStore.appendAudit?.(
+      plan.projectId,this.planAuditEntry(plan,type),
+    )).catch(() => undefined);
+  }
+
+  async appendConnectionOperationAudit(plan,operation) {
+    if (!['completed','failed','cancelled','cancelling'].includes(operation.status)) return;
+    const result = operation.status === 'completed' ? 'success'
+      : ['cancelled','cancelling'].includes(operation.status) ? 'cancelled' : 'error';
+    await Promise.resolve(this.manager.workspaceStore.appendAudit?.(operation.projectId,{
+      type:'plugin-connected',
+      projectId:operation.projectId,
+      environmentId:operation.environmentId,
+      pluginInstanceId:operation.pluginInstanceId,
+      pluginNameSnapshot:operation.plugin.displayName,
+      actor:plan.actor,
+      planId:operation.planId,
+      operationId:operation.operationId,
+      result,
+      ...(operation.error?.code ? {errorCode:operation.error.code} : {}),
+      durationMs:Math.max(0,Date.now() - operation.startedAt),
+    })).catch(() => undefined);
   }
 
   result(plan,outcome,actions = plan.actions) {
@@ -474,6 +516,7 @@ export class ConnectionIntentCoordinator {
       controller:new AbortController(),
       subscribers:new Set([plan.planId]),
       status:'running',
+      startedAt:Date.now(),
       promise:null,
     };
     node.operationId = operationId;
@@ -487,6 +530,7 @@ export class ConnectionIntentCoordinator {
       .finally(() => {
         if (this.operations.get(key) === operation) this.operations.delete(key);
         this.pruneHistory();
+        this.appendConnectionOperationAudit(plan,operation).catch(() => undefined);
       });
     return operation;
   }
@@ -739,17 +783,8 @@ export class ConnectionIntentCoordinator {
         await work;
         plan.completed = true;
         this.publishAggregate(plan);
-        await Promise.resolve(this.manager.workspaceStore.appendAudit?.(plan.projectId,{
-          type:'connection-plan-resumed',
-          projectId:plan.projectId,
-          environmentId:plan.environmentId,
-          pluginInstanceId:challenge.pluginInstanceId,
-          planId:plan.planId,
-          operationId:challenge.operationId,
-          actor:plan.actor,
-          result:plan.actions.length ? 'needs-action' : 'completed',
-        })).catch(() => undefined);
       }
+      this.appendPlanAudit(plan,'connection-plan-resumed').catch(() => undefined);
       const result = this.result(plan,plan.cancelled
         ? 'cancelled'
         : plan.actions.length

@@ -1173,10 +1173,7 @@ function renderProjectOverviewAttention(projectId) {
 }
 
 function overviewActivityVisible(entry) {
-  if (entry.type === 'plugin-operation-started' || entry.type === 'connect') return false;
-  if (entry.type === 'disconnect' && entry.result !== 'connection-lost') return false;
-  if (entry.type === 'environment-disconnected' && entry.reason === 'app-exit') return false;
-  return entry.type?.startsWith('environment-') || ['plugin-added','plugin-operation','plugin-operation-decision','plugin-connected','plugin-disconnected','plugin-policy-updated','runbook-updated','confirmation-approved','confirmation-rejected','mysql-query','policy-denied','host-key-change-approved','auto-reconnect'].includes(entry.type) || (entry.type === 'disconnect' && entry.result === 'connection-lost');
+  return auditEntryVisible(entry);
 }
 
 function overviewActivityTime(value) {
@@ -1715,9 +1712,9 @@ function renderConfiguration(plugin) {
   if (plugin.pluginType !== 'server') rows.push(['TLS',plugin.tls?.mode ?? 'disabled']);
   const editingMetadata = state.metadataEditingPluginId === plugin.pluginInstanceId;
   const metadata = editingMetadata
-    ? `<div class="inline-settings-form"><label class="field">名称<input id="pluginMetadataName" maxlength="120" value="${escapeAttr(plugin.displayName)}"></label><label class="field full">说明<textarea id="pluginMetadataDescription" rows="3">${escapeHtml(plugin.description ?? '')}</textarea></label><label class="field">标签<input id="pluginMetadataTags" value="${escapeAttr((plugin.tags ?? []).join(', '))}" placeholder="用逗号分隔"></label><label class="field">展示顺序<input id="pluginMetadataOrder" type="number" value="${Number(plugin.displayOrder ?? 0)}"></label><div class="inline-settings-actions"><button class="button" data-action="cancel-plugin-metadata">取消</button><button class="button primary" data-action="save-plugin-metadata">保存基本信息</button></div></div>`
-    : `<dl class="field-list"><dt>名称</dt><dd>${escapeHtml(plugin.displayName)}</dd><dt>说明</dt><dd>${escapeHtml(plugin.description || '未填写')}</dd><dt>标签</dt><dd>${escapeHtml((plugin.tags ?? []).join('、') || '未设置')}</dd></dl>`;
-  return `<section class="connection-section"><div class="content-title"><div><h2>基本信息</h2><p class="muted">仅影响显示，不访问凭据或断开网络连接。</p></div>${editingMetadata ? '' : '<button class="button" data-action="edit-plugin-metadata">编辑基本信息</button>'}</div>${metadata}</section><section class="connection-section"><div class="content-title"><div><h2>连接配置</h2><p class="muted">当前为只读详情；修改前会预览影响并安装连接门禁。</p></div><button class="button primary" data-action="edit-plugin">修改连接配置</button></div><dl class="field-list">${rows.map(([key,value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`).join('')}</dl></section><section class="configuration-note">${icon('shield')}<span>密码和私钥口令只保存在本机安全存储中，不会在详情页显示。</span></section>`;
+    ? `<div class="inline-settings-form"><label class="field full">插件名称<input id="pluginMetadataName" maxlength="120" value="${escapeAttr(plugin.displayName)}"></label><div class="inline-settings-actions"><button class="button" data-action="cancel-plugin-metadata">取消</button><button class="button primary" data-action="save-plugin-metadata">保存名称</button></div></div>`
+    : `<dl class="field-list"><dt>名称</dt><dd>${escapeHtml(plugin.displayName)}</dd></dl>`;
+  return `<section class="connection-section"><div class="content-title"><div><h2>插件名称</h2></div>${editingMetadata ? '' : '<button class="button" data-action="edit-plugin-metadata">修改名称</button>'}</div>${metadata}</section><section class="connection-section"><div class="content-title"><div><h2>连接配置</h2><p class="muted">当前为只读详情；修改前会预览影响并安装连接门禁。</p></div><button class="button primary" data-action="edit-plugin">修改连接配置</button></div><dl class="field-list">${rows.map(([key,value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`).join('')}</dl></section><section class="configuration-note">${icon('shield')}<span>密码和私钥口令只保存在本机安全存储中，不会在详情页显示。</span></section>`;
 }
 
 function diagnosticStepDefinitions(plugin) {
@@ -1824,17 +1821,16 @@ function renderPermissions(plugin) {
   return `<div class="permissions-page"><header class="permission-hero"><span class="permission-hero-icon">${icon('shield')}</span><div class="permission-hero-copy"><span class="permission-eyebrow">应用内置安全策略</span><h2>Agent 可执行范围</h2><p>权限由应用按操作风险强制判定，Agent 和插件数据源都不能修改或绕过。</p></div><div class="permission-summary">${overview}</div></header><div class="content-title"><div><h2>Agent 配置</h2><p class="muted">保存时保留网络连接，并重建后续请求使用的 Agent context。</p></div>${editing ? '' : '<button class="button" data-action="edit-plugin-agent">编辑 Agent 配置</button>'}</div>${editor}<section class="policy-section"><div class="policy-section-title"><span>固定执行规则</span><small>${rules.length} 项规则</small></div><div class="policy-list">${rows}</div></section><div class="policy-limits">${icon('shield')}<div><strong>边界与资源上限</strong><span>${escapeHtml(limitSummary(plugin))}</span></div></div></div>`;
 }
 
+function pluginMetadataPatch(displayName) {
+  return {displayName:String(displayName ?? '').trim()};
+}
+
 async function savePluginMetadata() {
   const plugin = activePlugin();
   if (!plugin || state.metadataEditingPluginId !== plugin.pluginInstanceId) return;
-  const displayName = $('#pluginMetadataName').value.trim();
+  const patch = pluginMetadataPatch($('#pluginMetadataName').value);
+  const displayName = patch.displayName;
   if (!displayName) throw new Error('插件名称不能为空。');
-  const patch = {
-    displayName,
-    description:$('#pluginMetadataDescription').value.trim(),
-    tags:$('#pluginMetadataTags').value.split(',').map((value) => value.trim()).filter(Boolean),
-    displayOrder:Number($('#pluginMetadataOrder').value) || 0,
-  };
   const value = await call(api.updatePluginMetadata({
     projectId:plugin.projectId,environmentId:plugin.environmentId,
     pluginInstanceId:plugin.pluginInstanceId,expectedRevision:plugin.revision,patch,
@@ -1842,7 +1838,7 @@ async function savePluginMetadata() {
   Object.assign(plugin,value);
   state.metadataEditingPluginId = null;
   renderShell();
-  toast('基本信息已保存；连接和凭据未改变。');
+  toast('插件名称已保存；连接和凭据未改变。');
 }
 
 async function savePluginAgentConfiguration() {
@@ -2017,7 +2013,8 @@ function auditResult(entry) {
   const value = String(entry.result ?? (entry.errorCode ? 'error' : 'success')).toLowerCase();
   if (['success','connected','disconnected','complete','completed'].includes(value)) return 'success';
   if (value === 'pending-confirmation') return 'pending';
-  if (['partial','warning'].includes(value)) return 'warning';
+  if (value === 'cancelled') return 'cancelled';
+  if (['partial','warning','needs-action'].includes(value)) return 'warning';
   if (['blocked','denied'].includes(value)) return 'blocked';
   return 'error';
 }
@@ -2040,6 +2037,12 @@ function auditOperationName(entry) {
   if (entry.type === 'plugin-added') return '添加插件';
   if (entry.type === 'plugin-connected') return '连接插件';
   if (entry.type === 'plugin-disconnected') return '断开插件';
+  if (entry.type === 'connection-plan-completed') return '执行连接计划';
+  if (entry.type === 'connection-plan-resumed') return '恢复连接计划';
+  if (entry.type === 'environment-connect-cancelled') return '取消环境连接';
+  if (entry.type === 'plugin-draft-saved') return '保存插件草稿';
+  if (entry.type === 'plugin-draft-promoted') return '保存正式插件';
+  if (entry.type === 'plugin-draft-deleted') return '删除插件草稿';
   if (entry.type === 'plugin-policy-updated') return '修改 Agent 权限';
   if (entry.type === 'runbook-updated') return '更新运维说明';
   if (entry.type === 'confirmation-approved') return '确认 Agent 操作';
@@ -2047,7 +2050,7 @@ function auditOperationName(entry) {
   if (entry.type === 'plugin-operation-decision') return auditCapabilityName(entry.capability ?? 'Agent 操作');
   if (entry.type === 'environment-disconnected') return '断开环境';
   if (entry.type?.startsWith('environment-')) return '连接环境';
-  if (entry.type === 'host-key-change-approved') return '确认服务器指纹';
+  if (entry.type === 'host-key-change-approved' || entry.type === 'server-host-key-trusted') return '确认服务器指纹';
   if (entry.type === 'auto-reconnect') return '自动恢复连接';
   if (entry.type === 'disconnect' && entry.result === 'connection-lost') return '连接意外中断';
   if (entry.type === 'plugin-operation') return auditCapabilityName(entry.capability ?? entry.operation ?? '执行插件操作');
@@ -2070,13 +2073,16 @@ function auditDescription(entry) {
   if (Number.isFinite(entry.durationMs)) return `耗时 ${entry.durationMs} ms`;
   return '已完成';
 }
+function auditEntryVisible(entry) {
+  if (!entry?.type || entry.type === 'plugin-operation-started' || entry.type === 'connect') return false;
+  if (entry.type === 'disconnect' && entry.result !== 'connection-lost') return false;
+  if (entry.type === 'environment-disconnected' && entry.reason === 'app-exit') return false;
+  return true;
+}
 function visibleAuditEntries() {
   return state.auditEntries.filter((entry) => {
     if (state.selectionKind === 'plugin' && entry.pluginInstanceId !== state.pluginId) return false;
-    if (entry.type === 'plugin-operation-started' || entry.type === 'connect') return false;
-    if (entry.type === 'disconnect' && entry.result !== 'connection-lost') return false;
-    if (entry.type === 'environment-disconnected' && entry.reason === 'app-exit') return false;
-    return entry.type?.startsWith('environment-') || ['plugin-operation','plugin-operation-decision','plugin-connected','plugin-disconnected','plugin-policy-updated','runbook-updated','confirmation-approved','confirmation-rejected','mysql-query','policy-denied','host-key-change-approved','auto-reconnect'].includes(entry.type) || (entry.type === 'disconnect' && entry.result === 'connection-lost');
+    return auditEntryVisible(entry);
   }).sort((left,right) => new Date(right.time).getTime() - new Date(left.time).getTime());
 }
 function auditDateLabel(date) {
@@ -2104,7 +2110,7 @@ function renderAudit() {
     const text = [auditOperationName(entry),auditPluginName(entry),auditDescription(entry)].join(' ').toLocaleLowerCase('zh-CN');
     return (!resultFilter || result === resultFilter) && (!query || text.includes(query));
   });
-  const resultNames = { success:'成功',pending:'等待确认',warning:'部分成功',blocked:'已拦截',error:'失败' };
+  const resultNames = { success:'成功',pending:'等待确认',warning:'部分成功',cancelled:'已取消',blocked:'已拦截',error:'失败' };
   const groups = new Map();
   for (const entry of rows) {
     const date = new Date(entry.time);
@@ -2294,6 +2300,12 @@ function pluginEditImpactMessage(preview, plugin) {
   return `修改“${plugin.displayName}”的连接配置会影响 ${affected} 个插件。\n\n${impact}${waiting}\n\n继续进入编辑吗？`;
 }
 
+function pluginEditRequiresConfirmation(preview) {
+  const connected = preview.preEditConnectedSet?.length ?? 0;
+  const active = (preview.activeOperations?.connection?.length ?? 0) + (preview.activeOperations?.workspace?.length ?? 0);
+  return connected > 0 || active > 0;
+}
+
 async function beginPluginConnectionEditor(plugin) {
   if (!plugin || state.pluginEditSession || state.pluginEditPreparation) return false;
   const scope = {
@@ -2304,7 +2316,7 @@ async function beginPluginConnectionEditor(plugin) {
   };
   const preview = await call(api.preparePluginConnectionEdit(scope));
   state.pluginEditPreparation = {...preview,scope};
-  if (!confirm(pluginEditImpactMessage(preview,plugin))) {
+  if (pluginEditRequiresConfirmation(preview) && !confirm(pluginEditImpactMessage(preview,plugin))) {
     try { await call(api.cancelPluginConnectionEdit({prepareToken:preview.prepareToken})); }
     finally { state.pluginEditPreparation = null; }
     return false;

@@ -354,7 +354,7 @@ test('connection editor prepares and confirms impact before beginning the fenced
     pluginStateKey:() => 'plugin-key',
     renderShell:() => calls.push(['populate',plugin]),
   });
-  install(context,['call','pluginEditImpactMessage','beginPluginConnectionEditor']);
+  install(context,['call','pluginEditImpactMessage','pluginEditRequiresConfirmation','beginPluginConnectionEditor']);
   context.plugin = plugin;
   assert.equal(await vm.runInContext('beginPluginConnectionEditor(plugin)',context),true);
   assert.deepEqual(calls.map(([name]) => name),['prepare','confirm','begin','populate']);
@@ -362,6 +362,47 @@ test('connection editor prepares and confirms impact before beginning the fenced
   assert.equal(state.pluginEditSession.editSessionId,'edit-1');
   assert.deepEqual(state.pluginEditSession.preEditConnectedSet,['server','orders']);
   assert.match(calls[1][1],/2 个连接/);
+});
+
+test('disconnected plugin enters the fenced editor without a redundant confirmation', async () => {
+  const calls = [];
+  const plugin = {projectId:'project',environmentId:'env',pluginInstanceId:'server',revision:5,displayName:'Server'};
+  const state = {projectId:'project',environmentId:'env',pluginId:'server',pluginEditPreparation:null,pluginEditSession:null,pluginValidationSequence:0,detailTabs:{},inlineConfigPluginId:null};
+  const context = vm.createContext({
+    state,
+    api:{
+      preparePluginConnectionEdit:async () => ({ok:true,data:{prepareToken:'prepare-1',affectedIds:['server'],preEditConnectedSet:[],activeOperations:{connection:[],workspace:[]}}}),
+      beginPluginConnectionEdit:async () => ({ok:true,data:{editSessionId:'edit-1',plugin,affectedIds:['server'],preEditConnectedSet:[],draftGeneration:0}}),
+    },
+    confirm:() => { calls.push('confirm'); return true; },
+    scopeMatches:() => true,
+    pluginStateKey:() => 'plugin-key',
+    renderShell:() => calls.push('render'),
+  });
+  install(context,['call','pluginEditImpactMessage','pluginEditRequiresConfirmation','beginPluginConnectionEditor']);
+  context.plugin = plugin;
+  assert.equal(await vm.runInContext('beginPluginConnectionEditor(plugin)',context),true);
+  assert.deepEqual(calls,['render']);
+  assert.equal(state.pluginEditSession.editSessionId,'edit-1');
+});
+
+test('audit visibility hides only transient noise and keeps connection and future terminal events', () => {
+  const context = vm.createContext({});
+  install(context,['auditEntryVisible']);
+  assert.equal(vm.runInContext("auditEntryVisible({type:'connection-plan-completed',result:'completed'})",context),true);
+  assert.equal(vm.runInContext("auditEntryVisible({type:'plugin-draft-saved',result:'success'})",context),true);
+  assert.equal(vm.runInContext("auditEntryVisible({type:'future-terminal-event',result:'success'})",context),true);
+  assert.equal(vm.runInContext("auditEntryVisible({type:'plugin-operation-started',result:'started'})",context),false);
+  assert.equal(vm.runInContext("auditEntryVisible({type:'environment-disconnected',reason:'app-exit'})",context),false);
+});
+
+test('plugin rename payload contains only the display name', () => {
+  const context = vm.createContext({});
+  install(context,['pluginMetadataPatch']);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(vm.runInContext("pluginMetadataPatch('  Primary database  ')",context))),
+    {displayName:'Primary database'},
+  );
 });
 
 test('partial runtime preserves a full plugin map, while partial-to-partial replaces the preview', () => {
