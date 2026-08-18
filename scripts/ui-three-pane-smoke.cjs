@@ -101,7 +101,7 @@ async function run() {
     const environmentTabs=[...document.querySelectorAll('#detailTopTabs .detail-top-tab')].map(item=>item.textContent.trim());
     const selectedHeaderContinuous=document.querySelector('.resource-environment-card.selected .resource-environment-head')!==null;
     const compactEnvironmentActions=[...document.querySelectorAll('.resource-environment-head')].every(head=>Boolean(head.querySelector(':scope > [data-environment-runtime-action]'))&&Boolean(head.querySelector(':scope > [data-resource-rename-environment]'))&&Boolean(head.querySelector(':scope > [data-resource-delete-environment]'))&&!head.querySelector('.action-menu'));
-    const environmentActionsSingleRow=[...document.querySelectorAll('.resource-environment-head')].every(head=>{const controls=[...head.children];const centers=controls.map(control=>{const rect=control.getBoundingClientRect();return Math.round(rect.top+rect.height/2)});return Math.max(...centers)-Math.min(...centers)<=2;});
+    const environmentActionsWrapCleanly=[...document.querySelectorAll('.resource-environment-head')].every(head=>{const center=control=>{const rect=control.getBoundingClientRect();return Math.round(rect.top+rect.height/2)};const top=[head.querySelector(':scope > .resource-environment-select'),head.querySelector(':scope > .resource-environment-status')].filter(Boolean).map(center);const bottom=[head.querySelector(':scope > .resource-runtime-action'),head.querySelector(':scope > .scope-confirmation-badge'),head.querySelector(':scope > .resource-rename'),head.querySelector(':scope > .resource-delete')].filter(Boolean).map(center);return Math.max(...top)-Math.min(...top)<=2&&Math.max(...bottom)-Math.min(...bottom)<=2&&Math.min(...bottom)>Math.max(...top);});
     const environmentHeaderHeight=Math.round(document.querySelector('.resource-environment-head').getBoundingClientRect().height);
     const railRefined=!document.querySelector('.rail-brand')&&!document.querySelector('.rail-project-manage')&&Boolean(document.querySelector('.rail-header .logo-mark use[href="#i-app"]'));
     const projectActionsExposed=!document.querySelector('#overviewAddEnvironment')&&!document.querySelector('.resource-project-actions .action-menu')&&['projectSettingsShortcut','resetWorkspaceWidths','projectDeleteShortcut'].every(id=>Boolean(document.querySelector('#'+id)));
@@ -197,7 +197,7 @@ async function run() {
     const collapsed={active:app.classList.contains('detail-collapsed'),detailWidth:Math.round(detail.getBoundingClientRect().width),resourceWidth:Math.round(resources.getBoundingClientRect().width),buttonVisible:getComputedStyle(document.querySelector('#expandDetailPane')).display!=='none'};
     document.querySelector('#expandDetailPane').click();
     await frame();
-    return {environmentTabs,pluginTabs,selectedHeaderContinuous,compactEnvironmentActions,environmentActionsSingleRow,environmentCardToggle,environmentHeaderHeight,railRefined,projectActionsExposed,environmentCreatedInline,confirmationCenter,permissionsRefined,projectRenameInline,projectDeleteDirect,configurationInline,diagnosticInline,formDiagnostic,addPluginInline,addPluginOpensDetail,auditFiltered,auditResponsive,auditPendingNamed,auditClearScoped,auditCleared,collapsed,initialRects:initialRects.map(rect=>({left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width)})),expanded:!app.classList.contains('detail-collapsed'),separators:document.querySelectorAll('[role="separator"]').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};
+    return {environmentTabs,pluginTabs,selectedHeaderContinuous,compactEnvironmentActions,environmentActionsWrapCleanly,environmentCardToggle,environmentHeaderHeight,railRefined,projectActionsExposed,environmentCreatedInline,confirmationCenter,permissionsRefined,projectRenameInline,projectDeleteDirect,configurationInline,diagnosticInline,formDiagnostic,addPluginInline,addPluginOpensDetail,auditFiltered,auditResponsive,auditPendingNamed,auditClearScoped,auditCleared,collapsed,initialRects:initialRects.map(rect=>({left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width)})),expanded:!app.classList.contains('detail-collapsed'),separators:document.querySelectorAll('[role="separator"]').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};
   })()`);
   const screenshotPath = process.argv.find((value) => /\.png$/i.test(value)) || process.env.AI_OPS_SCREENSHOT_PATH;
   if (screenshotPath) {
@@ -214,9 +214,9 @@ async function run() {
   assert.deepEqual(result.pluginTabs,['插件详情','配置','Agent 权限','操作记录']);
   assert.equal(result.selectedHeaderContinuous,true);
   assert.equal(result.compactEnvironmentActions,true);
-  assert.equal(result.environmentActionsSingleRow,true);
+  assert.equal(result.environmentActionsWrapCleanly,true);
   assert.equal(result.environmentCardToggle,true);
-  assert.ok(result.environmentHeaderHeight<=80,'environment header should stay on one compact row');
+  assert.ok(result.environmentHeaderHeight>=88&&result.environmentHeaderHeight<=104,'environment header should use two aligned compact rows');
   assert.equal(result.railRefined,true);
   assert.equal(result.projectActionsExposed,true);
   assert.equal(result.environmentCreatedInline,true);

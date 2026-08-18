@@ -312,13 +312,19 @@ export class ServerOperations {
 
   async listDirectory(plugin, { path: remotePath, cursor = 0, limit = 200 } = {}) {
     const requestedPath = normalizeRemotePath(remotePath);
-    const entries = await this.serverRuntime.listRemoteDirectory(plugin, requestedPath);
     const offset = Math.max(Number(cursor) || 0, 0);
     const pageSize = Math.min(Math.max(Number(limit) || 200, 1), 500);
-    const sorted = entries.sort((left, right) => left.name.localeCompare(right.name));
+    const entries = await this.serverRuntime.listRemoteDirectory(plugin, requestedPath, { offset, limit:pageSize + 1, sortByName:true });
+    // Older/custom runtimes return the whole directory; keep that contract as
+    // a fallback while native runtimes resolve symlinks only for this page.
+    const pagedByRuntime = Number(entries.pageOffset) === offset;
+    const sorted = pagedByRuntime ? entries : entries.sort((left, right) => left.name.localeCompare(right.name)).slice(offset);
+    const page = sorted.slice(0, pageSize);
+    const hasMoreWithinCap = pagedByRuntime ? Boolean(entries.hasMoreWithinCap) || sorted.length > pageSize : sorted.length > pageSize;
+    const sourceTruncated = pagedByRuntime ? Boolean(entries.sourceTruncated) : Boolean(entries.truncated);
     return {
       path:requestedPath,
-      entries:sorted.slice(offset, offset + pageSize).map((entry) => ({
+      entries:page.map((entry) => ({
         name:entry.name,
         path:entry.canonicalPath ?? path.posix.join(requestedPath, entry.name),
         size:entry.size,
@@ -326,8 +332,8 @@ export class ServerOperations {
         mode:entry.mode,
         type:entry.isSymbolicLink ? 'symlink' : entry.isDirectory ? 'directory' : entry.isFile ? 'file' : 'special',
       })),
-      nextCursor:offset + pageSize < sorted.length ? String(offset + pageSize) : null,
-      truncated:Boolean(entries.truncated) || offset + pageSize < sorted.length,
+      nextCursor:hasMoreWithinCap ? String(offset + pageSize) : null,
+      truncated:hasMoreWithinCap || sourceTruncated,
     };
   }
 

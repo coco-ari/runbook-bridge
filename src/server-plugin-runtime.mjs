@@ -120,6 +120,7 @@ export class ServerPluginRuntime extends EventEmitter {
     this.vpnGuard = vpnGuard;
     this.adapter = new ScopedServerStoreAdapter(workspaceStore);
     this.broker = new SshBroker(this.adapter);
+    this.connectAttempts = new Map();
     this.broker.setLifecycleHandler((event) => this.emit('lifecycle', { ...event, ...parseScopeKey(event.projectId), resourceKey: event.projectId }));
   }
 
@@ -177,9 +178,15 @@ export class ServerPluginRuntime extends EventEmitter {
     throw new AppError(lastError?.code === 'ETIMEDOUT' ? 'CONNECT_TIMEOUT' : 'ROUTE_UNAVAILABLE', 'Server 网络不可达。');
   }
 
-  async connect(plugin, suppliedSecrets = {}) {
+  async connect(plugin, suppliedSecrets = {}, { signal = null, attemptToken = null } = {}) {
     if (plugin.pluginType !== 'server' || plugin.configState !== 'ready') throw new AppError('PLUGIN_CONFIG_INCOMPLETE', 'Server 插件配置不完整。');
     const resource = this.key(plugin);
+    const owner = attemptToken ?? Symbol('server-connect');
+    this.connectAttempts.set(resource, owner);
+    let connected = false;
+    const assertOwned = () => {
+      if (signal?.aborted || this.connectAttempts.get(resource) !== owner) throw new AppError('CONNECT_CANCELLED', '连接已被更新的尝试取代。');
+    };
     const transient = plugin.pluginInstanceId.startsWith('diagnostic-');
     if (transient) this.adapter.setOverride(resource,plugin);
     let saved = null;
@@ -188,29 +195,61 @@ export class ServerPluginRuntime extends EventEmitter {
     } catch (error) {
       if (!Object.keys(suppliedSecrets).length) {
         if (transient) this.adapter.clearOverride(resource);
+        if (this.connectAttempts.get(resource) === owner) this.connectAttempts.delete(resource);
         throw error;
       }
+    }
+    try { assertOwned(); }
+    catch (error) {
+      if (transient) this.adapter.clearOverride(resource);
+      if (this.connectAttempts.get(resource) === owner) this.connectAttempts.delete(resource);
+      throw error;
     }
     const secrets = { ...(saved ?? {}), ...suppliedSecrets };
     if (plugin.auth.type === 'password' && !secrets.password) {
       if (transient) this.adapter.clearOverride(resource);
+      if (this.connectAttempts.get(resource) === owner) this.connectAttempts.delete(resource);
       throw new AppError('CREDENTIAL_UNAVAILABLE', 'Server 密码尚未保存。');
     }
     let sock;
+    const abort = () => {
+      sock?.destroy();
+      this.broker.cancelPendingConnection?.(resource);
+    };
+    signal?.addEventListener('abort', abort, { once:true });
     try {
+      if (signal?.aborted) throw new AppError('CONNECT_CANCELLED', '连接已取消。');
       sock = await this.createUplinkSocket(plugin,secrets);
-      return await this.broker.connect(resource,secrets,{sock});
+      assertOwned();
+      const result = await this.broker.connect(resource,secrets,{sock});
+      assertOwned();
+      connected = true;
+      return result;
     } catch (error) {
       sock?.destroy();
       if (transient) this.adapter.clearOverride(resource);
       throw error;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      if (!connected && this.connectAttempts.get(resource) === owner) this.connectAttempts.delete(resource);
     }
   }
 
   async disconnect(plugin, reason = 'environment-disconnect') {
     const resource = this.key(plugin);
+    this.connectAttempts.delete(resource);
     try { return await this.broker.disconnect(resource,reason); }
     finally { if (plugin.pluginInstanceId.startsWith('diagnostic-')) this.adapter.clearOverride(resource); }
+  }
+
+  forceDisconnect(plugin, reason = 'forced-disconnect', {attemptToken = null} = {}) {
+    const resource = this.key(plugin);
+    if (attemptToken !== null && this.connectAttempts.get(resource) !== attemptToken) {
+      return Promise.resolve({connected:Boolean(this.status(plugin)?.connected),forced:false,stale:true});
+    }
+    this.connectAttempts.delete(resource);
+    this.broker.cancelPendingConnection?.(resource);
+    return this.disconnect(plugin, reason);
   }
 
   async openForward(projectId, environmentId, pluginInstanceId, targetHost, targetPort) {
@@ -224,8 +263,8 @@ export class ServerPluginRuntime extends EventEmitter {
     return this.broker.execute(resource, authorization.contextToken, command);
   }
 
-  listRemoteDirectory(plugin, remotePath) {
-    return this.broker.listRemoteDirectory(this.key(plugin), remotePath);
+  listRemoteDirectory(plugin, remotePath, options = {}) {
+    return this.broker.listRemoteDirectory(this.key(plugin), remotePath, options);
   }
 
   withRemoteReadSession(plugin, operation) {

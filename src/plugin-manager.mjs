@@ -15,12 +15,19 @@ export class PluginManager {
     return this.runtime(plugin).status(plugin);
   }
 
-  connect(plugin, secrets = {}) {
-    return this.runtime(plugin).connect(plugin, secrets);
+  connect(plugin, secrets = {}, options = {}) {
+    return this.runtime(plugin).connect(plugin, secrets, options);
   }
 
   disconnect(plugin, reason) {
     return this.runtime(plugin).disconnect(plugin, reason);
+  }
+
+  forceDisconnect(plugin, reason = 'forced-disconnect', options = {}) {
+    const runtime = this.runtime(plugin);
+    return typeof runtime.forceDisconnect === 'function'
+      ? runtime.forceDisconnect(plugin, reason, options)
+      : runtime.disconnect(plugin, reason);
   }
 
   health(plugin) {

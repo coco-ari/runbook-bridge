@@ -1,7 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { MysqlPluginRuntime } from '../src/mysql-plugin-runtime.mjs';
+import { MysqlPluginRuntime, mysqlRuntimeInternals } from '../src/mysql-plugin-runtime.mjs';
+
+test('MySQL connection failures identify the field or network layer that needs correction', () => {
+  const plugin = {target:{host:'db.example.test',port:3306,database:'orders'}};
+  const dns = mysqlRuntimeInternals.mysqlConnectError(Object.assign(new Error('getaddrinfo failed'),{code:'ENOTFOUND'}),plugin);
+  assert.equal(dns.code,'MYSQL_DNS_LOOKUP_FAILED');
+  assert.match(dns.message,/db\.example\.test/);
+  const timeout = mysqlRuntimeInternals.mysqlConnectError(Object.assign(new Error('timed out'),{code:'ETIMEDOUT'}),plugin);
+  assert.equal(timeout.code,'CONNECT_TIMEOUT');
+  assert.match(timeout.message,/公网\/内网地址.*白名单/);
+  const database = mysqlRuntimeInternals.mysqlConnectError(Object.assign(new Error('unknown database'),{code:'ER_BAD_DB_ERROR'}),plugin);
+  assert.equal(database.code,'DATABASE_NOT_FOUND');
+  assert.match(database.message,/orders.*重新查询数据库/);
+  const unsupportedTls = mysqlRuntimeInternals.mysqlConnectError(Object.assign(new Error('server does not support secure connection'),{code:'HANDSHAKE_NO_SSL_SUPPORT'}),plugin);
+  assert.equal(unsupportedTls.code,'MYSQL_TLS_NOT_SUPPORTED');
+  assert.match(unsupportedTls.message,/TLS.*关闭/);
+});
 
 test('MySQL database discovery returns visible non-system databases and releases the temporary route', async () => {
   const calls = [];
@@ -35,6 +51,42 @@ test('MySQL database discovery returns visible non-system databases and releases
     databases:['member','member_archive'], truncated:false,
   });
   assert.deepEqual(calls, ['relay:create','connection:end','relay:close']);
+});
+
+test('MySQL direct discovery uses the resolved target stream without a loopback relay', async () => {
+  const stream = new EventEmitter();
+  stream.destroy = () => undefined;
+  const calls = [];
+  const routeManager = {
+    createStreamRoute: async () => {
+      calls.push('stream:create');
+      return {stream,generation:9};
+    },
+    createRelay: async () => {
+      throw new Error('direct MySQL must not use the loopback relay');
+    },
+    closeRelay: async (_plugin, generation) => calls.push(`route:close:${generation}`),
+  };
+  const runtime = new MysqlPluginRuntime(routeManager,{load:async()=>null},{
+    client:{
+      createConnection:async(options)=>{
+        assert.equal(options.stream,stream);
+        assert.equal(options.host,'db.example.test');
+        return {
+          query:async()=>[[{Database:'orders'}]],
+          end:async()=>calls.push('connection:end'),
+        };
+      },
+    },
+  });
+  const plugin = {
+    projectId:'p1',environmentId:'e1',pluginInstanceId:'mysql-direct',pluginType:'mysql',configState:'draft',
+    target:{host:'db.example.test',port:3306,database:'',addressFamily:'ipv4Preferred'},auth:{username:'root'},
+    transport:{kind:'direct'},tls:{mode:'disabled'},limits:{timeoutMs:5000},
+  };
+
+  assert.deepEqual(await runtime.listDatabases(plugin,{password:'secret'}),{databases:['orders'],truncated:false});
+  assert.deepEqual(calls,['stream:create','connection:end','route:close:9']);
 });
 
 test('MySQL runtime accepts a write-capable account while Agent SQL remains read-only', async () => {

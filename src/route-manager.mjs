@@ -54,6 +54,7 @@ export class AddressResolver {
   constructor({ resolver = dns, maxCandidatesPerFamily = 3 } = {}) {
     this.resolver = resolver;
     this.maxCandidatesPerFamily = maxCandidatesPerFamily;
+    this.inflight = new Map();
   }
 
   async resolve(host, policy = 'ipv4Preferred') {
@@ -65,17 +66,45 @@ export class AddressResolver {
       }
       return [{ address: host, family: literalFamily }];
     }
+    const requestKey = `${policy}:${host}`;
+    const existing = this.inflight.get(requestKey);
+    if (existing) return existing;
+    const pending = this.resolveHostname(host, policy);
+    this.inflight.set(requestKey, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.inflight.get(requestKey) === pending) this.inflight.delete(requestKey);
+    }
+  }
+
+  async resolveHostname(host, policy) {
     const records = new Map();
-    await Promise.all([4, 6].map(async (family) => {
+    const families = candidateFamilies(policy);
+    let needsSystemFallback = false;
+    await Promise.all(families.map(async (family) => {
       try {
         const values = family === 4 ? await this.resolver.resolve4(host) : await this.resolver.resolve6(host);
         records.set(family, values.slice(0, this.maxCandidatesPerFamily));
       } catch (error) {
-        if (!['ENODATA', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEOUT', 'ESERVFAIL', 'EREFUSED'].includes(error?.code)) throw error;
+        if (!['ENODATA', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEOUT', 'ESERVFAIL', 'EREFUSED', 'ECONNREFUSED'].includes(error?.code)) throw error;
+        if (['EAI_AGAIN', 'ETIMEOUT', 'ESERVFAIL', 'EREFUSED', 'ECONNREFUSED'].includes(error?.code)) needsSystemFallback = true;
         records.set(family, []);
       }
     }));
-    const candidates = candidateFamilies(policy).flatMap((family) => (records.get(family) ?? []).map((address) => ({ address, family })));
+    let candidates = families.flatMap((family) => (records.get(family) ?? []).map((address) => ({ address, family })));
+    if ((needsSystemFallback || !candidates.length) && typeof this.resolver.lookup === 'function') {
+      try {
+        const values = await this.resolver.lookup(host, { all:true, verbatim:true });
+        candidates = families.flatMap((family) => values
+          .filter((value) => value.family === family)
+          .slice(0, this.maxCandidatesPerFamily)
+          .map((value) => ({address:value.address,family})));
+      } catch {
+        // Preserve the explicit DNS result and the stable error below when the
+        // operating-system resolver cannot provide a fallback either.
+      }
+    }
     if (!candidates.length) throw new AppError('ADDRESS_FAMILY_UNAVAILABLE', '目标没有符合地址族策略的 DNS 记录。');
     return candidates;
   }
@@ -167,6 +196,23 @@ export class LoopbackRelay {
   }
 }
 
+class SocketRoute {
+  constructor(socket) {
+    this.socket = socket;
+    this.closed = false;
+  }
+
+  async close() {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      this.socket.destroy();
+    } catch {
+      // The protocol driver may already have closed the socket.
+    }
+  }
+}
+
 export class RouteManager {
   constructor({ resolver = new AddressResolver(), vpnGuard = new WindowsVpnGuard(), serverRuntime = null, connect = connectSocket } = {}) {
     this.resolver = resolver;
@@ -175,6 +221,7 @@ export class RouteManager {
     this.connect = connect;
     this.relays = new Map();
     this.generations = new Map();
+    this.generationSequence = 0;
   }
 
   routeKey(plugin) {
@@ -186,7 +233,7 @@ export class RouteManager {
   }
 
   bumpGeneration(plugin) {
-    const next = this.generation(plugin) + 1;
+    const next = ++this.generationSequence;
     this.generations.set(this.routeKey(plugin), next);
     return next;
   }
@@ -230,21 +277,84 @@ export class RouteManager {
     return this.openDirect(plugin, Math.min(plugin.limits?.timeoutMs ?? 10_000, 4_000));
   }
 
-  async createRelay(plugin) {
+  async createRelay(plugin, { signal = null } = {}) {
+    if (signal?.aborted) throw new AppError('CONNECT_CANCELLED', '连接已取消。');
     const key = this.routeKey(plugin);
     await this.closeRelay(plugin);
+    if (signal?.aborted) throw new AppError('CONNECT_CANCELLED', '连接已取消。');
     const generation = this.bumpGeneration(plugin);
     const relay = new LoopbackRelay(() => this.openTarget(plugin));
-    const endpoint = await relay.start();
-    this.relays.set(key, { relay, generation, endpoint });
-    return { ...endpoint, generation };
+    const abort = () => {
+      const current = this.relays.get(key);
+      if (current?.relay === relay && current.generation === generation) this.relays.delete(key);
+      void relay.close().catch(() => undefined);
+    };
+    signal?.addEventListener('abort', abort, { once:true });
+    try {
+      const endpoint = await relay.start();
+      if (signal?.aborted || this.generation(plugin) !== generation) {
+        throw new AppError('CONNECT_CANCELLED', '连接路由已被更新的尝试取代。');
+      }
+      this.relays.set(key, { relay, generation, endpoint });
+      return { ...endpoint, generation };
+    } catch (error) {
+      await relay.close().catch(() => undefined);
+      if (!this.relays.has(key) && this.generation(plugin) === generation) this.generations.delete(key);
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+    }
   }
 
-  async closeRelay(plugin) {
+  async createStreamRoute(plugin, { signal = null } = {}) {
+    if (signal?.aborted) throw new AppError('CONNECT_CANCELLED', '连接已取消。');
+    const key = this.routeKey(plugin);
+    await this.closeRelay(plugin);
+    if (signal?.aborted) throw new AppError('CONNECT_CANCELLED', '连接已取消。');
+    const generation = this.bumpGeneration(plugin);
+    let socket = null;
+    let route = null;
+    const abort = () => {
+      const current = this.relays.get(key);
+      if (current?.relay === route && current.generation === generation) this.relays.delete(key);
+      if (socket) void new SocketRoute(socket).close();
+    };
+    signal?.addEventListener('abort', abort, { once:true });
+    try {
+      socket = await this.openTarget(plugin);
+      if (signal?.aborted || this.generation(plugin) !== generation) {
+        throw new AppError('CONNECT_CANCELLED', '连接路由已被更新的尝试取代。');
+      }
+      route = new SocketRoute(socket);
+      this.relays.set(key, { relay:route, generation, endpoint:null });
+      return { stream:socket, generation };
+    } catch (error) {
+      if (route) await route.close().catch(() => undefined);
+      else if (socket) await new SocketRoute(socket).close().catch(() => undefined);
+      if (!this.relays.has(key) && this.generation(plugin) === generation) this.generations.delete(key);
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+    }
+  }
+
+  async closeRelay(plugin, expectedGeneration = null) {
     const key = this.routeKey(plugin);
     const current = this.relays.get(key);
+    if (expectedGeneration !== null && current?.generation !== expectedGeneration) {
+      if (!current && this.generation(plugin) === expectedGeneration) this.generations.delete(key);
+      return { closed:false, stale:true };
+    }
+    // An unconditional close is an ownership boundary (user disconnect or a
+    // newer connect) and invalidates a relay that is still being created.
+    if (expectedGeneration === null) this.bumpGeneration(plugin);
     this.relays.delete(key);
     if (current) await current.relay.close();
+    // Generation values are globally unique, so a closed transient diagnostic
+    // resource needs no per-key tombstone. An older in-flight create observes
+    // zero (or a newer global value) and still fails its ownership check.
+    if (!this.relays.has(key)) this.generations.delete(key);
+    return { closed:Boolean(current), stale:false };
   }
 
   async closeEnvironment(projectId, environmentId) {
@@ -254,11 +364,13 @@ export class RouteManager {
       this.relays.delete(key);
       await entry.relay.close();
     }));
+    for (const key of this.generations.keys()) if (key.startsWith(prefix)) this.generations.delete(key);
   }
 
   async closeAll() {
     const entries = [...this.relays.values()];
     this.relays.clear();
+    this.generations.clear();
     await Promise.all(entries.map((entry) => entry.relay.close()));
   }
 }

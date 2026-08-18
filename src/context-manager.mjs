@@ -4,10 +4,17 @@ import { AppError } from './errors.mjs';
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
 
 export class EnvironmentContextManager {
-  constructor(workspaceStore, { ttlMs = DEFAULT_TTL_MS } = {}) {
+  constructor(workspaceStore, { ttlMs = DEFAULT_TTL_MS, now = Date.now } = {}) {
     this.workspaceStore = workspaceStore;
     this.ttlMs = ttlMs;
+    this.now = now;
     this.contexts = new Map();
+  }
+
+  pruneExpired(current = this.now()) {
+    for (const [token, context] of this.contexts) {
+      if (context.expiresAt <= current) this.contexts.delete(token);
+    }
   }
 
   async digest(projectId, environmentId) {
@@ -30,9 +37,10 @@ export class EnvironmentContextManager {
   }
 
   async open(projectId, environmentId, clientInstanceId = 'unknown') {
+    this.pruneExpired();
     const value = await this.digest(projectId, environmentId);
     const contextToken = crypto.randomBytes(32).toString('base64url');
-    const createdAt = Date.now();
+    const createdAt = this.now();
     this.contexts.set(contextToken, {
       projectId,
       environmentId,
@@ -47,9 +55,10 @@ export class EnvironmentContextManager {
   }
 
   async verifyEnvironment(projectId, environmentId, contextToken, clientInstanceId = 'unknown') {
+    const currentTime = this.now();
+    this.pruneExpired(currentTime);
     const context = this.contexts.get(String(contextToken ?? ''));
-    if (!context || context.expiresAt <= Date.now()) {
-      if (context) this.contexts.delete(contextToken);
+    if (!context) {
       throw new AppError('CONTEXT_REQUIRED', '请重新打开当前环境后再操作。');
     }
     if (context.projectId !== projectId || context.environmentId !== environmentId) {
@@ -81,12 +90,14 @@ export class EnvironmentContextManager {
   }
 
   invalidateEnvironment(projectId, environmentId) {
+    this.pruneExpired();
     for (const [token, context] of this.contexts) {
       if (context.projectId === projectId && context.environmentId === environmentId) this.contexts.delete(token);
     }
   }
 
   invalidateProject(projectId) {
+    this.pruneExpired();
     for (const [token, context] of this.contexts) {
       if (context.projectId === projectId) this.contexts.delete(token);
     }

@@ -1,0 +1,767 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import test from 'node:test';
+import vm from 'node:vm';
+import { fileURLToPath } from 'node:url';
+
+const testDirectory = path.dirname(fileURLToPath(import.meta.url));
+const rendererPath = path.join(testDirectory,'..','renderer','v2','app.js');
+const renderer = await fs.readFile(rendererPath,'utf8');
+
+function functionSource(name) {
+  const marker = `function ${name}`;
+  let start = renderer.indexOf(marker);
+  assert.notEqual(start,-1,`${name} must remain available for renderer regression tests`);
+  if (renderer.slice(Math.max(0,start - 6),start) === 'async ') start -= 6;
+  const signatureEnd = renderer.indexOf(') {',start);
+  assert.notEqual(signatureEnd,-1,`${name} must use a standard function body`);
+  const bodyStart = signatureEnd + 2;
+  let depth = 0;
+  let quote = null;
+  let lineComment = false;
+  let blockComment = false;
+  let escaped = false;
+  for (let index = bodyStart; index < renderer.length; index += 1) {
+    const character = renderer[index];
+    const next = renderer[index + 1];
+    if (lineComment) {
+      if (character === '\n') lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (character === '*' && next === '/') { blockComment = false; index += 1; }
+      continue;
+    }
+    if (quote) {
+      if (escaped) { escaped = false; continue; }
+      if (character === '\\') { escaped = true; continue; }
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '/' && next === '/') { lineComment = true; index += 1; continue; }
+    if (character === '/' && next === '*') { blockComment = true; index += 1; continue; }
+    if (character === '"' || character === "'" || character === '`') { quote = character; continue; }
+    if (character === '{') depth += 1;
+    if (character === '}' && --depth === 0) return renderer.slice(start,index + 1);
+  }
+  throw new Error(`Could not extract ${name}`);
+}
+
+function install(context,names) {
+  vm.runInContext(names.map(functionSource).join('\n'),context);
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise,rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return {promise,resolve,reject};
+}
+
+test('partial runtime preserves a full plugin map, while partial-to-partial replaces the preview', () => {
+  const context = vm.createContext({result:null});
+  install(context,['runtimeTimestamp','runtimeSnapshotIsCurrent','mergeRuntimeSnapshot']);
+  const fullPlugins = Object.fromEntries(Array.from({length:8},(_,index) => [`plugin-${index + 1}`,{phase:'connected'}]));
+  context.current = {sequence:7,plugins:fullPlugins,pluginsPartial:false,connectedCount:8};
+  context.incoming = {sequence:7,plugins:{'plugin-1':{phase:'error'},'plugin-2':{phase:'connected'}},pluginsPartial:true,connectedCount:7};
+  assert.equal(vm.runInContext('runtimeSnapshotIsCurrent(incoming,current)',context),true);
+  vm.runInContext('result = mergeRuntimeSnapshot(incoming,current);',context);
+  assert.equal(Object.keys(context.result.plugins).length,8);
+  assert.equal(context.result.plugins['plugin-1'].phase,'error');
+  assert.equal(context.result.plugins['plugin-8'].phase,'connected');
+  assert.equal(context.result.connectedCount,7);
+  assert.equal(context.result.pluginsPartial,false);
+
+  context.current = {sequence:8,plugins:{old:{phase:'connected'}},pluginsPartial:true};
+  context.incoming = {sequence:9,plugins:{next:{phase:'disconnected'}},pluginsPartial:true};
+  assert.equal(vm.runInContext('runtimeSnapshotIsCurrent(incoming,current)',context),true);
+  vm.runInContext('result = mergeRuntimeSnapshot(incoming,current);',context);
+  assert.deepEqual(Object.keys(context.result.plugins),['next']);
+  assert.equal(context.result.pluginsPartial,true);
+  context.incoming = {sequence:7,plugins:{stale:{phase:'connected'}},pluginsPartial:true};
+  assert.equal(vm.runInContext('runtimeSnapshotIsCurrent(incoming,current)',context),false);
+});
+
+test('plugin detail and diagnostic cache keys isolate identical plugin ids across scopes', () => {
+  const context = vm.createContext({state:{projectId:'project-a',environmentId:'env',detailTabs:{}}});
+  install(context,['pluginStateKey','detailTab']);
+  const first = vm.runInContext("pluginStateKey('shared','project-a','env')",context);
+  const second = vm.runInContext("pluginStateKey('shared','project-b','env')",context);
+  assert.notEqual(first,second);
+  context.state.detailTabs[first] = 'audit';
+  context.plugin = {projectId:'project-b',environmentId:'env',pluginInstanceId:'shared'};
+  assert.equal(vm.runInContext('detailTab(plugin)',context),'connection');
+});
+
+test('a pending environment connect can be cancelled and its late response cannot win', async () => {
+  const connect = deferred();
+  let cancelCalls = 0;
+  const state = {
+    projectId:'project',environmentId:'environment',projectOverviewActive:false,
+    runtimeByScope:{},runtime:null,pluginFormDiagnostic:null,pluginDiagnostics:{},
+  };
+  const context = vm.createContext({
+    state,
+    inFlightOperations:new Map(),
+    runtimeMutationGenerations:new Map(),
+    api:{
+      connectEnvironment:() => connect.promise,
+      cancelEnvironment:async () => {
+        cancelCalls += 1;
+        return {ok:true,data:{projectId:'project',environmentId:'environment',sequence:2,updatedAt:'2026-01-01T00:00:02.000Z',phase:'disconnected',plugins:{}}};
+      },
+      disconnectEnvironment:async () => { throw new Error('unexpected disconnect'); },
+      retryEnvironment:async () => { throw new Error('unexpected retry'); },
+    },
+    environmentFor:() => ({revision:1}),
+    renderRuntimeOperationSurfaces:() => {},
+    refreshWorkspaceOverview:async () => true,
+  });
+  install(context,[
+    'call','scopeKey','scopeMatches','pluginStateCoordinates','operationInFlight','beginOperation','finishOperation',
+    'runtimeOperationKey','beginRuntimeOperation','runtimeOperationIsLatest','runtimeTimestamp','runtimeSnapshotIsCurrent',
+    'mergeRuntimeSnapshot','acceptRuntimeSnapshot','scopeDiagnosticPending','handleEnvironmentRuntimeAction',
+  ]);
+  const connectTask = vm.runInContext("handleEnvironmentRuntimeAction('connect','project','environment')",context);
+  await Promise.resolve();
+  const cancelTask = vm.runInContext("handleEnvironmentRuntimeAction('cancel','project','environment')",context);
+  await cancelTask;
+  assert.equal(cancelCalls,1);
+  connect.resolve({ok:true,data:{projectId:'project',environmentId:'environment',sequence:99,updatedAt:'2026-01-01T00:00:99.000Z',phase:'connected',plugins:{}}});
+  await connectTask;
+  assert.equal(state.runtime.phase,'disconnected');
+  assert.equal(state.runtime.sequence,2);
+});
+
+test('duplicate environment delete confirmation sends one request until its UI transaction finishes', async () => {
+  const deletion = deferred();
+  let deleteCalls = 0;
+  const button = {disabled:false,setAttribute(){},removeAttribute(){}};
+  const context = vm.createContext({
+    inFlightOperations:new Map(),
+    api:{deleteEnvironment:() => { deleteCalls += 1; return deletion.promise; }},
+    button,
+    completions:0,
+    setElementBusy:(element,busy) => { element.disabled = Boolean(busy); },
+  });
+  install(context,[
+    'call','scopeKey','beginOperation','finishOperation','environmentDeleteOperationKey','deleteEnvironmentOnce',
+  ]);
+  const first = vm.runInContext("deleteEnvironmentOnce('project','environment',button,async () => { completions += 1; })",context);
+  const duplicate = vm.runInContext("deleteEnvironmentOnce('project','environment',button,async () => { completions += 1; })",context);
+  assert.equal(button.disabled,true);
+  assert.equal(deleteCalls,1);
+  assert.equal(await duplicate,false);
+  deletion.resolve({ok:true,data:{}});
+  assert.equal(await first,true);
+  assert.equal(context.completions,1);
+  assert.equal(button.disabled,false);
+  assert.equal(context.inFlightOperations.size,0);
+});
+
+test('environment deletion reports a post-commit refresh failure without retrying the destructive request', async () => {
+  let deleteCalls = 0;
+  let warning = '';
+  const button = {disabled:false,setAttribute(){},removeAttribute(){}};
+  const context = vm.createContext({
+    inFlightOperations:new Map(),
+    api:{deleteEnvironment:async () => { deleteCalls += 1; return {ok:true,data:{credentialsPreserved:true}}; }},
+    setElementBusy:(element,busy) => { element.disabled = Boolean(busy); },
+    toast:(value,isError) => { warning = `${isError}:${value}`; },
+  });
+  install(context,['call','scopeKey','beginOperation','finishOperation','environmentDeleteOperationKey','deleteEnvironmentOnce']);
+  context.button = button;
+  const deleted = await vm.runInContext("deleteEnvironmentOnce('project','environment',button,async () => { throw new Error('overview unavailable'); })",context);
+  assert.equal(deleted,true);
+  assert.equal(deleteCalls,1);
+  assert.match(warning,/true:环境配置已删除/);
+  assert.match(warning,/本机加密凭据仍保留/);
+  assert.match(warning,/列表刷新失败/);
+});
+
+test('runbook render and a late load preserve an edited draft', async () => {
+  const read = deferred();
+  const state = {
+    projectId:'project',environmentId:'environment',view:'runbook',
+    runbookContent:'',runbookDraft:'',runbookRevision:null,runbookScopeKey:null,
+    runbookEditing:false,runbookDirty:false,runbookLoading:false,runbookLoadGeneration:0,
+  };
+  const context = vm.createContext({
+    state,
+    api:{readRunbook:() => read.promise},
+    renderRunbook:() => {},
+    activeEnvironment:() => ({revision:1}),
+  });
+  install(context,['call','scopeKey','loadRunbook','runbookVisibleContent']);
+  const load = vm.runInContext('loadRunbook()',context);
+  state.runbookDraft = '用户尚未保存的内容';
+  state.runbookDirty = true;
+  state.runbookEditing = true;
+  assert.equal(vm.runInContext('runbookVisibleContent()',context),'用户尚未保存的内容');
+  read.resolve({ok:true,data:{content:'服务器上的旧内容'}});
+  await load;
+  assert.equal(state.runbookDraft,'用户尚未保存的内容');
+  assert.equal(state.runbookDirty,true);
+  assert.equal(state.runbookEditing,true);
+});
+
+test('revealed credentials cannot write into a later scope and leaving only clears revealed plaintext', async () => {
+  const reveal = deferred();
+  const input = {type:'password',value:'*****',dataset:{credentialState:'stored'}};
+  const button = {dataset:{passwordTarget:'pluginPassword'},disabled:false,setAttribute(){},removeAttribute(){}};
+  const authType = {value:'password'};
+  const state = {projectId:'project-a',environmentId:'env-a',editingPlugin:{pluginInstanceId:'shared',pluginType:'server'},credentialRevealGeneration:0};
+  const context = vm.createContext({
+    state,
+    button,
+    api:{revealCredential:() => reveal.promise},
+    $:(selector) => selector === '#pluginPassword' ? input : selector === '#pluginAuthType' ? authType : selector.includes('data-password-target') ? button : null,
+    setElementBusy:(element,busy) => { element.disabled = Boolean(busy); },
+    updatePasswordToggle:() => {},
+    markPasswordStored:() => { input.type = 'password'; input.value = '*****'; input.dataset.credentialState = 'stored'; },
+    resetPasswordControl:() => { input.type = 'password'; input.value = ''; input.dataset.credentialState = 'empty'; },
+    primaryCredentialField:() => 'password',
+    pluginFormVisible:() => true,
+  });
+  install(context,['call','scopeMatches','clearTransientRevealedCredentials','togglePasswordVisibility']);
+  const pending = vm.runInContext('togglePasswordVisibility(button)',context);
+  state.projectId = 'project-b';
+  state.environmentId = 'env-b';
+  vm.runInContext('clearTransientRevealedCredentials()',context);
+  reveal.resolve({ok:true,data:{value:'old-secret'}});
+  await pending;
+  assert.equal(input.value,'*****');
+  assert.equal(input.dataset.credentialState,'stored');
+  assert.equal(button.disabled,false);
+
+  input.value = 'unsaved-secret';
+  input.dataset.credentialState = 'edited';
+  vm.runInContext('clearTransientRevealedCredentials()',context);
+  assert.equal(input.value,'unsaved-secret');
+  assert.equal(input.dataset.credentialState,'edited');
+});
+
+test('credential status from another environment cannot mark a reused plugin id as stored', async () => {
+  const status = deferred();
+  let storedMarks = 0;
+  const state = {projectId:'project',environmentId:'env-a',editingPlugin:{pluginInstanceId:'shared'},credentialProbeGeneration:1};
+  const context = vm.createContext({
+    state,
+    api:{credentialStatus:() => status.promise},
+    $:() => ({dataset:{credentialState:'empty'}}),
+    markPasswordStored:() => { storedMarks += 1; },
+    pluginFormVisible:() => true,
+  });
+  install(context,['call','scopeMatches','loadCredentialIndicators']);
+  context.plugin = {projectId:'project',environmentId:'env-a',pluginInstanceId:'shared'};
+  const pending = vm.runInContext('loadCredentialIndicators(plugin,1)',context);
+  state.environmentId = 'env-b';
+  state.credentialProbeGeneration = 2;
+  status.resolve({ok:true,data:{fields:{primary:true,proxy:true}}});
+  await pending;
+  assert.equal(storedMarks,0);
+});
+
+test('only explicitly edited non-empty secrets are emitted by the form', () => {
+  const inputs = {pluginPassword:{value:'secret',dataset:{credentialState:'revealed'}},pluginProxyPassword:{value:'',dataset:{credentialState:'edited'}}};
+  const context = vm.createContext({$:(selector) => inputs[selector.slice(1)]});
+  install(context,['editedPasswordValue']);
+  assert.equal(vm.runInContext("editedPasswordValue('pluginPassword')",context),'');
+  assert.equal(vm.runInContext("editedPasswordValue('pluginProxyPassword')",context),'');
+  inputs.pluginPassword.dataset.credentialState = 'edited';
+  assert.equal(vm.runInContext("editedPasswordValue('pluginPassword')",context),'secret');
+});
+
+test('legacy credential confirmation is scope-bound and never includes plaintext in its IPC payload', async () => {
+  let request = null;
+  let refreshed = null;
+  let message = '';
+  let confirmation = '';
+  const scope = {projectId:'project',environmentId:'env',pluginInstanceId:'server'};
+  const state = {
+    projectId:'project',environmentId:'env',credentialProbeGeneration:3,
+    editingPlugin:{...scope,revision:7},
+    credentialMigration:{
+      status:'confirmation-required',scope,expectedRevision:7,sourceSha256:'a'.repeat(64),
+      sourceBinding:{host:'old.example',port:22,username:'deploy'},
+      currentBinding:{host:'new.example',port:22,username:'deploy'},
+      changedFields:{host:true,proxyType:true},
+    },
+  };
+  const button = {isConnected:true};
+  const context = vm.createContext({
+    state,api:{confirmCredentialMigration:async (payload) => { request = payload; return {ok:true,data:{imported:true,preserved:true}}; }},
+    confirm:(value) => { confirmation = value; return true; },scopeMatches:() => true,pluginFormVisible:() => true,
+    beginOperation:() => ({token:true}),finishOperation:() => {},setElementBusy:() => {},
+    renderCredentialMigrationNotice:() => {},
+    loadCredentialIndicators:async (plugin,generation) => { refreshed = {plugin,generation}; },
+    toast:(value) => { message = value; },
+  });
+  install(context,['call','credentialMigrationBindingLabel','credentialMigrationChangedLabels','confirmCredentialMigration']);
+  context.button = button;
+  await vm.runInContext('confirmCredentialMigration(button)',context);
+  assert.deepEqual(JSON.parse(JSON.stringify(request)),{...scope,expectedRevision:7,sourceSha256:'a'.repeat(64)});
+  assert.doesNotMatch(JSON.stringify(request),/must-not-leak|old\.example|new\.example/);
+  assert.equal(state.credentialMigration,null);
+  assert.equal(refreshed.generation,4);
+  assert.match(message,/旧凭据已安全沿用/);
+  assert.match(confirmation,/旧凭据目标：deploy@old\.example:22/);
+  assert.match(confirmation,/当前插件目标：deploy@new\.example:22/);
+  assert.match(confirmation,/变化项：主机、代理方式/);
+  context.binding = {ssh:{host:'old.example',port:22,username:'deploy',password:'must-not-leak'}};
+  assert.equal(vm.runInContext('credentialMigrationBindingLabel(binding)',context),'deploy@old.example:22');
+});
+
+test('the unified leave guard preserves edits on cancel and clears pending form diagnostics only after confirmation', () => {
+  let allowLeave = false;
+  let clearedWith = null;
+  const state = {
+    projectId:'project',environmentId:'env',
+    runbookContent:'saved',runbookDraft:'draft',runbookDirty:true,runbookEditing:true,
+    pluginFormMode:'inline',pluginFormInitial:'initial',inlineConfigPluginId:'plugin',
+    pluginFormDiagnostic:{status:'pending',scope:{projectId:'project',environmentId:'env',pluginInstanceId:'plugin'}},
+    pluginDiagnostics:{},diagnosticGeneration:4,
+  };
+  const context = vm.createContext({
+    state,
+    inFlightOperations:new Map(),
+    confirm:() => allowLeave,
+    pluginFormDirty:() => true,
+    clearTransientRevealedCredentials:(options) => { clearedWith = options; },
+  });
+  install(context,['scopeKey','operationInFlight','currentScopeSaveInFlight','mayLeaveCurrentScope','pluginStateCoordinates','scopeDiagnosticPending']);
+  assert.equal(vm.runInContext('mayLeaveCurrentScope()',context),false);
+  assert.equal(state.runbookDraft,'draft');
+  assert.equal(state.pluginFormDiagnostic.status,'pending');
+  assert.equal(vm.runInContext("scopeDiagnosticPending('project','env')",context),true);
+
+  allowLeave = true;
+  assert.equal(vm.runInContext('mayLeaveCurrentScope()',context),true);
+  assert.equal(state.runbookDraft,'saved');
+  assert.equal(state.runbookDirty,false);
+  assert.equal(state.pluginFormDiagnostic,null);
+  assert.equal(state.diagnosticGeneration,5);
+  assert.equal(clearedWith.discardEdited,true);
+  assert.equal(vm.runInContext("scopeDiagnosticPending('project','env')",context),false);
+});
+
+test('navigation is blocked without clearing drafts while the current scope is saving', () => {
+  let confirmations = 0;
+  let clears = 0;
+  let message = '';
+  const state = {
+    projectId:'project',environmentId:'env',runbookDirty:false,
+    pluginFormMode:'inline',pluginFormInitial:'saved',inlineConfigPluginId:'plugin',
+  };
+  const context = vm.createContext({
+    state,
+    inFlightOperations:new Map([['plugin-save:project/env:plugin',{}]]),
+    confirm:() => { confirmations += 1; return true; },
+    pluginFormDirty:() => true,
+    clearTransientRevealedCredentials:() => { clears += 1; },
+    toast:(value) => { message = value; },
+  });
+  install(context,['scopeKey','operationInFlight','currentScopeSaveInFlight','mayLeaveCurrentScope']);
+  assert.equal(vm.runInContext('mayLeaveCurrentScope()',context),false);
+  assert.equal(confirmations,0);
+  assert.equal(clears,0);
+  assert.match(message,/正在保存/);
+  assert.equal(state.pluginFormInitial,'saved');
+  context.inFlightOperations.clear();
+  context.inFlightOperations.set('runbook-save:project/env',{});
+  assert.equal(vm.runInContext('mayLeaveCurrentScope()',context),false);
+  assert.equal(confirmations,0);
+  assert.equal(clears,0);
+});
+
+test('a failed plugin save leaves the form draft and credential state untouched', async () => {
+  const state = {
+    projectId:'project',environmentId:'env',
+    editingPlugin:{pluginInstanceId:'plugin',revision:3},
+    pluginFormInitial:'draft-signature',pluginFormDiagnostic:{status:'failure'},inlineConfigPluginId:'plugin',
+  };
+  const context = vm.createContext({
+    state,
+    inFlightOperations:new Map(),
+    pluginFormPayload:() => ({input:{displayName:'Draft'},secrets:{password:'unsaved-secret'}}),
+    api:{updatePlugin:async () => ({ok:false,error:{message:'save failed'}})},
+    refreshEnvironmentMetadata:async () => { throw new Error('must not refresh after failed save'); },
+  });
+  install(context,['call','scopeKey','beginOperation','finishOperation','savePlugin']);
+  await assert.rejects(vm.runInContext('savePlugin()',context),/save failed/);
+  assert.equal(state.pluginFormInitial,'draft-signature');
+  assert.equal(state.inlineConfigPluginId,'plugin');
+  assert.equal(state.editingPlugin.pluginInstanceId,'plugin');
+});
+
+test('a committed plugin save with a runtime warning clears the saved credential draft and warns without retrying', async () => {
+  let updateCalls = 0;
+  let cleared = null;
+  let message = '';
+  const state = {
+    projectId:'project',environmentId:'env',pluginId:'plugin',selectionKind:'plugin',
+    editingPlugin:{projectId:'project',environmentId:'env',pluginInstanceId:'plugin',revision:3},
+    pluginFormInitial:'draft-signature',pluginFormDiagnostic:{status:'success'},inlineConfigPluginId:'plugin',detailTabs:{},
+  };
+  const context = vm.createContext({
+    state,inFlightOperations:new Map(),
+    pluginFormPayload:() => ({input:{displayName:'Saved'},secrets:{password:'new-secret'}}),
+    api:{updatePlugin:async () => {
+      updateCalls += 1;
+      return {ok:true,data:{
+        projectId:'project',environmentId:'env',pluginInstanceId:'plugin',revision:4,configState:'ready',
+        runtimeWarning:{code:'RUNTIME_CLEANUP_FAILED'},manualReconnectRequired:true,
+      }};
+    }},
+    clearTransientRevealedCredentials:(options) => { cleared = options; },
+    refreshEnvironmentMetadata:async () => {},scopeMatches:() => true,loadEnvironment:async () => true,
+    pluginDiagnosticAvailable:() => true,pluginDiagnosticConfigurationIssue:() => null,
+    pluginStateKey:() => 'plugin-key',renderShell:() => {},toast:(value) => { message = value; },
+  });
+  install(context,['call','scopeKey','beginOperation','finishOperation','pluginRuntimeWarningMessage','savePlugin']);
+  await vm.runInContext('savePlugin()',context);
+  assert.equal(updateCalls,1);
+  assert.equal(cleared.discardEdited,true);
+  assert.equal(state.pluginFormInitial,null);
+  assert.equal(state.pluginFormDiagnostic,null);
+  assert.equal(state.inlineConfigPluginId,null);
+  assert.match(message,/配置和密码已保存/);
+  assert.match(message,/手动断开并重新连接/);
+});
+
+test('a committed plugin deletion warning states that deletion succeeded and credentials remain', () => {
+  const context = vm.createContext({});
+  install(context,['pluginRuntimeWarningMessage']);
+  context.result = {runtimeWarning:{code:'RUNTIME_CLEANUP_FAILED'}};
+  const message = vm.runInContext("pluginRuntimeWarningMessage(result,'delete','数据库插件')",context);
+  assert.match(message,/数据库插件.*已删除/);
+  assert.match(message,/本机凭据仍保留/);
+  assert.match(message,/手动断开并重新连接环境/);
+});
+
+test('a committed plugin save with a pending recovery journal asks for restart without suggesting a retry or reconnect', async () => {
+  let cleared = null;
+  let message = '';
+  const state = {
+    projectId:'project',environmentId:'env',pluginId:'plugin',selectionKind:'plugin',
+    editingPlugin:{projectId:'project',environmentId:'env',pluginInstanceId:'plugin',revision:3},
+    pluginFormInitial:'draft-signature',pluginFormDiagnostic:null,inlineConfigPluginId:'plugin',detailTabs:{},
+  };
+  const context = vm.createContext({
+    state,inFlightOperations:new Map(),
+    pluginFormPayload:() => ({input:{displayName:'Saved'},secrets:{password:'new-secret'}}),
+    api:{updatePlugin:async () => ({ok:true,data:{
+      projectId:'project',environmentId:'env',pluginInstanceId:'plugin',revision:4,configState:'ready',
+      persistenceWarning:{code:'CONFIG_TRANSACTION_CLEANUP_PENDING',message:'提交记录将在重启后自动完成。'},
+    }})},
+    clearTransientRevealedCredentials:(options) => { cleared = options; },
+    refreshEnvironmentMetadata:async () => {},scopeMatches:() => true,loadEnvironment:async () => true,
+    pluginDiagnosticAvailable:() => true,pluginDiagnosticConfigurationIssue:() => null,
+    pluginStateKey:() => 'plugin-key',renderShell:() => {},toast:(value) => { message = value; },
+  });
+  install(context,['call','scopeKey','beginOperation','finishOperation','pluginRuntimeWarningMessage','savePlugin']);
+  await vm.runInContext('savePlugin()',context);
+  assert.equal(cleared.discardEdited,true);
+  assert.equal(state.pluginFormInitial,null);
+  assert.match(message,/配置和密码已保存/);
+  assert.match(message,/重启应用/);
+  assert.match(message,/不要重复保存/);
+  assert.doesNotMatch(message,/手动断开|重新连接/);
+});
+
+test('diagnostic pending and runtime transitions mutually block conflicting actions', () => {
+  const key = JSON.stringify(['project','env','plugin']);
+  const state = {
+    pluginFormDiagnostic:null,
+    pluginDiagnostics:{[key]:{status:'pending'}},
+    runtimeByScope:{'project/env':{plugins:{plugin:{phase:'disconnected'}}}},
+  };
+  const context = vm.createContext({state,inFlightOperations:new Map()});
+  install(context,['scopeKey','pluginStateCoordinates','scopeDiagnosticPending','runtimeScopeOperationInFlight','runtimeBlocksDiagnostic']);
+  context.plugin = {projectId:'project',environmentId:'env',pluginInstanceId:'plugin'};
+  assert.equal(vm.runInContext("scopeDiagnosticPending('project','env','plugin')",context),true);
+  state.pluginDiagnostics[key].status = 'success';
+  state.runtimeByScope['project/env'].plugins.plugin.phase = 'connecting';
+  assert.equal(vm.runInContext('runtimeBlocksDiagnostic(plugin)',context),true);
+  state.runtimeByScope['project/env'].plugins.plugin.phase = 'disconnected';
+  context.inFlightOperations.set('runtime:project/env:plugin:connect',{});
+  assert.equal(vm.runInContext('runtimeBlocksDiagnostic(plugin)',context),true);
+});
+
+test('accepting a first-use SSH fingerprint clears the old pending check before retrying', async () => {
+  let testCalls = 0;
+  const plugin = {
+    projectId:'project',environmentId:'env',pluginInstanceId:'server',pluginType:'server',configState:'ready',
+    target:{host:'example.test',port:22},revision:1,
+  };
+  const diagnosticKey = JSON.stringify(['project','env','server']);
+  const state = {
+    projectId:'project',environmentId:'env',pluginId:'server',selectionKind:'plugin',view:'plugins',
+    diagnosticGeneration:0,detailTabs:{},pluginDiagnostics:{},
+  };
+  const context = vm.createContext({
+    state,
+    activePlugin:() => plugin,
+    pluginDiagnosticAvailable:() => true,
+    runtimeBlocksDiagnostic:() => false,
+    scopeDiagnosticPending:() => state.pluginDiagnostics[diagnosticKey]?.status === 'pending',
+    pluginStateKey:() => diagnosticKey,
+    createPendingDiagnostic:(_plugin,requestId) => ({requestId,status:'pending',checks:[]}),
+    withUiContinuity:(render) => render(),renderResourcePane:() => {},renderDetailTopbar:() => {},renderView:() => {},
+    api:{testPlugin:async () => {
+      testCalls += 1;
+      if (testCalls === 1) return {ok:false,error:{code:'SSH_HOST_KEY_CONFIRM_REQUIRED',message:'confirm host key',details:{fingerprint:'SHA256:test'}}};
+      return {ok:true,data:{checks:[],reused:false,totalElapsedMs:1}};
+    }},
+    scopeMatches:() => true,
+    confirmAndSaveObservedHostKey:async () => true,
+    completedDiagnostic:(diagnostic,result) => ({...diagnostic,...result,status:'success'}),
+    failedDiagnostic:(diagnostic,error) => ({...diagnostic,status:'failure',summary:error.message}),
+    renderPluginFormDiagnostic:() => {},renderPluginDetail:() => {},
+  });
+  install(context,['call','testPlugin']);
+  await vm.runInContext('testPlugin()',context);
+  assert.equal(testCalls,2);
+  assert.equal(state.pluginDiagnostics[diagnosticKey].status,'success');
+});
+
+test('non-current preview resources load the full plugin before host-key confirmation', async () => {
+  let listedScope = null;
+  let confirmedPlugin = null;
+  const full = {projectId:'project',environmentId:'env',pluginInstanceId:'server',pluginType:'server',revision:4,target:{host:'example.test',port:22}};
+  const context = vm.createContext({
+    api:{listPlugins:async (scope) => { listedScope = scope; return {ok:true,data:[full]}; }},
+    observedHostKey:() => 'SHA256:test',
+    runtimeOperationIsLatest:() => true,
+    confirmAndSaveObservedHostKey:async (plugin) => { confirmedPlugin = plugin; return true; },
+  });
+  install(context,['call','fullPluginForRuntimeAction','confirmRuntimeObservedHostKey']);
+  context.preview = {pluginInstanceId:'server',pluginType:'server',displayName:'Preview only'};
+  context.scope = {projectId:'project',environmentId:'env',pluginInstanceId:'server'};
+  const confirmed = await vm.runInContext('confirmRuntimeObservedHostKey(preview,{reason:"SSH_HOST_KEY_CONFIRM_REQUIRED"},scope,{})',context);
+  assert.equal(confirmed,true);
+  assert.equal(JSON.stringify(listedScope),JSON.stringify({projectId:'project',environmentId:'env'}));
+  assert.equal(confirmedPlugin,full);
+});
+
+test('runtime status rendering is coalesced to one animation frame', () => {
+  let frame = null;
+  let frames = 0;
+  let projectRenders = 0;
+  let runtimeRenders = 0;
+  const context = vm.createContext({
+    state:{projectId:'project',environmentId:'env',dragSort:null,sortSaving:false,railRefreshPending:false,projectOverviewActive:false},
+    dirtyRuntimeScopes:new Set(),
+    runtimeRenderFrame:null,
+    requestAnimationFrame:(callback) => { frames += 1; frame = callback; return frames; },
+    withUiContinuity:(render) => render(),
+    renderProjects:() => { projectRenders += 1; },
+    renderProjectOverview:() => {},
+    renderRuntime:() => { runtimeRenders += 1; },
+  });
+  install(context,['scopeKey','scheduleRuntimeRender']);
+  context.first = {projectId:'project',environmentId:'env'};
+  vm.runInContext('scheduleRuntimeRender(first); scheduleRuntimeRender(first);',context);
+  assert.equal(frames,1);
+  frame();
+  assert.equal(projectRenders,1);
+  assert.equal(runtimeRenders,1);
+});
+
+test('workspace change bursts share one overview refresh', async () => {
+  let refreshes = 0;
+  const context = vm.createContext({
+    state:{
+      projectId:'current',environmentId:'env',projectOverviewActive:false,
+      projectOverviewActivityProjectId:null,projectOverviewActivityGeneration:0,
+      managedProjectId:null,environmentsByProject:{},dragSort:null,sortSaving:false,railRefreshPending:false,
+    },
+    queuedWorkspaceChanges:[],
+    workspaceChangeRefreshPromise:null,
+    refreshWorkspaceOverview:async () => { refreshes += 1; return true; },
+    $:() => ({open:false}),
+    renderEnvironmentManager:() => {},
+    loadEnvironment:async () => false,
+    toast:() => {},
+    withUiContinuity:(render) => render(),
+    renderProjects:() => {},
+    renderProjectOverview:() => {},
+    renderResourcePane:() => {},
+    showError:(error) => { throw error; },
+  });
+  install(context,['scopeMatches','invalidateWorkspaceActivity','dedupeWorkspaceChanges','drainWorkspaceChanges','queueWorkspaceChange']);
+  const first = vm.runInContext("queueWorkspaceChange({type:'project-updated',projectId:'other'})",context);
+  const second = vm.runInContext("queueWorkspaceChange({type:'environment-updated',projectId:'other'})",context);
+  assert.equal(first,second);
+  await first;
+  assert.equal(refreshes,1);
+});
+
+test('a failed workspace refresh keeps its event batch for the next attempt and unlocks activity refresh', async () => {
+  let refreshes = 0;
+  let shownErrors = 0;
+  let activityRenders = 0;
+  const refreshButton = {disabled:true,setAttribute(){},removeAttribute(){}};
+  const context = vm.createContext({
+    state:{
+      projectId:'project',environmentId:'env',projectOverviewActive:true,
+      projectOverviewActivityProjectId:'project',projectOverviewActivityGeneration:3,
+      projectOverviewActivityEntries:[{id:1}],projectOverviewActivityLoading:true,projectOverviewActivityRefreshing:true,
+      managedProjectId:null,environmentsByProject:{},dragSort:null,sortSaving:false,railRefreshPending:false,
+    },
+    queuedWorkspaceChanges:[],workspaceChangeRefreshPromise:null,
+    refreshWorkspaceOverview:async () => {
+      refreshes += 1;
+      if (refreshes === 1) throw new Error('temporary failure');
+      return true;
+    },
+    $:(selector) => selector === '[data-refresh-overview-activity]' ? refreshButton : {open:false},
+    setElementBusy:(element,busy) => { element.disabled = Boolean(busy); },
+    renderProjectOverviewActivity:() => { activityRenders += 1; },
+    renderEnvironmentManager:() => {},renderProjects:() => {},renderProjectOverview:() => {},renderResourcePane:() => {},
+    loadEnvironment:async () => false,toast:() => {},withUiContinuity:(render) => render(),
+    showError:() => { shownErrors += 1; },
+  });
+  install(context,['scopeMatches','invalidateWorkspaceActivity','dedupeWorkspaceChanges','drainWorkspaceChanges','queueWorkspaceChange']);
+  await vm.runInContext("queueWorkspaceChange({type:'environment-updated',projectId:'project',environmentId:'env'})",context);
+  assert.equal(refreshes,1);
+  assert.equal(shownErrors,1);
+  assert.equal(context.queuedWorkspaceChanges.length,1);
+  assert.equal(context.state.projectOverviewActivityRefreshing,false);
+  assert.equal(refreshButton.disabled,false);
+  assert.equal(activityRenders,1);
+  await vm.runInContext("queueWorkspaceChange({type:'environment-updated',projectId:'project',environmentId:'env'})",context);
+  assert.equal(refreshes,2);
+  assert.equal(context.queuedWorkspaceChanges.length,0);
+});
+
+test('audit refreshes are singleflight per scope and always restore the refresh button', async () => {
+  const audit = deferred();
+  let listCalls = 0;
+  let renders = 0;
+  const button = {disabled:false,setAttribute(){},removeAttribute(){}};
+  const state = {
+    projectId:'project',environmentId:'env',pluginId:'plugin',selectionKind:'plugin',view:'audit',
+    auditLoadGeneration:0,auditEntries:[],
+  };
+  const context = vm.createContext({
+    state,auditLoadPromises:new Map(),button,
+    api:{listAudit:() => { listCalls += 1; return audit.promise; }},
+    $:(selector) => selector === '#refreshAudit' ? button : null,
+    setElementBusy:(element,busy) => { element.disabled = Boolean(busy); },
+    renderAudit:() => { renders += 1; },
+  });
+  install(context,['call','currentAuditScope','auditScopeKey','auditScopeIsCurrent','syncAuditRefreshBusy','trackAuditLoad','beginAuditLoad','loadAudit']);
+  const first = vm.runInContext('loadAudit()',context);
+  const duplicate = vm.runInContext('loadAudit()',context);
+  assert.equal(listCalls,1);
+  assert.equal(button.disabled,true);
+  audit.resolve({ok:true,data:{entries:[{id:'entry'}]}});
+  await Promise.all([first,duplicate]);
+  assert.equal(listCalls,1);
+  assert.equal(renders,1);
+  assert.equal(state.auditEntries[0].id,'entry');
+  assert.equal(button.disabled,false);
+  assert.equal(context.auditLoadPromises.size,0);
+});
+
+test('clearing audit invalidates an older scan and performs one fresh read afterward', async () => {
+  const oldRead = deferred();
+  const freshRead = deferred();
+  let listCalls = 0;
+  const state = {
+    projectId:'project',environmentId:'env',pluginId:null,selectionKind:'environment',view:'audit',
+    auditLoadGeneration:0,auditEntries:[],
+  };
+  const button = {disabled:false,setAttribute(){},removeAttribute(){}};
+  const context = vm.createContext({
+    state,auditLoadPromises:new Map(),
+    api:{listAudit:() => (++listCalls === 1 ? oldRead.promise : freshRead.promise)},
+    $:(selector) => selector === '#refreshAudit' ? button : null,
+    setElementBusy:(element,busy) => { element.disabled = Boolean(busy); },renderAudit:() => {},
+  });
+  install(context,[
+    'call','currentAuditScope','auditScopeKey','auditScopeIsCurrent','syncAuditRefreshBusy',
+    'refreshAuditAfterMutation','trackAuditLoad','beginAuditLoad','loadAudit',
+  ]);
+  context.scope = {projectId:'project',environmentId:'env',pluginInstanceId:null};
+  const oldRequest = vm.runInContext('loadAudit()',context);
+  const refresh = vm.runInContext('refreshAuditAfterMutation(scope)',context);
+  assert.equal(listCalls,1);
+  oldRead.resolve({ok:true,data:{entries:[{id:'stale'}]}});
+  await oldRequest;
+  await Promise.resolve();
+  assert.equal(listCalls,2);
+  assert.equal(state.auditEntries.length,0);
+  freshRead.resolve({ok:true,data:{entries:[{id:'fresh'}]}});
+  await refresh;
+  assert.equal(state.auditEntries[0].id,'fresh');
+  assert.equal(button.disabled,false);
+});
+
+test('returning to a scope with a stale pending audit read starts a fresh read after it settles', async () => {
+  const staleRead = deferred();
+  const freshRead = deferred();
+  let listCalls = 0;
+  const state = {
+    projectId:'project',environmentId:'env',pluginId:'plugin-a',selectionKind:'plugin',view:'audit',
+    auditLoadGeneration:0,auditEntries:[],
+  };
+  const button = {disabled:false,setAttribute(){},removeAttribute(){}};
+  const context = vm.createContext({
+    state,auditLoadPromises:new Map(),
+    api:{listAudit:() => (++listCalls === 1 ? staleRead.promise : freshRead.promise)},
+    $:(selector) => selector === '#refreshAudit' ? button : null,
+    setElementBusy:(element,busy) => { element.disabled = Boolean(busy); },renderAudit:() => {},
+  });
+  install(context,[
+    'call','currentAuditScope','auditScopeKey','auditScopeIsCurrent','syncAuditRefreshBusy',
+    'trackAuditLoad','beginAuditLoad','loadAudit',
+  ]);
+  const first = vm.runInContext('loadAudit()',context);
+  state.pluginId = 'plugin-b';
+  state.auditLoadGeneration += 1;
+  state.pluginId = 'plugin-a';
+  state.auditLoadGeneration += 1;
+  const returned = vm.runInContext('loadAudit()',context);
+  const duplicate = vm.runInContext('loadAudit()',context);
+  assert.equal(listCalls,1);
+  staleRead.resolve({ok:true,data:{entries:[{id:'stale'}]}});
+  await first;
+  await Promise.resolve();
+  assert.equal(listCalls,2);
+  assert.equal(state.auditEntries.length,0);
+  freshRead.resolve({ok:true,data:{entries:[{id:'fresh'}]}});
+  await Promise.all([returned,duplicate]);
+  assert.equal(listCalls,2);
+  assert.equal(state.auditEntries[0].id,'fresh');
+  assert.equal(button.disabled,false);
+});
+
+test('confirmation execution cache is bounded while preserving the active feedback item', () => {
+  const state = {confirmationExecutions:{},confirmationFeedback:{item:{requestId:'execution-0'}}};
+  const context = vm.createContext({state,CONFIRMATION_EXECUTION_CACHE_LIMIT:100});
+  install(context,['pruneConfirmationExecutions','rememberConfirmationExecution']);
+  for (let index = 0; index < 150; index += 1) {
+    context.change = {type:'confirmation-execution',confirmationId:`execution-${index}`,status:'success'};
+    vm.runInContext('rememberConfirmationExecution(change)',context);
+  }
+  assert.equal(Object.keys(state.confirmationExecutions).length,101);
+  assert.ok(state.confirmationExecutions['execution-0']);
+  assert.ok(state.confirmationExecutions['execution-149']);
+  assert.equal(state.confirmationExecutions['execution-1'],undefined);
+});
+
+test('isolated project status is explicit and cannot masquerade as an empty healthy project', () => {
+  const project = {projectId:'broken',name:'broken',configurationError:{code:'PROJECT_CONFIG_INVALID',message:'项目配置损坏或不完整，已隔离该项目；其他项目仍可正常使用。'}};
+  const context = vm.createContext({state:{projects:[project]},projectSummary:() => { throw new Error('isolated projects must not use normal counts'); }});
+  install(context,['projectConfigurationError','projectIsIsolated','projectState','projectSubtitle']);
+  assert.equal(vm.runInContext("projectState('broken')",context),'failed');
+  assert.equal(vm.runInContext("projectSubtitle('broken')",context),'配置损坏，已隔离');
+  assert.match(renderer,/data-project-isolated="true"/);
+  assert.match(renderer,/configurationError\.message/);
+});

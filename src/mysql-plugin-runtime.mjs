@@ -26,6 +26,34 @@ function mysqlError(error, fallbackMessage = 'MySQL 操作失败。') {
   return new AppError('DATABASE_OPERATION_FAILED', fallbackMessage);
 }
 
+function mysqlConnectError(error, plugin, fallbackMessage = 'MySQL 连接初始化失败。') {
+  if (error instanceof AppError) return error;
+  const code = String(error?.code ?? '');
+  const host = plugin?.target?.host || '目标主机';
+  const port = plugin?.target?.port ?? 3306;
+  if (['ENOTFOUND','EAI_AGAIN'].includes(code)) {
+    return new AppError('MYSQL_DNS_LOOKUP_FAILED',`无法解析 MySQL 主机 ${host}，请检查地址是否完整、是否有多余空格。`);
+  }
+  if (code === 'ECONNREFUSED') {
+    return new AppError('MYSQL_CONNECTION_REFUSED',`${host}:${port} 拒绝连接，请检查端口、RDS 公网地址和访问白名单。`);
+  }
+  if (['ETIMEDOUT','ESOCKETTIMEDOUT','EHOSTUNREACH','ENETUNREACH'].includes(code)) {
+    return new AppError('CONNECT_TIMEOUT',`无法访问 ${host}:${port}，请检查公网/内网地址、VPN、RDS 白名单和防火墙。`);
+  }
+  if (code === 'ER_BAD_DB_ERROR' || code === 'ER_DBACCESS_DENIED_ERROR') {
+    return new AppError('DATABASE_NOT_FOUND',`数据库 ${plugin?.target?.database || '当前选择'} 不存在或当前账号无权访问，请重新查询数据库。`);
+  }
+  if (code === 'HANDSHAKE_NO_SSL_SUPPORT') {
+    return new AppError('MYSQL_TLS_NOT_SUPPORTED','目标 MySQL 不支持 TLS，请将 TLS 调整为“关闭”后重试。');
+  }
+  if (MYSQL_TLS_CODES.has(code) || /(?:ssl|tls|certificate|certificate verify)/i.test(String(error?.message ?? ''))) {
+    return new AppError('TLS_IDENTITY_FAILED','MySQL TLS 协商失败，请核对 TLS 模式和证书配置。');
+  }
+  const mapped = mysqlError(error,fallbackMessage);
+  if (mapped.code !== 'DATABASE_OPERATION_FAILED') return mapped;
+  return new AppError('PLUGIN_UNAVAILABLE',`${fallbackMessage} 请检查主机、端口、账号、TLS 和数据库选择。`);
+}
+
 function invalidatesSession(error) {
   if (!error) return false;
   if (error instanceof AppError) return ['DATABASE_QUERY_TIMEOUT', 'ROUTE_UNAVAILABLE', 'PLUGIN_UNAVAILABLE'].includes(error.code);
@@ -50,6 +78,30 @@ function sslOptions(plugin, secrets) {
     ...(secrets.clientCertPem ? { cert: secrets.clientCertPem } : {}),
     ...(secrets.clientKeyPem ? { key: secrets.clientKeyPem } : {}),
     ...(secrets.tlsPassphrase ? { passphrase: secrets.tlsPassphrase } : {}),
+  };
+}
+
+async function createMysqlRoute(routeManager, plugin, options = {}) {
+  if (typeof routeManager.createStreamRoute === 'function') {
+    return routeManager.createStreamRoute(plugin, options);
+  }
+  return routeManager.createRelay(plugin, options);
+}
+
+function mysqlConnectionOptions(plugin, secrets, route) {
+  return {
+    host: route.stream ? plugin.target.host : route.host,
+    port: route.stream ? plugin.target.port : route.port,
+    ...(route.stream ? { stream:route.stream } : {}),
+    user: plugin.auth.username,
+    password: secrets.password,
+    database: plugin.target.database || undefined,
+    connectTimeout: Math.min(plugin.limits.timeoutMs, 20_000),
+    multipleStatements: false,
+    namedPlaceholders: false,
+    supportBigNumbers: true,
+    decimalNumbers: false,
+    ...(sslOptions(plugin, secrets) ? { ssl:sslOptions(plugin, secrets) } : {}),
   };
 }
 
@@ -97,16 +149,17 @@ export class MysqlPluginRuntime extends EventEmitter {
     this.credentialVault = credentialVault;
     this.client = client;
     this.sessions = new Map();
+    this.connectAttempts = new Map();
   }
 
   status(plugin) {
     const session = this.sessions.get(key(plugin));
-    return { connected: Boolean(session), connectedAt: session?.connectedAt ?? null, routeGeneration: session?.routeGeneration ?? 0 };
+    return { connected: Boolean(session && !session.closing), connectedAt: session?.connectedAt ?? null, routeGeneration: session?.routeGeneration ?? 0 };
   }
 
   require(plugin) {
     const session = this.sessions.get(key(plugin));
-    if (!session) throw new AppError('PLUGIN_NOT_CONNECTED', 'MySQL 插件尚未连接。');
+    if (!session || session.closing) throw new AppError('PLUGIN_NOT_CONNECTED', 'MySQL 插件尚未连接。');
     return session;
   }
 
@@ -114,13 +167,14 @@ export class MysqlPluginRuntime extends EventEmitter {
     if (!session || session.closing || this.sessions.get(key(plugin)) !== session) return;
     session.closing = true;
     this.sessions.delete(key(plugin));
+    if (this.connectAttempts.get(key(plugin)) === session.attemptToken) this.connectAttempts.delete(key(plugin));
     const raw = session.connection?.connection ?? session.connection;
     try {
       raw?.destroy?.();
     } catch {
       // The socket may already have been closed by mysql2.
     }
-    await this.routeManager.closeRelay(plugin).catch(() => undefined);
+    await this.routeManager.closeRelay(plugin, session.routeGeneration).catch(() => undefined);
     this.emit('lifecycle', {
       type: 'lost',
       projectId: plugin.projectId,
@@ -143,35 +197,54 @@ export class MysqlPluginRuntime extends EventEmitter {
     }
   }
 
-  async connect(plugin, suppliedSecrets = {}) {
+  async connect(plugin, suppliedSecrets = {}, { signal = null, attemptToken = null } = {}) {
     if (plugin.pluginType !== 'mysql' || plugin.configState !== 'ready') throw new AppError('PLUGIN_CONFIG_INCOMPLETE', 'MySQL 插件配置不完整。');
-    await this.disconnect(plugin);
+    if (signal?.aborted) throw new AppError('CONNECT_CANCELLED', '连接已取消。');
+    const resource = key(plugin);
+    const owner = attemptToken ?? Symbol('mysql-connect');
+    this.connectAttempts.set(resource, owner);
+    let connected = false;
+    let relay;
+    let connection;
+    const assertOwned = () => {
+      if (signal?.aborted || this.connectAttempts.get(resource) !== owner) throw new AppError('CONNECT_CANCELLED', '连接已被更新的尝试取代。');
+    };
+    const abort = () => {
+      if (this.connectAttempts.get(resource) !== owner) return;
+      const managed = this.sessions.get(resource);
+      if (managed) {
+        this.sessions.delete(resource);
+        managed.closing = true;
+        const managedRaw = managed.connection?.connection ?? managed.connection;
+        try { managedRaw?.destroy?.(); } catch { /* Driver may already be closed. */ }
+        void this.routeManager.closeRelay(plugin, managed.routeGeneration).catch(() => undefined);
+      }
+      const raw = connection?.connection ?? connection;
+      try { raw?.destroy?.(); } catch { /* Driver may already be closed. */ }
+      if (relay?.generation !== undefined) void this.routeManager.closeRelay(plugin, relay.generation).catch(() => undefined);
+    };
+    signal?.addEventListener('abort', abort, {once:true});
+    try {
+    await this.disconnect(plugin, 'superseded-connect', {preserveAttemptToken:owner});
+    assertOwned();
     let saved = null;
     try {
       saved = await this.credentialVault.load(plugin);
     } catch (error) {
       if (!Object.keys(suppliedSecrets).length) throw error;
     }
+    assertOwned();
     const secrets = { ...(saved ?? {}), ...suppliedSecrets };
     if (!secrets.password) throw new AppError('CREDENTIAL_UNAVAILABLE', 'MySQL 密码尚未保存。');
-    const relay = await this.routeManager.createRelay(plugin);
-    let connection;
     try {
-      connection = await this.client.createConnection({
-        host: relay.host,
-        port: relay.port,
-        user: plugin.auth.username,
-        password: secrets.password,
-        database: plugin.target.database,
-        connectTimeout: Math.min(plugin.limits.timeoutMs, 20_000),
-        multipleStatements: false,
-        namedPlaceholders: false,
-        supportBigNumbers: true,
-        decimalNumbers: false,
-        ...(sslOptions(plugin, secrets) ? { ssl: sslOptions(plugin, secrets) } : {}),
-      });
+      if (signal?.aborted) throw new AppError('CONNECT_CANCELLED', '连接已取消。');
+      relay = await createMysqlRoute(this.routeManager, plugin, {signal});
+      assertOwned();
+      connection = await this.client.createConnection(mysqlConnectionOptions(plugin, secrets, relay));
+      assertOwned();
       await connection.query({ sql: 'SELECT 1 AS ai_ops_health', timeout: plugin.limits.timeoutMs });
-      const session = { connection, connectedAt: new Date().toISOString(), routeGeneration: relay.generation, bindingHash: plugin.revision, closing:false };
+      assertOwned();
+      const session = { connection, connectedAt: new Date().toISOString(), routeGeneration: relay.generation, bindingHash: plugin.revision, closing:false, attemptToken:owner };
       this.sessions.set(key(plugin), session);
       const raw = connection.connection ?? connection;
       const lost = (error) => {
@@ -180,13 +253,16 @@ export class MysqlPluginRuntime extends EventEmitter {
       };
       raw.on?.('error', (error) => { if (invalidatesSession(error)) lost(error); });
       raw.on?.('end', () => lost(new AppError('ROUTE_UNAVAILABLE', 'MySQL 连接已中断。')));
+      connected = true;
       return { connected: true, connectedAt: this.sessions.get(key(plugin)).connectedAt, routeGeneration: relay.generation };
     } catch (error) {
-      await connection?.end().catch(() => undefined);
-      await this.routeManager.closeRelay(plugin);
-      const mapped = mysqlError(error, 'MySQL 连接初始化失败。');
-      if (mapped.code === 'DATABASE_OPERATION_FAILED') throw new AppError('PLUGIN_UNAVAILABLE', mapped.message);
-      throw mapped;
+      try { await connection?.end?.(); } catch { /* Preserve the original connection error. */ }
+      if (relay?.generation !== undefined) await this.routeManager.closeRelay(plugin, relay.generation).catch(() => undefined);
+      throw mysqlConnectError(error,plugin,'MySQL 连接初始化失败。');
+    } finally {}
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      if (!connected && this.connectAttempts.get(resource) === owner) this.connectAttempts.delete(resource);
     }
   }
 
@@ -196,21 +272,10 @@ export class MysqlPluginRuntime extends EventEmitter {
     }
     const secrets = { ...suppliedSecrets };
     if (!secrets.password) throw new AppError('CREDENTIAL_UNAVAILABLE', '请先填写 MySQL 密码。');
-    const relay = await this.routeManager.createRelay(plugin);
+    const relay = await createMysqlRoute(this.routeManager, plugin);
     let connection;
     try {
-      connection = await this.client.createConnection({
-        host: relay.host,
-        port: relay.port,
-        user: plugin.auth.username,
-        password: secrets.password,
-        connectTimeout: Math.min(plugin.limits.timeoutMs, 20_000),
-        multipleStatements: false,
-        namedPlaceholders: false,
-        supportBigNumbers: true,
-        decimalNumbers: false,
-        ...(sslOptions(plugin, secrets) ? { ssl: sslOptions(plugin, secrets) } : {}),
-      });
+      connection = await this.client.createConnection(mysqlConnectionOptions(plugin, secrets, relay));
       const [rows] = await connection.query({ sql: 'SHOW DATABASES', timeout: plugin.limits.timeoutMs });
       const visible = [...new Set(rows
         .flatMap((row) => Object.values(row).slice(0, 1))
@@ -219,22 +284,36 @@ export class MysqlPluginRuntime extends EventEmitter {
         .sort((left, right) => left.localeCompare(right, 'zh-CN'));
       return { databases: visible.slice(0, 200), truncated: visible.length > 200 };
     } catch (error) {
-      const mapped = mysqlError(error, '无法连接 MySQL 并查询数据库列表。');
-      if (mapped.code === 'DATABASE_OPERATION_FAILED') throw new AppError('PLUGIN_UNAVAILABLE', mapped.message);
-      throw mapped;
+      throw mysqlConnectError(error,plugin,'无法连接 MySQL 并查询数据库列表。');
     } finally {
       await connection?.end().catch(() => undefined);
-      await this.routeManager.closeRelay(plugin);
+      await this.routeManager.closeRelay(plugin, relay.generation);
     }
   }
 
-  async disconnect(plugin) {
+  async disconnect(plugin, _reason = 'user', {preserveAttemptToken = null} = {}) {
+    if (preserveAttemptToken === null) this.connectAttempts.delete(key(plugin));
     const session = this.sessions.get(key(plugin));
-    this.sessions.delete(key(plugin));
     if (session) session.closing = true;
-    await session?.connection?.end().catch(() => undefined);
-    await this.routeManager.closeRelay(plugin);
+    try {
+      await session?.connection?.end().catch(() => undefined);
+    } finally {
+      if (this.sessions.get(key(plugin)) === session) this.sessions.delete(key(plugin));
+      await this.routeManager.closeRelay(plugin, session?.routeGeneration ?? null);
+    }
     return { connected: false };
+  }
+
+  async forceDisconnect(plugin, _reason = 'forced-disconnect', {attemptToken = null} = {}) {
+    const session = this.sessions.get(key(plugin));
+    if (attemptToken !== null && session?.attemptToken !== attemptToken) return {connected:Boolean(session),forced:false,stale:true};
+    this.sessions.delete(key(plugin));
+    if (attemptToken === null || this.connectAttempts.get(key(plugin)) === attemptToken) this.connectAttempts.delete(key(plugin));
+    if (session) session.closing = true;
+    const raw = session?.connection?.connection ?? session?.connection;
+    try { raw?.destroy?.(); } catch { /* Driver may already be closed. */ }
+    if (session?.routeGeneration !== undefined) await this.routeManager.closeRelay(plugin, session.routeGeneration).catch(() => undefined);
+    return { connected:false, forced:true };
   }
 
   async health(plugin) {
@@ -329,5 +408,5 @@ export class MysqlPluginRuntime extends EventEmitter {
 }
 
 export const mysqlRuntimeInternals = {
-  key, normalizeParams, capRows, sslOptions, SYSTEM_DATABASES, mysqlError, invalidatesSession,
+  key, normalizeParams, capRows, sslOptions, createMysqlRoute, mysqlConnectionOptions, SYSTEM_DATABASES, mysqlError, mysqlConnectError, invalidatesSession,
 };

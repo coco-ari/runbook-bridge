@@ -41,32 +41,63 @@ export class RedisPluginRuntime extends EventEmitter {
     this.credentialVault = credentialVault;
     this.factory = factory;
     this.sessions = new Map();
+    this.connectAttempts = new Map();
   }
 
   status(plugin) {
     const session = this.sessions.get(key(plugin));
-    return { connected: Boolean(session), connectedAt: session?.connectedAt ?? null, routeGeneration: session?.routeGeneration ?? 0 };
+    return { connected: Boolean(session && !session.closing), connectedAt: session?.connectedAt ?? null, routeGeneration: session?.routeGeneration ?? 0 };
   }
 
   require(plugin) {
     const session = this.sessions.get(key(plugin));
-    if (!session) throw new AppError('PLUGIN_NOT_CONNECTED', 'Redis 插件尚未连接。');
+    if (!session || session.closing) throw new AppError('PLUGIN_NOT_CONNECTED', 'Redis 插件尚未连接。');
     return session;
   }
 
-  async connect(plugin, suppliedSecrets = {}) {
+  async connect(plugin, suppliedSecrets = {}, { signal = null, attemptToken = null } = {}) {
     if (plugin.pluginType !== 'redis' || plugin.configState !== 'ready') throw new AppError('PLUGIN_CONFIG_INCOMPLETE', 'Redis 插件配置不完整。');
-    await this.disconnect(plugin);
+    if (signal?.aborted) throw new AppError('CONNECT_CANCELLED', '连接已取消。');
+    const resource = key(plugin);
+    const owner = attemptToken ?? Symbol('redis-connect');
+    this.connectAttempts.set(resource, owner);
+    let connected = false;
+    let relay;
+    let client;
+    const assertOwned = () => {
+      if (signal?.aborted || this.connectAttempts.get(resource) !== owner) throw new AppError('CONNECT_CANCELLED', '连接已被更新的尝试取代。');
+    };
+    const abort = () => {
+      if (this.connectAttempts.get(resource) !== owner) return;
+      const managed = this.sessions.get(resource);
+      if (managed) {
+        this.sessions.delete(resource);
+        managed.closing = true;
+        try { managed.client?.destroy?.(); } catch { /* Driver may already be closed. */ }
+        try { void Promise.resolve(managed.client?.disconnect?.()).catch(() => undefined); } catch { /* Already closed. */ }
+        void this.routeManager.closeRelay(plugin, managed.routeGeneration).catch(() => undefined);
+      }
+      try { client?.destroy?.(); } catch { /* Driver may already be closed. */ }
+      try { void Promise.resolve(client?.disconnect?.()).catch(() => undefined); } catch { /* Already closed. */ }
+      if (relay?.generation !== undefined) void this.routeManager.closeRelay(plugin, relay.generation).catch(() => undefined);
+    };
+    signal?.addEventListener('abort', abort, {once:true});
+    try {
+    await this.disconnect(plugin, 'superseded-connect', {preserveAttemptToken:owner});
+    assertOwned();
     let saved = null;
     try {
       saved = await this.credentialVault.load(plugin);
     } catch (error) {
       if (!Object.keys(suppliedSecrets).length) throw error;
     }
+    assertOwned();
     const secrets = { ...(saved ?? {}), ...suppliedSecrets };
-    const relay = await this.routeManager.createRelay(plugin);
     const tls = plugin.tls?.mode && plugin.tls.mode !== 'disabled';
-    const client = this.factory({
+    try {
+      relay = await this.routeManager.createRelay(plugin, {signal});
+      assertOwned();
+      client = this.factory({
       // RESP3 starts with HELLO, which Redis < 6 and some compatible servers
       // do not implement. The exposed operations only need RESP2 semantics.
       RESP: 2,
@@ -93,41 +124,67 @@ export class RedisPluginRuntime extends EventEmitter {
       ...(plugin.auth.username ? { username: plugin.auth.username } : {}),
       ...(secrets.password ? { password: secrets.password } : {}),
       disableOfflineQueue: true,
-    });
-    let session = null;
-    const lost = (error) => {
-      if (!session || session.closing || this.sessions.get(key(plugin)) !== session) return;
-      this.sessions.delete(key(plugin));
-      this.routeManager.closeRelay(plugin).catch(() => undefined);
-      this.emit('lifecycle', { type:'lost', projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, error });
-    };
-    client.on?.('error', (error) => lost(error));
-    client.on?.('end', () => lost(new AppError('ROUTE_UNAVAILABLE', 'Redis 连接已中断。')));
-    try {
+      });
+      let session = null;
+      const lost = (error) => {
+        if (!session || session.closing || this.sessions.get(key(plugin)) !== session) return;
+        this.sessions.delete(key(plugin));
+        if (this.connectAttempts.get(resource) === session.attemptToken) this.connectAttempts.delete(resource);
+        this.routeManager.closeRelay(plugin, session.routeGeneration).catch(() => undefined);
+        this.emit('lifecycle', { type:'lost', projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, error });
+      };
+      client.on?.('error', (error) => lost(error));
+      client.on?.('end', () => lost(new AppError('ROUTE_UNAVAILABLE', 'Redis 连接已中断。')));
       await client.connect();
+      assertOwned();
       await client.ping();
-      session = { client, connectedAt: new Date().toISOString(), routeGeneration: relay.generation, closing:false };
+      assertOwned();
+      session = { client, connectedAt: new Date().toISOString(), routeGeneration: relay.generation, closing:false, attemptToken:owner };
       this.sessions.set(key(plugin), session);
+      connected = true;
       return { connected: true, connectedAt: this.sessions.get(key(plugin)).connectedAt, routeGeneration: relay.generation };
     } catch (error) {
-      await client.disconnect?.().catch(() => undefined);
-      await this.routeManager.closeRelay(plugin);
+      try { await Promise.resolve(client?.disconnect?.()).catch(() => undefined); }
+      catch { /* Preserve the original connection error. */ }
+      if (relay?.generation !== undefined) await this.routeManager.closeRelay(plugin, relay.generation).catch(() => undefined);
+      if (error instanceof AppError) throw error;
       if (/wrongpass|noauth|authentication/i.test(String(error?.message ?? ''))) throw new AppError('AUTHENTICATION_FAILED', 'Redis 用户名或密码认证失败。');
       if (['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID'].includes(error?.code)) throw new AppError('TLS_IDENTITY_FAILED', 'Redis TLS 身份校验失败。');
       throw new AppError('PLUGIN_UNAVAILABLE', 'Redis 连接失败。');
+    } finally {}
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      if (!connected && this.connectAttempts.get(resource) === owner) this.connectAttempts.delete(resource);
     }
   }
 
-  async disconnect(plugin) {
+  async disconnect(plugin, _reason = 'user', {preserveAttemptToken = null} = {}) {
+    if (preserveAttemptToken === null) this.connectAttempts.delete(key(plugin));
     const session = this.sessions.get(key(plugin));
-    this.sessions.delete(key(plugin));
     if (session) session.closing = true;
-    if (session?.client) {
-      if (session.client.isOpen) await session.client.quit().catch(() => session.client.disconnect?.());
-      else await session.client.disconnect?.().catch(() => undefined);
+    try {
+      if (session?.client) {
+        if (session.client.isOpen) await session.client.quit().catch(() => session.client.disconnect?.());
+        else await session.client.disconnect?.().catch(() => undefined);
+      }
+    } finally {
+      if (this.sessions.get(key(plugin)) === session) this.sessions.delete(key(plugin));
+      await this.routeManager.closeRelay(plugin, session?.routeGeneration ?? null);
     }
-    await this.routeManager.closeRelay(plugin);
     return { connected: false };
+  }
+
+  async forceDisconnect(plugin, _reason = 'forced-disconnect', {attemptToken = null} = {}) {
+    const session = this.sessions.get(key(plugin));
+    if (attemptToken !== null && session?.attemptToken !== attemptToken) return {connected:Boolean(session),forced:false,stale:true};
+    this.sessions.delete(key(plugin));
+    if (attemptToken === null || this.connectAttempts.get(key(plugin)) === attemptToken) this.connectAttempts.delete(key(plugin));
+    if (session) session.closing = true;
+    try { session?.client?.destroy?.(); } catch { /* Driver may already be closed. */ }
+    try { void Promise.resolve(session?.client?.disconnect?.()).catch(() => undefined); }
+    catch { /* Driver may already be closed. */ }
+    if (session?.routeGeneration !== undefined) await this.routeManager.closeRelay(plugin, session.routeGeneration).catch(() => undefined);
+    return { connected:false, forced:true };
   }
 
   async health(plugin) {

@@ -84,8 +84,8 @@ function agentPluginInput(params) {
 }
 
 export class V2Service {
-  constructor({ workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, operationGate = null, serverOperations, credentialVault, workspaceChanged = null }) {
-    Object.assign(this, { workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault, workspaceChanged });
+  constructor({ workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, operationGate = null, serverOperations, credentialVault, mutationCoordinator = null, workspaceChanged = null }) {
+    Object.assign(this, { workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault, mutationCoordinator, workspaceChanged });
     this.operationGate = operationGate ?? new OperationGate(confirmationManager);
   }
 
@@ -128,10 +128,31 @@ export class V2Service {
   }
 
   async addPlugin(params) {
+    const operation = () => this.addPluginUnlocked(params);
+    return this.mutationCoordinator
+      ? this.mutationCoordinator.enqueueEnvironmentMutation(params.projectId,params.environmentId,operation)
+      : operation();
+  }
+
+  async addPluginUnlocked(params) {
     const verified = await this.contextManager.verifyEnvironment(params.projectId, params.environmentId, params.contextToken, params.clientInstanceId);
     const input = agentPluginInput(params);
-    const plugin = await this.workspaceStore.createPlugin(params.projectId, params.environmentId, input, { expectedEnvironmentRevision:verified.environment.revision });
-    await this.connectionManager.configurationChanged(params.projectId, params.environmentId, plugin.pluginInstanceId);
+    const mutationToken = this.connectionManager.beginConfigurationMutation?.(params.projectId,params.environmentId,null) ?? null;
+    let plugin;
+    try {
+      plugin = await this.workspaceStore.createPlugin(params.projectId, params.environmentId, input, { expectedEnvironmentRevision:verified.environment.revision });
+    } catch (error) {
+      if (mutationToken !== null) this.connectionManager.endConfigurationMutation?.(params.projectId,params.environmentId,mutationToken,{restore:true});
+      throw error;
+    }
+    let runtimeWarning = null;
+    try {
+      const result = await this.connectionManager.configurationChanged(params.projectId, params.environmentId, plugin.pluginInstanceId);
+      runtimeWarning = result?.runtimeWarning ?? null;
+    } catch (error) { runtimeWarning = toPublicError(error); }
+    finally {
+      if (mutationToken !== null) this.connectionManager.endConfigurationMutation?.(params.projectId,params.environmentId,mutationToken);
+    }
     this.contextManager.invalidateEnvironment(params.projectId, params.environmentId);
     const auditWarning = await this.workspaceStore.appendAudit(params.projectId, {
       type:'plugin-added', environmentId:params.environmentId, pluginInstanceId:plugin.pluginInstanceId,
@@ -145,6 +166,7 @@ export class V2Service {
       contextStale:true,
       message:plugin.configState === 'ready' ? '插件已配置并保持断开，请人工点击连接。' : '插件草稿已创建，请人工补齐配置后连接。',
       ...(auditWarning ? { auditWarning:true } : {}),
+      ...(runtimeWarning ? {runtimeWarning,manualReconnectRequired:true} : {}),
     };
   }
 
@@ -219,6 +241,16 @@ export class V2Service {
   }
 
   async invoke(params, capability, args = {}) {
+    const operation = async () => {
+      this.connectionManager.assertConfigurationStable?.(params.projectId,params.environmentId);
+      return this.invokeUnlocked(params,capability,args);
+    };
+    return this.mutationCoordinator
+      ? this.mutationCoordinator.runEnvironmentOperation(params.projectId,params.environmentId,operation)
+      : operation();
+  }
+
+  async invokeUnlocked(params, capability, args = {}) {
     const requestId = String(params.requestId ?? crypto.randomUUID()).slice(0, 128);
     let plugin;
     let operationArgs = args;

@@ -16,6 +16,7 @@ const SFTP_CLEANUP_GRACE_MS = 1_000;
 const SFTP_READ_INACTIVITY_MS = 30_000;
 const SFTP_READ_SESSION_TIMEOUT_MS = 120_000;
 const SFTP_READ_CHUNK_BYTES = 64 * 1024;
+const SFTP_METADATA_CONCURRENCY = 16;
 const NON_RETRYABLE_RECONNECT_ERRORS = new Set([
   'SSH_AUTH_FAILED',
   'SSH_IDENTITY_UNAVAILABLE',
@@ -35,6 +36,21 @@ function fingerprint(key) {
 
 function quotePosix(value) {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`;
+}
+
+async function mapLimit(values, limit, operation) {
+  const items = Array.from(values);
+  const results = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(Math.max(limit, 1), items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await operation(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 function collect(stream, limit, onLimit) {
@@ -429,12 +445,16 @@ async function readRemoteSnapshot(sftp, remotePath) {
   }
 }
 
-async function listRemoteDirectoryOnSftp(sftp, remotePath) {
+async function listRemoteDirectoryOnSftp(sftp, remotePath, { offset = 0, limit = 10_000, sortByName = false } = {}) {
   const normalized = normalizeAbsoluteRemotePath(remotePath);
   const canonicalRoot = await sftpRealpath(sftp, normalized);
   const entries = await sftpReaddir(sftp, canonicalRoot);
-  const bounded = entries.slice(0, 10_000);
-  const result = await Promise.all(bounded.map(async (entry) => {
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  const safeLimit = Math.min(Math.max(Number(limit) || 1, 1), 10_000);
+  const ordered = sortByName ? [...entries].sort((left, right) => left.filename.localeCompare(right.filename)) : entries;
+  const available = ordered.slice(0, 10_000);
+  const bounded = available.slice(safeOffset, safeOffset + safeLimit);
+  const result = await mapLimit(bounded, SFTP_METADATA_CONCURRENCY, async (entry) => {
     const candidate = path.posix.join(canonicalRoot, entry.filename);
     let canonical = candidate;
     if (entry.attrs?.isSymbolicLink?.()) {
@@ -451,8 +471,12 @@ async function listRemoteDirectoryOnSftp(sftp, remotePath) {
       isDirectory: Boolean(entry.attrs?.isDirectory?.()),
       isSymbolicLink: Boolean(entry.attrs?.isSymbolicLink?.()),
     };
-  }));
-  result.truncated = entries.length > bounded.length;
+  });
+  result.pageOffset = safeOffset;
+  result.totalEntries = entries.length;
+  result.hasMoreWithinCap = safeOffset + bounded.length < available.length;
+  result.sourceTruncated = entries.length > available.length;
+  result.truncated = result.hasMoreWithinCap || result.sourceTruncated;
   return result;
 }
 
@@ -578,6 +602,7 @@ export class SshBroker {
     this.store = projectStore;
     this.sessions = new Map();
     this.generations = new Map();
+    this.generationSequence = 0;
     this.contexts = new Map();
     this.logSearchCursors = new LogSearchCursorStore();
     this.activeLogSearchProjects = new Set();
@@ -857,7 +882,7 @@ export class SshBroker {
         });
       }
       this.assertPendingConnection(projectId, attempt);
-      const generation = (this.generations.get(projectId) ?? 0) + 1;
+      const generation = ++this.generationSequence;
       this.generations.set(projectId, generation);
       const record = {
         client: session.client,
@@ -871,6 +896,7 @@ export class SshBroker {
       const clearInterruptedSession = (reason) => {
         if (this.sessions.get(projectId) === record) {
           this.sessions.delete(projectId);
+          if (this.generations.get(projectId) === record.generation) this.generations.delete(projectId);
           this.lifecycleHandler?.({ projectId, type: 'lost', generation: record.generation, reason });
           this.invalidateProjectContexts(projectId);
           this.store
@@ -940,7 +966,7 @@ export class SshBroker {
     if (!session) return { connected: false };
     this.sessions.delete(projectId);
     this.lifecycleHandler?.({ projectId, type: 'disconnected', generation: session.generation, reason });
-    this.generations.set(projectId, session.generation + 1);
+    if (this.generations.get(projectId) === session.generation) this.generations.delete(projectId);
     this.invalidateProjectContexts(projectId);
     const closed = new Promise((resolve) => {
       const timer = setTimeout(resolve, 2_000);
@@ -970,6 +996,7 @@ export class SshBroker {
       ...this.reconnectStates.keys(),
     ]);
     await Promise.all([...projectIds].map((id) => this.disconnect(id, 'app-exit')));
+    this.generations.clear();
   }
 
   invalidateProjectContexts(projectId) {
@@ -1104,8 +1131,8 @@ export class SshBroker {
     });
   }
 
-  async listRemoteDirectory(projectId, remotePath) {
-    return this.withInternalSftp(projectId, (sftp) => listRemoteDirectoryOnSftp(sftp, remotePath));
+  async listRemoteDirectory(projectId, remotePath, options = {}) {
+    return this.withInternalSftp(projectId, (sftp) => listRemoteDirectoryOnSftp(sftp, remotePath, options));
   }
 
   async readRemoteRange(projectId, remotePath, start = 0, maxBytes = 262_144) {

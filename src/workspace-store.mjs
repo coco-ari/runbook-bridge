@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import readline from 'node:readline';
 import YAML from 'yaml';
 import { AppError } from './errors.mjs';
 
@@ -10,6 +12,34 @@ const PLUGIN_TYPES = new Set(['server', 'mysql', 'redis']);
 const ADDRESS_FAMILIES = new Set(['ipv4Preferred', 'ipv4Only', 'ipv6Preferred', 'ipv6Only']);
 const TRANSPORTS = new Set(['direct', 'windowsVpn', 'serverTunnel']);
 const POLICY_MODES = new Set(['auto', 'confirm', 'deny']);
+const FILE_READ_CONCURRENCY = 8;
+const AUDIT_READ_CHUNK_BYTES = 64 * 1024;
+const MAX_AUDIT_LINE_BYTES = 1024 * 1024;
+const FATAL_FILESYSTEM_ERRORS = new Set(['EACCES', 'EPERM', 'EIO', 'EMFILE', 'ENFILE', 'ENOSPC']);
+const ISOLATABLE_CONFIG_ERRORS = new Set([
+  'PROJECT_CONFIG_INVALID', 'ENVIRONMENT_CONFIG_INVALID', 'PLUGIN_CONFIG_INVALID',
+  'ENVIRONMENT_NOT_FOUND', 'PLUGIN_NOT_FOUND', 'SCOPE_MISMATCH',
+]);
+
+function isConfigurationFailure(error) {
+  return error?.name === 'YAMLParseError'
+    || (error instanceof AppError && ISOLATABLE_CONFIG_ERRORS.has(error.code));
+}
+
+async function mapLimit(values, limit, operation) {
+  const items = Array.from(values);
+  const results = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(Math.max(limit, 1), items.length) }, async () => {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await operation(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 const DEFAULT_RUNBOOK = (name) => `# ${name}\n\n## 环境说明\n\n记录环境用途、访问入口、部署方式和关键依赖。不要在此粘贴密码或私钥。\n\n## 服务器与服务\n\n按 Server 插件名称准确记录服务信息，例如：\n\n### 应用服务器\n- 主机职责：订单 API\n- systemd unit：\`orders.service\`\n- 安装目录：\`/srv/orders\`\n- 当前制品：\`/srv/orders/orders.jar\`\n- 配置文件：\`/etc/orders/application-prod.yml\`\n- 日志目录：\`/var/log/orders\`\n- 健康检查：\`http://127.0.0.1:8080/actuator/health\`\n\n## 中间件\n\n记录 MySQL、Redis、消息队列等实例的用途、配置位置、服务单元和相互依赖。\n\n## 查询建议\n\n记录常用只读排障顺序、应优先检查的路径以及需要避免的大目录或高负载查询。Agent 可以读取服务器上的任意普通文件，不需要把每个目录登记为数据源。\n\n## 发布与回滚\n\n记录制品来源、备份位置、发布步骤、重启顺序、验证标准和回滚步骤。任何服务器变更仍需用户逐次确认。\n`;
 
@@ -325,6 +355,22 @@ function normalizePlugin(input, scope, existing = null) {
   };
 }
 
+function sanitizePluginSnapshot(plugin) {
+  // Re-normalizing through the plugin schema is an allow-list operation. It
+  // deliberately drops unknown YAML keys (including accidentally embedded
+  // password/ciphertext fields) before configuration recovery metadata is
+  // persisted outside the encrypted vault.
+  const normalized = normalizePlugin(plugin, {
+    projectId:plugin.projectId,
+    environmentId:plugin.environmentId,
+  });
+  return {
+    ...normalized,
+    revision:plugin.revision,
+    updatedAt:plugin.updatedAt,
+  };
+}
+
 async function pathExists(target) {
   try {
     await fs.access(target);
@@ -333,6 +379,124 @@ async function pathExists(target) {
     if (error?.code === 'ENOENT') return false;
     throw error;
   }
+}
+
+async function syncDirectoryBestEffort(directory) {
+  let handle;
+  try {
+    handle = await fs.open(directory, 'r');
+    await handle.sync();
+  } catch {
+    // Directory handles cannot be flushed on every supported Windows build.
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function sha256File(file) {
+  const hash = crypto.createHash('sha256');
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+async function* readLinesReverse(file, { chunkBytes = AUDIT_READ_CHUNK_BYTES, maxLineBytes = MAX_AUDIT_LINE_BYTES } = {}) {
+  let handle;
+  try {
+    handle = await fs.open(file, 'r');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  try {
+    let position = Number((await handle.stat()).size);
+    let carry = Buffer.alloc(0);
+    let discardingOversizedLine = false;
+    const decode = (buffer) => {
+      let end = buffer.length;
+      if (end && buffer[end - 1] === 0x0d) end -= 1;
+      if (end === 0 || end > maxLineBytes) return null;
+      return buffer.subarray(0, end).toString('utf8');
+    };
+    while (position > 0) {
+      const length = Math.min(chunkBytes, position);
+      position -= length;
+      const block = Buffer.allocUnsafe(length);
+      const { bytesRead } = await handle.read(block, 0, length, position);
+      const chunk = block.subarray(0, bytesRead);
+      const combined = discardingOversizedLine || carry.length === 0 ? chunk : Buffer.concat([chunk, carry]);
+      let end = combined.length;
+      if (discardingOversizedLine) {
+        let boundary = -1;
+        for (let index = end - 1; index >= 0; index -= 1) {
+          if (combined[index] === 0x0a) { boundary = index; break; }
+        }
+        if (boundary < 0) continue;
+        end = boundary;
+        discardingOversizedLine = false;
+      }
+      for (let index = end - 1; index >= 0; index -= 1) {
+        if (combined[index] !== 0x0a) continue;
+        const line = decode(combined.subarray(index + 1, end));
+        if (line !== null) yield line;
+        end = index;
+      }
+      carry = combined.subarray(0, end);
+      if (carry.length > maxLineBytes) {
+        carry = Buffer.alloc(0);
+        discardingOversizedLine = true;
+      }
+    }
+    if (!discardingOversizedLine && carry.length) {
+      const line = decode(carry);
+      if (line !== null) yield line;
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+async function rewriteJsonLines(file, shouldDelete) {
+  try {
+    await fs.access(file);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return 0;
+    throw error;
+  }
+  const temporary = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  const output = await fs.open(temporary, 'w', 0o600);
+  let deletedCount = 0;
+  let buffered = '';
+  try {
+    const lines = readline.createInterface({ input:createReadStream(file), crlfDelay:Infinity });
+    for await (const line of lines) {
+      let remove = false;
+      try { remove = shouldDelete(JSON.parse(line)); } catch { /* Preserve damaged historical lines. */ }
+      if (remove) {
+        deletedCount += 1;
+        continue;
+      }
+      buffered += `${line}\n`;
+      if (Buffer.byteLength(buffered, 'utf8') >= AUDIT_READ_CHUNK_BYTES) {
+        await output.write(buffered, null, 'utf8');
+        buffered = '';
+      }
+    }
+    if (buffered) await output.write(buffered, null, 'utf8');
+    await output.sync();
+  } catch (error) {
+    await output.close().catch(() => undefined);
+    await fs.rm(temporary, {force:true}).catch(() => undefined);
+    throw error;
+  }
+  await output.close();
+  try {
+    if (deletedCount > 0) await fs.rename(temporary, file);
+    else await fs.rm(temporary, {force:true});
+  } catch (error) {
+    await fs.rm(temporary, {force:true}).catch(() => undefined);
+    throw error;
+  }
+  return deletedCount;
 }
 
 export class WorkspaceStore {
@@ -398,8 +562,20 @@ export class WorkspaceStore {
   async atomicWrite(file, content) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     const temporary = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-    await fs.writeFile(temporary, content, { encoding: 'utf8', mode: 0o600 });
-    await fs.rename(temporary, file);
+    let handle;
+    try {
+      handle = await fs.open(temporary, 'wx', 0o600);
+      await handle.writeFile(content, 'utf8');
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      await fs.rename(temporary, file);
+      await syncDirectoryBestEffort(path.dirname(file));
+    } catch (error) {
+      await handle?.close().catch(() => undefined);
+      await fs.rm(temporary, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   async writeYaml(file, value) {
@@ -410,7 +586,13 @@ export class WorkspaceStore {
     const legacyProjects = await this.legacyStore.list();
     const migrated = [];
     for (const legacy of legacyProjects) {
-      if (await pathExists(this.workspacePath(legacy.id))) continue;
+      const workspaceAlreadyExists = await pathExists(this.workspacePath(legacy.id));
+      if (workspaceAlreadyExists) {
+        let existingWorkspace;
+        try { existingWorkspace = await this.readYaml(this.workspacePath(legacy.id), 'PROJECT_NOT_FOUND', '项目不存在。'); }
+        catch { continue; }
+        if (existingWorkspace?.migration?.source !== 'project-v1') continue;
+      }
       const environmentId = 'default';
       const pluginInstanceId = 'server-primary';
       const projectDir = this.projectDir(legacy.id);
@@ -450,44 +632,95 @@ export class WorkspaceStore {
       }, { projectId: legacy.id, environmentId });
       const legacyReadme = path.join(projectDir, 'docs', 'README.md');
       const runbook = (await pathExists(legacyReadme)) ? await fs.readFile(legacyReadme, 'utf8') : DEFAULT_RUNBOOK(environment.name);
-      await this.writeYaml(this.workspacePath(legacy.id), workspace);
-      await this.writeYaml(this.environmentPath(legacy.id, environmentId), environment);
-      await this.writeYaml(this.pluginPath(legacy.id, environmentId, pluginInstanceId), plugin);
-      await this.atomicWrite(path.join(environmentDir, 'README.md'), runbook);
+      // workspace.yaml is the migration commit marker. Writing it last makes a
+      // crash during materialization safely retryable on the next launch. For
+      // historical partial migrations (marker exists), conservatively fill
+      // only missing generated files and never overwrite user edits.
+      if (!await pathExists(this.environmentPath(legacy.id, environmentId))) {
+        await this.writeYaml(this.environmentPath(legacy.id, environmentId), environment);
+      }
+      if (!await pathExists(this.pluginPath(legacy.id, environmentId, pluginInstanceId))) {
+        await this.writeYaml(this.pluginPath(legacy.id, environmentId, pluginInstanceId), plugin);
+      }
+      if (!await pathExists(path.join(environmentDir, 'README.md'))) {
+        await this.atomicWrite(path.join(environmentDir, 'README.md'), runbook);
+      }
+      if (!workspaceAlreadyExists) await this.writeYaml(this.workspacePath(legacy.id), workspace);
       migrated.push(legacy.id);
     }
     return migrated;
   }
 
-  async listProjects() {
+  configurationError(projectId, error = null) {
+    return {
+      schemaVersion: 2,
+      projectId,
+      name: projectId,
+      revision: 0,
+      environmentCount: 0,
+      pluginCount: 0,
+      environments: [],
+      configurationError: {
+        code: 'PROJECT_CONFIG_INVALID',
+        message: '项目配置损坏或不完整，已隔离该项目；其他项目仍可正常使用。',
+        source: `projects/${projectId}`,
+        causeCode: error instanceof AppError ? error.code : 'CONFIG_PARSE_FAILED',
+      },
+    };
+  }
+
+  async listProjectOverviews() {
     const entries = await fs.readdir(this.projectsRoot, { withFileTypes: true }).catch((error) => {
       if (error?.code === 'ENOENT') return [];
       throw error;
     });
-    const projects = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !ID_RE.test(entry.name)) continue;
+    const candidates = entries.filter((entry) => entry.isDirectory() && ID_RE.test(entry.name));
+    const projects = await mapLimit(candidates, FILE_READ_CONCURRENCY, async (entry) => {
       try {
         const project = await this.getProject(entry.name);
-        const environments = await this.listEnvironments(entry.name);
-        projects.push({ ...project, environmentCount: environments.length, pluginCount: environments.reduce((sum, item) => sum + item.pluginCount, 0) });
+        const environments = await this.listEnvironmentsForProject(project);
+        return { ...project, environmentCount: environments.length, pluginCount: environments.reduce((sum, item) => sum + item.pluginCount, 0), environments };
       } catch (error) {
-        if (!(error instanceof AppError && error.code === 'PROJECT_NOT_FOUND')) throw error;
+        if (error instanceof AppError && error.code === 'PROJECT_NOT_FOUND') return null;
+        if (FATAL_FILESYSTEM_ERRORS.has(error?.code) || !isConfigurationFailure(error)) throw error;
+        return this.configurationError(entry.name, error);
       }
-    }
-    return projects.sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
+    });
+    return projects.filter(Boolean).sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'));
+  }
+
+  async listProjects() {
+    return (await this.listProjectOverviews()).map(({ environments: _environments, ...project }) => project);
   }
 
   async getProject(projectId) {
     const value = await this.readYaml(this.workspacePath(projectId), 'PROJECT_NOT_FOUND', '项目不存在。');
-    if (value?.schemaVersion !== 2 || value.projectId !== projectId) throw new AppError('PROJECT_CONFIG_INVALID', '项目配置损坏。');
+    if (value?.schemaVersion !== 2 || value.projectId !== projectId || typeof value.name !== 'string' || !value.name.trim()
+      || !Number.isInteger(value.revision) || value.revision < 1 || !Array.isArray(value.environmentOrder)
+      || value.environmentOrder.some((id) => !ID_RE.test(String(id))) || new Set(value.environmentOrder).size !== value.environmentOrder.length) {
+      throw new AppError('PROJECT_CONFIG_INVALID', '项目配置损坏。');
+    }
     return value;
   }
 
   async createProject(input) {
     const name = normalizeName(input?.name, '项目名称');
     let projectId = normalizeId(input?.projectId ?? name, 'project');
-    while (await pathExists(this.projectDir(projectId))) projectId = `project-${crypto.randomBytes(5).toString('hex')}`;
+    // Claim the project directory atomically. A check-then-recursive-mkdir race
+    // allowed two windows to believe they owned the same directory; if one
+    // later failed, its rollback could recursively remove the other window's
+    // successfully-created project. Only the caller whose non-recursive mkdir
+    // succeeds may ever remove that directory.
+    await fs.mkdir(this.projectsRoot, { recursive:true });
+    while (true) {
+      try {
+        await fs.mkdir(this.projectDir(projectId), { recursive:false });
+        break;
+      } catch (error) {
+        if (error?.code !== 'EEXIST') throw error;
+        projectId = `project-${crypto.randomBytes(5).toString('hex')}`;
+      }
+    }
     const environmentId = normalizeId(input?.environmentId ?? input?.environmentName ?? 'default', 'environment');
     const timestamp = now();
     const workspace = {
@@ -509,8 +742,8 @@ export class WorkspaceStore {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    await fs.mkdir(this.pluginDir(projectId, environmentId), { recursive: true });
     try {
+      await fs.mkdir(this.pluginDir(projectId, environmentId), { recursive: true });
       await this.writeYaml(this.workspacePath(projectId), workspace);
       await this.writeYaml(this.environmentPath(projectId, environmentId), environment);
       await this.atomicWrite(this.runbookPath(projectId, environmentId), String(input?.runbook ?? DEFAULT_RUNBOOK(environment.name)));
@@ -536,45 +769,103 @@ export class WorkspaceStore {
     return this.enqueue(`project:${projectId}`, async () => {
       const project = await this.getProject(projectId);
       const environments = await this.listEnvironments(projectId);
+      // The rename commit shares the audit queue. Audits already in flight are
+      // included in the tombstone; audits submitted after this commit re-check
+      // getProject and cannot recreate the deleted projects/<id> directory.
+      return this.enqueue(`audit:${projectId}`, async () => {
       const source = this.projectDir(projectId);
       const tombstone = path.join(this.projectsRoot, `.deleting-${projectId}-${crypto.randomBytes(4).toString('hex')}`);
       await fs.rename(source, tombstone);
+      // Renaming out of the indexed project namespace is the commit point.
+      // Legacy credentials live inside the old project directory. Preserve the
+      // complete legacy binding/config alongside its opaque ciphertext outside
+      // the indexed projects tree; it must remain recoverable even when DPAPI
+      // was temporarily unavailable during migration.
+      const legacyCredential = path.join(tombstone, 'credentials.enc.json');
+      let preserveLegacy = false;
       try {
-        await fs.rm(tombstone, { recursive: true, force: true });
+        await fs.access(legacyCredential);
+        preserveLegacy = true;
       } catch (error) {
-        await fs.rename(tombstone, source).catch(() => undefined);
-        throw error;
+        if (error?.code !== 'ENOENT') preserveLegacy = true;
+      }
+      let credentialArchive = null;
+      if (preserveLegacy) {
+        const archiveRoot = path.join(this.dataRoot, 'credential-archives', 'deleted-projects');
+        const archiveName = `${projectId}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+        const finalArchive = path.join(archiveRoot, archiveName);
+        const temporaryArchive = `${finalArchive}.tmp`;
+        try {
+          await fs.mkdir(archiveRoot, {recursive:true});
+          await fs.mkdir(temporaryArchive, {recursive:false});
+          const files = [];
+          for (const name of ['credentials.enc.json','project.yaml']) {
+            const sourceFile = path.join(tombstone,name);
+            const targetFile = path.join(temporaryArchive,name);
+            await fs.copyFile(sourceFile,targetFile);
+            await fs.chmod(targetFile,0o600).catch(() => undefined);
+            const handle = await fs.open(targetFile,'r');
+            try { await handle.sync(); } finally { await handle.close(); }
+            files.push({name,sha256:await sha256File(targetFile),bytes:Number((await fs.stat(targetFile)).size)});
+          }
+          await this.atomicWrite(path.join(temporaryArchive,'manifest.json'),JSON.stringify({
+            schemaVersion:1,projectId,deletedAt:now(),files,
+          },null,2));
+          await syncDirectoryBestEffort(temporaryArchive);
+          await fs.rename(temporaryArchive,finalArchive);
+          await syncDirectoryBestEffort(archiveRoot);
+          credentialArchive = finalArchive;
+          await fs.rm(tombstone,{recursive:true,force:true}).catch(() => undefined);
+        } catch {
+          await fs.rm(temporaryArchive,{recursive:true,force:true}).catch(() => undefined);
+          // The non-indexed tombstone still contains every original byte.
+          credentialArchive = tombstone;
+        }
+      } else {
+        // Cleanup is best effort so a transient antivirus/file-lock failure
+        // cannot make the caller retry an already committed deletion.
+        await fs.rm(tombstone, { recursive: true, force: true }).catch(() => undefined);
       }
       return {
         projectId,
         name: project.name,
         environmentCount: environments.length,
         pluginCount: environments.reduce((sum, environment) => sum + Number(environment.pluginCount ?? 0), 0),
+        ...(credentialArchive ? {credentialArchive} : {}),
       };
+      });
     });
   }
 
   async listEnvironments(projectId) {
     const project = await this.getProject(projectId);
-    const environments = [];
-    for (const environmentId of project.environmentOrder ?? []) {
+    return this.listEnvironmentsForProject(project);
+  }
+
+  async listEnvironmentsForProject(project) {
+    return mapLimit(project.environmentOrder ?? [], FILE_READ_CONCURRENCY, async (environmentId) => {
+      const projectId = project.projectId;
       const environment = await this.getEnvironment(projectId, environmentId);
-      const plugins = await this.listPlugins(projectId, environmentId);
-      environments.push({
+      const plugins = await this.listPluginsForEnvironment(environment);
+      return {
         ...environment,
         pluginCount: plugins.length,
         readyPluginCount: plugins.filter((item) => item.configState === 'ready').length,
         pluginTypeCounts: plugins.reduce((counts,item) => ({ ...counts, [item.pluginType]:(counts[item.pluginType] ?? 0) + 1 }), { server:0,mysql:0,redis:0 }),
         resourcePreview: plugins.slice(0,6).map((plugin) => this.publicPlugin(plugin)),
         resourcePreviewTruncated: plugins.length > 6,
-      });
-    }
-    return environments;
+      };
+    });
   }
 
   async getEnvironment(projectId, environmentId) {
     const value = await this.readYaml(this.environmentPath(projectId, environmentId), 'ENVIRONMENT_NOT_FOUND', '环境不存在。');
     if (value?.projectId !== projectId || value.environmentId !== environmentId) throw new AppError('SCOPE_MISMATCH', '环境不属于当前项目。');
+    if (value?.schemaVersion !== 1 || typeof value.name !== 'string' || !value.name.trim()
+      || !Number.isInteger(value.revision) || value.revision < 1 || !Array.isArray(value.pluginOrder)
+      || value.pluginOrder.some((id) => !ID_RE.test(String(id))) || new Set(value.pluginOrder).size !== value.pluginOrder.length) {
+      throw new AppError('ENVIRONMENT_CONFIG_INVALID', '环境配置损坏。');
+    }
     return value;
   }
 
@@ -628,11 +919,13 @@ export class WorkspaceStore {
       await fs.rename(source, tombstone);
       try {
         await this.writeYaml(this.workspacePath(projectId), next);
-        await fs.rm(tombstone, { recursive: true, force: true });
       } catch (error) {
         await fs.rename(tombstone, source).catch(() => undefined);
         throw error;
       }
+      // The workspace index is authoritative after the write above. Leaving a
+      // tombstone is safer than restoring an environment that the index omits.
+      await fs.rm(tombstone, { recursive: true, force: true }).catch(() => undefined);
       return { environmentId, name: environment.name };
     });
   }
@@ -674,15 +967,23 @@ export class WorkspaceStore {
 
   async listPlugins(projectId, environmentId) {
     const environment = await this.getEnvironment(projectId, environmentId);
-    const plugins = [];
-    for (const pluginInstanceId of environment.pluginOrder ?? []) plugins.push(await this.getPlugin(projectId, environmentId, pluginInstanceId));
-    return plugins;
+    return this.listPluginsForEnvironment(environment);
+  }
+
+  async listPluginsForEnvironment(environment) {
+    return mapLimit(environment.pluginOrder ?? [], FILE_READ_CONCURRENCY, (pluginInstanceId) => (
+      this.getPlugin(environment.projectId, environment.environmentId, pluginInstanceId)
+    ));
   }
 
   async getPlugin(projectId, environmentId, pluginInstanceId) {
     const value = await this.readYaml(this.pluginPath(projectId, environmentId, pluginInstanceId), 'PLUGIN_NOT_FOUND', '插件不存在。');
     if (value?.projectId !== projectId || value.environmentId !== environmentId || value.pluginInstanceId !== pluginInstanceId) {
       throw new AppError('SCOPE_MISMATCH', '插件不属于当前环境。');
+    }
+    if (value?.schemaVersion !== 1 || !PLUGIN_TYPES.has(value.pluginType) || typeof value.displayName !== 'string' || !value.displayName.trim()
+      || !Number.isInteger(value.revision) || value.revision < 1 || !['ready','draft'].includes(value.configState)) {
+      throw new AppError('PLUGIN_CONFIG_INVALID', '插件配置损坏。');
     }
     return value;
   }
@@ -713,8 +1014,36 @@ export class WorkspaceStore {
     });
   }
 
-  async restorePluginSnapshot(plugin) {
+  async preparePluginUpdate(projectId, environmentId, pluginInstanceId, patch, expectedRevision = null) {
+    const before = await this.getPlugin(projectId, environmentId, pluginInstanceId);
+    if (expectedRevision !== null && expectedRevision !== undefined && before.revision !== expectedRevision) {
+      throw new AppError('CONFIG_REVISION_CONFLICT', '插件配置已经变化，请刷新后重试。');
+    }
+    const after = normalizePlugin({ ...patch, pluginInstanceId, pluginType:before.pluginType }, {projectId,environmentId}, before);
+    await this.assertPluginReferences(after);
+    return {before,after};
+  }
+
+  async commitPluginSnapshot(plugin, expectedCurrentRevision) {
     return this.enqueue(`environment:${plugin.projectId}:${plugin.environmentId}`, async () => {
+      const current = await this.getPlugin(plugin.projectId, plugin.environmentId, plugin.pluginInstanceId);
+      if (current.revision !== expectedCurrentRevision || plugin.revision !== expectedCurrentRevision + 1) {
+        throw new AppError('CONFIG_REVISION_CONFLICT', '插件配置已经变化，请刷新后重试。');
+      }
+      await this.assertPluginReferences(plugin);
+      await this.writeYaml(this.pluginPath(plugin.projectId, plugin.environmentId, plugin.pluginInstanceId), plugin);
+      return plugin;
+    });
+  }
+
+  async restorePluginSnapshot(plugin, expectedCurrentRevision = null) {
+    return this.enqueue(`environment:${plugin.projectId}:${plugin.environmentId}`, async () => {
+      if (expectedCurrentRevision !== null) {
+        const current = await this.getPlugin(plugin.projectId, plugin.environmentId, plugin.pluginInstanceId);
+        if (current.revision !== expectedCurrentRevision) {
+          throw new AppError('CONFIG_REVISION_CONFLICT', '插件配置在凭据保存期间再次变化，不能覆盖较新的配置。');
+        }
+      }
       await this.writeYaml(this.pluginPath(plugin.projectId, plugin.environmentId, plugin.pluginInstanceId), plugin);
       return plugin;
     });
@@ -730,10 +1059,11 @@ export class WorkspaceStore {
     return { plugin, dependents: [] };
   }
 
-  async deletePlugin(projectId, environmentId, pluginInstanceId) {
+  async deletePlugin(projectId, environmentId, pluginInstanceId, {expectedRevision = null} = {}) {
     return this.enqueue(`environment:${projectId}:${environmentId}`, async () => {
       const environment = await this.getEnvironment(projectId, environmentId);
       const plugin = await this.getPlugin(projectId, environmentId, pluginInstanceId);
+      if (expectedRevision !== null && plugin.revision !== expectedRevision) throw new AppError('CONFIG_REVISION_CONFLICT', '插件配置已经变化，不能移除较新的插件。');
       const plugins = await this.listPlugins(projectId, environmentId);
       const dependents = plugins.filter((item) => item.transport?.kind === 'serverTunnel' && item.transport.serverPluginInstanceId === pluginInstanceId);
       if (dependents.length) throw new AppError('PLUGIN_HAS_DEPENDENTS', `仍有 ${dependents.length} 个插件复用此隧道：${dependents.map((item) => item.displayName).join('、')}。`);
@@ -743,11 +1073,13 @@ export class WorkspaceStore {
       await fs.rename(source, tombstone);
       try {
         await this.writeYaml(this.environmentPath(projectId, environmentId), next);
-        await fs.rm(tombstone, { force: true });
       } catch (error) {
         await fs.rename(tombstone, source).catch(() => undefined);
         throw error;
       }
+      // The environment index write is the commit point; delayed tombstone
+      // cleanup must not resurrect an unindexed plugin.
+      await fs.rm(tombstone, { force: true }).catch(() => undefined);
       return { pluginInstanceId, displayName: plugin.displayName };
     });
   }
@@ -785,6 +1117,7 @@ export class WorkspaceStore {
 
   async appendAudit(projectId, entry) {
     return this.enqueue(`audit:${projectId}`, async () => {
+      await this.getProject(projectId);
       const file = path.join(this.projectDir(projectId), 'audit', 'operations-v3.jsonl');
       await fs.mkdir(path.dirname(file), { recursive: true });
       const record = { schemaVersion: 3, time: now(), ...entry };
@@ -796,16 +1129,24 @@ export class WorkspaceStore {
   async listAudit(projectId, { environmentId = null, pluginInstanceId = null, cursor = 0, limit = 100 } = {}) {
     await this.getProject(projectId);
     const file = path.join(this.projectDir(projectId), 'audit', 'operations-v3.jsonl');
-    const content = await fs.readFile(file, 'utf8').catch((error) => {
-      if (error?.code === 'ENOENT') return '';
-      throw error;
-    });
-    const entries = content.split(/\r?\n/).filter(Boolean).flatMap((line) => {
-      try { return [JSON.parse(line)]; } catch { return []; }
-    }).filter((entry) => (!environmentId || entry.environmentId === environmentId) && (!pluginInstanceId || entry.pluginInstanceId === pluginInstanceId)).reverse();
     const offset = Math.max(Number(cursor) || 0, 0);
     const pageSize = Math.min(Math.max(Number(limit) || 100, 1), 200);
-    return { entries: entries.slice(offset, offset + pageSize), nextCursor: offset + pageSize < entries.length ? String(offset + pageSize) : null };
+    const entries = [];
+    let matched = 0;
+    for await (const line of readLinesReverse(file)) {
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+      if ((environmentId && entry.environmentId !== environmentId) || (pluginInstanceId && entry.pluginInstanceId !== pluginInstanceId)) continue;
+      if (matched < offset) {
+        matched += 1;
+        continue;
+      }
+      entries.push(entry);
+      matched += 1;
+      if (entries.length > pageSize) break;
+    }
+    const hasMore = entries.length > pageSize;
+    return { entries:entries.slice(0, pageSize), nextCursor:hasMore ? String(offset + pageSize) : null };
   }
 
   async clearAudit(projectId, { environmentId, pluginInstanceId = null } = {}) {
@@ -813,27 +1154,12 @@ export class WorkspaceStore {
     if (pluginInstanceId) await this.getPlugin(projectId, environmentId, pluginInstanceId);
     return this.enqueue(`audit:${projectId}`, async () => {
       const file = path.join(this.projectDir(projectId), 'audit', 'operations-v3.jsonl');
-      const content = await fs.readFile(file, 'utf8').catch((error) => {
-        if (error?.code === 'ENOENT') return '';
-        throw error;
-      });
-      let deletedCount = 0;
-      const retained = content.split(/\r?\n/).filter(Boolean).filter((line) => {
-        try {
-          const entry = JSON.parse(line);
-          const matchesEnvironment = entry.environmentId === environmentId;
-          const matchesPlugin = !pluginInstanceId || entry.pluginInstanceId === pluginInstanceId;
-          if (matchesEnvironment && matchesPlugin) {
-            deletedCount += 1;
-            return false;
-          }
-        } catch {}
-        return true;
-      });
-      if (deletedCount > 0) await this.atomicWrite(file, retained.length ? `${retained.join('\n')}\n` : '');
+      const deletedCount = await rewriteJsonLines(file, (entry) => (
+        entry.environmentId === environmentId && (!pluginInstanceId || entry.pluginInstanceId === pluginInstanceId)
+      ));
       return { deletedCount, environmentId, pluginInstanceId };
     });
   }
 }
 
-export const workspaceInternals = { normalizePlugin, normalizeId, normalizeName };
+export const workspaceInternals = { normalizePlugin, sanitizePluginSnapshot, normalizeId, normalizeName, readLinesReverse, rewriteJsonLines };
