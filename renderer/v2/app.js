@@ -36,7 +36,7 @@ function storedResourcePaneWidth() {
 const state = {
   projects: [], environments: [], plugins: [], pluginDrafts: [], auditEntries: [], projectId: null,
   environmentId: null, pluginId: null, view: 'plugins', runtime: null,
-  editingPlugin: null, editingEnvironmentId: undefined, environmentDeletePrompt: null, detailTabs: {}, navigationGeneration: 0,
+  editingPlugin: null, detailTabs: {}, navigationGeneration: 0,
   runbookContent: '', runbookDraft: '', runbookRevision: null, runbookScopeKey: null, runbookEditing: false,
   runbookDirty: false, runbookLoading: false, runbookLoadGeneration: 0, pendingCount: 0,
   confirmations: [], confirmationsLoaded: false, confirmationCenterActive: false,
@@ -61,8 +61,6 @@ const state = {
   overviewEditingEnvironmentId: null,
   overviewEnvironmentDeletePrompt: null,
   managingProjectId: null,
-  managedProjectId: null,
-  managedEnvironments: [],
   projectOrder: (() => { try { const value = JSON.parse(localStorage.getItem(PROJECT_ORDER_KEY) || '[]'); return Array.isArray(value) ? value : []; } catch { return []; } })(),
   dragSort: null,
   sortSaving: false,
@@ -81,6 +79,9 @@ const state = {
   environmentDetailTab: 'runbook',
   projectTitleEditing: false,
   creatingEnvironmentInline: false,
+  resourceEnvironmentEditor: null,
+  resourceEnvironmentDeletePrompt: null,
+  resourceEnvironmentEditSequence: 0,
   pluginFormMode: 'inline',
   inlineConfigPluginId: null,
   pluginFormDiagnostic: null,
@@ -1267,6 +1268,12 @@ async function saveOverviewEnvironmentName(form) {
   const name = form.querySelector('input').value.trim();
   if (!environment) return;
   if (!name) throw new Error('请输入环境名称。');
+  if (name === environment.name) {
+    state.overviewEditingProjectId = null;
+    state.overviewEditingEnvironmentId = null;
+    renderProjectOverview();
+    return;
+  }
   const submit = form.querySelector('[type="submit"]');
   submit.disabled = true;
   try {
@@ -1372,6 +1379,28 @@ function environmentActionLabel(action) {
   return action.label;
 }
 
+function resourceEnvironmentEditorFor(projectId,environmentId) {
+  const editor = state.resourceEnvironmentEditor;
+  return editor?.projectId === projectId && editor.environmentId === environmentId ? editor : null;
+}
+
+function resourceEnvironmentDeletePromptFor(projectId,environmentId) {
+  const prompt = state.resourceEnvironmentDeletePrompt;
+  return prompt?.projectId === projectId && prompt.environmentId === environmentId ? prompt : null;
+}
+
+function renderResourceEnvironmentEditor(projectId,environment,editor) {
+  const environmentLabel = escapeAttr(environment.name);
+  return `<form class="resource-environment-rename-form" data-resource-environment-editor="${escapeAttr(environment.environmentId)}" data-resource-project-id="${escapeAttr(projectId)}" novalidate><span class="resource-environment-icon">${icon('environment')}</span><label><span class="sr-only">环境名称</span><input maxlength="120" autocomplete="off" aria-label="环境名称" value="${escapeAttr(editor.name)}"></label><span class="resource-environment-rename-error" role="alert"></span><button type="submit" class="square-button resource-environment-rename-save" title="保存" aria-label="保存${environmentLabel}的新名称">${icon('check')}</button><button type="button" class="square-button resource-environment-rename-cancel" data-resource-cancel-environment-rename title="取消" aria-label="取消重命名${environmentLabel}">${icon('x')}</button></form>`;
+}
+
+function renderResourceEnvironmentDeletePrompt(projectId,environment,prompt) {
+  const environmentId = escapeAttr(environment.environmentId);
+  const environmentLabel = escapeAttr(environment.name);
+  const deleting = operationInFlight(environmentDeleteOperationKey(projectId,environment.environmentId));
+  return `<div class="resource-environment-delete-prompt ${prompt.confirmable ? '' : 'blocked'}" data-resource-environment-delete-prompt="${environmentId}"><span class="resource-environment-icon">${icon('trash')}</span><span class="resource-environment-delete-copy"><strong>${escapeHtml(environment.name)}</strong><small>${escapeHtml(prompt.message)}</small></span><button type="button" class="square-button" data-resource-cancel-environment-delete title="${prompt.confirmable ? '取消' : '关闭'}" aria-label="${prompt.confirmable ? '取消删除' : '关闭提示'}${environmentLabel}">${icon('x')}</button>${prompt.confirmable ? `<button type="button" class="square-button danger-subtle" data-resource-confirm-environment-delete="${environmentId}" data-resource-project-id="${escapeAttr(projectId)}" title="确认删除" aria-label="确认删除${environmentLabel}"${deleting ? ' disabled aria-busy="true"' : ''}>${icon('trash')}</button>` : ''}</div>`;
+}
+
 function renderResourceEnvironment(projectId,environment) {
   const runtime = environmentRuntime(projectId,environment.environmentId);
   const presentationPhase = runtimePresentationPhase(runtime);
@@ -1395,7 +1424,12 @@ function renderResourceEnvironment(projectId,environment) {
   const approvalScope = confirmationScopeData('environment',projectId,environment.environmentId);
   const approvals = confirmationCount(approvalScope);
   const approvalButton = approvals ? `<button class="scope-confirmation-badge" ${confirmationScopeAttributes(approvalScope)} title="查看${environment.name}的${approvals}项待确认操作" aria-label="${environment.name}有${approvals}项操作待确认">${icon('shield')}<b>${approvals}</b></button>` : '';
-  return `<article class="resource-environment-card ${expanded ? 'expanded' : ''} ${selectedEnvironment ? 'selected' : ''}" data-state="${escapeAttr(presentationPhase)}"><header class="resource-environment-head"><button class="resource-environment-select" data-resource-environment-id="${escapeAttr(environment.environmentId)}" aria-expanded="${expanded}" title="点击${expanded ? '收起' : '展开'}${environmentLabel}"><span class="resource-environment-icon">${icon('environment')}</span><span class="resource-environment-copy"><strong>${escapeHtml(environment.name)}</strong><small>${Number(environment.pluginCount ?? 0)} 个插件</small></span></button><span class="resource-environment-status" data-state="${escapeAttr(presentationPhase)}"><i></i><span>${escapeHtml(connectionLabel)}</span></span>${approvalButton}<button class="button small resource-runtime-action ${action.primary ? 'primary' : ''} ${action.action === 'disconnect' ? 'danger-subtle' : ''}" data-environment-runtime-action="${escapeAttr(action.action)}" data-action-project-id="${escapeAttr(projectId)}" data-action-environment-id="${escapeAttr(environment.environmentId)}" ${action.disabled || busy || diagnosticPending ? 'disabled aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${escapeHtml(environmentActionLabel(action))}</button><button type="button" class="square-button resource-rename" data-resource-rename-environment="${escapeAttr(environment.environmentId)}" title="重命名环境" aria-label="重命名${environmentLabel}">${icon('edit')}</button><button type="button" class="square-button danger-subtle resource-delete" data-resource-delete-environment="${escapeAttr(environment.environmentId)}" title="删除环境" aria-label="删除${environmentLabel}">${icon('trash')}</button></header>${body}</article>`;
+  const editor = resourceEnvironmentEditorFor(projectId,environment.environmentId);
+  const deletePrompt = resourceEnvironmentDeletePromptFor(projectId,environment.environmentId);
+  const headerContent = editor ? renderResourceEnvironmentEditor(projectId,environment,editor)
+    : deletePrompt ? renderResourceEnvironmentDeletePrompt(projectId,environment,deletePrompt)
+    : `<button class="resource-environment-select" data-resource-environment-id="${escapeAttr(environment.environmentId)}" aria-expanded="${expanded}" title="点击${expanded ? '收起' : '展开'}${environmentLabel}"><span class="resource-environment-icon">${icon('environment')}</span><span class="resource-environment-copy"><strong>${escapeHtml(environment.name)}</strong><small>${Number(environment.pluginCount ?? 0)} 个插件</small></span></button><span class="resource-environment-status" data-state="${escapeAttr(presentationPhase)}"><i></i><span>${escapeHtml(connectionLabel)}</span></span>${approvalButton}<button class="button small resource-runtime-action ${action.primary ? 'primary' : ''} ${action.action === 'disconnect' ? 'danger-subtle' : ''}" data-environment-runtime-action="${escapeAttr(action.action)}" data-action-project-id="${escapeAttr(projectId)}" data-action-environment-id="${escapeAttr(environment.environmentId)}" ${action.disabled || busy || diagnosticPending ? 'disabled aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${escapeHtml(environmentActionLabel(action))}</button><button type="button" class="square-button resource-rename" data-resource-rename-environment="${escapeAttr(environment.environmentId)}" title="重命名环境" aria-label="重命名${environmentLabel}">${icon('edit')}</button><button type="button" class="square-button danger-subtle resource-delete" data-resource-delete-environment="${escapeAttr(environment.environmentId)}" title="删除环境" aria-label="删除${environmentLabel}">${icon('trash')}</button>`;
+  return `<article class="resource-environment-card ${expanded ? 'expanded' : ''} ${selectedEnvironment ? 'selected' : ''}" data-state="${escapeAttr(presentationPhase)}"><header class="resource-environment-head">${headerContent}</header>${body}</article>`;
 }
 
 function renderInlineEnvironmentCreate(project) {
@@ -2160,84 +2194,117 @@ async function clearSelectedAudit() {
   }
 }
 
-function environmentInlineEditor(environment = null) {
-  return `<form class="manager-inline-editor" id="environmentInlineForm" data-environment-editor="${environment ? escapeAttr(environment.environmentId) : 'new'}"><input id="managerEnvironmentName" maxlength="120" autocomplete="off" aria-label="环境名称" placeholder="输入环境名称" value="${escapeAttr(environment?.name ?? '')}"><span class="manager-inline-actions"><button type="button" class="button small" data-cancel-environment-editor>取消</button><button id="saveEnvironment" type="submit" class="button small primary">${environment ? '保存' : '创建'}</button></span></form>`;
+function beginResourceEnvironmentRename(projectId,environmentId) {
+  const project = state.projects.find((item) => item.projectId === projectId);
+  const environment = environmentFor(projectId,environmentId);
+  if (!project || !environment) return;
+  if (projectIsIsolated(project)) { toast(project.configurationError.message,true); return; }
+  state.resourceEnvironmentDeletePrompt = null;
+  state.resourceEnvironmentEditor = {
+    projectId,
+    environmentId,
+    name:environment.name,
+    sequence:++state.resourceEnvironmentEditSequence,
+  };
+  renderResourcePane();
+  requestAnimationFrame(() => {
+    const input = $(`[data-resource-environment-editor="${CSS.escape(environmentId)}"] input`);
+    input?.focus();
+    input?.select();
+  });
 }
-function environmentManagerActions(item) {
-  const prompt = state.environmentDeletePrompt?.projectId === state.managedProjectId
-    && state.environmentDeletePrompt?.environmentId === item.environmentId
-    ? state.environmentDeletePrompt
-    : null;
-  if (prompt) {
-    const deleting = operationInFlight(environmentDeleteOperationKey(state.managedProjectId,item.environmentId));
-    return `<span class="manager-delete-prompt ${prompt.confirmable ? '' : 'blocked'}"><span>${escapeHtml(prompt.message)}</span><button class="button small" data-cancel-environment-delete>${prompt.confirmable ? '取消' : '关闭'}</button>${prompt.confirmable ? `<button class="button small danger" data-confirm-delete-environment="${escapeAttr(item.environmentId)}"${deleting ? ' disabled aria-busy="true"' : ''}>确认删除</button>` : ''}</span>`;
+
+function cancelResourceEnvironmentRename() {
+  state.resourceEnvironmentEditor = null;
+  renderResourcePane();
+}
+
+async function saveResourceEnvironmentName(form) {
+  const projectId = form.dataset.resourceProjectId;
+  const environmentId = form.dataset.resourceEnvironmentEditor;
+  const editor = resourceEnvironmentEditorFor(projectId,environmentId);
+  const environment = environmentFor(projectId,environmentId);
+  const input = form.querySelector('input');
+  const error = form.querySelector('.resource-environment-rename-error');
+  const submit = form.querySelector('[type="submit"]');
+  if (!editor || !environment || !input || !submit || submit.disabled) return;
+  editor.name = input.value;
+  const name = input.value.trim();
+  if (!name) {
+    error.textContent = '请输入环境名称。';
+    input.focus();
+    return;
   }
-  return `<span class="manager-actions"><button class="button small" data-edit-environment="${escapeAttr(item.environmentId)}">重命名</button><button class="button small danger" data-delete-environment="${escapeAttr(item.environmentId)}">删除</button></span>`;
+  if (name === environment.name) {
+    state.resourceEnvironmentEditor = null;
+    renderResourcePane();
+    return;
+  }
+  const sequence = editor.sequence;
+  const expectedRevision = environment.revision;
+  for (const button of form.querySelectorAll('button')) button.disabled = true;
+  try {
+    const updated = await call(api.updateEnvironment({projectId,environmentId,patch:{name},expectedRevision}));
+    const current = environmentFor(projectId,environmentId);
+    if (current && Number(current.revision ?? 0) <= Number(updated?.revision ?? 0)) Object.assign(current,updated);
+    if (state.resourceEnvironmentEditor?.sequence === sequence) state.resourceEnvironmentEditor = null;
+    let refreshError = null;
+    try { await refreshWorkspaceOverview({render:false}); }
+    catch (caught) { refreshError = caught; }
+    state.environments = state.environmentsByProject[state.projectId] ?? [];
+    renderShell();
+    if (refreshError) toast(`环境名称已保存，但列表刷新失败：${refreshError.message}`,true);
+    else toast('环境名称已更新。');
+  } finally {
+    if (form.isConnected) for (const button of form.querySelectorAll('button')) button.disabled = false;
+  }
 }
-function renderEnvironmentManager() {
-  const project = state.projects.find((item) => item.projectId === state.managedProjectId);
-  const environments = state.managedEnvironments;
-  if (!project) return;
-  $('#environmentManagerDialog').dataset.managedProjectId = project.projectId;
-  $('#environmentManagerScope').textContent = `${project.name} · ${environments.length} 个环境`;
-  const creating = state.editingEnvironmentId === null ? environmentInlineEditor() : '';
-  $('#environmentManagerList').innerHTML = creating + environments.map((item) => state.editingEnvironmentId === item.environmentId ? environmentInlineEditor(item) : `<div class="manager-row" data-managed-environment-id="${escapeAttr(item.environmentId)}"><span><strong>${escapeHtml(item.name)}</strong><small>${item.pluginCount} 个插件</small></span>${environmentManagerActions(item)}</div>`).join('');
-  const form = $('#environmentInlineForm');
-  form?.addEventListener('submit', (event) => { event.preventDefault(); saveEnvironmentFromManager().catch(showError); });
-}
-function openEnvironmentManager(projectId = state.projectId, editorId = undefined) {
-  if (!projectId) return;
+
+function openEnvironmentDelete(projectId,environmentId) {
   const project = state.projects.find((item) => item.projectId === projectId);
   if (!project) return;
   if (projectIsIsolated(project)) { toast(project.configurationError.message,true); return; }
-  state.managedProjectId = projectId;
-  state.managedEnvironments = state.environmentsByProject[projectId] ?? [];
-  state.editingEnvironmentId = editorId;
-  state.environmentDeletePrompt = null;
-  renderEnvironmentManager();
-  if (!$('#environmentManagerDialog').open) $('#environmentManagerDialog').showModal();
-  if (editorId !== undefined) requestAnimationFrame(() => { $('#managerEnvironmentName')?.focus(); $('#managerEnvironmentName')?.select(); });
-}
-function openEnvironmentDelete(projectId,environmentId) {
-  openEnvironmentManager(projectId);
-  const environments = state.managedEnvironments;
+  const environments = state.environmentsByProject[projectId] ?? [];
   const environment = environments.find((item) => item.environmentId === environmentId);
   if (!environment) return;
-  let message = `确定删除“${environment.name}”？`;
+  let message = `确定删除“${environment.name}”的配置和运维说明？本机加密凭据会继续保留。`;
   let confirmable = true;
   if (environments.length <= 1) { message = '项目至少需要保留一个环境'; confirmable = false; }
   else if (environment.pluginCount) { message = `请先处理该环境的 ${environment.pluginCount} 个插件`; confirmable = false; }
   const runtime = state.runtimeByScope[scopeKey(projectId,environmentId)];
   if (confirmable && (runtime?.desiredConnected || (runtime && runtime.phase !== 'disconnected'))) { message = '请先断开该环境'; confirmable = false; }
-  state.environmentDeletePrompt = { projectId,environmentId,message,confirmable };
-  renderEnvironmentManager();
+  state.resourceEnvironmentEditor = null;
+  state.resourceEnvironmentDeletePrompt = {projectId,environmentId,message,confirmable};
+  renderResourcePane();
 }
-function openEnvironmentEditor(id = null) {
-  openEnvironmentManager(state.managedProjectId ?? state.projectId,id);
-}
-async function saveEnvironmentFromManager() {
-  const button = $('#saveEnvironment');
-  if (!button || button.disabled) return;
-  button.disabled = true;
-  const editingId = state.editingEnvironmentId;
-  const projectId = state.managedProjectId;
+
+async function confirmResourceEnvironmentDelete(target) {
+  const projectId = target.dataset.resourceProjectId;
+  const environmentId = target.dataset.resourceConfirmEnvironmentDelete;
+  const environments = state.environmentsByProject[projectId] ?? [];
+  const environment = environments.find((item) => item.environmentId === environmentId);
+  const prompt = state.resourceEnvironmentDeletePrompt;
+  if (!environment || prompt?.projectId !== projectId || prompt.environmentId !== environmentId || !prompt.confirmable) return;
+  const index = environments.findIndex((item) => item.environmentId === environmentId);
+  const nextEnvironmentId = environments[index + 1]?.environmentId ?? environments[index - 1]?.environmentId ?? null;
+  const deletingCurrent = projectId === state.projectId && environmentId === state.environmentId;
+  if (deletingCurrent && !await mayLeaveCurrentScope()) return;
   try {
-    const name = $('#managerEnvironmentName').value.trim();
-    if (!name) throw new Error('请输入环境名称。');
-    if (editingId) {
-      const environment = state.managedEnvironments.find((item) => item.environmentId === editingId);
-      await call(api.updateEnvironment({projectId,environmentId:environment.environmentId,patch:{name},expectedRevision:environment.revision}));
-    } else await call(api.createEnvironment({projectId,input:{name}}));
-    state.editingEnvironmentId = undefined;
-    await refreshWorkspaceOverview({render:false});
-    state.managedEnvironments = state.environmentsByProject[projectId] ?? [];
-    state.environments = state.environmentsByProject[state.projectId] ?? [];
-    renderShell();
-    renderEnvironmentManager();
-    toast(editingId ? '环境名称已更新。' : '环境已创建。');
-  } finally {
-    const current = $('#saveEnvironment');
-    if (current) current.disabled = false;
+    await deleteEnvironmentOnce(projectId,environmentId,target,async () => {
+      if (state.resourceEnvironmentDeletePrompt?.projectId === projectId
+        && state.resourceEnvironmentDeletePrompt.environmentId === environmentId) state.resourceEnvironmentDeletePrompt = null;
+      await refreshWorkspaceOverview({render:false});
+      state.environments = state.environmentsByProject[state.projectId] ?? [];
+      if (deletingCurrent && nextEnvironmentId) await openScope(projectId,nextEnvironmentId,{skipLeaveCheck:true});
+      else renderShell();
+      toast(`“${environment.name}”的配置已删除；本机加密凭据仍保留。`);
+    });
+  } catch (error) {
+    if (state.resourceEnvironmentDeletePrompt?.projectId === projectId
+      && state.resourceEnvironmentDeletePrompt.environmentId === environmentId) {
+      state.resourceEnvironmentDeletePrompt = {projectId,environmentId,message:error?.message ?? '删除失败',confirmable:false};
+      renderResourcePane();
+    } else showError(error);
   }
 }
 
@@ -3427,6 +3494,8 @@ function resetScopeUi() {
   }
   state.mobileDetail = false;
   state.creatingEnvironmentInline = false;
+  state.resourceEnvironmentEditor = null;
+  state.resourceEnvironmentDeletePrompt = null;
   state.metadataEditingPluginId = null;
   state.agentEditingPluginId = null;
   state.editingDraft = null;
@@ -3889,6 +3958,28 @@ document.addEventListener('drop',(event) => {
 
 document.addEventListener('dragend',finishRailDrag);
 
+document.addEventListener('input',(event) => {
+  const form = event.target.closest?.('[data-resource-environment-editor]');
+  if (!form || event.target.tagName !== 'INPUT') return;
+  const editor = resourceEnvironmentEditorFor(form.dataset.resourceProjectId,form.dataset.resourceEnvironmentEditor);
+  if (!editor) return;
+  editor.name = event.target.value;
+  form.querySelector('.resource-environment-rename-error').textContent = '';
+});
+
+document.addEventListener('submit',(event) => {
+  const form = event.target.closest?.('[data-resource-environment-editor]');
+  if (!form) return;
+  event.preventDefault();
+  saveResourceEnvironmentName(form).catch(showError);
+});
+
+document.addEventListener('keydown',(event) => {
+  if (event.key !== 'Escape' || !event.target.closest?.('[data-resource-environment-editor]')) return;
+  event.preventDefault();
+  cancelResourceEnvironmentRename();
+});
+
 document.addEventListener('click', async (event) => {
   const target = event.target.closest('button');
   if (!target) {
@@ -3990,8 +4081,11 @@ document.addEventListener('click', async (event) => {
       await startAddPlugin(state.projectId,target.dataset.resourceAddPlugin);
       return;
     }
-    if (target.dataset.resourceRenameEnvironment) { openEnvironmentManager(state.projectId,target.dataset.resourceRenameEnvironment); return; }
+    if (target.dataset.resourceRenameEnvironment) { beginResourceEnvironmentRename(state.projectId,target.dataset.resourceRenameEnvironment); return; }
     if (target.dataset.resourceDeleteEnvironment) { openEnvironmentDelete(state.projectId,target.dataset.resourceDeleteEnvironment); return; }
+    if (target.hasAttribute('data-resource-cancel-environment-rename')) { cancelResourceEnvironmentRename(); return; }
+    if (target.hasAttribute('data-resource-cancel-environment-delete')) { state.resourceEnvironmentDeletePrompt = null; renderResourcePane(); return; }
+    if (target.dataset.resourceConfirmEnvironmentDelete) { await confirmResourceEnvironmentDelete(target); return; }
     if (target.dataset.overviewPluginAction) {
       setElementBusy(target,true);
       try {
@@ -4024,7 +4118,6 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.projectSettings) { openProjectSettings(target.dataset.projectSettings); return; }
-    if (target.dataset.manageProjectId) { openEnvironmentManager(target.dataset.manageProjectId); return; }
     if (target.dataset.overviewRenameEnvironment) {
       state.overviewEnvironmentDeletePrompt = null;
       state.overviewEditingProjectId = state.projectId;
@@ -4149,56 +4242,6 @@ document.addEventListener('click', async (event) => {
       }
       renderDetailTopbar();
       renderView();
-      return;
-    }
-    if (target.dataset.editEnvironment) { openEnvironmentEditor(target.dataset.editEnvironment); return; }
-    if (target.hasAttribute('data-cancel-environment-editor')) { state.editingEnvironmentId = undefined; renderEnvironmentManager(); return; }
-    if (target.hasAttribute('data-cancel-environment-delete')) { state.environmentDeletePrompt = null; renderEnvironmentManager(); return; }
-    if (target.dataset.deleteEnvironment) {
-      const projectId = state.managedProjectId;
-      const environments = state.managedEnvironments;
-      const environment = environments.find((item) => item.environmentId === target.dataset.deleteEnvironment);
-      if (!environment) return;
-      let message = `确定删除“${environment.name}”的配置和运维说明？本机加密凭据会继续保留。`;
-      let confirmable = true;
-      if (environments.length <= 1) { message = '项目至少需要保留一个环境'; confirmable = false; }
-      else if (environment.pluginCount) { message = `请先处理该环境的 ${environment.pluginCount} 个插件`; confirmable = false; }
-      const runtime = state.runtimeByScope[scopeKey(projectId,environment?.environmentId)];
-      if (confirmable && (runtime?.desiredConnected || (runtime && runtime.phase !== 'disconnected'))) { message = '请先断开该环境'; confirmable = false; }
-      state.environmentDeletePrompt = { projectId,environmentId:environment.environmentId,message,confirmable };
-      renderEnvironmentManager();
-      return;
-    }
-    if (target.dataset.confirmDeleteEnvironment) {
-      const projectId = state.managedProjectId;
-      const environmentId = target.dataset.confirmDeleteEnvironment;
-      const environments = state.managedEnvironments;
-      const environment = environments.find((item) => item.environmentId === environmentId);
-      if (!environment || state.environmentDeletePrompt?.projectId !== projectId || state.environmentDeletePrompt?.environmentId !== environmentId || !state.environmentDeletePrompt.confirmable) return;
-      const index = environments.findIndex((item) => item.environmentId === environmentId);
-      const nextEnvironmentId = environments[index + 1]?.environmentId ?? environments[index - 1]?.environmentId ?? null;
-      const deletingCurrent = projectId === state.projectId && environmentId === state.environmentId;
-      if (deletingCurrent && !await mayLeaveCurrentScope()) return;
-      try {
-        await deleteEnvironmentOnce(projectId,environmentId,target,async () => {
-          if (state.environmentDeletePrompt?.projectId === projectId
-            && state.environmentDeletePrompt?.environmentId === environmentId) state.environmentDeletePrompt = null;
-          await refreshWorkspaceOverview({render:false});
-          if (state.managedProjectId === projectId) state.managedEnvironments = state.environmentsByProject[projectId] ?? [];
-          state.environments = state.environmentsByProject[state.projectId] ?? [];
-          if (state.projectId === projectId && state.environmentId === environmentId && nextEnvironmentId) {
-            await openScope(projectId,nextEnvironmentId,{skipLeaveCheck:true});
-          } else renderShell();
-          if (state.managedProjectId === projectId) renderEnvironmentManager();
-          toast(`“${environment.name}”的配置已删除；本机加密凭据仍保留。`);
-        });
-      } catch (error) {
-        if (state.environmentDeletePrompt?.projectId === projectId
-          && state.environmentDeletePrompt?.environmentId === environmentId) {
-          state.environmentDeletePrompt = { projectId,environmentId,message:error?.message ?? '删除失败',confirmable:false };
-          renderEnvironmentManager();
-        } else showError(error);
-      }
       return;
     }
     if (target.dataset.approveConfirmation) {
@@ -4416,7 +4459,6 @@ $('#toggleDetailPane').addEventListener('click',() => setDetailPaneCollapsed(!st
 $('#expandDetailPane').addEventListener('click',() => setDetailPaneCollapsed(false));
 $('#moreEnvironments').addEventListener('click', openEnvironmentSwitcher);
 $('#confirmationButton').addEventListener('click', () => openConfirmations().catch(showError));
-$('#managerAddEnvironment').addEventListener('click', () => openEnvironmentEditor());
 $('#showInlineEnvironmentCreate').addEventListener('click', beginInlineEnvironmentCreate);
 $('#cancelInlineEnvironmentCreate').addEventListener('click', cancelInlineEnvironmentCreate);
 $('#resourceEnvironmentCreateForm').addEventListener('submit', (event) => saveInlineEnvironmentCreate(event));
@@ -4775,11 +4817,6 @@ async function drainWorkspaceChanges() {
     const changes = dedupeWorkspaceChanges(queuedWorkspaceChanges.slice(0,batchSize));
     const refreshed = await refreshWorkspaceOverview({render:false});
     if (!refreshed) return false;
-    const managedChanged = changes.some((change) => change.projectId === state.managedProjectId);
-    if ($('#environmentManagerDialog').open && managedChanged) {
-      state.managedEnvironments = state.environmentsByProject[state.managedProjectId] ?? [];
-      renderEnvironmentManager();
-    }
     const added = [...changes].reverse().find((change) => change.type === 'plugin-added'
       && change.projectId === state.projectId
       && change.environmentId === state.environmentId

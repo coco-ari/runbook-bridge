@@ -26,6 +26,7 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(html, /id="projectOverviewActivity"/);
   assert.match(html, /id="showInlineEnvironmentCreate"/);
   assert.match(html, /id="resourceEnvironmentCreateForm"/);
+  assert.doesNotMatch(html, /id="environmentManagerDialog"/);
   assert.doesNotMatch(html, /id="overviewAddEnvironment"|class="action-menu"/);
   assert.match(html, /id="projectTitleEditor"/);
   assert.match(html, /id="projectDeleteShortcut"/);
@@ -57,7 +58,7 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.doesNotMatch(html, /id="pluginDialog"|id="diagnosticDialog"|<th>发起者<\/th>/);
   assert.doesNotMatch(html, /id="pluginSearch"|id="pluginTypeFilter"|id="pluginStatusFilter"|plugin-filters/);
   const dialogs = [...html.matchAll(/<dialog\b([^>]*)>([\s\S]*?)<\/dialog>/g)];
-  assert.ok(dialogs.length >= 7, 'expected all native dialogs to remain in the V2 surface');
+  assert.ok(dialogs.length >= 6, 'expected the remaining destructive and selection dialogs in the V2 surface');
   for (const [, attributes, contents] of dialogs) {
     const dialogId = attributes.match(/\bid="([^"]+)"/)?.[1];
     const labelledBy = attributes.match(/\baria-labelledby="([^"]+)"/)?.[1];
@@ -136,6 +137,9 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.doesNotMatch(renderer, /diagnosticDialog.*showModal/);
   assert.match(renderer, /saveProjectTitleEdit/);
   assert.match(renderer, /saveInlineEnvironmentCreate/);
+  assert.match(renderer, /data-resource-environment-editor/);
+  assert.match(renderer, /data-resource-environment-delete-prompt/);
+  assert.doesNotMatch(renderer, /openEnvironmentManager|renderEnvironmentManager/);
   assert.doesNotMatch(renderer, /resource-environment-menu|环境更多操作/);
   assert.doesNotMatch(renderer, /resource-chevron|resourceToggleEnvironment/);
   assert.match(renderer, /permission-summary-item/);
@@ -176,6 +180,8 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(styles, /\.plugin-form-diagnostic/);
   assert.match(styles, /\.credential-migration-notice/);
   assert.match(styles, /\.resource-environment-create/);
+  assert.match(styles, /\.resource-environment-rename-form/);
+  assert.match(styles, /\.resource-environment-delete-prompt/);
   assert.match(styles, /\.resource-draft-row/);
   assert.match(styles, /\.permission-hero/);
   assert.match(styles, /\.permissions-page \.policy-row/);

@@ -566,6 +566,64 @@ test('environment deletion reports a post-commit refresh failure without retryin
   assert.match(warning,/列表刷新失败/);
 });
 
+test('environment rename no-op skips persistence and a late save cannot close a newer editor', async () => {
+  const update = deferred();
+  const environment = {projectId:'project',environmentId:'environment',name:'Production',revision:1};
+  const state = {
+    projectId:'project',
+    environments:[environment],
+    environmentsByProject:{project:[environment]},
+    resourceEnvironmentEditor:{projectId:'project',environmentId:'environment',name:'Production',sequence:1},
+  };
+  const input = {value:' Production ',focus(){}};
+  const error = {textContent:''};
+  const submit = {disabled:false};
+  const cancel = {disabled:false};
+  const form = {
+    dataset:{resourceProjectId:'project',resourceEnvironmentEditor:'environment'},
+    isConnected:true,
+    querySelector:(selector) => selector === 'input' ? input
+      : selector === '.resource-environment-rename-error' ? error
+      : selector === '[type="submit"]' ? submit : null,
+    querySelectorAll:() => [submit,cancel],
+  };
+  let payload = null;
+  let refreshes = 0;
+  let resourceRenders = 0;
+  let shellRenders = 0;
+  const context = vm.createContext({
+    state,
+    api:{updateEnvironment:(value) => { payload = JSON.parse(JSON.stringify(value)); return update.promise; }},
+    refreshWorkspaceOverview:async () => { refreshes += 1; },
+    renderResourcePane:() => { resourceRenders += 1; },
+    renderShell:() => { shellRenders += 1; },
+    toast:() => {},
+  });
+  install(context,['call','environmentFor','resourceEnvironmentEditorFor','saveResourceEnvironmentName']);
+  context.form = form;
+
+  await vm.runInContext('saveResourceEnvironmentName(form)',context);
+  assert.equal(payload,null);
+  assert.equal(refreshes,0);
+  assert.equal(resourceRenders,1);
+  assert.equal(state.resourceEnvironmentEditor,null);
+
+  state.resourceEnvironmentEditor = {projectId:'project',environmentId:'environment',name:'Renamed',sequence:2};
+  input.value = 'Renamed';
+  const save = vm.runInContext('saveResourceEnvironmentName(form)',context);
+  assert.equal(submit.disabled,true);
+  state.resourceEnvironmentEditor = {projectId:'project',environmentId:'environment',name:'Newest draft',sequence:3};
+  update.resolve({ok:true,data:{...environment,name:'Renamed',revision:2}});
+  await save;
+
+  assert.deepEqual(payload,{projectId:'project',environmentId:'environment',patch:{name:'Renamed'},expectedRevision:1});
+  assert.equal(state.resourceEnvironmentEditor.sequence,3);
+  assert.equal(environment.name,'Renamed');
+  assert.equal(refreshes,1);
+  assert.equal(shellRenders,1);
+  assert.equal(submit.disabled,false);
+});
+
 test('runbook render and a late load preserve an edited draft', async () => {
   const read = deferred();
   const state = {
@@ -950,13 +1008,12 @@ test('workspace change bursts share one overview refresh', async () => {
     state:{
       projectId:'current',environmentId:'env',projectOverviewActive:false,
       projectOverviewActivityProjectId:null,projectOverviewActivityGeneration:0,
-      managedProjectId:null,environmentsByProject:{},dragSort:null,sortSaving:false,railRefreshPending:false,
+      environmentsByProject:{},dragSort:null,sortSaving:false,railRefreshPending:false,
     },
     queuedWorkspaceChanges:[],
     workspaceChangeRefreshPromise:null,
     refreshWorkspaceOverview:async () => { refreshes += 1; return true; },
     $:() => ({open:false}),
-    renderEnvironmentManager:() => {},
     loadEnvironment:async () => false,
     toast:() => {},
     withUiContinuity:(render) => render(),
@@ -983,7 +1040,7 @@ test('a failed workspace refresh keeps its event batch for the next attempt and 
       projectId:'project',environmentId:'env',projectOverviewActive:true,
       projectOverviewActivityProjectId:'project',projectOverviewActivityGeneration:3,
       projectOverviewActivityEntries:[{id:1}],projectOverviewActivityLoading:true,projectOverviewActivityRefreshing:true,
-      managedProjectId:null,environmentsByProject:{},dragSort:null,sortSaving:false,railRefreshPending:false,
+      environmentsByProject:{},dragSort:null,sortSaving:false,railRefreshPending:false,
     },
     queuedWorkspaceChanges:[],workspaceChangeRefreshPromise:null,
     refreshWorkspaceOverview:async () => {
@@ -994,7 +1051,7 @@ test('a failed workspace refresh keeps its event batch for the next attempt and 
     $:(selector) => selector === '[data-refresh-overview-activity]' ? refreshButton : {open:false},
     setElementBusy:(element,busy) => { element.disabled = Boolean(busy); },
     renderProjectOverviewActivity:() => { activityRenders += 1; },
-    renderEnvironmentManager:() => {},renderProjects:() => {},renderProjectOverview:() => {},renderResourcePane:() => {},
+    renderProjects:() => {},renderProjectOverview:() => {},renderResourcePane:() => {},
     loadEnvironment:async () => false,toast:() => {},withUiContinuity:(render) => render(),
     showError:() => { shownErrors += 1; },
   });

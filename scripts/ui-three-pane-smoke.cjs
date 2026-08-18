@@ -27,6 +27,7 @@ const plugins = {
 };
 const drafts = {prod:[],gray:[]};
 let expectDraftSessionValidation = false;
+const environmentUpdateCalls = [];
 const environments = [
   {projectId:'member',environmentId:'prod',name:'正式环境',revision:1,pluginCount:6,readyPluginCount:6,pluginTypeCounts:{server:2,mysql:2,redis:2},resourcePreview:plugins.prod.map((plugin) => ({pluginInstanceId:plugin.pluginInstanceId,pluginType:plugin.pluginType,displayName:plugin.displayName,configState:plugin.configState,resource:plugin.pluginType === 'server' ? {host:plugin.target.host,port:plugin.target.port} : plugin.pluginType === 'mysql' ? {database:plugin.target.database} : {db:plugin.target.db}})),runtime:runtime('member','prod',6)},
   {projectId:'member',environmentId:'gray',name:'灰度环境',revision:1,pluginCount:1,readyPluginCount:1,pluginTypeCounts:{server:1,mysql:0,redis:0},resourcePreview:[{pluginInstanceId:'gray-server',pluginType:'server',displayName:'灰度服务器',configState:'ready',resource:{host:'10.0.0.8',port:22}}],runtime:runtime('member','gray',1)},
@@ -56,6 +57,13 @@ handle('v2:environment-create',({projectId,input}) => {
   return environment;
 });
 handle('v2:environment-list',() => environments);
+handle('v2:environment-update',(payload) => {
+  environmentUpdateCalls.push(structuredClone(payload));
+  const environment = environments.find((item) => item.projectId === payload.projectId && item.environmentId === payload.environmentId);
+  if (!environment) throw new Error('environment not found');
+  Object.assign(environment,payload.patch,{revision:Number(environment.revision ?? 0) + 1});
+  return environment;
+});
 handle('v2:plugin-list',({environmentId}) => plugins[environmentId] ?? []);
 handle('v2:plugin-draft-list',({environmentId}) => drafts[environmentId] ?? []);
 handle('v2:plugin-draft-save',(payload) => {
@@ -168,6 +176,28 @@ async function run() {
     const railRefined=!document.querySelector('.rail-brand')&&!document.querySelector('.rail-project-manage')&&Boolean(document.querySelector('.rail-header .logo-mark use[href="#i-app"]'));
     const projectActionsExposed=!document.querySelector('#overviewAddEnvironment')&&!document.querySelector('.resource-project-actions .action-menu')&&['projectSettingsShortcut','resetWorkspaceWidths','projectDeleteShortcut'].every(id=>Boolean(document.querySelector('#'+id)));
     const environmentCaretRemoved=!document.querySelector('.resource-chevron');
+    click('[data-resource-rename-environment="prod"]');
+    await wait(()=>Boolean(document.querySelector('[data-resource-environment-editor="prod"]')),'inline environment rename');
+    const environmentNameInput=document.querySelector('[data-resource-environment-editor="prod"] input');
+    await wait(()=>document.activeElement===environmentNameInput,'focus inline environment rename');
+    const renameFocused=document.activeElement===environmentNameInput;
+    environmentNameInput.value='   ';
+    document.querySelector('[data-resource-environment-editor="prod"]').requestSubmit();
+    await wait(()=>document.querySelector('.resource-environment-rename-error').textContent.includes('请输入环境名称'),'reject empty environment name');
+    const blankNameRejected=Boolean(document.querySelector('[data-resource-environment-editor="prod"]'));
+    environmentNameInput.value='生产环境';
+    environmentNameInput.dispatchEvent(new Event('input',{bubbles:true}));
+    document.querySelector('[data-resource-environment-editor="prod"]').requestSubmit();
+    await wait(()=>document.querySelector('[data-resource-environment-id="prod"] .resource-environment-copy strong')?.textContent==='生产环境'&&document.querySelector('#runbookTitle').textContent.startsWith('生产环境'),'save inline environment rename');
+    click('[data-resource-rename-environment="prod"]');
+    await wait(()=>Boolean(document.querySelector('[data-resource-environment-editor="prod"]')),'inline environment rename no-op');
+    document.querySelector('[data-resource-environment-editor="prod"]').requestSubmit();
+    await wait(()=>!document.querySelector('[data-resource-environment-editor="prod"]'),'close no-op environment rename');
+    click('[data-resource-delete-environment="prod"]');
+    await wait(()=>Boolean(document.querySelector('[data-resource-environment-delete-prompt="prod"]')),'inline environment delete prompt');
+    const environmentDeleteInline=document.querySelector('[data-resource-environment-delete-prompt="prod"]').textContent.includes('请先处理该环境的 6 个插件');
+    click('[data-resource-cancel-environment-delete]');
+    const environmentRenameInline=renameFocused&&blankNameRejected&&!document.querySelector('#environmentManagerDialog')&&environmentDeleteInline;
     click('.resource-environment-select[data-resource-environment-id="gray"]');
     await wait(()=>Boolean(document.querySelector('.resource-environment-card.expanded .resource-environment-select[data-resource-environment-id="gray"]'))&&!document.querySelector('.resource-environment-card.expanded .resource-environment-select[data-resource-environment-id="prod"]'),'exclusive environment expand');
     const switchedEnvironmentExclusive=document.querySelectorAll('.resource-environment-card.expanded').length===1;
@@ -179,7 +209,7 @@ async function run() {
     const environmentCardToggle=environmentCaretRemoved&&switchedEnvironmentExclusive&&selectedEnvironmentCollapsed;
     click('#showInlineEnvironmentCreate');
     await wait(()=>!document.querySelector('#resourceEnvironmentCreateForm').classList.contains('hidden'),'inline environment create');
-    const environmentCreateInline=!document.querySelector('#environmentManagerDialog').open;
+    const environmentCreateInline=!document.querySelector('#environmentManagerDialog');
     document.querySelector('#resourceEnvironmentName').value='新增测试环境';
     document.querySelector('#resourceEnvironmentCreateForm').requestSubmit();
     await wait(()=>[...document.querySelectorAll('.resource-environment-card')].some(card=>card.textContent.includes('新增测试环境')),'save inline environment');
@@ -300,17 +330,17 @@ async function run() {
     const collapsed={active:app.classList.contains('detail-collapsed'),detailWidth:Math.round(detail.getBoundingClientRect().width),resourceWidth:Math.round(resources.getBoundingClientRect().width),buttonVisible:getComputedStyle(document.querySelector('#expandDetailPane')).display!=='none'};
     click('#expandDetailPane');
     await frame();
-    return {environmentTabs,pluginTabs,selectedHeaderContinuous,compactEnvironmentActions,environmentActionsWrapCleanly,environmentCardToggle,environmentHeaderHeight,railRefined,projectActionsExposed,environmentCreatedInline,confirmationCenter,permissionsRefined,projectRenameInline,projectDeleteDirect,configurationInline,diagnosticInline,formDiagnostic,basedDraftValidationUsesDraftSession,addPluginInline,addPluginOpensDetail,draftSaved,draftResumed,draftDeleted,overflowSelectionVisible,resourceOverflowOwnedByList,auditFiltered,auditConnectionVisible,auditResponsive,auditPendingNamed,auditClearScoped,auditCleared,collapsed,initialRects:initialRects.map(rect=>({left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width)})),expanded:!app.classList.contains('detail-collapsed'),separators:document.querySelectorAll('[role="separator"]').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};
+    return {environmentTabs,pluginTabs,selectedHeaderContinuous,compactEnvironmentActions,environmentActionsWrapCleanly,environmentCardToggle,environmentHeaderHeight,railRefined,projectActionsExposed,environmentRenameInline,environmentCreatedInline,confirmationCenter,permissionsRefined,projectRenameInline,projectDeleteDirect,configurationInline,diagnosticInline,formDiagnostic,basedDraftValidationUsesDraftSession,addPluginInline,addPluginOpensDetail,draftSaved,draftResumed,draftDeleted,overflowSelectionVisible,resourceOverflowOwnedByList,auditFiltered,auditConnectionVisible,auditResponsive,auditPendingNamed,auditClearScoped,auditCleared,collapsed,initialRects:initialRects.map(rect=>({left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width)})),expanded:!app.classList.contains('detail-collapsed'),separators:document.querySelectorAll('[role="separator"]').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};
   })()`);
   const screenshotPath = process.argv.find((value) => /\.png$/i.test(value)) || process.env.AI_OPS_SCREENSHOT_PATH;
   if (screenshotPath) {
-    const screenshotMode = ['confirmation','editor','configuration','audit','resources'].includes(process.env.AI_OPS_SCREENSHOT_MODE) ? process.env.AI_OPS_SCREENSHOT_MODE : 'permissions';
+    const screenshotMode = ['confirmation','editor','configuration','audit','resources','environment'].includes(process.env.AI_OPS_SCREENSHOT_MODE) ? process.env.AI_OPS_SCREENSHOT_MODE : 'permissions';
     if (screenshotMode === 'audit') auditEntries = structuredClone(initialAuditEntries);
     if (screenshotMode === 'resources') {
       win.setContentSize(815,900);
       await new Promise((resolve) => setTimeout(resolve,100));
     }
-    const screenshotState = await win.webContents.executeJavaScript(`(async()=>{const wait=async(predicate)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: ${screenshotMode} screenshot');await new Promise(resolve=>setTimeout(resolve,20));}};const click=(selector)=>{const element=document.querySelector(selector);if(!element)throw new Error('missing screenshot target: '+selector);element.click();};const openMysql=async()=>{if(!document.querySelector('[data-resource-plugin-id="mysql-member"]')){click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('[data-resource-plugin-id="mysql-member"]'));}click('[data-resource-plugin-id="mysql-member"]');await wait(()=>document.querySelector('[data-detail-tab="configuration"]')&&document.querySelector('#pluginDetail')?.textContent.includes('会员业务库'));};if('${screenshotMode}'==='confirmation'){click('#confirmationButton');await wait(()=>!document.querySelector('#confirmationView').classList.contains('hidden')&&document.querySelector('#detailTopTabs').textContent.includes('操作确认')&&document.querySelector('[data-confirmation-card]'));}else if('${screenshotMode}'==='editor'){await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('当前为只读详情'));window.confirm=()=>true;click('[data-action="edit-plugin"]');await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden'));click('#validateMysqlDatabase');await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'));document.querySelector('#pluginFormDiagnostic').scrollIntoView({block:'center'});}else if('${screenshotMode}'==='configuration'){await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('修改名称'));}else if('${screenshotMode}'==='audit'){await openMysql();click('[data-detail-tab="audit"]');await wait(()=>!document.querySelector('#auditView').classList.contains('hidden')&&document.querySelector('#auditBody')?.textContent.includes('连接插件'));}else if('${screenshotMode}'==='resources'){if(!document.querySelector('#app').classList.contains('detail-collapsed'))click('#toggleDetailPane');await wait(()=>document.querySelector('#app').classList.contains('detail-collapsed'));const list=document.querySelector('#resourceEnvironmentList');list.scrollTop=list.scrollHeight;await wait(()=>{const row=document.querySelector('[data-resource-plugin-id="redis-cache-2"]')?.closest('.resource-plugin-row');if(!row)return false;const rowRect=row.getBoundingClientRect(),listRect=list.getBoundingClientRect();return rowRect.bottom<=listRect.bottom&&rowRect.top>=listRect.top;});}else{click('[data-resource-plugin-id="server-app"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('应用服务器'));click('[data-detail-tab="permissions"]');await wait(()=>Boolean(document.querySelector('#pluginDetail .permissions-page')));}await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));return{mode:'${screenshotMode}',editorVisible:!document.querySelector('#pluginConfigView').classList.contains('hidden'),successfulChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.success').length,pendingChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.pending, #pluginFormDiagnostic .diagnostic-step.queued').length,visibleFooterActions:document.querySelectorAll('.plugin-form-actions>button:not(.hidden)').length};})()`);
+    const screenshotState = await win.webContents.executeJavaScript(`(async()=>{const wait=async(predicate)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: ${screenshotMode} screenshot');await new Promise(resolve=>setTimeout(resolve,20));}};const click=(selector)=>{const element=document.querySelector(selector);if(!element)throw new Error('missing screenshot target: '+selector);element.click();};const openMysql=async()=>{if(!document.querySelector('[data-resource-plugin-id="mysql-member"]')){click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('[data-resource-plugin-id="mysql-member"]'));}click('[data-resource-plugin-id="mysql-member"]');await wait(()=>document.querySelector('[data-detail-tab="configuration"]')&&document.querySelector('#pluginDetail')?.textContent.includes('会员业务库'));};if('${screenshotMode}'==='confirmation'){click('#confirmationButton');await wait(()=>!document.querySelector('#confirmationView').classList.contains('hidden')&&document.querySelector('#detailTopTabs').textContent.includes('操作确认')&&document.querySelector('[data-confirmation-card]'));}else if('${screenshotMode}'==='editor'){await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('当前为只读详情'));window.confirm=()=>true;click('[data-action="edit-plugin"]');await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden'));click('#validateMysqlDatabase');await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'));document.querySelector('#pluginFormDiagnostic').scrollIntoView({block:'center'});}else if('${screenshotMode}'==='configuration'){await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('修改名称'));}else if('${screenshotMode}'==='audit'){await openMysql();click('[data-detail-tab="audit"]');await wait(()=>!document.querySelector('#auditView').classList.contains('hidden')&&document.querySelector('#auditBody')?.textContent.includes('连接插件'));}else if('${screenshotMode}'==='resources'){if(!document.querySelector('#app').classList.contains('detail-collapsed'))click('#toggleDetailPane');await wait(()=>document.querySelector('#app').classList.contains('detail-collapsed'));const list=document.querySelector('#resourceEnvironmentList');list.scrollTop=list.scrollHeight;await wait(()=>{const row=document.querySelector('[data-resource-plugin-id="redis-cache-2"]')?.closest('.resource-plugin-row');if(!row)return false;const rowRect=row.getBoundingClientRect(),listRect=list.getBoundingClientRect();return rowRect.bottom<=listRect.bottom&&rowRect.top>=listRect.top;});}else if('${screenshotMode}'==='environment'){click('[data-resource-rename-environment="prod"]');await wait(()=>document.querySelector('[data-resource-environment-editor="prod"]')&&document.activeElement===document.querySelector('[data-resource-environment-editor="prod"] input'));}else{click('[data-resource-plugin-id="server-app"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('应用服务器'));click('[data-detail-tab="permissions"]');await wait(()=>Boolean(document.querySelector('#pluginDetail .permissions-page')));}await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));return{mode:'${screenshotMode}',editorVisible:!document.querySelector('#pluginConfigView').classList.contains('hidden'),successfulChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.success').length,pendingChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.pending, #pluginFormDiagnostic .diagnostic-step.queued').length,visibleFooterActions:document.querySelectorAll('.plugin-form-actions>button:not(.hidden)').length};})()`);
     if (screenshotMode === 'editor') assert.deepEqual(screenshotState,{mode:'editor',editorVisible:true,successfulChecks:3,pendingChecks:0,visibleFooterActions:3});
     win.showInactive();
     await new Promise((resolve) => setTimeout(resolve,250));
@@ -334,6 +364,8 @@ async function run() {
   assert.ok(result.environmentHeaderHeight>=88&&result.environmentHeaderHeight<=104,'environment header should use two aligned compact rows');
   assert.equal(result.railRefined,true);
   assert.equal(result.projectActionsExposed,true);
+  assert.equal(result.environmentRenameInline,true);
+  assert.deepEqual(environmentUpdateCalls,[{projectId:'member',environmentId:'prod',patch:{name:'生产环境'},expectedRevision:1}]);
   assert.equal(result.environmentCreatedInline,true);
   assert.deepEqual(result.permissionsRefined,{hero:true,summary:4,rows:8,fits:true});
   assert.equal(result.projectRenameInline,true);
