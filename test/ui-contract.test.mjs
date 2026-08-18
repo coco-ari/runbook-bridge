@@ -3,17 +3,20 @@ import fs from 'node:fs/promises';
 import test from 'node:test';
 
 test('production renderer exposes only the structured V2 operations surface', async () => {
-  const [html, renderer, styles, preload, main, manifest] = await Promise.all([
+  const [html, renderer, styles, preload, main, ipc, manifest] = await Promise.all([
     fs.readFile('renderer/v2/index.html', 'utf8'),
     fs.readFile('renderer/v2/app.js', 'utf8'),
     fs.readFile('renderer/v2/styles.css', 'utf8'),
     fs.readFile('src/preload.cjs', 'utf8'),
     fs.readFile('src/main.mjs', 'utf8'),
+    fs.readFile('src/ipc-v2.mjs', 'utf8'),
     fs.readFile('package.json', 'utf8'),
   ]);
 
   assert.match(html, /id="moreEnvironments"/);
   assert.match(html, /id="confirmationButton"/);
+  assert.match(html, /id="confirmationView"/);
+  assert.doesNotMatch(html, /id="confirmationDialog"/);
   assert.match(html, /id="deletePluginDialog"/);
   assert.match(html, /id="queryDatabases"/);
   assert.match(html, /id="toggleProjectRail"/);
@@ -21,12 +24,25 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(html, /id="projectOverviewStats"/);
   assert.match(html, /id="projectOverviewAttention"/);
   assert.match(html, /id="projectOverviewActivity"/);
-  assert.match(html, /id="overviewAddEnvironment"/);
+  assert.match(html, /id="showInlineEnvironmentCreate"/);
+  assert.match(html, /id="resourceEnvironmentCreateForm"/);
+  assert.doesNotMatch(html, /id="overviewAddEnvironment"|class="action-menu"/);
+  assert.match(html, /id="projectTitleEditor"/);
+  assert.match(html, /id="projectDeleteShortcut"/);
+  assert.match(html, /id="pluginConfigView"/);
+  assert.match(html, /id="pluginFormDepot"/);
+  assert.match(html, /id="testPluginFromForm"/);
+  assert.match(html, /id="pluginFormDiagnostic"/);
+  assert.match(html, /id="auditBody" class="audit-list"/);
+  assert.match(html, /id="clearAudit"/);
+  assert.match(html, /id="clearAuditDialog"/);
+  assert.match(html, /value="pending">等待确认/);
+  assert.match(html, /href="#i-app"/);
   assert.doesNotMatch(html, /id="overviewManageEnvironments"/);
   assert.match(html, /id="projectSettingsDialog"/);
   assert.match(html, /id="deleteProjectDialog"/);
   assert.match(html, /data-password-target="pluginPassword"/);
-  assert.match(html, /<th>发起者<\/th>/);
+  assert.doesNotMatch(html, /id="pluginDialog"|id="diagnosticDialog"|<th>发起者<\/th>/);
   assert.doesNotMatch(html, /id="pluginSearch"|id="pluginTypeFilter"|id="pluginStatusFilter"|plugin-filters/);
   assert.doesNotMatch(renderer, /pluginFilter|clear-plugin-filter/);
   assert.doesNotMatch(renderer, /manager-current|当前查看/);
@@ -52,7 +68,21 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(renderer, /loadProjectOverviewActivity/);
   assert.match(renderer, /filter\(overviewActivityVisible\)\.slice\(0,5\)/);
   assert.match(renderer, /本机保存的凭据会继续保留/);
-  assert.match(renderer, /data-project-settings/);
+  assert.doesNotMatch(renderer, /rail-project-manage|data-project-settings/);
+  assert.match(renderer, /startAddPlugin/);
+  assert.match(renderer, /pluginInlineFormHost/);
+  assert.match(renderer, /function renderDiagnosticPanel/);
+  assert.match(renderer, /function diagnosticStepDefinitions/);
+  assert.match(renderer, /totalElapsedMs/);
+  assert.match(renderer, /testPluginFromForm/);
+  assert.doesNotMatch(renderer, /diagnostic-facts|结果依据/);
+  assert.doesNotMatch(renderer, /diagnosticDialog.*showModal/);
+  assert.match(renderer, /saveProjectTitleEdit/);
+  assert.match(renderer, /saveInlineEnvironmentCreate/);
+  assert.doesNotMatch(renderer, /resource-environment-menu|环境更多操作/);
+  assert.doesNotMatch(renderer, /resource-chevron|resourceToggleEnvironment/);
+  assert.match(renderer, /permission-summary-item/);
+  assert.match(renderer, /permissions-page/);
   assert.match(renderer, /api\.deleteProject/);
   assert.match(renderer, /slice\(0,2\)/);
   assert.match(renderer, /插件草稿已保存；补齐配置后才能连接/);
@@ -60,9 +90,17 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(renderer, /任意绝对路径；敏感内容也原样返回/);
   assert.match(renderer, /所有服务器变更逐次确认/);
   assert.match(renderer, /data-approval-level/);
+  assert.match(renderer, /function renderConfirmationCenter/);
+  assert.match(renderer, /confirmation-execution/);
+  assert.match(renderer, /api\.clearAudit/);
+  assert.match(renderer, /pending:'等待确认'/);
+  assert.match(renderer, /我已核对上面的完整命令/);
+  assert.doesNotMatch(renderer, /这是任意 Shell 命令，可能修改或删除数据、停止服务。确认已经逐字核对/);
   assert.doesNotMatch(renderer, /data-policy-key|save-policy|discard-policy/);
   assert.doesNotMatch(preload, /savePolicy|v2:plugin-policy/);
-  assert.match(styles, /\.confirmation-button/);
+  assert.match(styles, /\.rail-confirmation-button/);
+  assert.match(styles, /\.confirmation-page-shell/);
+  assert.match(styles, /\.scope-confirmation-badge/);
   assert.match(styles, /\.policy-state\.strong/);
   assert.match(styles, /\.delete-blockers/);
   assert.match(styles, /\.project-rail-resize-handle/);
@@ -71,18 +109,33 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(styles, /\.environment-resource-action/);
   assert.match(styles, /\.overview-attention-row:only-child/);
   assert.match(styles, /\.environment-overview-issue\.empty/);
+  assert.match(styles, /\.plugin-inline-form-host/);
+  assert.match(styles, /\.audit-record/);
+  assert.match(styles, /\.connection-check-section/);
+  assert.match(styles, /\.diagnostic-steps/);
+  assert.match(styles, /\.connection-overview/);
+  assert.match(styles, /\.plugin-form-diagnostic/);
+  assert.match(styles, /\.resource-environment-create/);
+  assert.match(styles, /\.permission-hero/);
+  assert.match(styles, /\.permissions-page \.policy-row/);
+  assert.match(styles, /@container \(max-width:650px\)/);
 
   assert.match(preload, /contextBridge\.exposeInMainWorld\('aiOps', \{\s*v2:/s);
   assert.match(preload, /v2:plugin-delete/);
   assert.match(preload, /v2:project-delete/);
   assert.match(preload, /v2:plugin-databases/);
+  assert.match(preload, /v2:plugin-test-progress/);
   assert.match(preload, /v2:confirmation-list/);
+  assert.match(preload, /v2:audit-clear/);
   assert.doesNotMatch(preload, /project:delete/);
   assert.doesNotMatch(preload, /project:execute/);
   assert.doesNotMatch(preload, /project:upload/);
   assert.doesNotMatch(preload, /project:download/);
   assert.doesNotMatch(main, /registerIpc\(/);
   assert.doesNotMatch(main, /new SshBroker/);
+  assert.match(ipc, /配置与依赖/);
+  assert.match(ipc, /SELECT 1 健康检查/);
+  assert.match(ipc, /totalElapsedMs/);
 
   const packageJson = JSON.parse(manifest);
   assert.ok(packageJson.build.files.includes('renderer/v2/**/*'));

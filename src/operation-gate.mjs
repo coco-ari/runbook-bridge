@@ -56,7 +56,7 @@ export class OperationGate {
     const approved = approvalToken
       ? this.confirmationManager.consume(approvalToken, scope, capability, args)
       : this.confirmationManager.consumeMatching(scope, capability, args);
-    if (approved) return rule;
+    if (approved) return { ...rule, confirmationId:approved.requestId };
 
     const pending = this.confirmationManager.request(scope, capability, args, summary, {
       ...metadata,
@@ -69,6 +69,7 @@ export class OperationGate {
       summary,
       riskLevel:rule.risk,
       approvalLevel:rule.approvalLevel ?? 'standard',
+      confirmationCreated:pending.deduplicated !== true,
     });
   }
 }

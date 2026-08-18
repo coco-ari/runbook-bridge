@@ -29,7 +29,13 @@ contextBridge.exposeInMainWorld('aiOps', {
     revealCredential: (payload) => ipcRenderer.invoke('v2:plugin-credential-reveal', payload),
     listPluginDatabases: (payload) => ipcRenderer.invoke('v2:plugin-databases', payload),
     testPlugin: (payload) => ipcRenderer.invoke('v2:plugin-test', payload),
+    onPluginTestProgress: (callback) => {
+      const listener = (_event, value) => callback(value);
+      ipcRenderer.on('v2:plugin-test-progress', listener);
+      return () => ipcRenderer.removeListener('v2:plugin-test-progress', listener);
+    },
     listAudit: (payload) => ipcRenderer.invoke('v2:audit-list', payload),
+    clearAudit: (payload) => ipcRenderer.invoke('v2:audit-clear', payload),
     listConfirmations: () => ipcRenderer.invoke('v2:confirmation-list'),
     approveConfirmation: (requestId) => ipcRenderer.invoke('v2:confirmation-approve', requestId),
     rejectConfirmation: (requestId) => ipcRenderer.invoke('v2:confirmation-reject', requestId),

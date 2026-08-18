@@ -18,13 +18,13 @@ export class ConfirmationManager extends EventEmitter {
     const operationHash = fingerprint({ scope, capability, args });
     const current = Date.now();
     for (const entry of this.pending.values()) {
-      if (entry.expiresAt > current && entry.operationHash === operationHash) return entry;
+      if (entry.expiresAt > current && entry.operationHash === operationHash) return { ...entry, deduplicated:true };
     }
     const requestId = crypto.randomUUID();
     const entry = { requestId, operationHash, ...scope, capability, summary, ...metadata, actor: 'Agent', createdAt: new Date().toISOString(), expiresAt: current + this.ttlMs };
     this.pending.set(requestId, entry);
     this.emit('changed', this.list());
-    return entry;
+    return { ...entry, deduplicated:false };
   }
 
   approve(requestId) {
@@ -49,14 +49,14 @@ export class ConfirmationManager extends EventEmitter {
     if (!entry || entry.expiresAt <= Date.now()) throw new AppError('CONFIRMATION_REQUIRED', '该操作需要在桌面端确认。');
     const operationHash = fingerprint({ scope, capability, args });
     if (entry.operationHash !== operationHash) throw new AppError('CONFIRMATION_SCOPE_MISMATCH', '操作内容已变化，需要重新确认。');
-    return true;
+    return entry;
   }
 
   consumeMatching(scope, capability, args) {
     const operationHash = fingerprint({ scope, capability, args });
     for (const [token, entry] of this.approved) {
       if (entry.expiresAt <= Date.now()) { this.approved.delete(token); continue; }
-      if (entry.operationHash === operationHash) { this.approved.delete(token); return true; }
+      if (entry.operationHash === operationHash) { this.approved.delete(token); return entry; }
     }
     return false;
   }

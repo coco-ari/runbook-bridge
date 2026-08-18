@@ -23,7 +23,9 @@ test('server changes require one exact approval and parameter changes require an
   assert.equal(pending.riskLevel,'destructive');
   assert.equal(pending.approvalLevel,'standard');
   manager.approve(pending.requestId);
-  assert.equal(gate.authorize(request).decision,'confirm');
+  const authorization=gate.authorize(request);
+  assert.equal(authorization.decision,'confirm');
+  assert.equal(authorization.confirmationId,pending.requestId);
   assert.throws(()=>gate.authorize(request),(error)=>error.code==='CONFIRMATION_REQUIRED');
   manager.reject(manager.list()[0].requestId);
   const changed={...request,args:{...request.args,_precondition:{remote:{exists:true,size:11,mtime:8}}}};

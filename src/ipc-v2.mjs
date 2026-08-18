@@ -1,11 +1,19 @@
 import crypto from 'node:crypto';
 import { AppError, toPublicError } from './errors.mjs';
+import { pluginCredentialInternals } from './plugin-credential-vault.mjs';
 import { workspaceInternals } from './workspace-store.mjs';
 
 function resultHandler(handler) {
   return async (_event, ...args) => {
     try { return { ok: true, data: await handler(...args) }; }
     catch (error) { return { ok: false, error: toPublicError(error) }; }
+  };
+}
+
+function resultHandlerWithEvent(handler) {
+  return async (event, ...args) => {
+    try { return { ok:true, data:await handler(event,...args) }; }
+    catch (error) { return { ok:false, error:toPublicError(error) }; }
   };
 }
 
@@ -159,6 +167,7 @@ export function registerV2Ipc(ipcMain, services) {
     return mysqlRuntime.listDatabases(transient, { ...savedSecrets, ...providedSecrets });
   });
   handle('audit-list', ({ projectId, ...filters }) => store.listAudit(projectId, filters));
+  handle('audit-clear', ({ projectId, environmentId, pluginInstanceId = null }) => store.clearAudit(projectId, { environmentId, pluginInstanceId }));
   handle('confirmation-list', () => confirmationManager.list());
   handle('confirmation-approve', async (requestId) => {
     const pending = confirmationManager.list().find((item) => item.requestId === requestId);
@@ -172,14 +181,72 @@ export function registerV2Ipc(ipcMain, services) {
     if (pending) await store.appendAudit(pending.projectId, { type:'confirmation-rejected', environmentId:pending.environmentId, pluginInstanceId:pending.pluginInstanceId, pluginNameSnapshot:pending.pluginNameSnapshot, actor:'user', capability:pending.capability, operationSummary:pending.summary, confirmationId:requestId, result:'blocked' }).catch(() => undefined);
     return result;
   });
-  handle('plugin-test', async ({ projectId, environmentId, pluginInstanceId, secrets }) => {
-    const state = connectionManager.snapshot(projectId, environmentId).plugins[pluginInstanceId];
-    const plugin = await store.getPlugin(projectId, environmentId, pluginInstanceId);
-    if (state?.phase === 'connected') return { ...(await pluginManager.health(plugin)), reused: true };
-    const result = await pluginManager.connect(plugin, secrets ?? {});
-    await pluginManager.disconnect(plugin, 'diagnostic-complete');
-    return { ...result, diagnosticOnly: true };
-  });
+  ipcMain.handle('v2:plugin-test', resultHandlerWithEvent(async (event, { projectId, environmentId, pluginInstanceId, input, secrets, requestId }) => {
+    const startedAt = performance.now();
+    const checks = [];
+    const sendProgress = (check) => {
+      if (!event.sender.isDestroyed()) event.sender.send('v2:plugin-test-progress',{requestId,pluginInstanceId,check});
+    };
+    const failWithDiagnostic = (error) => {
+      const diagnostic = { checks,totalElapsedMs:Math.max(0,Math.round(performance.now() - startedAt)) };
+      if (error instanceof AppError) throw new AppError(error.code,error.message,{...(error.details ?? {}),diagnostic});
+      throw new AppError('PLUGIN_TEST_FAILED','连接检查失败。',{diagnostic});
+    };
+    const runCheck = async (id, label, action, describe) => {
+      const stepStartedAt = performance.now();
+      try {
+        const value = await action();
+        const check = {id,label,status:'success',detail:describe(value),elapsedMs:Math.max(0,Math.round(performance.now() - stepStartedAt))};
+        checks.push(check);
+        sendProgress(check);
+        return value;
+      } catch (error) {
+        const check = {id,label,status:'failure',detail:error?.message ?? '检查失败。',elapsedMs:Math.max(0,Math.round(performance.now() - stepStartedAt))};
+        checks.push(check);
+        sendProgress(check);
+        failWithDiagnostic(error);
+      }
+    };
+
+    let existing = null;
+    let plugin = null;
+    let diagnosticSecrets = {...(secrets ?? {})};
+    await runCheck('configuration','配置与依赖',async () => {
+      await store.getEnvironment(projectId,environmentId);
+      if (pluginInstanceId) existing = await store.getPlugin(projectId,environmentId,pluginInstanceId);
+      if (input) {
+        if (existing && input.pluginType && input.pluginType !== existing.pluginType) throw new AppError('INVALID_ARGUMENT','不能修改插件类型。');
+        const diagnosticId = `diagnostic-${crypto.randomBytes(5).toString('hex')}`;
+        const baseline = existing ? {...existing,pluginInstanceId:diagnosticId} : null;
+        plugin = workspaceInternals.normalizePlugin({...input,pluginInstanceId:diagnosticId},{projectId,environmentId},baseline);
+      } else plugin = existing;
+      if (!plugin) throw new AppError('PLUGIN_NOT_FOUND','找不到要检查的插件。');
+      if (plugin.configState !== 'ready') throw new AppError('PLUGIN_CONFIG_INCOMPLETE','请先补齐插件必填配置。');
+      if (existing) {
+        const rebound = {...plugin,pluginInstanceId:existing.pluginInstanceId};
+        if (pluginCredentialInternals.bindingHash(existing) === pluginCredentialInternals.bindingHash(rebound)) {
+          diagnosticSecrets = {...(await credentialVault.load(existing) ?? {}),...diagnosticSecrets};
+        }
+      }
+      return plugin;
+    },() => input ? '当前表单配置有效，可以开始连接' : '已保存配置有效，可以开始连接');
+
+    const activeState = !input && existing ? connectionManager.snapshot(projectId,environmentId).plugins[existing.pluginInstanceId] : null;
+    let temporaryConnection = false;
+    let reused = false;
+    try {
+      await runCheck('connection',plugin.pluginType === 'server' ? '网络、SSH 与认证' : plugin.pluginType === 'mysql' ? '路由、MySQL 与认证' : '路由、Redis 与认证',async () => {
+        if (activeState?.phase === 'connected') { reused = true; return {reused:true}; }
+        await pluginManager.connect(plugin,diagnosticSecrets);
+        temporaryConnection = true;
+        return {reused:false};
+      },(value) => value.reused ? '复用当前活动连接' : plugin.pluginType === 'server' ? 'TCP、SSH 握手与身份认证完成' : plugin.pluginType === 'mysql' ? '数据库路由与身份认证完成' : 'Redis 路由与身份认证完成');
+      const health = await runCheck('protocol',plugin.pluginType === 'server' ? 'SSH 会话确认' : plugin.pluginType === 'mysql' ? 'SELECT 1 健康检查' : 'PING 健康检查',() => pluginManager.health(plugin),() => plugin.pluginType === 'server' ? 'SSH 会话处于可用状态' : plugin.pluginType === 'mysql' ? '数据库返回有效结果' : 'Redis 返回 PONG');
+      return {...health,reused,diagnosticOnly:!reused,checks,totalElapsedMs:Math.max(0,Math.round(performance.now() - startedAt))};
+    } finally {
+      if (temporaryConnection) await pluginManager.disconnect(plugin,'diagnostic-complete').catch(() => undefined);
+    }
+  }));
 
   connectionManager.on('changed', (state) => services.broadcast?.('v2:environment-status-changed', state));
   confirmationManager.on('changed', (pending) => services.broadcast?.('v2:confirmations-changed', pending));

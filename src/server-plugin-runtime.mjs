@@ -18,11 +18,20 @@ function parseScopeKey(value) {
 class ScopedServerStoreAdapter {
   constructor(workspaceStore) {
     this.workspaceStore = workspaceStore;
+    this.overrides = new Map();
+  }
+
+  setOverride(key, plugin) {
+    this.overrides.set(key,plugin);
+  }
+
+  clearOverride(key) {
+    this.overrides.delete(key);
   }
 
   async get(key) {
     const scope = parseScopeKey(key);
-    const plugin = await this.workspaceStore.getPlugin(scope.projectId, scope.environmentId, scope.pluginInstanceId);
+    const plugin = this.overrides.get(key) ?? await this.workspaceStore.getPlugin(scope.projectId, scope.environmentId, scope.pluginInstanceId);
     if (plugin.pluginType !== 'server') throw new AppError('PLUGIN_TYPE_MISMATCH', '目标不是 Server 插件。');
     return {
       id: key,
@@ -55,6 +64,14 @@ class ScopedServerStoreAdapter {
 
   async update(key, patch) {
     const scope = parseScopeKey(key);
+    const override = this.overrides.get(key);
+    if (override) {
+      this.overrides.set(key,{
+        ...override,
+        target:{...override.target,...(patch.ssh?.hostKeyFingerprint ? {hostKeyFingerprint:patch.ssh.hostKeyFingerprint} : {})},
+      });
+      return this.get(key);
+    }
     const current = await this.workspaceStore.getPlugin(scope.projectId, scope.environmentId, scope.pluginInstanceId);
     const updated = await this.workspaceStore.updatePlugin(scope.projectId, scope.environmentId, scope.pluginInstanceId, {
       target: {
@@ -66,6 +83,7 @@ class ScopedServerStoreAdapter {
   }
 
   async appendAudit(key, entry) {
+    if (this.overrides.has(key)) return {diagnostic:true};
     const scope = parseScopeKey(key);
     return this.workspaceStore.appendAudit(scope.projectId, {
       projectId: scope.projectId,
@@ -161,25 +179,38 @@ export class ServerPluginRuntime extends EventEmitter {
 
   async connect(plugin, suppliedSecrets = {}) {
     if (plugin.pluginType !== 'server' || plugin.configState !== 'ready') throw new AppError('PLUGIN_CONFIG_INCOMPLETE', 'Server 插件配置不完整。');
+    const resource = this.key(plugin);
+    const transient = plugin.pluginInstanceId.startsWith('diagnostic-');
+    if (transient) this.adapter.setOverride(resource,plugin);
     let saved = null;
     try {
       saved = await this.credentialVault.load(plugin);
     } catch (error) {
-      if (!Object.keys(suppliedSecrets).length) throw error;
+      if (!Object.keys(suppliedSecrets).length) {
+        if (transient) this.adapter.clearOverride(resource);
+        throw error;
+      }
     }
     const secrets = { ...(saved ?? {}), ...suppliedSecrets };
-    if (plugin.auth.type === 'password' && !secrets.password) throw new AppError('CREDENTIAL_UNAVAILABLE', 'Server 密码尚未保存。');
-    const sock = await this.createUplinkSocket(plugin, secrets);
+    if (plugin.auth.type === 'password' && !secrets.password) {
+      if (transient) this.adapter.clearOverride(resource);
+      throw new AppError('CREDENTIAL_UNAVAILABLE', 'Server 密码尚未保存。');
+    }
+    let sock;
     try {
-      return await this.broker.connect(this.key(plugin), secrets, { sock });
+      sock = await this.createUplinkSocket(plugin,secrets);
+      return await this.broker.connect(resource,secrets,{sock});
     } catch (error) {
-      sock.destroy();
+      sock?.destroy();
+      if (transient) this.adapter.clearOverride(resource);
       throw error;
     }
   }
 
   async disconnect(plugin, reason = 'environment-disconnect') {
-    return this.broker.disconnect(this.key(plugin), reason);
+    const resource = this.key(plugin);
+    try { return await this.broker.disconnect(resource,reason); }
+    finally { if (plugin.pluginInstanceId.startsWith('diagnostic-')) this.adapter.clearOverride(resource); }
   }
 
   async openForward(projectId, environmentId, pluginInstanceId, targetHost, targetPort) {

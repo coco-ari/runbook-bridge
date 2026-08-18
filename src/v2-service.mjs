@@ -172,6 +172,32 @@ export class V2Service {
     return operationSummary(plugin, capability, args);
   }
 
+  confirmationPresentation(plugin, capability, args) {
+    const base = { kind:'operation', target:plugin.displayName };
+    if (plugin.pluginType !== 'server') return base;
+    if (capability === 'fs.upload') return {
+      ...base, kind:'file-transfer', source:args.localPath, destination:args.remotePath,
+      bytes:args._precondition.local.size, sha256:args._precondition.local.sha256, overwrite:Boolean(args.overwrite),
+    };
+    if (capability === 'fs.write') return {
+      ...base, kind:'file-write', destination:args.path, bytes:args._precondition.bytes,
+      sha256:args._precondition.newSha256, overwrite:Boolean(args.overwrite),
+    };
+    if (capability === 'fs.move') return {
+      ...base, kind:'path-move', source:args.sourcePath, destination:args.destinationPath, overwrite:Boolean(args.overwrite),
+    };
+    if (capability === 'fs.delete') return {
+      ...base, kind:'path-delete', destination:args.path, remoteType:args._precondition?.remote?.type ?? '路径',
+    };
+    if (capability === 'service.control') return {
+      ...base, kind:'service-control', action:args.action, unit:args.unit,
+    };
+    if (capability === 'shell.execute') return {
+      ...base, kind:'shell', command:args.command, workingDirectory:args.workingDirectory ?? null,
+    };
+    return base;
+  }
+
   async serverDescriptors(params, kind) {
     const verified = await this.contextManager.verify(params.projectId, params.environmentId, params.pluginInstanceId, params.contextToken, params.clientInstanceId);
     if (verified.plugin.pluginType !== 'server') throw new AppError('PLUGIN_TYPE_MISMATCH', '目标不是 Server 插件。');
@@ -196,6 +222,7 @@ export class V2Service {
     const requestId = String(params.requestId ?? crypto.randomUUID()).slice(0, 128);
     let plugin;
     let operationArgs = args;
+    let confirmationId = null;
     try {
       const callable = await this.requireCallable(params);
       plugin = callable.plugin;
@@ -212,36 +239,48 @@ export class V2Service {
           pluginNameSnapshot:plugin.displayName,
         });
       }
-      this.operationGate.authorize({
+      const authorization = this.operationGate.authorize({
         scope:scopeOf(params), plugin, capability, args:operationArgs, approvalToken:params.approvalToken,
-        summary:this.confirmationSummary(plugin, capability, operationArgs), metadata,
+        summary:this.confirmationSummary(plugin, capability, operationArgs),
+        metadata:{...metadata,presentation:this.confirmationPresentation(plugin, capability, operationArgs)},
       });
+      confirmationId = authorization.confirmationId ?? null;
     } catch (error) {
       const value = toPublicError(error);
       const attempted = await this.workspaceStore.getPlugin(params.projectId, params.environmentId, params.pluginInstanceId).catch(() => null);
-      await this.workspaceStore.appendAudit(params.projectId, {
-        type:'plugin-operation-decision', requestId, environmentId:params.environmentId,
-        pluginInstanceId:params.pluginInstanceId, pluginType:attempted?.pluginType,
-        pluginNameSnapshot:attempted?.displayName, actor:'agent', capability,
-        operationSummary:attempted ? auditSummary(attempted, capability, operationArgs) : String(capability),
-        result:value.code === 'CONFIRMATION_REQUIRED' ? 'pending-confirmation' : 'blocked', errorCode:value.code,
-      }).catch(() => undefined);
+      const repeatedPendingConfirmation = value.code === 'CONFIRMATION_REQUIRED' && value.details?.confirmationCreated === false;
+      if (!repeatedPendingConfirmation) {
+        await this.workspaceStore.appendAudit(params.projectId, {
+          type:'plugin-operation-decision', requestId, environmentId:params.environmentId,
+          pluginInstanceId:params.pluginInstanceId, pluginType:attempted?.pluginType,
+          pluginNameSnapshot:attempted?.displayName, actor:'agent', capability,
+          operationSummary:attempted ? auditSummary(attempted, capability, operationArgs) : String(capability),
+          result:value.code === 'CONFIRMATION_REQUIRED' ? 'pending-confirmation' : 'blocked', errorCode:value.code,
+          confirmationId:value.code === 'CONFIRMATION_REQUIRED' ? value.details?.requestId ?? null : null,
+        }).catch(() => undefined);
+      }
       throw error;
     }
     const started = Date.now();
     await this.workspaceStore.appendAudit(plugin.projectId, {
       type: 'plugin-operation-started', requestId, environmentId: plugin.environmentId,
       pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, capability,
-      pluginNameSnapshot: plugin.displayName, actor: 'agent', operationSummary: auditSummary(plugin, capability, operationArgs), result: 'started',
+      pluginNameSnapshot: plugin.displayName, actor: 'agent', operationSummary: auditSummary(plugin, capability, operationArgs), result: 'started', confirmationId,
     });
+    if (confirmationId) this.workspaceChanged?.({ type:'confirmation-execution', status:'running', confirmationId, projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId });
     try {
       let result;
       if (plugin.pluginType === 'server') result = await this.invokeServer(plugin, capability, operationArgs);
       else result = await this.pluginManager.invoke(plugin, capability, { ...operationArgs, policyApproved: true });
-      const auditFailed = await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor: 'agent', capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'success', durationMs: Date.now() - started }).then(() => false, () => true);
+      const durationMs = Date.now() - started;
+      const auditFailed = await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor: 'agent', capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'success', durationMs, confirmationId }).then(() => false, () => true);
+      if (confirmationId) this.workspaceChanged?.({ type:'confirmation-execution', status:'success', confirmationId, projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, durationMs });
       return auditFailed && result && typeof result === 'object' ? { ...result, auditWarning:true } : result;
     } catch (error) {
-      await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor: 'agent', capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'error', errorCode: toPublicError(error).code, durationMs: Date.now() - started }).catch(() => undefined);
+      const durationMs = Date.now() - started;
+      const errorCode = toPublicError(error).code;
+      await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor: 'agent', capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'error', errorCode, durationMs, confirmationId }).catch(() => undefined);
+      if (confirmationId) this.workspaceChanged?.({ type:'confirmation-execution', status:'error', confirmationId, projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, durationMs, errorCode });
       throw error;
     }
   }

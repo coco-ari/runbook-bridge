@@ -57,8 +57,55 @@ test('identical confirmation requests are deduplicated and include a human summa
   const first = manager.request(scope, 'select', { sql:'SELECT 1' }, '查询会员主库');
   const second = manager.request(scope, 'select', { sql:'SELECT 1' }, '查询会员主库');
   assert.equal(second.requestId, first.requestId);
+  assert.equal(first.deduplicated, false);
+  assert.equal(second.deduplicated, true);
   assert.equal(manager.list().length, 1);
+  assert.equal('deduplicated' in manager.list()[0], false);
   assert.equal(manager.list()[0].summary, '查询会员主库');
+});
+
+test('confirmation presentation exposes operation facts without file contents', () => {
+  const service = new V2Service({});
+  const plugin = { pluginType:'server', displayName:'应用服务器' };
+  const presentation = service.confirmationPresentation(plugin,'fs.write',{
+    path:'/srv/app/config.json', content:'must-not-reach-renderer', overwrite:true,
+    _precondition:{ bytes:18, newSha256:'a'.repeat(64) },
+  });
+  assert.deepEqual(presentation,{
+    kind:'file-write', target:'应用服务器', destination:'/srv/app/config.json', bytes:18, sha256:'a'.repeat(64), overwrite:true,
+  });
+  assert.equal('content' in presentation,false);
+});
+
+test('confirmed operation keeps its confirmation id through actual execution', async () => {
+  const confirmationManager = new ConfirmationManager();
+  const audits = [];
+  const changes = [];
+  const plugin = { projectId:'p1', environmentId:'e1', pluginInstanceId:'s1', pluginType:'server', displayName:'应用服务器', sources:[] };
+  const service = new V2Service({
+    workspaceStore:{
+      getProject:async () => ({name:'示例项目'}),
+      getPlugin:async () => plugin,
+      appendAudit:async (_projectId,entry) => { audits.push(entry); },
+    },
+    connectionManager:{snapshot:() => ({plugins:{s1:{phase:'connected'}}})},
+    contextManager:{verify:async () => ({plugin,environment:{name:'生产环境'},runbook:{content:''}})},
+    confirmationManager,
+    serverOperations:{prepareMutation:async (_plugin,_capability,args) => args,mutate:async () => ({ok:true})},
+    workspaceChanged:(change) => changes.push(change),
+  });
+  const params = {projectId:'p1',environmentId:'e1',pluginInstanceId:'s1',clientInstanceId:'agent-a',contextToken:'ctx'};
+  await assert.rejects(() => service.invoke(params,'service.control',{action:'restart',unit:'orders.service'}),(error) => error.code === 'CONFIRMATION_REQUIRED');
+  const pending = confirmationManager.list()[0];
+  assert.deepEqual(pending.presentation,{kind:'service-control',target:'应用服务器',action:'restart',unit:'orders.service'});
+  await assert.rejects(() => service.invoke(params,'service.control',{action:'restart',unit:'orders.service'}),(error) => error.code === 'CONFIRMATION_REQUIRED');
+  assert.equal(audits.filter((entry) => entry.type === 'plugin-operation-decision' && entry.result === 'pending-confirmation').length,1);
+  assert.equal(audits.find((entry) => entry.type === 'plugin-operation-decision').confirmationId,pending.requestId);
+  confirmationManager.approve(pending.requestId);
+  assert.deepEqual(await service.invoke(params,'service.control',{action:'restart',unit:'orders.service'}),{ok:true});
+  const executed = audits.filter((entry) => entry.type === 'plugin-operation-started' || entry.type === 'plugin-operation');
+  assert.deepEqual(executed.map((entry) => entry.confirmationId),[pending.requestId,pending.requestId]);
+  assert.deepEqual(changes.map((entry) => [entry.status,entry.confirmationId]),[['running',pending.requestId],['success',pending.requestId]]);
 });
 
 test('an oversized runbook is rejected before a context token is issued', async () => {

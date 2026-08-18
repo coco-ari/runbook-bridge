@@ -807,6 +807,33 @@ export class WorkspaceStore {
     const pageSize = Math.min(Math.max(Number(limit) || 100, 1), 200);
     return { entries: entries.slice(offset, offset + pageSize), nextCursor: offset + pageSize < entries.length ? String(offset + pageSize) : null };
   }
+
+  async clearAudit(projectId, { environmentId, pluginInstanceId = null } = {}) {
+    await this.getEnvironment(projectId, environmentId);
+    if (pluginInstanceId) await this.getPlugin(projectId, environmentId, pluginInstanceId);
+    return this.enqueue(`audit:${projectId}`, async () => {
+      const file = path.join(this.projectDir(projectId), 'audit', 'operations-v3.jsonl');
+      const content = await fs.readFile(file, 'utf8').catch((error) => {
+        if (error?.code === 'ENOENT') return '';
+        throw error;
+      });
+      let deletedCount = 0;
+      const retained = content.split(/\r?\n/).filter(Boolean).filter((line) => {
+        try {
+          const entry = JSON.parse(line);
+          const matchesEnvironment = entry.environmentId === environmentId;
+          const matchesPlugin = !pluginInstanceId || entry.pluginInstanceId === pluginInstanceId;
+          if (matchesEnvironment && matchesPlugin) {
+            deletedCount += 1;
+            return false;
+          }
+        } catch {}
+        return true;
+      });
+      if (deletedCount > 0) await this.atomicWrite(file, retained.length ? `${retained.join('\n')}\n` : '');
+      return { deletedCount, environmentId, pluginInstanceId };
+    });
+  }
 }
 
 export const workspaceInternals = { normalizePlugin, normalizeId, normalizeName };

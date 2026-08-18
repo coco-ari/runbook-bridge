@@ -63,6 +63,28 @@ test('projects can be renamed and deleted with all nested workspace data', async
   await assert.rejects(() => fs.access(path.join(root, 'projects', project.projectId)));
 });
 
+test('operation records can be cleared by current plugin or environment without touching other scopes', async (t) => {
+  const { store } = await fixture(t);
+  const project = await store.createProject({ name:'审计范围', environmentName:'生产环境' });
+  const [production] = await store.listEnvironments(project.projectId);
+  const staging = await store.createEnvironment(project.projectId,{ name:'预发环境' });
+  const server = await store.createPlugin(project.projectId, production.environmentId, { pluginType:'server', displayName:'应用服务器' });
+  const database = await store.createPlugin(project.projectId, production.environmentId, { pluginType:'mysql', displayName:'业务数据库' });
+  await store.appendAudit(project.projectId,{ environmentId:production.environmentId, pluginInstanceId:server.pluginInstanceId, type:'plugin-operation', result:'success' });
+  await store.appendAudit(project.projectId,{ environmentId:production.environmentId, pluginInstanceId:database.pluginInstanceId, type:'plugin-operation', result:'success' });
+  await store.appendAudit(project.projectId,{ environmentId:production.environmentId, type:'environment-disconnected', result:'success' });
+  await store.appendAudit(project.projectId,{ environmentId:staging.environmentId, type:'environment-disconnected', result:'success' });
+
+  const pluginResult = await store.clearAudit(project.projectId,{ environmentId:production.environmentId, pluginInstanceId:server.pluginInstanceId });
+  assert.equal(pluginResult.deletedCount,1);
+  assert.deepEqual((await store.listAudit(project.projectId,{ environmentId:production.environmentId })).entries.map((entry) => entry.pluginInstanceId ?? null),[null,database.pluginInstanceId]);
+
+  const environmentResult = await store.clearAudit(project.projectId,{ environmentId:production.environmentId });
+  assert.equal(environmentResult.deletedCount,2);
+  assert.equal((await store.listAudit(project.projectId,{ environmentId:production.environmentId })).entries.length,0);
+  assert.equal((await store.listAudit(project.projectId,{ environmentId:staging.environmentId })).entries.length,1);
+});
+
 test('a plugin name and type are sufficient to save disconnected drafts', async (t) => {
   const { store } = await fixture(t);
   const project = await store.createProject({ name:'越南项目', environmentName:'测试环境' });

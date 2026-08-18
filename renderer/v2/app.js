@@ -4,10 +4,14 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const icon = (name, className = 'icon') => `<svg class="${className}"><use href="#i-${name}"/></svg>`;
 const STORED_PASSWORD_MASK = '*****';
 const PROJECT_ORDER_KEY = 'ai-ops-project-order-v1';
-const PROJECT_RAIL_WIDTH_KEY = 'ai-ops-project-rail-width-v1';
-const PROJECT_RAIL_DEFAULT_WIDTH = 328;
-const PROJECT_RAIL_MIN_WIDTH = 260;
-const PROJECT_RAIL_MAX_WIDTH = 520;
+const PROJECT_RAIL_WIDTH_KEY = 'ai-ops-project-rail-width-v2';
+const PROJECT_RAIL_DEFAULT_WIDTH = 260;
+const PROJECT_RAIL_MIN_WIDTH = 220;
+const PROJECT_RAIL_MAX_WIDTH = 340;
+const RESOURCE_PANE_WIDTH_KEY = 'ai-ops-resource-pane-width-v1';
+const RESOURCE_PANE_DEFAULT_WIDTH = 420;
+const RESOURCE_PANE_MIN_WIDTH = 340;
+const RESOURCE_PANE_MAX_WIDTH = 560;
 
 function storedProjectRailWidth() {
   try {
@@ -18,18 +22,30 @@ function storedProjectRailWidth() {
   } catch { return PROJECT_RAIL_DEFAULT_WIDTH; }
 }
 
+function storedResourcePaneWidth() {
+  try {
+    const value = Number(localStorage.getItem(RESOURCE_PANE_WIDTH_KEY));
+    return Number.isFinite(value) && value > 0
+      ? Math.min(RESOURCE_PANE_MAX_WIDTH,Math.max(RESOURCE_PANE_MIN_WIDTH,value))
+      : RESOURCE_PANE_DEFAULT_WIDTH;
+  } catch { return RESOURCE_PANE_DEFAULT_WIDTH; }
+}
+
 const state = {
   projects: [], environments: [], plugins: [], auditEntries: [], projectId: null,
   environmentId: null, pluginId: null, view: 'plugins', runtime: null,
   editingPlugin: null, editingEnvironmentId: undefined, environmentDeletePrompt: null, detailTabs: {}, navigationGeneration: 0,
   runbookContent: '', runbookRevision: null, runbookScopeKey: null, runbookEditing: false, pendingCount: 0,
+  confirmations: [], confirmationsLoaded: false, confirmationCenterActive: false,
+  confirmationFilter: { kind:'all' }, confirmationFeedback: null, confirmationExecutions: {},
   projectEnvironmentMemory: {}, scopePluginMemory: {},
   databaseDiscoverySignature: null, databaseCredentialRevision: 0, databaseQueryGeneration: 0,
   credentialProbeGeneration: 0,
   deletingPluginScope: null,
+  clearingAuditScope: null,
   runtimeByScope: {},
   environmentsByProject: {},
-  projectOverviewActive: true,
+  projectOverviewActive: false,
   projectOverviewActivityProjectId: null,
   projectOverviewActivityEntries: [],
   projectOverviewActivityLoading: false,
@@ -52,6 +68,18 @@ const state = {
   mobileDetail: false,
   projectRailExpanded: (() => { try { return localStorage.getItem('ai-ops-project-rail-expanded') === '1'; } catch { return false; } })(),
   projectRailWidth: storedProjectRailWidth(),
+  resourcePaneWidth: storedResourcePaneWidth(),
+  detailPaneCollapsed: (() => { try { return localStorage.getItem('ai-ops-detail-pane-collapsed') === '1'; } catch { return false; } })(),
+  selectionKind: 'environment',
+  expandedEnvironmentId: null,
+  environmentDetailTab: 'runbook',
+  projectTitleEditing: false,
+  creatingEnvironmentInline: false,
+  pluginFormMode: 'inline',
+  inlineConfigPluginId: null,
+  pluginDiagnostics: {},
+  pluginFormDiagnostic: null,
+  diagnosticGeneration: 0,
 };
 
 let pluginFormTransitionGeneration = 0;
@@ -133,7 +161,7 @@ async function loadCredentialIndicators(plugin, generation) {
   const status = await call(api.credentialStatus({
     projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId,
   }));
-  if (generation !== state.credentialProbeGeneration || state.editingPlugin?.pluginInstanceId !== plugin.pluginInstanceId || !$('#pluginDialog').open) return;
+  if (generation !== state.credentialProbeGeneration || state.editingPlugin?.pluginInstanceId !== plugin.pluginInstanceId || !pluginFormActive()) return;
   if (status.fields?.primary && $('#pluginPassword').dataset.credentialState === 'empty') markPasswordStored('pluginPassword');
   if (status.fields?.proxy && $('#pluginProxyPassword').dataset.credentialState === 'empty') markPasswordStored('pluginProxyPassword');
 }
@@ -175,6 +203,16 @@ function activeProject() { return state.projects.find((item) => item.projectId =
 function activeEnvironment() { return state.environments.find((item) => item.environmentId === state.environmentId); }
 function activePlugin() { return state.plugins.find((item) => item.pluginInstanceId === state.pluginId); }
 function pluginRuntime(id) { return state.runtime?.plugins?.[id] ?? { phase:'disconnected' }; }
+function pendingConfirmations() { const now = Date.now(); return state.confirmations.filter((item) => confirmationExpiresAt(item) > now); }
+function confirmationCount({ projectId = null, environmentId = null, pluginInstanceId = null } = {}) {
+  return pendingConfirmations().filter((item) => (!projectId || item.projectId === projectId) && (!environmentId || item.environmentId === environmentId) && (!pluginInstanceId || item.pluginInstanceId === pluginInstanceId)).length;
+}
+function confirmationScopeData(kind = 'all', projectId = null, environmentId = null, pluginInstanceId = null) {
+  return { kind, ...(projectId ? {projectId} : {}), ...(environmentId ? {environmentId} : {}), ...(pluginInstanceId ? {pluginInstanceId} : {}) };
+}
+function confirmationScopeAttributes(scope) {
+  return `data-open-confirmations="${escapeAttr(scope.kind)}"${scope.projectId ? ` data-confirmation-project="${escapeAttr(scope.projectId)}"` : ''}${scope.environmentId ? ` data-confirmation-environment="${escapeAttr(scope.environmentId)}"` : ''}${scope.pluginInstanceId ? ` data-confirmation-plugin="${escapeAttr(scope.pluginInstanceId)}"` : ''}`;
+}
 
 function runtimeFacts(runtime = {}) {
   const pluginEntries = Object.entries(runtime.plugins ?? {});
@@ -283,9 +321,10 @@ async function refreshWorkspaceOverview({ render = true } = {}) {
   const projectSelectionChanged = !state.projectId || !state.projects.some((project) => project.projectId === state.projectId);
   if (projectSelectionChanged) {
     state.projectId = state.projects[0]?.projectId ?? null;
-    state.projectOverviewActive = true;
+    state.projectOverviewActive = false;
     state.environmentId = null;
     state.pluginId = null;
+    state.selectionKind = 'environment';
     state.plugins = [];
     state.runtime = null;
     state.loadedScopeKey = null;
@@ -315,6 +354,8 @@ async function loadProject(preferredEnvironment = state.environmentId, projectId
   }
   state.environmentId = preferredEnvironment && environments.some((item) => item.environmentId === preferredEnvironment) ? preferredEnvironment : environments[0]?.environmentId ?? null;
   state.pluginId = null;
+  state.selectionKind = 'environment';
+  state.expandedEnvironmentId = state.environmentId;
   if (state.environmentId) await loadEnvironment(state.scopePluginMemory[scopeKey()], { projectId, environmentId:state.environmentId }, generation);
   else renderShell();
 }
@@ -333,7 +374,7 @@ async function loadEnvironment(preferredPlugin = state.pluginId, scope = { proje
   state.runtime = runtime;
   state.runtimeByScope[scopeKey(scope.projectId, scope.environmentId)] = runtime;
   state.pluginId = plugins.some((item) => item.pluginInstanceId === preferredPlugin) ? preferredPlugin : plugins[0]?.pluginInstanceId ?? null;
-  state.scopePluginMemory[scopeKey()] = state.pluginId;
+  if (state.pluginId) state.scopePluginMemory[scopeKey()] = state.pluginId;
   state.loadedScopeKey = scopeKey(scope.projectId,scope.environmentId);
   state.mobileDetail = false;
   renderShell();
@@ -351,10 +392,10 @@ async function refreshEnvironmentMetadata() {
 
 function projectMark(project) { return [...(project.name || '项目')].slice(0,2).join(''); }
 function projectRailWidthBounds() {
-  const compact = window.innerWidth <= 760;
-  const min = compact ? 220 : PROJECT_RAIL_MIN_WIDTH;
-  const contentMinimum = compact ? 320 : 560;
-  const max = Math.max(min,Math.min(PROJECT_RAIL_MAX_WIDTH,window.innerWidth - contentMinimum));
+  const overlay = window.innerWidth <= 1100;
+  const min = overlay ? 220 : PROJECT_RAIL_MIN_WIDTH;
+  const contentMinimum = overlay ? 96 : 980;
+  const max = Math.max(min,Math.min(overlay ? 300 : PROJECT_RAIL_MAX_WIDTH,window.innerWidth - contentMinimum));
   return { min, max };
 }
 function applyProjectRailWidth(width = state.projectRailWidth) {
@@ -379,6 +420,48 @@ function renderProjectRailState() {
   handle.tabIndex = state.projectRailExpanded ? 0 : -1;
   handle.setAttribute('aria-hidden',String(!state.projectRailExpanded));
   applyProjectRailWidth();
+}
+
+function resourcePaneWidthBounds() {
+  const overlayRail = window.innerWidth <= 1100 && state.projectRailExpanded;
+  const railWidth = overlayRail ? 72 : $('.project-rail')?.getBoundingClientRect().width ?? 72;
+  const detailMinimum = state.detailPaneCollapsed ? 58 : 560;
+  const available = Math.max(280,window.innerWidth - railWidth - detailMinimum);
+  const max = Math.min(RESOURCE_PANE_MAX_WIDTH,available);
+  return { min:Math.min(RESOURCE_PANE_MIN_WIDTH,max), max };
+}
+
+function applyResourcePaneWidth(width = state.resourcePaneWidth) {
+  const { min, max } = resourcePaneWidthBounds();
+  const effectiveWidth = Math.round(Math.min(max,Math.max(min,Number(width) || RESOURCE_PANE_DEFAULT_WIDTH)));
+  state.resourcePaneWidth = effectiveWidth;
+  $('#app').style.setProperty('--resource-pane-width',`${effectiveWidth}px`);
+  const handle = $('#resourcePaneResizeHandle');
+  handle.setAttribute('aria-valuemin',String(min));
+  handle.setAttribute('aria-valuemax',String(max));
+  handle.setAttribute('aria-valuenow',String(effectiveWidth));
+  return effectiveWidth;
+}
+
+function resetWorkspaceWidths() {
+  state.projectRailWidth = PROJECT_RAIL_DEFAULT_WIDTH;
+  state.resourcePaneWidth = RESOURCE_PANE_DEFAULT_WIDTH;
+  applyProjectRailWidth();
+  applyResourcePaneWidth();
+  try {
+    localStorage.setItem(PROJECT_RAIL_WIDTH_KEY,String(state.projectRailWidth));
+    localStorage.setItem(RESOURCE_PANE_WIDTH_KEY,String(state.resourcePaneWidth));
+  } catch {}
+  toast('已恢复默认栏宽。');
+}
+
+function renderDetailPaneState() {
+  $('#app').classList.toggle('detail-collapsed',state.detailPaneCollapsed);
+  const toggle = $('#toggleDetailPane');
+  toggle.setAttribute('aria-expanded',String(!state.detailPaneCollapsed));
+  toggle.setAttribute('aria-label',state.detailPaneCollapsed ? '展开详情栏' : '折叠详情栏');
+  toggle.title = state.detailPaneCollapsed ? '展开详情栏' : '折叠详情栏';
+  applyResourcePaneWidth();
 }
 
 function animateProjectRailLayout(change) {
@@ -479,8 +562,8 @@ function renderProjects() {
   renderProjectRailState();
   $('#projectList').innerHTML = state.projects.map((project) => {
     const projectActive = project.projectId === state.projectId;
-    const settingsAction = projectActive ? `<button type="button" class="rail-project-manage" data-project-settings="${escapeAttr(project.projectId)}" aria-label="设置项目 ${escapeAttr(project.name)}" title="项目设置">${icon('edit')}<span>设置</span></button>` : '';
-    return `<section class="project-tree-item ${projectActive ? 'active' : ''}" data-tree-project="${escapeAttr(project.projectId)}" data-project-state="${escapeAttr(projectState(project.projectId))}"><div class="project-tree-head"><button type="button" class="rail-button ${projectActive ? 'active' : ''}" draggable="true" data-project-id="${escapeAttr(project.projectId)}" aria-label="打开 ${escapeAttr(project.name)} 的项目概览" title="${escapeAttr(project.name)}"><span class="rail-letter">${escapeHtml(projectMark(project))}</span><span class="rail-project-copy"><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(projectSubtitle(project.projectId))}</small></span><span class="project-tooltip">${escapeHtml(project.name)}</span></button>${settingsAction}</div></section>`;
+    const approvals = confirmationCount({projectId:project.projectId});
+    return `<section class="project-tree-item ${projectActive ? 'active' : ''}" data-tree-project="${escapeAttr(project.projectId)}" data-project-state="${escapeAttr(projectState(project.projectId))}"><div class="project-tree-head"><button type="button" class="rail-button ${projectActive ? 'active' : ''}" draggable="true" data-project-id="${escapeAttr(project.projectId)}" aria-label="打开项目 ${escapeAttr(project.name)}${approvals ? `，${approvals} 项操作待确认` : ''}" title="${escapeAttr(project.name)}"><span class="rail-letter">${escapeHtml(projectMark(project))}</span><span class="rail-project-copy"><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(projectSubtitle(project.projectId))}</small></span>${approvals ? `<span class="project-confirmation-count" title="${approvals} 项操作待确认">${approvals}</span>` : ''}<span class="project-tooltip">${escapeHtml(project.name)}${approvals ? ` · ${approvals} 项待确认` : ''}</span></button></div></section>`;
   }).join('');
 }
 
@@ -780,80 +863,220 @@ function renderProjectOverview() {
   if (!state.projectOverviewActivityLoading && state.projectOverviewActivityProjectId !== project.projectId) loadProjectOverviewActivity(project.projectId).catch(showError);
 }
 
+function resourcePanePlugins(environment) {
+  if (environment.environmentId === state.environmentId && state.loadedScopeKey === scopeKey()) return state.plugins;
+  return Array.isArray(environment.resourcePreview) ? environment.resourcePreview : [];
+}
+
+function resourcePluginTarget(plugin) {
+  if ('resource' in plugin) return resourceTargetText(plugin);
+  return pluginTarget(plugin);
+}
+
+function resourcePluginPhase(plugin,runtime) {
+  if (plugin.configState !== 'ready') return 'draft';
+  return runtime.plugins?.[plugin.pluginInstanceId]?.phase ?? 'disconnected';
+}
+
+function renderResourcePlugin(projectId,environment,plugin,runtime) {
+  const phase = resourcePluginPhase(plugin,runtime);
+  const action = resourceAction(plugin,phase);
+  const selected = state.selectionKind === 'plugin' && environment.environmentId === state.environmentId && plugin.pluginInstanceId === state.pluginId;
+  const approvalScope = confirmationScopeData('plugin',projectId,environment.environmentId,plugin.pluginInstanceId);
+  const approvals = confirmationCount(approvalScope);
+  const approvalButton = approvals ? `<button class="scope-confirmation-badge compact" ${confirmationScopeAttributes(approvalScope)} title="查看${plugin.displayName}的待确认操作" aria-label="${plugin.displayName}有${approvals}项操作待确认">${icon('shield')}<span>${approvals}</span></button>` : '';
+  return `<div class="resource-plugin-row ${selected ? 'selected' : ''}"><button class="resource-plugin-open" data-resource-project-id="${escapeAttr(projectId)}" data-resource-environment-id="${escapeAttr(environment.environmentId)}" data-resource-plugin-id="${escapeAttr(plugin.pluginInstanceId)}"><span class="resource-plugin-icon ${escapeAttr(plugin.pluginType)}">${icon(typeIcons[plugin.pluginType] ?? 'plug')}</span><span class="resource-plugin-copy"><strong>${escapeHtml(plugin.displayName)}</strong><small>${escapeHtml(resourcePluginTarget(plugin))}</small></span><span class="state-dot ${escapeAttr(phase)}" title="${escapeAttr(plugin.configState === 'ready' ? phaseNames[phase] ?? phase : '待配置')}"></span></button>${approvalButton}<button class="resource-plugin-action ${escapeAttr(phase)}" data-overview-project-id="${escapeAttr(projectId)}" data-overview-environment-id="${escapeAttr(environment.environmentId)}" data-overview-plugin-id="${escapeAttr(plugin.pluginInstanceId)}" data-overview-plugin-action="${escapeAttr(action.action)}" ${action.disabled ? 'disabled' : ''}>${escapeHtml(action.label)}</button></div>`;
+}
+
+function environmentActionLabel(action) {
+  if (action.action === 'connect') return action.label === '连接未连接项' ? action.label : '连接全部';
+  if (action.action === 'disconnect') return '断开全部';
+  if (action.action === 'retry') return '重试失败';
+  if (action.action === 'configure') return '完善配置';
+  return action.label;
+}
+
+function renderResourceEnvironment(projectId,environment) {
+  const runtime = environmentRuntime(projectId,environment.environmentId);
+  const presentationPhase = runtimePresentationPhase(runtime);
+  const connectionLabel = phaseNames[presentationPhase] ?? '未连接';
+  const action = railEnvironmentAction(projectId,environment);
+  const expanded = state.expandedEnvironmentId === environment.environmentId;
+  const selectedEnvironment = state.selectionKind === 'environment' && state.environmentId === environment.environmentId;
+  const plugins = resourcePanePlugins(environment);
+  const grouped = ['server','mysql','redis'].map((type) => {
+    const items = plugins.filter((plugin) => plugin.pluginType === type);
+    if (!items.length) return '';
+    return `<section class="resource-plugin-group"><div class="resource-plugin-group-label"><span>${typeNames[type]}</span><b>${items.length}</b></div>${items.map((plugin) => renderResourcePlugin(projectId,environment,plugin,runtime)).join('')}</section>`;
+  }).join('');
+  const previewMissing = Math.max(0,Number(environment.pluginCount ?? 0) - plugins.length);
+  const body = expanded ? `<div class="resource-environment-body">${grouped || '<p class="resource-empty">当前环境还没有插件</p>'}${previewMissing ? `<button class="resource-preview-more" data-resource-environment-id="${escapeAttr(environment.environmentId)}">打开后查看另外 ${previewMissing} 个插件</button>` : ''}<button class="resource-add-plugin" data-resource-add-plugin="${escapeAttr(environment.environmentId)}">${icon('plus')}添加插件</button></div>` : '';
+  const environmentLabel = escapeAttr(environment.name);
+  const approvalScope = confirmationScopeData('environment',projectId,environment.environmentId);
+  const approvals = confirmationCount(approvalScope);
+  const approvalButton = approvals ? `<button class="scope-confirmation-badge" ${confirmationScopeAttributes(approvalScope)} title="查看${environment.name}的${approvals}项待确认操作" aria-label="${environment.name}有${approvals}项操作待确认">${icon('shield')}<b>${approvals}</b></button>` : '';
+  return `<article class="resource-environment-card ${expanded ? 'expanded' : ''} ${selectedEnvironment ? 'selected' : ''}" data-state="${escapeAttr(presentationPhase)}"><header class="resource-environment-head"><button class="resource-environment-select" data-resource-environment-id="${escapeAttr(environment.environmentId)}" aria-expanded="${expanded}" title="点击${expanded ? '收起' : '展开'}${environmentLabel}"><span class="resource-environment-icon">${icon('environment')}</span><span class="resource-environment-copy"><strong>${escapeHtml(environment.name)}</strong><small>${Number(environment.pluginCount ?? 0)} 个插件</small></span></button><span class="resource-environment-status" data-state="${escapeAttr(presentationPhase)}"><i></i><span>${escapeHtml(connectionLabel)}</span></span>${approvalButton}<button class="button small resource-runtime-action ${action.primary ? 'primary' : ''} ${action.action === 'disconnect' ? 'danger-subtle' : ''}" data-environment-runtime-action="${escapeAttr(action.action)}" data-action-project-id="${escapeAttr(projectId)}" data-action-environment-id="${escapeAttr(environment.environmentId)}" ${action.disabled ? 'disabled' : ''}>${escapeHtml(environmentActionLabel(action))}</button><button type="button" class="square-button resource-rename" data-resource-rename-environment="${escapeAttr(environment.environmentId)}" title="重命名环境" aria-label="重命名${environmentLabel}">${icon('edit')}</button><button type="button" class="square-button danger-subtle resource-delete" data-resource-delete-environment="${escapeAttr(environment.environmentId)}" title="删除环境" aria-label="删除${environmentLabel}">${icon('trash')}</button></header>${body}</article>`;
+}
+
+function renderInlineEnvironmentCreate(project) {
+  const creating = Boolean(project && state.creatingEnvironmentInline);
+  $('#showInlineEnvironmentCreate').disabled = !project;
+  $('#showInlineEnvironmentCreate').classList.toggle('hidden',creating);
+  $('#resourceEnvironmentCreateForm').classList.toggle('hidden',!creating);
+}
+
+function renderResourcePane() {
+  const project = activeProject();
+  $('#projectTitle').textContent = project?.name ?? '选择项目';
+  $('#projectTitle').classList.toggle('hidden',Boolean(project && state.projectTitleEditing));
+  $('#projectTitleEditor').classList.toggle('hidden',!project || !state.projectTitleEditing);
+  if (project && state.projectTitleEditing && document.activeElement !== $('#projectTitleInput')) $('#projectTitleInput').value = project.name;
+  $('#projectSettingsShortcut').disabled = !project;
+  $('#projectDeleteShortcut').disabled = !project;
+  renderInlineEnvironmentCreate(project);
+  if (!project) {
+    $('#projectResourceSummary').textContent = '0 个环境 · 0 个插件';
+    $('#resourceEnvironmentCount').textContent = '';
+    $('#resourceEnvironmentList').innerHTML = '<div class="resource-pane-empty">选择项目后在这里管理环境与插件</div>';
+    return;
+  }
+  const pluginCount = state.environments.reduce((sum,environment) => sum + Number(environment.pluginCount ?? 0),0);
+  $('#projectResourceSummary').textContent = `${state.environments.length} 个环境 · ${pluginCount} 个插件`;
+  $('#resourceEnvironmentCount').textContent = `${state.environments.length} 个环境`;
+  $('#resourceEnvironmentList').innerHTML = state.environments.map((environment) => renderResourceEnvironment(project.projectId,environment)).join('') || '<div class="resource-pane-empty">当前项目还没有环境</div>';
+}
+
+function beginInlineEnvironmentCreate() {
+  if (!activeProject()) return;
+  state.creatingEnvironmentInline = true;
+  $('#resourceEnvironmentName').value = '';
+  $('#resourceEnvironmentCreateError').textContent = '';
+  renderInlineEnvironmentCreate(activeProject());
+  requestAnimationFrame(() => $('#resourceEnvironmentName').focus());
+}
+
+function cancelInlineEnvironmentCreate() {
+  state.creatingEnvironmentInline = false;
+  $('#resourceEnvironmentName').value = '';
+  $('#resourceEnvironmentCreateError').textContent = '';
+  renderInlineEnvironmentCreate(activeProject());
+}
+
+async function saveInlineEnvironmentCreate(event) {
+  event.preventDefault();
+  const project = activeProject();
+  const button = $('#saveInlineEnvironmentCreate');
+  if (!project || button.disabled) return;
+  const name = $('#resourceEnvironmentName').value.trim();
+  if (!name) {
+    $('#resourceEnvironmentCreateError').textContent = '请输入环境名称。';
+    $('#resourceEnvironmentName').focus();
+    return;
+  }
+  button.disabled = true;
+  $('#resourceEnvironmentCreateError').textContent = '';
+  try {
+    await call(api.createEnvironment({projectId:project.projectId,input:{name}}));
+    state.creatingEnvironmentInline = false;
+    await refreshWorkspaceOverview({render:false});
+    state.environments = state.environmentsByProject[state.projectId] ?? [];
+    renderShell();
+    toast('环境已创建。');
+  } catch (error) {
+    $('#resourceEnvironmentCreateError').textContent = error?.message || '创建环境失败。';
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function beginProjectTitleEdit() {
+  const project = activeProject();
+  if (!project) return;
+  state.projectTitleEditing = true;
+  renderResourcePane();
+  requestAnimationFrame(() => { $('#projectTitleInput').focus(); $('#projectTitleInput').select(); });
+}
+
+function cancelProjectTitleEdit() {
+  state.projectTitleEditing = false;
+  renderResourcePane();
+}
+
+async function saveProjectTitleEdit() {
+  const project = activeProject();
+  if (!project || !state.projectTitleEditing) return;
+  const name = $('#projectTitleInput').value.trim();
+  if (!name) throw new Error('项目名称不能为空。');
+  if (name !== project.name) {
+    const value = await call(api.updateProject({projectId:project.projectId,patch:{name},expectedRevision:project.revision}));
+    Object.assign(project,value);
+  }
+  state.projectTitleEditing = false;
+  renderShell();
+  toast('项目名称已更新。');
+}
+
+function renderDetailTopbar() {
+  if (state.confirmationCenterActive) {
+    $('#detailTopTabs').innerHTML = '<button class="detail-top-tab active" data-confirmation-center-current>操作确认</button>';
+    return;
+  }
+  const plugin = state.selectionKind === 'plugin' ? activePlugin() : null;
+  const creatingPlugin = state.selectionKind === 'new-plugin';
+  const tabs = creatingPlugin
+    ? [['configuration','配置']]
+    : plugin
+    ? [['connection','插件详情'],['configuration','配置'],['permissions','Agent 权限'],['audit','操作记录']]
+    : [['runbook','运维说明'],['audit','环境操作记录']];
+  const active = creatingPlugin ? 'configuration' : plugin ? detailTab(plugin) : state.environmentDetailTab;
+  $('#detailTopTabs').innerHTML = tabs.map(([value,label]) => `<button class="detail-top-tab ${active === value ? 'active' : ''}" data-detail-tab="${value}">${label}</button>`).join('');
+}
+
 function renderShell() {
   renderProjects();
+  renderDetailPaneState();
+  renderResourcePane();
+  renderConfirmationButton();
   const project = activeProject();
   const environment = activeEnvironment();
-  const overview = Boolean(project && state.projectOverviewActive);
-  $('#app').classList.toggle('project-overview-active',overview);
-  $('#projectTitle').textContent = project?.name ?? '选择项目';
-  $('#emptyState').classList.toggle('hidden', Boolean(project));
-  $('#environmentRuntime').classList.toggle('hidden', !environment);
-  if (!project) {
-    $('#environmentTabs').innerHTML = '';
-    $('#moreEnvironments').classList.add('hidden');
-    renderConfirmationButton();
-    ['projectOverviewView','pluginsView','runbookView','auditView'].forEach((id) => $(`#${id}`).classList.add('hidden'));
+  $('#emptyState').classList.toggle('hidden',Boolean(state.confirmationCenterActive || (project && environment)));
+  if (state.confirmationCenterActive) {
+    renderDetailTopbar();
+    renderView();
     return;
   }
-  $('#environmentTabs').innerHTML = overview ? '' : visibleEnvironments().map((item) => `<button class="environment-tab ${item.environmentId === state.environmentId ? 'active' : ''}" data-environment-id="${escapeAttr(item.environmentId)}" title="${escapeAttr(item.name)}">${escapeHtml(item.name)}</button>`).join('');
-  const hiddenEnvironmentCount = overview ? 0 : Math.max(0, state.environments.length - visibleEnvironments().length);
-  $('#moreEnvironments').classList.toggle('hidden', hiddenEnvironmentCount === 0);
-  $('#moreEnvironments').textContent = `更多 ${hiddenEnvironmentCount}`;
-  renderConfirmationButton();
-  if (overview) {
-    $('#projectOverviewView').classList.remove('hidden');
-    ['pluginsView','runbookView','auditView'].forEach((id) => $(`#${id}`).classList.add('hidden'));
-    renderProjectOverview();
+  if (!project || !environment) {
+    $('#detailTopTabs').innerHTML = '';
+    ['pluginsView','pluginConfigView','runbookView','auditView','confirmationView'].forEach((id) => $(`#${id}`).classList.add('hidden'));
     return;
   }
-  $('#projectOverviewView').classList.add('hidden');
-  if (!environment) return;
-  renderRuntime();
+  renderDetailTopbar();
   renderView();
 }
 
 function renderRuntime() {
-  const runtime = state.runtime ?? { phase:'disconnected', eligibleCount:0, connectedCount:0 };
-  const facts = runtimeFacts(runtime);
-  const status = $('#environmentStatus');
-  status.dataset.state = runtimePresentationPhase(runtime);
-  const total = facts.eligibleCount;
-  const connected = facts.connectedCount;
-  if (runtime.phase === 'reconnecting') status.textContent = total ? `网络变化 · 重连中 ${connected}/${total}` : '网络变化 · 重连中';
-  else if (runtime.phase === 'connecting') status.textContent = total ? `连接中 ${connected}/${total}` : '正在准备连接';
-  else if (runtime.phase === 'disconnecting') status.textContent = phaseNames[runtime.phase];
-  else if (facts.failureCount > 0 && connected > 0) status.textContent = `${connected}/${total} 可用 · ${facts.failureCount} 个异常`;
-  else if (facts.failureCount > 0) status.textContent = total ? `连接失败 · 0/${total}` : '没有可连接的插件';
-  else if (connected > 0) status.textContent = `${connected}/${total} 已连接${facts.manualDisconnectedCount ? ` · ${facts.manualDisconnectedCount} 主动断开` : ''}`;
-  else if (facts.manualDisconnectedCount) status.textContent = `${facts.manualDisconnectedCount} 个插件已主动断开`;
-  else status.textContent = phaseNames[runtime.phase] ?? '未连接';
-  const action = $('#environmentAction');
-  const disconnect = $('#environmentDisconnect');
-  const environmentAction = currentEnvironmentAction();
-  const canStopConnection = connected > 0 || runtime.phase === 'reconnecting';
-  disconnect.textContent = runtime.phase === 'reconnecting' && connected === 0 ? '停止重连' : '断开';
-  disconnect.classList.toggle('hidden', !runtime.desiredConnected || !canStopConnection || ['connecting','disconnecting'].includes(runtime.phase) || environmentAction.action === 'disconnect');
-  if (environmentAction.action === 'configure') action.textContent = state.plugins.length ? '完善插件' : '添加插件';
-  else if (environmentAction.action === 'cancel') action.textContent = '取消';
-  else if (environmentAction.action === 'disconnect') action.textContent = '断开环境';
-  else if (environmentAction.action === 'retry') action.textContent = '重试失败项';
-  else if (environmentAction.action === 'connect') action.textContent = environmentAction.label === '连接未连接项' ? environmentAction.label : '连接全部插件';
-  else action.textContent = environmentAction.label;
-  action.disabled = Boolean(environmentAction.disabled);
+  renderResourcePane();
+  if (state.selectionKind === 'plugin') renderPluginDetail();
 }
 
 function renderView() {
-  $$('.page-tab').forEach((item) => item.classList.toggle('active', item.dataset.view === state.view));
-  $('#pluginsView').classList.toggle('hidden', state.view !== 'plugins');
-  $('#runbookView').classList.toggle('hidden', state.view !== 'runbook');
-  $('#auditView').classList.toggle('hidden', state.view !== 'audit');
-  if (state.view === 'plugins') renderPlugins();
+  const plugin = state.selectionKind === 'plugin' ? activePlugin() : null;
+  if (state.confirmationCenterActive) state.view = 'confirmations';
+  else if (state.selectionKind === 'new-plugin') state.view = 'plugin-config';
+  else if (plugin) state.view = detailTab(plugin) === 'audit' ? 'audit' : detailTab(plugin) === 'configuration' ? 'plugin-config' : 'plugins';
+  else state.view = state.environmentDetailTab;
+  $('#pluginsView').classList.toggle('hidden',state.view !== 'plugins');
+  $('#pluginConfigView').classList.toggle('hidden',state.view !== 'plugin-config');
+  $('#runbookView').classList.toggle('hidden',state.view !== 'runbook');
+  $('#auditView').classList.toggle('hidden',state.view !== 'audit');
+  $('#confirmationView').classList.toggle('hidden',state.view !== 'confirmations');
+  if (state.view === 'confirmations') renderConfirmationCenter();
+  else if (state.view === 'plugins') renderPlugins();
+  else if (state.view === 'plugin-config') renderInlinePluginConfig();
   else if (state.view === 'runbook') {
     if (state.runbookScopeKey === scopeKey()) renderRunbook();
     else loadRunbook().catch(showError);
-  }
-  else loadAudit().catch(showError);
+  } else loadAudit().catch(showError);
 }
 
 function pluginTarget(plugin) {
@@ -867,14 +1090,6 @@ function familyName(value) { return ({ ipv4Preferred:'IPv4 优先，失败尝试
 function uplinkName(plugin) { const uplink = plugin.uplink ?? { type:'direct' }; if (uplink.type === 'direct') return '直接连接'; if (uplink.type === 'windowsVpn') return `Windows VPN · ${uplink.interfaceAlias || '未配置网卡'}`; return `${uplink.type.toUpperCase()} · ${uplink.host}:${uplink.port}`; }
 
 function renderPlugins() {
-  $('#pluginsView').classList.toggle('mobile-detail-open', state.mobileDetail);
-  $('#pluginCount').textContent = state.plugins.length || '';
-  const groups = ['server','mysql','redis'].map((type) => {
-    const items = state.plugins.filter((item) => item.pluginType === type);
-    if (!items.length) return '';
-    return `<section class="plugin-group"><div class="plugin-group-label">${typeNames[type]} · ${items.length}</div>${items.map(pluginItem).join('')}</section>`;
-  }).join('');
-  $('#pluginList').innerHTML = groups || '<div class="detail-empty"><div><p>当前环境还没有插件</p><button class="button primary" data-action="add-plugin">添加插件</button></div></div>';
   renderPluginDetail();
 }
 
@@ -885,7 +1100,7 @@ function pluginItem(plugin) {
   return `<button class="plugin-item ${plugin.pluginInstanceId === state.pluginId ? 'active' : ''}" data-plugin-id="${escapeAttr(plugin.pluginInstanceId)}"><span class="plugin-icon">${icon(typeIcons[plugin.pluginType])}</span><span class="plugin-copy"><strong>${escapeHtml(plugin.displayName)}</strong><small>${escapeHtml(pluginTarget(plugin))}</small></span><span class="state-dot ${escapeAttr(stateClass)}" title="${escapeAttr(status)}"></span></button>`;
 }
 
-function detailTab(plugin) { return state.detailTabs[plugin.pluginInstanceId] ?? (plugin.pluginType === 'mysql' ? 'permissions' : 'connection'); }
+function detailTab(plugin) { return state.detailTabs[plugin.pluginInstanceId] ?? 'connection'; }
 function renderPluginDetail() {
   const plugin = activePlugin();
   if (!plugin) { $('#pluginDetail').innerHTML = '<div class="detail-empty"><div>选择一个插件查看详情</div></div>'; return; }
@@ -899,26 +1114,129 @@ function renderPluginDetail() {
     : connected
     ? `<button class="button" data-action="disconnect-plugin" ${['connecting','reconnecting'].includes(runtime.phase) ? 'disabled' : ''}>断开</button>`
     : '<button class="button primary" data-action="connect-plugin">连接</button>';
-  const configAction = plugin.configState === 'ready' ? '<button class="button" data-action="edit-plugin">配置</button>' : '';
   const status = plugin.configState === 'ready' ? (phaseNames[runtime.phase] ?? runtime.phase) : '待配置';
   const stateClass = plugin.configState === 'ready' ? runtime.phase : 'draft';
-  $('#pluginDetail').innerHTML = `<header class="detail-head"><button class="square-button mobile-back" data-action="mobile-plugin-list" aria-label="返回插件列表">←</button><div class="detail-title-line"><span class="detail-icon">${icon(typeIcons[plugin.pluginType])}</span><div class="detail-title"><div class="detail-title-top"><h1>${escapeHtml(plugin.displayName)}</h1><span class="type-label">${typeNames[plugin.pluginType]}</span><span class="health ${escapeAttr(stateClass)}">${escapeHtml(status)}</span></div><p class="detail-summary">${escapeHtml(pluginTarget(plugin))}</p></div><div class="detail-actions">${runtimeAction}<button class="button" data-action="test-plugin" ${plugin.configState !== 'ready' ? 'disabled' : ''}>检查连接</button>${configAction}<button class="button danger" data-action="prepare-delete-plugin">删除插件</button></div></div><nav class="detail-tabs"><button class="detail-tab ${tab === 'connection' ? 'active' : ''}" data-detail-tab="connection">连接</button><button class="detail-tab ${tab === 'permissions' ? 'active' : ''}" data-detail-tab="permissions">Agent 权限</button></nav></header><div class="detail-content">${error}${tab === 'connection' ? renderConnection(plugin) : renderPermissions(plugin)}</div>`;
+  const approvalScope = confirmationScopeData('plugin',plugin.projectId,plugin.environmentId,plugin.pluginInstanceId);
+  const approvals = confirmationCount(approvalScope);
+  const approvalButton = approvals ? `<button class="detail-confirmation-badge" ${confirmationScopeAttributes(approvalScope)}>${icon('shield')}<span>${approvals} 项待确认</span></button>` : '';
+  const content = tab === 'configuration' ? renderConfiguration(plugin) : tab === 'permissions' ? renderPermissions(plugin) : renderConnection(plugin);
+  $('#pluginDetail').innerHTML = `<header class="detail-head"><div class="detail-title-line"><span class="detail-icon">${icon(typeIcons[plugin.pluginType])}</span><div class="detail-title"><div class="detail-title-top"><h1>${escapeHtml(plugin.displayName)}</h1><span class="type-label">${typeNames[plugin.pluginType]}</span><span class="health ${escapeAttr(stateClass)}">${escapeHtml(status)}</span>${approvalButton}</div><p class="detail-summary">${escapeHtml(pluginTarget(plugin))}</p></div><div class="detail-actions">${runtimeAction}<button class="button danger-subtle" data-action="prepare-delete-plugin">删除插件</button></div></div></header><div class="detail-content">${error}${content}</div>`;
+}
+
+function renderConfiguration(plugin) {
+  const target = plugin.target ?? {};
+  const rows = [
+    ['配置完整性',plugin.configState === 'ready' ? '已配置' : '待完善'],
+    ['主机',target.host ? `${target.host}:${target.port ?? ''}` : '未配置'],
+    ['连接方式',plugin.pluginType === 'server' ? uplinkName(plugin) : transportName(plugin)],
+    ['地址族',familyName(target.addressFamily)],
+  ];
+  if (plugin.pluginType === 'mysql') rows.push(['固定数据库',target.database || '未配置']);
+  if (plugin.pluginType === 'redis') rows.push(['Logical DB',String(target.db ?? 0)]);
+  if (plugin.pluginType !== 'server') rows.push(['TLS',plugin.tls?.mode ?? 'disabled']);
+  return `<div class="content-title"><div><h2>配置</h2><p class="muted">查看当前配置摘要；修改后仍使用原有校验与凭据保护流程。</p></div><button class="button primary" data-action="edit-plugin">编辑配置</button></div><section class="connection-section"><dl class="field-list">${rows.map(([key,value]) => `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd>`).join('')}</dl></section><section class="configuration-note">${icon('shield')}<span>密码和私钥口令只保存在本机安全存储中，不会在详情页显示。</span></section>`;
+}
+
+function diagnosticStepDefinitions(plugin) {
+  const connectionLabel = plugin.pluginType === 'server' ? '网络、SSH 与认证' : plugin.pluginType === 'mysql' ? '路由、MySQL 与认证' : '路由、Redis 与认证';
+  const protocolLabel = plugin.pluginType === 'server' ? 'SSH 会话确认' : plugin.pluginType === 'mysql' ? 'SELECT 1 健康检查' : 'PING 健康检查';
+  return [
+    { id:'configuration',label:'配置与依赖',detail:'检查必填项、凭据和上游依赖' },
+    { id:'connection',label:connectionLabel,detail:'建立一次真实连接并完成认证' },
+    { id:'protocol',label:protocolLabel,detail:'确认目标服务能够正常响应' },
+  ];
+}
+
+function createPendingDiagnostic(plugin, requestId) {
+  return {
+    requestId,
+    status:'pending',
+    summary:'正在按顺序执行检查…',
+    checks:diagnosticStepDefinitions(plugin).map((step,index) => ({...step,status:index === 0 ? 'pending' : 'queued',elapsedMs:null})),
+  };
+}
+
+function diagnosticChecks(plugin, diagnostic) {
+  const current = new Map((diagnostic.checks ?? []).map((check) => [check.id,check]));
+  return diagnosticStepDefinitions(plugin).map((step) => ({...step,...current.get(step.id)}));
+}
+
+function elapsedText(elapsedMs) {
+  if (!Number.isFinite(elapsedMs)) return '';
+  if (elapsedMs < 1) return '<1 ms';
+  return `${Math.round(elapsedMs).toLocaleString()} ms`;
+}
+
+function diagnosticIcon(check, index) {
+  if (check.status === 'success') return icon('check');
+  if (check.status === 'failure') return icon('x');
+  if (check.status === 'pending') return icon('loader');
+  return `<span>${index + 1}</span>`;
+}
+
+function renderDiagnosticContent(plugin, diagnostic) {
+  const checks = diagnosticChecks(plugin,diagnostic);
+  const completed = checks.filter((check) => check.status === 'success').length;
+  const failed = checks.find((check) => check.status === 'failure');
+  const status = diagnostic.status ?? 'idle';
+  const title = status === 'success' ? `${completed} 项检查通过` : status === 'failure' ? `检查停在“${failed?.label ?? '连接'}”` : status === 'pending' ? '正在检查连接' : '确认当前配置能否实际使用';
+  const subtitle = status === 'success'
+    ? `${diagnostic.reused ? '复用活动连接' : '临时连接已释放'} · 环境状态未改变`
+    : status === 'failure' ? '后续检查未继续执行' : status === 'pending' ? '上一项成功后才会开始下一项' : '依次检查配置、连接和协议响应';
+  const total = Number.isFinite(diagnostic.totalElapsedMs) ? elapsedText(diagnostic.totalElapsedMs) : '';
+  const steps = checks.map((check,index) => {
+    const timing = check.status === 'pending' ? '检查中' : check.status === 'queued' ? '等待' : elapsedText(check.elapsedMs);
+    return `<div class="diagnostic-step ${escapeAttr(check.status ?? 'queued')}"><span class="diagnostic-step-marker">${diagnosticIcon(check,index)}</span><span class="diagnostic-step-copy"><strong>${escapeHtml(check.label)}</strong><small>${escapeHtml(check.detail)}</small></span><span class="diagnostic-step-time">${escapeHtml(timing)}</span></div>`;
+  }).join('');
+  const summary = diagnostic.summary ? `<p class="diagnostic-message ${escapeAttr(status)}">${escapeHtml(diagnostic.summary)}</p>` : '';
+  return `<div class="diagnostic-overview ${escapeAttr(status)}"><span class="diagnostic-overview-icon">${icon(status === 'success' ? 'check' : status === 'failure' ? 'x' : status === 'pending' ? 'loader' : 'route')}</span><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(subtitle)}</small></span>${total ? `<b>${escapeHtml(total)}</b>` : ''}</div><div class="diagnostic-steps">${steps}</div>${summary}`;
+}
+
+function renderDiagnosticPanel(plugin) {
+  const diagnostic = state.pluginDiagnostics[plugin.pluginInstanceId] ?? { status:'idle',summary:'检查只建立临时连接，不会连接或断开当前环境。',checks:[] };
+  const unavailable = plugin.configState !== 'ready';
+  const actionLabel = unavailable ? '完善配置后检查' : diagnostic.status === 'pending' ? '检查中…' : diagnostic.status === 'idle' ? '开始检查' : '重新检查';
+  const effectiveDiagnostic = unavailable ? {...diagnostic,summary:'请先在“配置”中补齐必填信息并保存。'} : diagnostic;
+  return `<section id="connectionCheckPanel" class="connection-check-section"><div class="connection-section-head"><div><span class="connection-section-eyebrow">可用性验证</span><h3>连接检查</h3><p>真实连接、逐项执行、记录每一步耗时</p></div><button class="button ${diagnostic.status === 'idle' && !unavailable ? 'primary' : ''}" data-action="test-plugin" ${unavailable || diagnostic.status === 'pending' ? 'disabled' : ''}>${actionLabel}</button></div><div class="connection-diagnostic" aria-live="polite">${renderDiagnosticContent(plugin,effectiveDiagnostic)}</div></section>`;
+}
+
+function serverAuthName(plugin) {
+  return ({password:'密码',privateKey:'私钥',agent:'SSH Agent'})[plugin.auth?.type] ?? '未配置';
+}
+
+function tlsName(mode) {
+  return ({disabled:'关闭',preferred:'加密（不校验证书）',required:'必须加密',verifyIdentity:'加密并校验证书身份'})[mode] ?? '关闭';
 }
 
 function renderConnection(plugin) {
   const fields = plugin.pluginType === 'server'
-    ? [['SSH 目标',`${plugin.auth?.username || ''}@${plugin.target.host}:${plugin.target.port}`],['上行方式',uplinkName(plugin)],['地址族',familyName(plugin.target.addressFamily)],['主机指纹',plugin.target.hostKeyFingerprint || '首次连接时确认']]
-    : [['目标',`${plugin.target.host}:${plugin.target.port}`],[plugin.pluginType === 'mysql' ? '固定数据库' : '固定 Logical DB',plugin.pluginType === 'mysql' ? plugin.target.database : String(plugin.target.db)],['连接方式',transportName(plugin)],['地址族',familyName(plugin.target.addressFamily)],['TLS',plugin.tls?.mode ?? 'disabled']];
+    ? [
+      ['SSH 目标',`${plugin.auth?.username || ''}@${plugin.target.host}:${plugin.target.port}`,''],
+      ['认证方式',serverAuthName(plugin),''],
+      ['地址策略',familyName(plugin.target.addressFamily),''],
+      ['主机指纹',plugin.target.hostKeyFingerprint || '首次成功连接时确认','wide mono'],
+    ]
+    : [
+      ['服务端点',`${plugin.target.host}:${plugin.target.port}`,'mono'],
+      [plugin.pluginType === 'mysql' ? '固定数据库' : 'Logical DB',plugin.pluginType === 'mysql' ? plugin.target.database : String(plugin.target.db),''],
+      ['地址策略',familyName(plugin.target.addressFamily),''],
+      ['TLS',tlsName(plugin.tls?.mode),''],
+    ];
   const route = plugin.pluginType === 'server' ? ['本机', uplinkName(plugin), `${plugin.target.host}:${plugin.target.port}`] : plugin.transport?.kind === 'serverTunnel' ? ['本机',providerName(plugin.transport.serverPluginInstanceId),'SSH 隧道',`${plugin.target.host}:${plugin.target.port}`] : ['本机',transportName(plugin),`${plugin.target.host}:${plugin.target.port}`];
   const dependents = plugin.pluginType === 'server' ? state.plugins.filter((item) => item.transport?.serverPluginInstanceId === plugin.pluginInstanceId) : [];
-  return `<div class="content-title"><h2>连接</h2></div><section class="connection-section"><h3>连接目标</h3><dl class="field-list">${fields.map(([key,value]) => `<dt>${escapeHtml(key)}</dt><dd class="mono">${escapeHtml(value)}</dd>`).join('')}</dl></section><section class="connection-section"><h3>连接路径</h3><div class="route-line">${route.map((node,index) => `${index ? '<span class="route-arrow">→</span>' : ''}<span class="route-node">${escapeHtml(node)}</span>`).join('')}</div></section>${plugin.pluginType === 'server' ? `<section class="connection-section"><h3>隧道复用</h3><div class="consumer-list">${dependents.length ? dependents.map((item) => `<div class="consumer-row">${icon(typeIcons[item.pluginType])}<strong>${escapeHtml(item.displayName)}</strong><span>${typeNames[item.pluginType]} · ${escapeHtml(item.pluginType === 'mysql' ? item.target.database : `DB ${item.target.db}`)}</span></div>`).join('') : '<span class="muted">暂无插件复用该隧道</span>'}</div></section>` : ''}`;
+  const overview = fields.map(([key,value,className]) => `<article class="connection-fact-card ${escapeAttr(className)}"><span>${escapeHtml(key)}</span><strong>${escapeHtml(value)}</strong></article>`).join('');
+  const consumers = dependents.length ? `<div class="connection-consumers"><div class="connection-section-heading"><div><h3>隧道复用</h3><p>这些插件依赖当前 SSH 连接</p></div><span class="connection-count">${dependents.length}</span></div><div class="consumer-list">${dependents.map((item) => `<div class="consumer-row">${icon(typeIcons[item.pluginType])}<strong>${escapeHtml(item.displayName)}</strong><span>${typeNames[item.pluginType]} · ${escapeHtml(item.pluginType === 'mysql' ? item.target.database : `DB ${item.target.db}`)}</span></div>`).join('')}</div></div>` : '';
+  return `<div class="connection-page">${renderDiagnosticPanel(plugin)}<section class="connection-information"><div class="connection-section-heading"><div><span class="connection-section-eyebrow">当前保存配置</span><h3>连接信息</h3><p>用于确认实际目标、认证边界与网络路径</p></div></div><div class="connection-overview">${overview}</div><div class="connection-route-card"><div><strong>连接路径</strong><small>${escapeHtml(plugin.pluginType === 'server' ? 'SSH 上行' : '数据源访问路径')}</small></div><div class="route-line">${route.map((node,index) => `${index ? '<span class="route-arrow">→</span>' : ''}<span class="route-node">${escapeHtml(node)}</span>`).join('')}</div></div>${consumers}</section></div>`;
 }
 
 const permissionModeNames = { auto:'自动放行', confirm:'每次确认', strong:'强确认', deny:'默认拒绝' };
 function limitSummary(plugin) { if (plugin.pluginType === 'mysql') return `只读固定数据库 ${plugin.target.database} · 单语句 · 最多 ${plugin.limits?.maxRows ?? 100} 行 · ${Math.round((plugin.limits?.timeoutMs ?? 10000)/1000)} 秒超时`; if (plugin.pluginType === 'redis') return `只读固定 DB ${plugin.target.db} · 最多 ${plugin.limits?.maxKeys ?? 100} 个 Key · 不允许 Agent 切库`; return '权限由应用内置风险表判定，Agent 不能自行声明“安全”；所有读取有资源上限，所有服务器变更逐次确认。'; }
 function renderPermissions(plugin) {
-  const rows = permissionRules[plugin.pluginType].map((rule) => `<div class="policy-row"><span class="policy-row-icon">${icon(rule.icon)}</span><strong>${escapeHtml(rule.label)}</strong><span class="policy-detail">${escapeHtml(rule.detail)}</span><span class="policy-state ${escapeAttr(rule.mode)}">${escapeHtml(permissionModeNames[rule.mode])}</span></div>`).join('');
-  return `<div class="content-title"><div><h2>Agent 权限</h2><p class="muted">这是应用强制执行的风险规则，不由 Agent 或插件数据源决定。</p></div></div><section class="policy-section"><div class="policy-section-title">固定执行规则</div>${rows}</section><div class="policy-limits">${icon('shield')}<span>${escapeHtml(limitSummary(plugin))}</span></div>`;
+  const rules = permissionRules[plugin.pluginType];
+  const counts = rules.reduce((summary,rule) => ({...summary,[rule.mode]:(summary[rule.mode] ?? 0) + 1}),{});
+  const overview = ['auto','confirm','strong','deny'].filter((mode) => counts[mode]).map((mode) => `<div class="permission-summary-item ${escapeAttr(mode)}"><strong>${counts[mode]}</strong><span>${escapeHtml(permissionModeNames[mode])}</span></div>`).join('');
+  const rows = rules.map((rule) => `<article class="policy-row" data-mode="${escapeAttr(rule.mode)}"><span class="policy-row-icon">${icon(rule.icon)}</span><div class="policy-copy"><strong>${escapeHtml(rule.label)}</strong><span class="policy-detail">${escapeHtml(rule.detail)}</span></div><span class="policy-state ${escapeAttr(rule.mode)}">${escapeHtml(permissionModeNames[rule.mode])}</span></article>`).join('');
+  return `<div class="permissions-page"><header class="permission-hero"><span class="permission-hero-icon">${icon('shield')}</span><div class="permission-hero-copy"><span class="permission-eyebrow">应用内置安全策略</span><h2>Agent 可执行范围</h2><p>权限由应用按操作风险强制判定，Agent 和插件数据源都不能修改或绕过。</p></div><div class="permission-summary">${overview}</div></header><section class="policy-section"><div class="policy-section-title"><span>固定执行规则</span><small>${rules.length} 项规则</small></div><div class="policy-list">${rows}</div></section><div class="policy-limits">${icon('shield')}<div><strong>边界与资源上限</strong><span>${escapeHtml(limitSummary(plugin))}</span></div></div></div>`;
 }
 
 function renderMarkdown(source) {
@@ -970,16 +1288,22 @@ function renderRunbook() {
 }
 
 async function loadAudit() {
-  const requestedScope = scopeKey();
-  const result = await call(api.listAudit({ projectId:state.projectId, environmentId:state.environmentId, limit:200 }));
-  if (state.view !== 'audit' || requestedScope !== scopeKey()) return;
+  const requestedScope = {
+    projectId:state.projectId,
+    environmentId:state.environmentId,
+    pluginInstanceId:state.selectionKind === 'plugin' ? state.pluginId : null,
+  };
+  const result = await call(api.listAudit({ ...requestedScope, limit:200 }));
+  const currentPluginId = state.selectionKind === 'plugin' ? state.pluginId : null;
+  if (state.view !== 'audit' || requestedScope.projectId !== state.projectId || requestedScope.environmentId !== state.environmentId || requestedScope.pluginInstanceId !== currentPluginId) return;
   state.auditEntries = result.entries ?? [];
   renderAudit();
 }
 function auditResult(entry) {
   const value = String(entry.result ?? (entry.errorCode ? 'error' : 'success')).toLowerCase();
   if (['success','connected','disconnected','complete','completed'].includes(value)) return 'success';
-  if (['partial','warning','pending-confirmation'].includes(value)) return 'warning';
+  if (value === 'pending-confirmation') return 'pending';
+  if (['partial','warning'].includes(value)) return 'warning';
   if (['blocked','denied'].includes(value)) return 'blocked';
   return 'error';
 }
@@ -1034,16 +1358,31 @@ function auditDescription(entry) {
 }
 function visibleAuditEntries() {
   return state.auditEntries.filter((entry) => {
+    if (state.selectionKind === 'plugin' && entry.pluginInstanceId !== state.pluginId) return false;
     if (entry.type === 'plugin-operation-started' || entry.type === 'connect') return false;
     if (entry.type === 'disconnect' && entry.result !== 'connection-lost') return false;
     if (entry.type === 'environment-disconnected' && entry.reason === 'app-exit') return false;
     return entry.type?.startsWith('environment-') || ['plugin-operation','plugin-operation-decision','plugin-connected','plugin-disconnected','plugin-policy-updated','runbook-updated','confirmation-approved','confirmation-rejected','mysql-query','policy-denied','host-key-change-approved','auto-reconnect'].includes(entry.type) || (entry.type === 'disconnect' && entry.result === 'connection-lost');
   }).sort((left,right) => new Date(right.time).getTime() - new Date(left.time).getTime());
 }
+function auditDateLabel(date) {
+  const today = new Date();
+  const yesterday = new Date(today.getFullYear(),today.getMonth(),today.getDate() - 1);
+  const key = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+  const todayKey = `${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`;
+  const yesterdayKey = `${yesterday.getFullYear()}-${yesterday.getMonth()}-${yesterday.getDate()}`;
+  if (key === todayKey) return '今天';
+  if (key === yesterdayKey) return '昨天';
+  return date.toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric'});
+}
 function renderAudit() {
   const environment = activeEnvironment();
   if (!environment) return;
-  $('#auditTitle').textContent = `${environment.name} · 操作记录`;
+  const plugin = state.selectionKind === 'plugin' ? activePlugin() : null;
+  $('#auditTitle').textContent = plugin ? `${plugin.displayName} · 操作记录` : `${environment.name} · 环境操作记录`;
+  $('#auditScopeHint').textContent = plugin ? '仅展示当前插件的用户、Agent 与系统记录' : '展示当前环境全部插件的用户、Agent 与系统记录';
+  $('#clearAudit').textContent = plugin ? '清除当前插件记录' : '清除当前环境记录';
+  $('#clearAudit').disabled = visibleAuditEntries().length === 0;
   const query = $('#auditSearch').value.trim().toLocaleLowerCase('zh-CN');
   const resultFilter = $('#auditResult').value;
   const rows = visibleAuditEntries().filter((entry) => {
@@ -1051,10 +1390,54 @@ function renderAudit() {
     const text = [auditOperationName(entry),auditPluginName(entry),auditDescription(entry)].join(' ').toLocaleLowerCase('zh-CN');
     return (!resultFilter || result === resultFilter) && (!query || text.includes(query));
   });
-  const resultNames = { success:'成功',warning:'部分成功',blocked:'已拦截',error:'失败' };
-  $('#auditBody').innerHTML = rows.map((entry) => { const result = auditResult(entry); return `<tr><td>${escapeHtml(new Date(entry.time).toLocaleString())}</td><td><span class="audit-actor ${escapeAttr(auditActorName(entry).toLowerCase())}">${escapeHtml(auditActorName(entry))}</span></td><td><strong>${escapeHtml(auditOperationName(entry))}</strong></td><td>${escapeHtml(auditPluginName(entry))}</td><td><span class="result ${escapeAttr(result)}">${resultNames[result]}</span></td><td>${escapeHtml(auditDescription(entry))}</td></tr>`; }).join('');
+  const resultNames = { success:'成功',pending:'等待确认',warning:'部分成功',blocked:'已拦截',error:'失败' };
+  const groups = new Map();
+  for (const entry of rows) {
+    const date = new Date(entry.time);
+    const key = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+    if (!groups.has(key)) groups.set(key,{date,entries:[]});
+    groups.get(key).entries.push(entry);
+  }
+  $('#auditBody').innerHTML = [...groups.values()].map(({date,entries}) => `<section class="audit-date-group"><h2 class="audit-date-label">${escapeHtml(auditDateLabel(date))}</h2>${entries.map((entry) => {
+    const result = auditResult(entry);
+    const instant = new Date(entry.time);
+    const actor = auditActorName(entry);
+    return `<article class="audit-record"><time datetime="${escapeAttr(instant.toISOString())}">${escapeHtml(instant.toLocaleTimeString('zh-CN',{hour12:false}))}</time><span class="audit-actor ${escapeAttr(actor.toLowerCase())}">${escapeHtml(actor)}</span><div class="audit-event"><div class="audit-event-title"><strong>${escapeHtml(auditOperationName(entry))}</strong><span> · ${escapeHtml(auditPluginName(entry))}</span></div><p>${escapeHtml(auditDescription(entry))}</p></div><span class="result ${escapeAttr(result)}">${escapeHtml(resultNames[result])}</span></article>`;
+  }).join('')}</section>`).join('');
   $('#auditEmpty').classList.toggle('hidden', rows.length > 0);
-  $('.audit-table-wrap table').classList.toggle('hidden', rows.length === 0);
+  $('#auditBody').classList.toggle('hidden', rows.length === 0);
+}
+
+function prepareClearAudit() {
+  const environment = activeEnvironment();
+  if (!environment) return;
+  const plugin = state.selectionKind === 'plugin' ? activePlugin() : null;
+  state.clearingAuditScope = {
+    projectId:state.projectId,
+    environmentId:state.environmentId,
+    pluginInstanceId:plugin?.pluginInstanceId ?? null,
+  };
+  $('#clearAuditScope').textContent = plugin
+    ? `${environment.name} / ${plugin.displayName} · 仅当前插件`
+    : `${environment.name} · 当前环境全部插件`;
+  $('#confirmClearAudit').textContent = plugin ? '清除插件记录' : '清除环境记录';
+  $('#clearAuditDialog').showModal();
+}
+
+async function clearSelectedAudit() {
+  const scope = state.clearingAuditScope;
+  if (!scope) return;
+  const button = $('#confirmClearAudit');
+  button.disabled = true;
+  try {
+    const result = await call(api.clearAudit(scope));
+    $('#clearAuditDialog').close();
+    state.clearingAuditScope = null;
+    await loadAudit();
+    toast(result.deletedCount > 0 ? `已清除 ${result.deletedCount.toLocaleString()} 条操作记录。` : '当前范围没有可清除的操作记录。');
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function environmentInlineEditor(environment = null) {
@@ -1085,6 +1468,20 @@ function openEnvironmentManager(projectId = state.projectId, editorId = undefine
   renderEnvironmentManager();
   if (!$('#environmentManagerDialog').open) $('#environmentManagerDialog').showModal();
   if (editorId !== undefined) requestAnimationFrame(() => { $('#managerEnvironmentName')?.focus(); $('#managerEnvironmentName')?.select(); });
+}
+function openEnvironmentDelete(projectId,environmentId) {
+  openEnvironmentManager(projectId);
+  const environments = state.managedEnvironments;
+  const environment = environments.find((item) => item.environmentId === environmentId);
+  if (!environment) return;
+  let message = `确定删除“${environment.name}”？`;
+  let confirmable = true;
+  if (environments.length <= 1) { message = '项目至少需要保留一个环境'; confirmable = false; }
+  else if (environment.pluginCount) { message = `请先处理该环境的 ${environment.pluginCount} 个插件`; confirmable = false; }
+  const runtime = state.runtimeByScope[scopeKey(projectId,environmentId)];
+  if (confirmable && (runtime?.desiredConnected || (runtime && runtime.phase !== 'disconnected'))) { message = '请先断开该环境'; confirmable = false; }
+  state.environmentDeletePrompt = { projectId,environmentId,message,confirmable };
+  renderEnvironmentManager();
 }
 function openEnvironmentEditor(id = null) {
   openEnvironmentManager(state.managedProjectId ?? state.projectId,id);
@@ -1124,10 +1521,9 @@ function resetPluginFormTransition() {
 }
 
 function transitionPluginForm(update) {
-  const dialog = $('#pluginDialog');
   const grid = $('#pluginFormGrid');
-  const body = $('.plugin-dialog-body', dialog);
-  if (!dialog.open || !grid || !body || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  const body = pluginFormElement()?.querySelector('.plugin-dialog-body');
+  if (!grid || !body || matchMedia('(prefers-reduced-motion: reduce)').matches) {
     update();
     return;
   }
@@ -1149,16 +1545,27 @@ function transitionPluginForm(update) {
   },60);
 }
 
-function openPluginDialog(plugin = null) {
+function pluginFormElement() { return $('.plugin-card'); }
+function pluginFormActive() { return Boolean(pluginFormElement()?.closest('#pluginInlineFormHost')); }
+function mountPluginForm() {
+  const form = pluginFormElement();
+  if (!form) return;
+  state.pluginFormMode = 'inline';
+  form.classList.add('inline-plugin-form');
+  $('#pluginInlineFormHost').append(form);
+}
+
+function populatePluginForm(plugin = null) {
   resetPluginFormTransition();
   state.editingPlugin = plugin;
+  state.pluginFormDiagnostic = null;
   $('#savePlugin').disabled = false;
   state.databaseQueryGeneration += 1;
   const credentialProbeGeneration = ++state.credentialProbeGeneration;
-  clearPluginDialogError();
+  clearPluginFormError();
   const type = plugin?.pluginType ?? 'server';
-  $('#pluginDialogTitle').textContent = plugin ? '配置插件' : '添加插件';
-  $('#pluginDialogScope').textContent = `${activeProject().name} / ${activeEnvironment().name}`;
+  $('#pluginFormTitle').textContent = plugin ? '编辑插件配置' : '添加插件';
+  $('#pluginFormScope').textContent = `${activeProject().name} / ${activeEnvironment().name}`;
   $('#pluginType').value = type;
   $$('[name=pluginTypeChoice]').forEach((radio) => { radio.checked = radio.value === type; radio.disabled = Boolean(plugin); });
   $('#pluginDisplayName').value = plugin?.displayName ?? '';
@@ -1189,18 +1596,30 @@ function openPluginDialog(plugin = null) {
   if (plugin?.transport?.serverPluginInstanceId) $('#pluginProvider').value = plugin.transport.serverPluginInstanceId;
   state.databaseDiscoverySignature = plugin?.pluginType === 'mysql' ? databaseConnectionSignature() : null;
   state.pluginFormInitial = pluginFormSignature();
-  $('#pluginDialog').showModal();
-  loadCredentialIndicators(plugin, credentialProbeGeneration).catch(showPluginDialogError);
+  renderPluginFormDiagnostic();
+  loadCredentialIndicators(plugin, credentialProbeGeneration).catch(showPluginFormError);
 }
 
-function clearPluginDialogError() {
-  const element = $('#pluginDialogError');
+function renderInlinePluginConfig(force = false) {
+  const creating = state.selectionKind === 'new-plugin';
+  const plugin = creating ? null : activePlugin();
+  if (!creating && !plugin) return;
+  const formKey = creating ? '__new__' : plugin.pluginInstanceId;
+  mountPluginForm();
+  if (force || state.inlineConfigPluginId !== formKey) {
+    state.inlineConfigPluginId = formKey;
+    populatePluginForm(plugin);
+  }
+}
+
+function clearPluginFormError() {
+  const element = $('#pluginFormError');
   element.textContent = '';
   element.classList.add('hidden');
 }
 
-function showPluginDialogError(error) {
-  const element = $('#pluginDialogError');
+function showPluginFormError(error) {
+  const element = $('#pluginFormError');
   element.textContent = error?.message ?? String(error);
   element.classList.remove('hidden');
   element.scrollIntoView({ block:'nearest' });
@@ -1224,11 +1643,11 @@ function pluginFormSignature() {
 }
 
 function pluginFormDirty() {
-  return $('#pluginDialog').open && state.pluginFormInitial !== null && pluginFormSignature() !== state.pluginFormInitial;
+  return pluginFormActive() && state.pluginFormInitial !== null && pluginFormSignature() !== state.pluginFormInitial;
 }
 
 function invalidateDatabaseDiscovery() {
-  if ($('#pluginType').value !== 'mysql' || !$('#pluginDialog').open) return;
+  if ($('#pluginType').value !== 'mysql' || !pluginFormActive()) return;
   if (state.databaseDiscoverySignature === databaseConnectionSignature()) return;
   state.databaseQueryGeneration += 1;
   state.databaseDiscoverySignature = null;
@@ -1252,7 +1671,7 @@ async function queryDatabases() {
   const dialogGeneration = state.credentialProbeGeneration;
   const requestedScope = { projectId:state.projectId, environmentId:state.environmentId, pluginInstanceId:state.editingPlugin?.pluginInstanceId ?? null };
   const requestedSignature = databaseConnectionSignature();
-  clearPluginDialogError();
+  clearPluginFormError();
   button.disabled = true;
   saveButton.disabled = true;
   button.textContent = '查询中…';
@@ -1270,7 +1689,7 @@ async function queryDatabases() {
       pluginInstanceId:state.editingPlugin?.pluginType === 'mysql' ? requestedScope.pluginInstanceId : null,
       input, secrets:password ? {password} : {},
     }));
-    if (queryGeneration !== state.databaseQueryGeneration || dialogGeneration !== state.credentialProbeGeneration || !$('#pluginDialog').open || requestedScope.projectId !== state.projectId || requestedScope.environmentId !== state.environmentId || requestedScope.pluginInstanceId !== (state.editingPlugin?.pluginInstanceId ?? null) || requestedSignature !== databaseConnectionSignature()) return;
+    if (queryGeneration !== state.databaseQueryGeneration || dialogGeneration !== state.credentialProbeGeneration || !pluginFormActive() || requestedScope.projectId !== state.projectId || requestedScope.environmentId !== state.environmentId || requestedScope.pluginInstanceId !== (state.editingPlugin?.pluginInstanceId ?? null) || requestedSignature !== databaseConnectionSignature()) return;
     const databases = result.databases ?? [];
     $('#pluginDatabase').innerHTML = databases.length
       ? `<option value="">请选择数据库</option>${databases.map((name) => `<option value="${escapeAttr(name)}">${escapeHtml(name)}</option>`).join('')}`
@@ -1316,7 +1735,7 @@ function renderPluginForm() {
   if (selectedProvider) $('#pluginProvider').value = selectedProvider;
 }
 
-async function savePlugin() {
+function pluginFormPayload() {
   const type = $('#pluginType').value;
   const input = { pluginType:type, displayName:$('#pluginDisplayName').value.trim(), target:{ host:$('#pluginHost').value.trim(), port:Number($('#pluginPort').value), addressFamily:$('#pluginAddressFamily').value }, auth:{ username:$('#pluginUsername').value.trim() } };
   if (!input.displayName) throw new Error('请填写插件名称。');
@@ -1350,11 +1769,22 @@ async function savePlugin() {
   const proxyPassword = editedPasswordValue('pluginProxyPassword');
   const secrets = primaryPassword ? (type === 'server' && input.auth.type === 'privateKey' ? {privateKeyPassphrase:primaryPassword} : {password:primaryPassword}) : {};
   if (type === 'server' && proxyPassword) secrets.proxyPassword = proxyPassword;
+  return {input,secrets};
+}
+
+async function savePlugin() {
+  const {input,secrets} = pluginFormPayload();
   const scope = { projectId:state.projectId,environmentId:state.environmentId };
   const plugin = state.editingPlugin ? await call(api.updatePlugin({...scope,pluginInstanceId:state.editingPlugin.pluginInstanceId,patch:input,expectedRevision:state.editingPlugin.revision,secrets})) : await call(api.createPlugin({...scope,input,secrets}));
-  $('#pluginDialog').close();
+  state.pluginFormInitial = null;
+  state.pluginFormDiagnostic = null;
+  state.inlineConfigPluginId = null;
   await refreshEnvironmentMetadata();
   await loadEnvironment(plugin.pluginInstanceId);
+  state.selectionKind = 'plugin';
+  state.pluginId = plugin.pluginInstanceId;
+  state.detailTabs[plugin.pluginInstanceId] = 'configuration';
+  renderShell();
   toast(plugin.configState === 'ready' ? '插件已保存；不会自动连接。' : '插件草稿已保存；补齐配置后才能连接。');
 }
 
@@ -1365,60 +1795,271 @@ async function environmentAction() {
   await handleEnvironmentRuntimeAction(action,state.projectId,environment.environmentId);
 }
 
-function diagnosticScopeName(plugin) {
-  if (plugin.pluginType === 'server') return '网络路由、SSH 认证与主机指纹';
-  if (plugin.pluginType === 'mysql') return '连接路由、数据库认证与固定数据库';
-  return '连接路由、Redis 认证与 PING';
+function mergeDiagnosticProgress(diagnostic, plugin, check) {
+  const checks = diagnosticChecks(plugin,diagnostic);
+  const index = checks.findIndex((item) => item.id === check.id);
+  if (index < 0) return diagnostic;
+  checks[index] = {...checks[index],...check};
+  if (check.status === 'success' && checks[index + 1]?.status === 'queued') checks[index + 1] = {...checks[index + 1],status:'pending'};
+  return {
+    ...diagnostic,
+    status:check.status === 'failure' ? 'failure' : 'pending',
+    summary:check.status === 'failure' ? check.detail : '正在按顺序执行检查…',
+    checks,
+  };
 }
-function diagnosticRouteName(plugin) { return plugin.pluginType === 'server' ? uplinkName(plugin) : transportName(plugin); }
-function diagnosticMarkup(plugin, status, reused = false) {
-  const pending = status === 'pending';
-  const title = pending ? '正在检查连接' : status === 'success' ? (reused ? '当前已连接' : '连接正常') : '连接检查失败';
-  const subtitle = pending ? '等待真实连接结果…' : status === 'success' ? (reused ? '读取当前环境的活动连接状态' : '临时连接检查已完成') : '未通过连接检查';
-  const statusIcon = pending ? 'loader' : status === 'success' ? 'check' : 'x';
-  return `<div class="diagnostic-state ${status}"><span class="diagnostic-state-icon">${icon(statusIcon)}</span><span><strong>${title}</strong><small>${subtitle}</small></span></div><dl class="diagnostic-facts"><dt>目标</dt><dd>${escapeHtml(pluginTarget(plugin))}</dd><dt>连接方式</dt><dd>${escapeHtml(diagnosticRouteName(plugin))}</dd><dt>${reused ? '结果依据' : '实际检查'}</dt><dd>${escapeHtml(reused ? '当前环境的活动连接状态' : diagnosticScopeName(plugin))}</dd></dl>`;
+
+function completedDiagnostic(diagnostic, result) {
+  return {
+    ...diagnostic,
+    status:'success',
+    reused:Boolean(result.reused),
+    checks:result.checks?.length ? result.checks : diagnostic.checks,
+    totalElapsedMs:result.totalElapsedMs,
+    summary:result.reused ? '已通过当前活动连接完成全部检查。' : '临时连接已在检查完成后释放，可以安全保存或继续使用当前配置。',
+  };
 }
-async function testPlugin() {
-  const plugin = activePlugin();
-  const environment = activeEnvironment();
-  $('#diagnosticTitle').textContent = `${plugin.displayName} · 连接检查`;
-  $('#diagnosticScope').textContent = `${activeProject().name} / ${environment.name}`;
-  $('#diagnosticList').innerHTML = diagnosticMarkup(plugin,'pending');
-  $('#diagnosticSummary').className = 'diagnostic-summary';
-  $('#diagnosticSummary').textContent = '正在建立临时连接…';
-  $('#diagnosticDialog').showModal();
-  try {
-    const result = await call(api.testPlugin({projectId:state.projectId,environmentId:state.environmentId,pluginInstanceId:plugin.pluginInstanceId}));
-    $('#diagnosticList').innerHTML = diagnosticMarkup(plugin,'success',Boolean(result.reused));
-    $('#diagnosticSummary').className = 'diagnostic-summary success';
-    $('#diagnosticSummary').textContent = result.reused ? '复用当前环境连接完成检查，没有新建或断开连接。' : '已建立一次临时连接并立即释放；环境连接状态未改变。';
-  } catch (error) {
-    $('#diagnosticList').innerHTML = diagnosticMarkup(plugin,'failure');
-    $('#diagnosticSummary').className = 'diagnostic-summary failure';
-    $('#diagnosticSummary').textContent = error.message;
+
+function failedDiagnostic(diagnostic, error) {
+  const details = error?.details?.diagnostic;
+  let checks = details?.checks?.length ? details.checks : diagnostic.checks;
+  if (!checks.some((check) => check.status === 'failure')) {
+    let marked = false;
+    checks = checks.map((check) => {
+      if (!marked && check.status === 'pending') { marked = true; return {...check,status:'failure',detail:error?.message ?? check.detail,elapsedMs:check.elapsedMs ?? null}; }
+      return check;
+    });
+  }
+  return {...diagnostic,status:'failure',checks,totalElapsedMs:details?.totalElapsedMs,summary:error?.message ?? '连接检查失败。'};
+}
+
+function renderPluginFormDiagnostic() {
+  const host = $('#pluginFormDiagnostic');
+  if (!host) return;
+  const diagnostic = state.pluginFormDiagnostic;
+  host.classList.toggle('hidden',!diagnostic);
+  host.innerHTML = diagnostic ? `<div class="plugin-form-diagnostic-head"><div><span class="connection-section-eyebrow">保存前验证</span><strong>连接检查</strong></div></div>${renderDiagnosticContent(diagnostic.plugin,diagnostic)}` : '';
+  const button = $('#testPluginFromForm');
+  if (button) {
+    button.disabled = diagnostic?.status === 'pending';
+    button.innerHTML = `${icon(diagnostic?.status === 'pending' ? 'loader' : 'route')}${diagnostic?.status === 'pending' ? '检查中…' : diagnostic ? '重新检查' : '检查连接'}`;
   }
 }
 
-async function openConfirmations() {
+function refreshDiagnosticSurface(requestId) {
+  const plugin = activePlugin();
+  const detailDiagnostic = plugin ? state.pluginDiagnostics[plugin.pluginInstanceId] : null;
+  if (plugin && detailDiagnostic?.requestId === requestId) {
+    const panel = $('#connectionCheckPanel');
+    if (panel) panel.outerHTML = renderDiagnosticPanel(plugin);
+  }
+  if (state.pluginFormDiagnostic?.requestId === requestId) renderPluginFormDiagnostic();
+}
+
+function applyPluginTestProgress(message) {
+  if (!message?.requestId || !message.check) return;
+  for (const [pluginInstanceId,diagnostic] of Object.entries(state.pluginDiagnostics)) {
+    if (diagnostic?.requestId !== message.requestId) continue;
+    const plugin = state.plugins.find((item) => item.pluginInstanceId === pluginInstanceId);
+    if (plugin) state.pluginDiagnostics[pluginInstanceId] = mergeDiagnosticProgress(diagnostic,plugin,message.check);
+  }
+  if (state.pluginFormDiagnostic?.requestId === message.requestId) {
+    state.pluginFormDiagnostic = mergeDiagnosticProgress(state.pluginFormDiagnostic,state.pluginFormDiagnostic.plugin,message.check);
+  }
+  refreshDiagnosticSurface(message.requestId);
+}
+
+async function testPlugin() {
+  const plugin = activePlugin();
+  if (!plugin || plugin.configState !== 'ready') return;
+  const scope = { projectId:state.projectId,environmentId:state.environmentId,pluginInstanceId:plugin.pluginInstanceId };
+  const requestId = ++state.diagnosticGeneration;
+  state.detailTabs[plugin.pluginInstanceId] = 'connection';
+  state.pluginDiagnostics[plugin.pluginInstanceId] = createPendingDiagnostic(plugin,requestId);
+  renderDetailTopbar();
+  renderView();
+  try {
+    const result = await call(api.testPlugin({...scope,requestId}));
+    if (state.pluginDiagnostics[plugin.pluginInstanceId]?.requestId !== requestId) return;
+    state.pluginDiagnostics[plugin.pluginInstanceId] = completedDiagnostic(state.pluginDiagnostics[plugin.pluginInstanceId],result);
+  } catch (error) {
+    if (state.pluginDiagnostics[plugin.pluginInstanceId]?.requestId !== requestId) return;
+    state.pluginDiagnostics[plugin.pluginInstanceId] = failedDiagnostic(state.pluginDiagnostics[plugin.pluginInstanceId],error);
+  }
+  if (state.projectId === scope.projectId && state.environmentId === scope.environmentId && state.pluginId === scope.pluginInstanceId && state.selectionKind === 'plugin') renderPluginDetail();
+}
+
+async function testPluginFromForm() {
+  clearPluginFormError();
+  const {input,secrets} = pluginFormPayload();
+  const requestId = ++state.diagnosticGeneration;
+  const plugin = {
+    ...(state.editingPlugin ?? {}),
+    ...input,
+    target:input.target,
+    auth:input.auth,
+    pluginInstanceId:state.editingPlugin?.pluginInstanceId ?? '__unsaved_plugin__',
+    configState:'ready',
+  };
+  state.pluginFormDiagnostic = {...createPendingDiagnostic(plugin,requestId),plugin};
+  renderPluginFormDiagnostic();
+  try {
+    const result = await call(api.testPlugin({
+      projectId:state.projectId,
+      environmentId:state.environmentId,
+      pluginInstanceId:state.editingPlugin?.pluginInstanceId,
+      input,
+      secrets,
+      requestId,
+    }));
+    if (state.pluginFormDiagnostic?.requestId !== requestId) return;
+    state.pluginFormDiagnostic = {...completedDiagnostic(state.pluginFormDiagnostic,result),plugin};
+  } catch (error) {
+    if (state.pluginFormDiagnostic?.requestId !== requestId) return;
+    state.pluginFormDiagnostic = {...failedDiagnostic(state.pluginFormDiagnostic,error),plugin};
+  }
+  renderPluginFormDiagnostic();
+}
+
+function confirmationExpiresAt(item) {
+  return typeof item.expiresAt === 'number' ? item.expiresAt : new Date(item.expiresAt).getTime();
+}
+
+function confirmationRiskName(item) {
+  return ({write:'写入',destructive:'破坏性变更',service:'服务变更',critical:'最高风险'})[item.riskLevel] ?? '服务器变更';
+}
+
+function confirmationScopeName(item) {
+  const project = state.projects.find((entry) => entry.projectId === item.projectId);
+  const environment = environmentFor(item.projectId,item.environmentId);
+  const plugin = item.projectId === state.projectId && item.environmentId === state.environmentId
+    ? state.plugins.find((entry) => entry.pluginInstanceId === item.pluginInstanceId)
+    : environment?.resourcePreview?.find((entry) => entry.pluginInstanceId === item.pluginInstanceId);
+  return {
+    project:item.projectNameSnapshot ?? project?.name ?? '项目',
+    environment:item.environmentNameSnapshot ?? environment?.name ?? '环境',
+    plugin:item.pluginNameSnapshot ?? plugin?.displayName ?? '插件',
+  };
+}
+
+function confirmationMatches(item,filter = state.confirmationFilter) {
+  if (filter.kind === 'project') return item.projectId === filter.projectId;
+  if (filter.kind === 'environment') return item.projectId === filter.projectId && item.environmentId === filter.environmentId;
+  if (filter.kind === 'plugin') return item.projectId === filter.projectId && item.environmentId === filter.environmentId && item.pluginInstanceId === filter.pluginInstanceId;
+  return true;
+}
+
+function confirmationFilterOptions() {
+  const filters = [confirmationScopeData('all')];
+  const active = state.confirmationFilter;
+  const projectId = active.projectId ?? state.projectId;
+  const environmentId = active.environmentId ?? state.environmentId;
+  const pluginInstanceId = active.pluginInstanceId ?? (state.selectionKind === 'plugin' ? state.pluginId : null);
+  if (projectId) filters.push(confirmationScopeData('project',projectId));
+  if (projectId && environmentId) filters.push(confirmationScopeData('environment',projectId,environmentId));
+  if (projectId && environmentId && pluginInstanceId) filters.push(confirmationScopeData('plugin',projectId,environmentId,pluginInstanceId));
+  return filters;
+}
+
+function confirmationFilterLabel(filter) {
+  if (filter.kind === 'all') return '全部';
+  const item = pendingConfirmations().find((entry) => confirmationMatches(entry,filter));
+  const names = item ? confirmationScopeName(item) : {};
+  if (filter.kind === 'project') return names.project ?? state.projects.find((entry) => entry.projectId === filter.projectId)?.name ?? '当前项目';
+  if (filter.kind === 'environment') return names.environment ?? environmentFor(filter.projectId,filter.environmentId)?.name ?? '当前环境';
+  if (filter.kind === 'plugin') return names.plugin ?? state.plugins.find((entry) => entry.pluginInstanceId === filter.pluginInstanceId)?.displayName ?? '当前插件';
+  return '全部';
+}
+
+function confirmationFilterIsActive(filter) {
+  const current = state.confirmationFilter;
+  return current.kind === filter.kind && current.projectId === filter.projectId && current.environmentId === filter.environmentId && current.pluginInstanceId === filter.pluginInstanceId;
+}
+
+function renderConfirmationPresentation(item) {
+  const value = item.presentation ?? {};
+  const row = (label,content,className = '') => `<div class="confirmation-fact ${escapeAttr(className)}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(content)}</strong></div>`;
+  if (value.kind === 'shell') return `<div class="confirmation-command"><span>完整命令</span><pre>${escapeHtml(value.command ?? item.summary)}</pre>${value.workingDirectory ? `<small>工作目录：${escapeHtml(value.workingDirectory)}</small>` : ''}</div>`;
+  if (value.kind === 'file-transfer') return `<div class="confirmation-facts">${row('本地文件',value.source,'wide mono')}${row('服务器目标',value.destination,'wide mono')}${row('文件大小',`${Number(value.bytes ?? 0).toLocaleString()} 字节`)}${row('覆盖现有文件',value.overwrite ? '是' : '否')}${row('SHA-256',value.sha256,'wide mono')}</div>`;
+  if (value.kind === 'file-write') return `<div class="confirmation-facts">${row('服务器目标',value.destination,'wide mono')}${row('写入大小',`${Number(value.bytes ?? 0).toLocaleString()} 字节`)}${row('覆盖现有文件',value.overwrite ? '是' : '否')}${row('新内容 SHA-256',value.sha256,'wide mono')}</div>`;
+  if (value.kind === 'path-move') return `<div class="confirmation-facts">${row('原路径',value.source,'wide mono')}${row('目标路径',value.destination,'wide mono')}${row('覆盖目标',value.overwrite ? '是' : '否')}</div>`;
+  if (value.kind === 'path-delete') return `<div class="confirmation-facts">${row('删除目标',value.destination,'wide mono')}${row('目标类型',value.remoteType)}</div>`;
+  if (value.kind === 'service-control') return `<div class="confirmation-facts">${row('systemd unit',value.unit,'mono')}${row('动作',value.action)}</div>`;
+  return `<p class="confirmation-plain-summary">${escapeHtml(item.summary || '对服务器执行一次变更操作')}</p>`;
+}
+
+function renderConfirmationFeedback() {
+  const feedback = state.confirmationFeedback;
+  if (!feedback) return '';
+  const execution = state.confirmationExecutions[feedback.item.requestId];
+  const status = execution?.status ?? feedback.status;
+  const meta = ({waiting:['已授权，等待 Agent 执行','本次授权只匹配完全相同的操作内容'],running:['Agent 正在执行','操作已开始，请等待实际结果'],success:['操作执行成功',Number.isFinite(execution?.durationMs) ? `实际执行耗时 ${execution.durationMs.toLocaleString()} ms` : '实际操作已经完成'],error:['操作执行失败',auditErrorName(execution?.errorCode ?? '执行失败')],rejected:['操作已拒绝','Agent 需要重新发起请求后才能再次确认']})[status] ?? ['确认状态已更新',''];
+  const tone = status === 'success' ? 'success' : status === 'error' || status === 'rejected' ? 'error' : status === 'running' ? 'running' : 'pending';
+  return `<section class="confirmation-feedback ${tone}"><span class="confirmation-feedback-icon">${icon(status === 'success' ? 'check' : status === 'error' || status === 'rejected' ? 'x' : status === 'running' ? 'loader' : 'shield')}</span><div><strong>${escapeHtml(meta[0])}</strong><small>${escapeHtml(meta[1])}</small></div><button class="button small" data-confirmation-open-audit="${escapeAttr(feedback.item.requestId)}">查看操作记录</button></section>`;
+}
+
+function renderConfirmationCard(item) {
+  const names = confirmationScopeName(item);
+  const strong = item.approvalLevel === 'strong';
+  const expiresAt = confirmationExpiresAt(item);
+  const remaining = Math.max(0,Math.ceil((expiresAt - Date.now()) / 1000));
+  return `<article class="confirmation-card ${strong ? 'critical' : ''}" data-confirmation-card="${escapeAttr(item.requestId)}"><header class="confirmation-card-head"><div><span class="confirmation-source">Agent 请求 · ${escapeHtml(names.project)} / ${escapeHtml(names.environment)}</span><div class="confirmation-title"><h2>${escapeHtml(item.capabilityLabel ?? auditCapabilityName(item.capability))}</h2><span class="risk-badge ${strong ? 'critical' : ''}">${escapeHtml(confirmationRiskName(item))}</span></div><p>目标插件：${escapeHtml(names.plugin)}</p></div><button class="button small" data-locate-confirmation="${escapeAttr(item.requestId)}">定位插件</button></header>${renderConfirmationPresentation(item)}${strong ? `<div class="strong-confirmation"><div class="strong-confirmation-warning">${icon('shield')}<span><strong>这是任意 Shell 命令</strong><small>命令可能修改或删除数据、停止服务，必须完整核对后才能授权。</small></span></div><label><input type="checkbox" data-confirmation-ack="${escapeAttr(item.requestId)}">我已核对上面的完整命令、工作目录和目标环境</label></div>` : ''}<footer class="confirmation-card-actions"><span>只授权本次操作 · <time data-confirmation-expires="${escapeAttr(item.requestId)}" datetime="${new Date(expiresAt).toISOString()}">${remaining} 秒后过期</time></span><div><button class="button" data-reject-confirmation="${escapeAttr(item.requestId)}">拒绝</button><button class="button ${strong ? 'danger' : 'primary'}" data-approve-confirmation="${escapeAttr(item.requestId)}" data-approval-level="${strong ? 'strong' : 'standard'}" ${strong ? 'disabled' : ''}>${strong ? '确认执行一次' : '确认一次'}</button></div></footer></article>`;
+}
+
+function renderConfirmationCenter() {
+  const pending = pendingConfirmations().filter((item) => confirmationMatches(item)).sort((left,right) => {
+    const riskOrder = {critical:0,destructive:1,service:2,write:3};
+    return (riskOrder[left.riskLevel] ?? 9) - (riskOrder[right.riskLevel] ?? 9) || new Date(left.createdAt) - new Date(right.createdAt);
+  });
+  const filters = confirmationFilterOptions().map((filter) => {
+    const count = confirmationCount(filter);
+    const attributes = `data-confirmation-filter="${escapeAttr(filter.kind)}"${filter.projectId ? ` data-confirmation-project="${escapeAttr(filter.projectId)}"` : ''}${filter.environmentId ? ` data-confirmation-environment="${escapeAttr(filter.environmentId)}"` : ''}${filter.pluginInstanceId ? ` data-confirmation-plugin="${escapeAttr(filter.pluginInstanceId)}"` : ''}`;
+    return `<button class="confirmation-filter ${confirmationFilterIsActive(filter) ? 'active' : ''}" ${attributes}>${escapeHtml(confirmationFilterLabel(filter))}<span>${count}</span></button>`;
+  }).join('');
+  const empty = `<div class="confirmation-empty">${icon('shield')}<h2>${state.pendingCount ? '当前筛选没有待确认操作' : '当前没有待确认操作'}</h2><p>${state.pendingCount ? '切换到“全部”查看其他项目或环境的请求。' : 'Agent 发起服务器变更后会显示在这里，不会自动执行。'}</p></div>`;
+  $('#confirmationCenter').innerHTML = `<div class="confirmation-page-shell"><header class="confirmation-page-head"><span class="confirmation-page-icon">${icon('shield')}</span><div><span class="confirmation-eyebrow">全局安全队列</span><h1>操作确认 <b>${state.pendingCount}</b></h1><p>逐项核对 Agent 请求；内容、目标或环境变化后必须重新确认。</p></div><button class="button" data-close-confirmation-center>${icon('x')}返回之前页面</button></header><nav class="confirmation-filters" aria-label="筛选待确认操作">${filters}</nav>${renderConfirmationFeedback()}<div class="confirmation-card-list">${pending.length ? pending.map(renderConfirmationCard).join('') : empty}</div></div>`;
+}
+
+async function refreshConfirmations({render = true} = {}) {
   const pending = await call(api.listConfirmations());
-  state.pendingCount = pending.length;
+  state.confirmations = pending;
+  state.pendingCount = pendingConfirmations().length;
+  state.confirmationsLoaded = true;
+  if (render) renderConfirmationSurfaces();
+  return pending;
+}
+
+function renderConfirmationSurfaces() {
+  state.pendingCount = pendingConfirmations().length;
   renderConfirmationButton();
-  $('#confirmationList').innerHTML = pending.length ? pending.map((item) => {
-    const project = state.projects.find((entry) => entry.projectId === item.projectId);
-    const environment = state.environments.find((entry) => entry.environmentId === item.environmentId);
-    const plugin = state.plugins.find((entry) => entry.pluginInstanceId === item.pluginInstanceId);
-    const strong = item.approvalLevel === 'strong';
-    const riskName = ({write:'写入',destructive:'破坏性变更',service:'服务变更',critical:'最高风险'})[item.riskLevel] ?? '服务器变更';
-    return `<article class="confirmation-row ${strong ? 'critical' : ''}"><div class="confirmation-copy"><span class="confirmation-source">Agent 请求 · ${escapeHtml(item.projectNameSnapshot ?? project?.name ?? '项目')} / ${escapeHtml(item.environmentNameSnapshot ?? environment?.name ?? '环境')}</span><div class="confirmation-title"><strong>${escapeHtml(item.capabilityLabel ?? auditCapabilityName(item.capability))}</strong><span class="risk-badge ${strong ? 'critical' : ''}">${escapeHtml(riskName)}</span></div><p>${escapeHtml(item.summary || '对服务器执行一次变更操作')}</p>${strong ? '<small class="critical-warning">请逐字核对命令；Shell 可以绕过结构化工具的所有保护。</small>' : ''}<small>目标：${escapeHtml(item.pluginNameSnapshot ?? plugin?.displayName ?? '插件')} · 只授权本次操作 · ${escapeHtml(new Date(item.createdAt).toLocaleTimeString())}</small></div><div class="confirmation-actions"><button class="button small" data-reject-confirmation="${escapeAttr(item.requestId)}">拒绝</button><button class="button small ${strong ? 'danger' : 'primary'}" data-approve-confirmation="${escapeAttr(item.requestId)}" data-approval-level="${strong ? 'strong' : 'standard'}">${strong ? '核对后确认' : '确认一次'}</button></div></article>`;
-  }).join('') : '<div class="dialog-empty">当前没有等待确认的操作</div>';
-  if (!$('#confirmationDialog').open) $('#confirmationDialog').showModal();
+  renderProjects();
+  renderResourcePane();
+  if (state.confirmationCenterActive) renderConfirmationCenter();
+  else if (state.selectionKind === 'plugin' && activePlugin()) renderPluginDetail();
+}
+
+async function openConfirmations(filter = confirmationScopeData('all')) {
+  if (state.detailPaneCollapsed) setDetailPaneCollapsed(false);
+  await refreshConfirmations({render:false});
+  state.confirmationFilter = filter;
+  state.confirmationCenterActive = true;
+  renderShell();
+}
+
+function closeConfirmationCenter() {
+  state.confirmationCenterActive = false;
+  renderShell();
 }
 
 function renderConfirmationButton() {
   const button = $('#confirmationButton');
   if (!button) return;
-  button.classList.toggle('hidden', state.pendingCount === 0);
+  button.classList.toggle('has-pending', state.pendingCount > 0);
+  button.classList.toggle('active', state.confirmationCenterActive);
+  $('#confirmationCount').classList.toggle('hidden',state.pendingCount === 0);
   $('#confirmationCount').textContent = state.pendingCount;
+  $('#confirmationSummary').textContent = state.pendingCount ? `${state.pendingCount} 项操作等待处理` : '当前没有待确认操作';
+  button.setAttribute('aria-label',state.pendingCount ? `打开操作确认中心，${state.pendingCount}项操作待确认` : '打开操作确认中心');
 }
 
 function openEnvironmentSwitcher() {
@@ -1444,7 +2085,13 @@ function openDeletePlugin(plugin = activePlugin()) {
 }
 
 function mayLeaveCurrentScope() {
-  return !state.runbookEditing || confirm('运维说明尚未保存，确定离开当前环境？');
+  if (state.runbookEditing && !confirm('运维说明尚未保存，确定离开当前环境？')) return false;
+  if (state.pluginFormMode === 'inline' && pluginFormDirty() && !confirm('插件配置尚未保存，确定放弃更改？')) return false;
+  if (state.pluginFormMode === 'inline') {
+    state.pluginFormInitial = null;
+    state.inlineConfigPluginId = null;
+  }
+  return true;
 }
 
 function rememberCurrentScope() {
@@ -1459,24 +2106,35 @@ function resetScopeUi() {
   state.runbookScopeKey = null;
   state.runbookEditing = false;
   state.mobileDetail = false;
+  state.creatingEnvironmentInline = false;
 }
 
 async function showProjectOverview(projectId) {
   if (!projectId) return;
-  if (state.projectId === projectId && state.projectOverviewActive) return;
+  state.confirmationCenterActive = false;
+  if (state.projectId === projectId && state.environmentId) {
+    state.selectionKind = 'environment';
+    state.pluginId = null;
+    state.environmentDetailTab = 'runbook';
+    state.expandedEnvironmentId = state.environmentId;
+    renderShell();
+    return;
+  }
   if (!mayLeaveCurrentScope()) return;
   rememberCurrentScope();
-  ++state.navigationGeneration;
+  const generation = ++state.navigationGeneration;
   state.projectId = projectId;
-  state.projectOverviewActive = true;
+  state.projectOverviewActive = false;
   state.environmentId = null;
   state.pluginId = null;
+  state.selectionKind = 'environment';
+  state.environmentDetailTab = 'runbook';
   state.environments = state.environmentsByProject[projectId] ?? [];
   state.plugins = [];
   state.runtime = null;
   state.loadedScopeKey = null;
   resetScopeUi();
-  renderShell();
+  await loadProject(state.projectEnvironmentMemory[projectId],projectId,generation);
 }
 
 async function openScope(projectId,environmentId,{ pluginId = null, skipLeaveCheck = false } = {}) {
@@ -1487,6 +2145,8 @@ async function openScope(projectId,environmentId,{ pluginId = null, skipLeaveChe
     if (pluginId && state.plugins.some((plugin) => plugin.pluginInstanceId === pluginId)) {
       state.pluginId = pluginId;
       state.scopePluginMemory[scopeKey()] = pluginId;
+      state.selectionKind = 'plugin';
+      state.expandedEnvironmentId = environmentId;
       renderShell();
     }
     return true;
@@ -1504,6 +2164,7 @@ async function openScope(projectId,environmentId,{ pluginId = null, skipLeaveChe
     state.runtime = environmentRuntime(projectId,environmentId);
     state.loadedScopeKey = null;
     state.projectEnvironmentMemory[projectId] = environmentId;
+    state.expandedEnvironmentId = environmentId;
     resetScopeUi();
     // Switch the visible shell immediately so controls from the previous scope
     // cannot run while the new environment is loading.
@@ -1511,11 +2172,53 @@ async function openScope(projectId,environmentId,{ pluginId = null, skipLeaveChe
   }
   const preferred = pluginId ?? state.scopePluginMemory[requestedScopeKey];
   const loaded = await loadEnvironment(preferred,{ projectId,environmentId },generation);
+  if (loaded && pluginId && state.plugins.some((plugin) => plugin.pluginInstanceId === pluginId)) {
+    state.pluginId = pluginId;
+    state.selectionKind = 'plugin';
+    renderShell();
+  }
   return Boolean(loaded && generation === state.navigationGeneration && state.projectId === projectId && state.environmentId === environmentId && !state.projectOverviewActive);
 }
 
 async function switchProject(id) { await showProjectOverview(id); }
-async function switchEnvironment(id) { await openScope(state.projectId,id); }
+async function switchEnvironment(id) {
+  state.confirmationCenterActive = false;
+  if (state.environmentId === id && state.selectionKind === 'plugin' && !mayLeaveCurrentScope()) return false;
+  const opened = await openScope(state.projectId,id);
+  if (!opened) return false;
+  state.selectionKind = 'environment';
+  state.pluginId = null;
+  state.environmentDetailTab = 'runbook';
+  state.expandedEnvironmentId = id;
+  renderShell();
+  return true;
+}
+
+async function selectResourcePlugin(projectId,environmentId,pluginId) {
+  state.confirmationCenterActive = false;
+  if ((environmentId !== state.environmentId || pluginId !== state.pluginId) && !mayLeaveCurrentScope()) return;
+  const opened = await openScope(projectId,environmentId,{pluginId});
+  if (!opened) return;
+  state.selectionKind = 'plugin';
+  state.pluginId = pluginId;
+  state.scopePluginMemory[scopeKey()] = pluginId;
+  state.detailTabs[pluginId] ??= 'connection';
+  state.expandedEnvironmentId = environmentId;
+  renderShell();
+}
+
+async function startAddPlugin(projectId = state.projectId,environmentId = state.environmentId) {
+  if (!projectId || !environmentId || !mayLeaveCurrentScope()) return;
+  state.confirmationCenterActive = false;
+  if (state.detailPaneCollapsed) setDetailPaneCollapsed(false);
+  const opened = await openScope(projectId,environmentId);
+  if (!opened) return;
+  state.selectionKind = 'new-plugin';
+  state.pluginId = null;
+  state.expandedEnvironmentId = environmentId;
+  state.inlineConfigPluginId = null;
+  renderShell();
+}
 
 async function handleEnvironmentRuntimeAction(action,projectId,environmentId) {
   const environment = environmentFor(projectId,environmentId);
@@ -1526,10 +2229,12 @@ async function handleEnvironmentRuntimeAction(action,projectId,environmentId) {
     const incomplete = state.plugins.find((plugin) => plugin.configState !== 'ready');
     if (incomplete) {
       state.pluginId = incomplete.pluginInstanceId;
+      state.selectionKind = 'plugin';
+      state.detailTabs[incomplete.pluginInstanceId] = 'configuration';
       state.scopePluginMemory[scopeKey()] = state.pluginId;
-      renderPlugins();
-      openPluginDialog(incomplete);
-    } else openPluginDialog();
+      state.inlineConfigPluginId = null;
+      renderShell();
+    } else await startAddPlugin(projectId,environmentId);
     return;
   }
   const scope = { projectId,environmentId };
@@ -1554,7 +2259,9 @@ async function handleEnvironmentRuntimeAction(action,projectId,environmentId) {
 
 async function handleOverviewPluginRuntimeAction(action,projectId,environmentId,pluginInstanceId) {
   const environment = environmentFor(projectId,environmentId);
-  const resource = environment?.resourcePreview?.find((item) => item.pluginInstanceId === pluginInstanceId);
+  const resource = projectId === state.projectId && environmentId === state.environmentId
+    ? state.plugins.find((item) => item.pluginInstanceId === pluginInstanceId) ?? environment?.resourcePreview?.find((item) => item.pluginInstanceId === pluginInstanceId)
+    : environment?.resourcePreview?.find((item) => item.pluginInstanceId === pluginInstanceId);
   if (!environment || !resource) throw new Error('目标资源已经不存在，请刷新后重试。');
   const scope = { projectId,environmentId,pluginInstanceId };
   const runtime = action === 'disconnect'
@@ -1704,7 +2411,11 @@ document.addEventListener('dragend',finishRailDrag);
 
 document.addEventListener('click', async (event) => {
   const target = event.target.closest('button');
-  if (!target) return;
+  if (!target) {
+    const environmentButton = event.target.closest('.resource-environment-head')?.querySelector('.resource-environment-select');
+    environmentButton?.click();
+    return;
+  }
   try {
     if (Date.now() < state.suppressRailClickUntil && target.closest('.rail-button')) {
       event.preventDefault();
@@ -1712,6 +2423,76 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.passwordTarget) { await togglePasswordVisibility(target); return; }
+    if (target.dataset.openConfirmations) {
+      const filter = confirmationScopeData(target.dataset.openConfirmations,target.dataset.confirmationProject,target.dataset.confirmationEnvironment,target.dataset.confirmationPlugin);
+      await openConfirmations(filter);
+      return;
+    }
+    if (target.hasAttribute('data-close-confirmation-center')) { closeConfirmationCenter(); return; }
+    if (target.dataset.confirmationFilter) {
+      state.confirmationFilter = confirmationScopeData(target.dataset.confirmationFilter,target.dataset.confirmationProject,target.dataset.confirmationEnvironment,target.dataset.confirmationPlugin);
+      renderConfirmationCenter();
+      return;
+    }
+    if (target.dataset.locateConfirmation) {
+      const item = state.confirmations.find((entry) => entry.requestId === target.dataset.locateConfirmation) ?? state.confirmationFeedback?.item;
+      if (!item) return;
+      state.confirmationCenterActive = false;
+      const opened = await openScope(item.projectId,item.environmentId,{pluginId:item.pluginInstanceId});
+      if (opened) {
+        state.selectionKind = 'plugin';
+        state.pluginId = item.pluginInstanceId;
+        state.detailTabs[item.pluginInstanceId] ??= 'connection';
+        renderShell();
+      }
+      return;
+    }
+    if (target.dataset.confirmationOpenAudit) {
+      const item = state.confirmations.find((entry) => entry.requestId === target.dataset.confirmationOpenAudit) ?? state.confirmationFeedback?.item;
+      if (!item) return;
+      state.confirmationCenterActive = false;
+      const opened = await openScope(item.projectId,item.environmentId,{pluginId:item.pluginInstanceId});
+      if (opened) {
+        state.selectionKind = 'plugin';
+        state.pluginId = item.pluginInstanceId;
+        state.detailTabs[item.pluginInstanceId] = 'audit';
+        renderShell();
+      }
+      return;
+    }
+    if (target.id === 'projectSettingsShortcut') { beginProjectTitleEdit(); return; }
+    if (target.id === 'resetWorkspaceWidths') { resetWorkspaceWidths(); return; }
+    if (target.id === 'saveProjectTitle') { await saveProjectTitleEdit(); return; }
+    if (target.id === 'cancelProjectTitle') { cancelProjectTitleEdit(); return; }
+    if (target.id === 'projectDeleteShortcut') {
+      const project = activeProject();
+      if (!project) return;
+      state.managingProjectId = project.projectId;
+      openDeleteProject();
+      return;
+    }
+    if (target.dataset.resourcePluginId) {
+      if (state.runbookEditing && !mayLeaveCurrentScope()) return;
+      state.runbookEditing = false;
+      await selectResourcePlugin(target.dataset.resourceProjectId ?? state.projectId,target.dataset.resourceEnvironmentId,target.dataset.resourcePluginId);
+      return;
+    }
+    if (target.dataset.resourceEnvironmentId) {
+      const environmentId = target.dataset.resourceEnvironmentId;
+      const shouldCollapse = state.expandedEnvironmentId === environmentId;
+      const switched = await switchEnvironment(environmentId);
+      if (switched && shouldCollapse) {
+        state.expandedEnvironmentId = null;
+        renderResourcePane();
+      }
+      return;
+    }
+    if (target.dataset.resourceAddPlugin) {
+      await startAddPlugin(state.projectId,target.dataset.resourceAddPlugin);
+      return;
+    }
+    if (target.dataset.resourceRenameEnvironment) { openEnvironmentManager(state.projectId,target.dataset.resourceRenameEnvironment); return; }
+    if (target.dataset.resourceDeleteEnvironment) { openEnvironmentDelete(state.projectId,target.dataset.resourceDeleteEnvironment); return; }
     if (target.dataset.overviewPluginAction) {
       target.disabled = true;
       try {
@@ -1726,7 +2507,19 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.close) {
-      if (target.dataset.close === 'pluginDialog' && pluginFormDirty() && !confirm('插件配置尚未保存，确定放弃更改？')) return;
+      if (target.dataset.close === 'pluginForm' && state.pluginFormMode === 'inline') {
+        if (pluginFormDirty() && !confirm('插件配置尚未保存，确定放弃更改？')) return;
+        if (state.selectionKind === 'new-plugin') {
+          state.selectionKind = 'environment';
+          state.pluginId = null;
+          state.environmentDetailTab = 'runbook';
+          state.inlineConfigPluginId = null;
+          renderShell();
+          return;
+        }
+        renderInlinePluginConfig(true);
+        return;
+      }
       $(`#${target.dataset.close}`).close();
       return;
     }
@@ -1797,8 +2590,7 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.hasAttribute('data-overview-add-resource')) {
-      await openScope(target.dataset.overviewProjectId,target.dataset.overviewEnvironmentId);
-      openPluginDialog();
+      await startAddPlugin(target.dataset.overviewProjectId,target.dataset.overviewEnvironmentId);
       return;
     }
     if (target.dataset.environmentRuntimeAction) {
@@ -1832,7 +2624,23 @@ document.addEventListener('click', async (event) => {
     if (target.dataset.environmentId) { await switchEnvironment(target.dataset.environmentId); if ($('#environmentSwitcherDialog').open) $('#environmentSwitcherDialog').close(); return; }
     if (target.dataset.pluginId) { state.pluginId = target.dataset.pluginId; state.mobileDetail = true; state.scopePluginMemory[scopeKey()] = state.pluginId; renderPlugins(); return; }
     if (target.dataset.view) { if (state.runbookEditing && target.dataset.view !== 'runbook' && !confirm('运维说明尚未保存，确定离开？')) return; state.view = target.dataset.view; renderView(); return; }
-    if (target.dataset.detailTab) { const plugin = activePlugin(); state.detailTabs[plugin.pluginInstanceId] = target.dataset.detailTab; renderPluginDetail(); return; }
+    if (target.dataset.detailTab) {
+      if (state.selectionKind === 'new-plugin') {
+        renderView();
+        return;
+      } else if (state.selectionKind === 'plugin') {
+        const plugin = activePlugin();
+        if (!plugin) return;
+        if (detailTab(plugin) === 'configuration' && target.dataset.detailTab !== 'configuration' && !mayLeaveCurrentScope()) return;
+        state.detailTabs[plugin.pluginInstanceId] = target.dataset.detailTab;
+      } else {
+        if (state.runbookEditing && target.dataset.detailTab !== 'runbook' && !confirm('运维说明尚未保存，确定离开？')) return;
+        state.environmentDetailTab = target.dataset.detailTab;
+      }
+      renderDetailTopbar();
+      renderView();
+      return;
+    }
     if (target.dataset.editEnvironment) { openEnvironmentEditor(target.dataset.editEnvironment); return; }
     if (target.hasAttribute('data-cancel-environment-editor')) { state.editingEnvironmentId = undefined; renderEnvironmentManager(); return; }
     if (target.hasAttribute('data-cancel-environment-delete')) { state.environmentDeletePrompt = null; renderEnvironmentManager(); return; }
@@ -1877,14 +2685,37 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.approveConfirmation) {
-      if (target.dataset.approvalLevel === 'strong' && !window.confirm('这是任意 Shell 命令，可能修改或删除数据、停止服务。确认已经逐字核对并仅授权本次执行？')) return;
-      await call(api.approveConfirmation(target.dataset.approveConfirmation)); await openConfirmations(); toast('已确认一次。'); return;
+      const item = state.confirmations.find((entry) => entry.requestId === target.dataset.approveConfirmation);
+      if (!item || (target.dataset.approvalLevel === 'strong' && target.disabled)) return;
+      await call(api.approveConfirmation(item.requestId));
+      state.confirmationFeedback = {item,status:'waiting'};
+      await refreshConfirmations({render:false});
+      renderConfirmationSurfaces();
+      toast('已授权一次，正在等待 Agent 执行。');
+      return;
     }
-    if (target.dataset.rejectConfirmation) { await call(api.rejectConfirmation(target.dataset.rejectConfirmation)); await openConfirmations(); toast('操作已拒绝。'); return; }
+    if (target.dataset.rejectConfirmation) {
+      const item = state.confirmations.find((entry) => entry.requestId === target.dataset.rejectConfirmation);
+      if (!item) return;
+      await call(api.rejectConfirmation(item.requestId));
+      state.confirmationFeedback = {item,status:'rejected'};
+      await refreshConfirmations({render:false});
+      renderConfirmationSurfaces();
+      toast('操作已拒绝。');
+      return;
+    }
     if (target.dataset.action === 'new-project') { $('#projectName').value=''; $('#firstEnvironmentName').value=''; $('#projectDialog').showModal(); return; }
-    if (target.dataset.action === 'add-plugin') { openPluginDialog(); return; }
+    if (target.dataset.action === 'add-plugin') { await startAddPlugin(); return; }
     if (target.dataset.action === 'mobile-plugin-list') { state.mobileDetail = false; renderPlugins(); return; }
-    if (target.dataset.action === 'edit-plugin') { openPluginDialog(activePlugin()); return; }
+    if (target.dataset.action === 'edit-plugin') {
+      const plugin = activePlugin();
+      if (!plugin) return;
+      state.selectionKind = 'plugin';
+      state.detailTabs[plugin.pluginInstanceId] = 'configuration';
+      state.inlineConfigPluginId = null;
+      renderShell();
+      return;
+    }
     if (target.dataset.action === 'prepare-delete-plugin') { openDeletePlugin(); return; }
     if (target.dataset.action === 'test-plugin') { await testPlugin(); return; }
     if (target.dataset.action === 'connect-plugin') {
@@ -1911,11 +2742,17 @@ document.addEventListener('click', async (event) => {
       renderShell();
       return;
     }
-  } catch (error) { if ($('#pluginDialog').open) showPluginDialogError(error); else showError(error); }
+  } catch (error) { if (pluginFormActive()) showPluginFormError(error); else showError(error); }
 });
 
 document.addEventListener('change', (event) => {
   const target = event.target;
+  if (target.dataset.confirmationAck) {
+    const card = target.closest('[data-confirmation-card]');
+    const approve = card?.querySelector(`[data-approve-confirmation="${CSS.escape(target.dataset.confirmationAck)}"]`);
+    if (approve) approve.disabled = !target.checked;
+    return;
+  }
   if (target.matches('[name=pluginTypeChoice]')) {
     const type = target.value;
     transitionPluginForm(() => {
@@ -1986,11 +2823,69 @@ $('#toggleProjectRail').addEventListener('click', () => {
     saveWidth();
   });
 }
+{
+  const app = $('#app');
+  const pane = $('#resourcePane');
+  const handle = $('#resourcePaneResizeHandle');
+  let resize = null;
+  const saveWidth = () => { try { localStorage.setItem(RESOURCE_PANE_WIDTH_KEY,String(Math.round(state.resourcePaneWidth))); } catch {} };
+  const finishResize = (event) => {
+    if (!resize || (event?.pointerId !== undefined && event.pointerId !== resize.pointerId)) return;
+    const pointerId = resize.pointerId;
+    resize = null;
+    if (handle.hasPointerCapture?.(pointerId)) handle.releasePointerCapture(pointerId);
+    app.classList.remove('resource-resizing');
+    document.documentElement.classList.remove('resource-resizing');
+    saveWidth();
+  };
+  handle.addEventListener('pointerdown',(event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    resize = { pointerId:event.pointerId,startX:event.clientX,startWidth:pane.getBoundingClientRect().width };
+    handle.setPointerCapture(event.pointerId);
+    app.classList.add('resource-resizing');
+    document.documentElement.classList.add('resource-resizing');
+  });
+  handle.addEventListener('pointermove',(event) => {
+    if (!resize || event.pointerId !== resize.pointerId) return;
+    applyResourcePaneWidth(resize.startWidth + event.clientX - resize.startX);
+  });
+  handle.addEventListener('pointerup',finishResize);
+  handle.addEventListener('pointercancel',finishResize);
+  handle.addEventListener('lostpointercapture',finishResize);
+  handle.addEventListener('dblclick',() => { state.resourcePaneWidth = RESOURCE_PANE_DEFAULT_WIDTH; applyResourcePaneWidth(); saveWidth(); });
+  handle.addEventListener('keydown',(event) => {
+    const { min,max } = resourcePaneWidthBounds();
+    const current = pane.getBoundingClientRect().width;
+    let next = null;
+    if (event.key === 'ArrowLeft') next = current - (event.shiftKey ? 32 : 8);
+    if (event.key === 'ArrowRight') next = current + (event.shiftKey ? 32 : 8);
+    if (event.key === 'Home') next = min;
+    if (event.key === 'End') next = max;
+    if (next === null) return;
+    event.preventDefault();
+    applyResourcePaneWidth(next);
+    saveWidth();
+  });
+}
+function setDetailPaneCollapsed(collapsed) {
+  state.detailPaneCollapsed = Boolean(collapsed);
+  try { localStorage.setItem('ai-ops-detail-pane-collapsed',state.detailPaneCollapsed ? '1' : '0'); } catch {}
+  renderDetailPaneState();
+}
+$('#toggleDetailPane').addEventListener('click',() => setDetailPaneCollapsed(!state.detailPaneCollapsed));
+$('#expandDetailPane').addEventListener('click',() => setDetailPaneCollapsed(false));
 $('#moreEnvironments').addEventListener('click', openEnvironmentSwitcher);
 $('#confirmationButton').addEventListener('click', () => openConfirmations().catch(showError));
 $('#managerAddEnvironment').addEventListener('click', () => openEnvironmentEditor());
-$('#overviewAddEnvironment').addEventListener('click', () => openEnvironmentManager(state.projectId,null));
-$('#addPlugin').addEventListener('click', () => openPluginDialog());
+$('#showInlineEnvironmentCreate').addEventListener('click', beginInlineEnvironmentCreate);
+$('#cancelInlineEnvironmentCreate').addEventListener('click', cancelInlineEnvironmentCreate);
+$('#resourceEnvironmentCreateForm').addEventListener('submit', (event) => saveInlineEnvironmentCreate(event));
+$('#addPlugin').addEventListener('click', () => startAddPlugin().catch(showError));
+$('#projectTitleInput').addEventListener('keydown',(event) => {
+  if (event.key === 'Enter') { event.preventDefault(); saveProjectTitleEdit().catch(showError); }
+  if (event.key === 'Escape') { event.preventDefault(); cancelProjectTitleEdit(); }
+});
 $('#pluginAuthType').addEventListener('change', () => {
   const plugin = state.editingPlugin;
   const authType = $('#pluginAuthType').value;
@@ -1999,13 +2894,13 @@ $('#pluginAuthType').addEventListener('change', () => {
     renderPluginForm();
     if (plugin?.pluginType === 'server' && plugin.auth?.type === authType) {
       const generation = ++state.credentialProbeGeneration;
-      loadCredentialIndicators(plugin, generation).catch(showPluginDialogError);
+      loadCredentialIndicators(plugin, generation).catch(showPluginFormError);
     }
   });
 });
 $('#pluginTransport').addEventListener('change', () => transitionPluginForm(renderPluginForm));
 $('#pluginUplink').addEventListener('change', () => transitionPluginForm(renderPluginForm));
-$('#queryDatabases').addEventListener('click', () => queryDatabases().catch(showPluginDialogError));
+$('#queryDatabases').addEventListener('click', () => queryDatabases().catch(showPluginFormError));
 ['pluginHost','pluginPort','pluginUsername','pluginAddressFamily','pluginTransport','pluginProvider','pluginVpnAlias','pluginTls'].forEach((id) => {
   $(`#${id}`).addEventListener(id === 'pluginHost' || id === 'pluginUsername' || id === 'pluginVpnAlias' ? 'input' : 'change', invalidateDatabaseDiscovery);
 });
@@ -2040,7 +2935,7 @@ $('#saveProject').addEventListener('click', async (event) => {
     if (!name || !environmentName) throw new Error('请填写项目名称和第一个环境。');
     const project = await call(api.createProject({name,environmentName}));
     $('#projectDialog').close();
-    state.projectOverviewActive = true;
+    state.projectOverviewActive = false;
     await loadProjects(project.projectId);
   } catch (error) { showError(error); }
   finally { button.disabled = false; }
@@ -2083,7 +2978,7 @@ $('#confirmDeleteProject').addEventListener('click', async () => {
     for (const key of Object.keys(state.runtimeByScope)) if (key.startsWith(`${project.projectId}/`)) delete state.runtimeByScope[key];
     state.projectOrder = state.projectOrder.filter((id) => id !== project.projectId);
     try { localStorage.setItem(PROJECT_ORDER_KEY,JSON.stringify(state.projectOrder)); } catch {}
-    state.projectOverviewActive = true;
+    state.projectOverviewActive = false;
     state.environmentId = null;
     state.pluginId = null;
     state.loadedScopeKey = null;
@@ -2100,10 +2995,25 @@ $('#savePlugin').addEventListener('click', async (event) => {
   const button = event.currentTarget;
   if (button.disabled) return;
   button.disabled = true;
-  clearPluginDialogError();
-  try { await savePlugin(); } catch (error) { showPluginDialogError(error); }
-  finally { if ($('#pluginDialog').open) button.disabled = false; }
+  clearPluginFormError();
+  try { await savePlugin(); } catch (error) { showPluginFormError(error); }
+  finally { if (pluginFormActive()) button.disabled = false; }
 });
+$('#testPluginFromForm').addEventListener('click', async (event) => {
+  event.preventDefault();
+  const button = event.currentTarget;
+  if (button.disabled) return;
+  button.disabled = true;
+  try { await testPluginFromForm(); } catch (error) { showPluginFormError(error); }
+  finally { if (pluginFormActive() && state.pluginFormDiagnostic?.status !== 'pending') button.disabled = false; }
+});
+function invalidatePluginFormDiagnostic() {
+  if (!state.pluginFormDiagnostic) return;
+  state.pluginFormDiagnostic = null;
+  renderPluginFormDiagnostic();
+}
+$('.plugin-card').addEventListener('input', invalidatePluginFormDiagnostic);
+$('.plugin-card').addEventListener('change', invalidatePluginFormDiagnostic);
 $('#confirmDeletePlugin').addEventListener('click', async () => {
   const scope = state.deletingPluginScope;
   if (!scope) { $('#deletePluginDialog').close(); return; }
@@ -2111,14 +3021,17 @@ $('#confirmDeletePlugin').addEventListener('click', async () => {
     await call(api.deletePlugin(scope));
     $('#deletePluginDialog').close();
     await refreshEnvironmentMetadata();
-    await loadEnvironment();
+    state.selectionKind = 'environment';
+    state.environmentDetailTab = 'runbook';
+    await loadEnvironment(null);
+    state.pluginId = null;
+    renderShell();
     toast(`“${scope.displayName}”已删除。`);
   } catch (error) { showError(error); }
 });
 $('#projectDialog form').addEventListener('submit', (event) => { event.preventDefault(); $('#saveProject').click(); });
 $('#projectSettingsDialog form').addEventListener('submit', (event) => { event.preventDefault(); $('#saveProjectSettings').click(); });
-$('#pluginDialog form').addEventListener('submit', (event) => { event.preventDefault(); $('#savePlugin').click(); });
-$('#pluginDialog').addEventListener('close', resetPluginFormTransition);
+$('.plugin-card').addEventListener('submit', (event) => { event.preventDefault(); $('#savePlugin').click(); });
 $('#editRunbook').addEventListener('click', () => { state.runbookEditing = true; renderRunbook(); $('#runbookEditor').focus(); });
 $('#runbookEditor').addEventListener('input', () => {
   const bytes = new TextEncoder().encode($('#runbookEditor').value).length;
@@ -2144,13 +3057,16 @@ $('#saveRunbook').addEventListener('click', async () => {
   } catch (error) { showError(error); }
 });
 $('#refreshAudit').addEventListener('click', () => loadAudit().catch(showError));
+$('#clearAudit').addEventListener('click', prepareClearAudit);
+$('#confirmClearAudit').addEventListener('click', () => clearSelectedAudit().catch(showError));
+$('#clearAuditDialog').addEventListener('close', () => { state.clearingAuditScope = null; });
 $('#auditSearch').addEventListener('input', renderAudit);
 $('#auditResult').addEventListener('change', renderAudit);
 $('#toast').addEventListener('click', () => { if ($('#toast').dataset.action === 'confirmations') openConfirmations().catch(showError); });
 
 window.addEventListener('online', () => api.notifyNetworkChanged());
 window.addEventListener('offline', () => api.notifyNetworkChanged());
-window.addEventListener('resize', () => applyProjectRailWidth());
+window.addEventListener('resize', () => { applyProjectRailWidth(); applyResourcePaneWidth(); });
 api.onEnvironmentStatus((runtime) => {
   state.runtimeByScope[scopeKey(runtime.projectId,runtime.environmentId)] = runtime;
   const currentScope = runtime.projectId === state.projectId && runtime.environmentId === state.environmentId && !state.projectOverviewActive;
@@ -2171,6 +3087,14 @@ api.onEnvironmentStatus((runtime) => {
   }
 });
 api.onWorkspaceChanged((change) => {
+  if (change.type === 'confirmation-execution' && change.confirmationId) {
+    state.confirmationExecutions[change.confirmationId] = change;
+    if (state.confirmationFeedback?.item?.requestId === change.confirmationId) state.confirmationFeedback.status = change.status;
+    if (state.confirmationCenterActive) renderConfirmationCenter();
+    if (change.status === 'success') toast(`Agent 操作执行成功${Number.isFinite(change.durationMs) ? ` · ${change.durationMs.toLocaleString()} ms` : ''}`);
+    if (change.status === 'error') toast(`Agent 操作执行失败：${auditErrorName(change.errorCode)}`,true);
+    return;
+  }
   if (change.projectId === state.projectOverviewActivityProjectId) {
     ++state.projectOverviewActivityGeneration;
     state.projectOverviewActivityProjectId = null;
@@ -2182,7 +3106,7 @@ api.onWorkspaceChanged((change) => {
       state.managedEnvironments = state.environmentsByProject[change.projectId] ?? [];
       renderEnvironmentManager();
     }
-    if (change.projectId === state.projectId && change.environmentId === state.environmentId && !state.projectOverviewActive) {
+    if (change.type === 'plugin-added' && change.projectId === state.projectId && change.environmentId === state.environmentId && !state.projectOverviewActive) {
       await loadEnvironment(change.pluginInstanceId);
       toast(`Agent 已添加插件：${change.pluginName}`);
       return;
@@ -2194,15 +3118,40 @@ api.onWorkspaceChanged((change) => {
     }
   }).catch(showError);
 });
-api.onConfirmations((pending) => { state.pendingCount = pending.length; renderConfirmationButton(); if ($('#confirmationDialog').open) openConfirmations().catch(showError); });
+api.onPluginTestProgress?.(applyPluginTestProgress);
+api.onConfirmations((pending) => {
+  const previousIds = new Set(state.confirmations.map((item) => item.requestId));
+  const added = pending.filter((item) => !previousIds.has(item.requestId));
+  state.confirmations = pending;
+  state.pendingCount = pendingConfirmations().length;
+  const wasLoaded = state.confirmationsLoaded;
+  state.confirmationsLoaded = true;
+  renderConfirmationSurfaces();
+  if (wasLoaded && added.length && !state.confirmationCenterActive) toast(`Agent 有 ${added.length} 项操作等待确认，点击查看。`,false,'confirmations');
+});
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   const openDialogs = $$('dialog[open]');
   const open = openDialogs[openDialogs.length - 1];
   if (!open) return;
   event.preventDefault();
-  if (open.id === 'pluginDialog' && pluginFormDirty() && !confirm('插件配置尚未保存，确定放弃更改？')) return;
   open.close();
 });
 
-loadProjects().catch(showError);
+setInterval(() => {
+  const now = Date.now();
+  let expired = false;
+  $$('[data-confirmation-expires]').forEach((element) => {
+    const item = state.confirmations.find((entry) => entry.requestId === element.dataset.confirmationExpires);
+    if (!item) return;
+    const remaining = Math.max(0,Math.ceil((confirmationExpiresAt(item) - now) / 1000));
+    element.textContent = remaining ? `${remaining} 秒后过期` : '已过期';
+    if (!remaining) expired = true;
+  });
+  if (expired) {
+    state.confirmations = state.confirmations.filter((item) => confirmationExpiresAt(item) > now);
+    renderConfirmationSurfaces();
+  }
+},1000);
+
+Promise.all([loadProjects(),refreshConfirmations({render:false})]).then(() => renderShell()).catch(showError);
