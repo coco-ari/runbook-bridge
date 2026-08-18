@@ -1160,6 +1160,50 @@ export class WorkspaceStore {
     });
   }
 
+  async commitNewPluginSnapshot(plugin, {expectedEnvironmentRevision = null} = {}) {
+    return this.enqueue(`environment:${plugin.projectId}:${plugin.environmentId}`,async () => {
+      const environment = await this.getEnvironment(plugin.projectId,plugin.environmentId);
+      if (expectedEnvironmentRevision !== null && environment.revision !== expectedEnvironmentRevision) {
+        throw new AppError('CONFIG_REVISION_CONFLICT','环境配置已经变化，请重新打开环境后重试。');
+      }
+      if (environment.pluginOrder.length >= 100) throw new AppError('RESULT_LIMIT_EXCEEDED','每个环境最多 100 个插件。');
+      const snapshot = sanitizePluginSnapshot(plugin);
+      if (snapshot.revision !== 1) throw new AppError('INVALID_ARGUMENT','新插件快照 revision 无效。');
+      if (environment.pluginOrder.includes(snapshot.pluginInstanceId)) throw new AppError('PLUGIN_ALREADY_EXISTS','插件标识已经存在。');
+      await this.assertPluginReferences(snapshot);
+      await this.writeYaml(this.pluginPath(snapshot.projectId,snapshot.environmentId,snapshot.pluginInstanceId),snapshot);
+      const nextEnvironment = {
+        ...environment,
+        pluginOrder:[...environment.pluginOrder,snapshot.pluginInstanceId],
+        revision:environment.revision + 1,
+        updatedAt:now(),
+      };
+      await this.writeYaml(this.environmentPath(snapshot.projectId,snapshot.environmentId),nextEnvironment);
+      return snapshot;
+    });
+  }
+
+  async ensurePluginIndexed(plugin) {
+    return this.enqueue(`environment:${plugin.projectId}:${plugin.environmentId}`,async () => {
+      const environment = await this.getEnvironment(plugin.projectId,plugin.environmentId);
+      const current = await this.getPlugin(plugin.projectId,plugin.environmentId,plugin.pluginInstanceId);
+      if (!isDeepStrictEqual(sanitizePluginSnapshot(current),sanitizePluginSnapshot(plugin))) {
+        throw new AppError('CONFIG_REVISION_CONFLICT','插件文件与待恢复的草稿提升快照不一致。');
+      }
+      if (environment.pluginOrder.includes(plugin.pluginInstanceId)) return current;
+      if (environment.pluginOrder.length >= 100) throw new AppError('RESULT_LIMIT_EXCEEDED','每个环境最多 100 个插件。');
+      await this.assertPluginReferences(current);
+      const next = {
+        ...environment,
+        pluginOrder:[...environment.pluginOrder,plugin.pluginInstanceId],
+        revision:environment.revision + 1,
+        updatedAt:now(),
+      };
+      await this.writeYaml(this.environmentPath(plugin.projectId,plugin.environmentId),next);
+      return current;
+    });
+  }
+
   async updatePlugin(projectId, environmentId, pluginInstanceId, patch, expectedRevision = null) {
     const prepared = await this.preparePluginUpdate(projectId,environmentId,pluginInstanceId,patch,expectedRevision);
     if (prepared.change.kind === 'none') return prepared.before;

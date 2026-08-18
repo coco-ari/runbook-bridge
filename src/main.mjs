@@ -27,6 +27,10 @@ import { WorkspaceMutationCoordinator } from './workspace-mutation-coordinator.m
 import { CredentialUseResolver } from './credential-use-resolver.mjs';
 import { PluginValidationRuntime } from './plugin-validation-runtime.mjs';
 import { PluginEditSessionManager } from './plugin-edit-session-manager.mjs';
+import { PluginDraftCredentialVault } from './plugin-draft-credential-vault.mjs';
+import { PluginDraftStore } from './plugin-draft-store.mjs';
+import { PluginDraftPromotionJournal } from './plugin-draft-promotion-journal.mjs';
+import { PluginDraftService } from './plugin-draft-service.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataRoot = defaultDataRoot();
@@ -140,6 +144,20 @@ if (process.argv.includes('--mcp')) {
         await pluginCredentialVault.ensureBackup();
         const configTransactionJournal = new PluginConfigTransactionJournal(dataRoot, workspaceStore, pluginCredentialVault);
         await configTransactionJournal.recoverAll();
+        const pluginDraftCredentialVault = new PluginDraftCredentialVault(dataRoot,safeStorage);
+        const pluginDraftStore = new PluginDraftStore(workspaceStore,pluginDraftCredentialVault);
+        const pluginDraftPromotionJournal = new PluginDraftPromotionJournal(
+          dataRoot,workspaceStore,pluginDraftStore,pluginDraftCredentialVault,pluginCredentialVault,
+        );
+        await pluginDraftPromotionJournal.recoverAll();
+        configTransactionJournal.addGuard(pluginDraftPromotionJournal);
+        const pluginDraftService = new PluginDraftService({
+          workspaceStore,
+          draftStore:pluginDraftStore,
+          draftCredentialVault:pluginDraftCredentialVault,
+          credentialVault:pluginCredentialVault,
+          promotionJournal:pluginDraftPromotionJournal,
+        });
         // Recovery must precede legacy materialization/import: otherwise an
         // unresolved old envelope could be mistaken for an absent credential.
         if (!configTransactionJournal.hasUnresolved()) await workspaceStore.migrateLegacyProjects();
@@ -187,6 +205,7 @@ if (process.argv.includes('--mcp')) {
         const confirmationManager = new ConfirmationManager();
         const credentialUseResolver = new CredentialUseResolver(pluginCredentialVault);
         const validationRuntime = new PluginValidationRuntime({pluginManager,mysqlRuntime});
+        pluginDraftService.validationRuntime = validationRuntime;
         const pluginEditSessionManager = new PluginEditSessionManager({
           workspaceStore,
           connectionManager:environmentConnectionManager,
@@ -201,7 +220,7 @@ if (process.argv.includes('--mcp')) {
           }
         };
         const v2Service = new V2Service({ workspaceStore, connectionManager: environmentConnectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault: pluginCredentialVault, mutationCoordinator, workspaceChanged:(payload) => broadcast('v2:workspace-changed', payload) });
-        v2 = { workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, mutationCoordinator, credentialUseResolver, validationRuntime, pluginEditSessionManager, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
+        v2 = { workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, pluginDraftCredentialVault, pluginDraftStore, pluginDraftPromotionJournal, pluginDraftService, mutationCoordinator, credentialUseResolver, validationRuntime, pluginEditSessionManager, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
         const token = await rotateBrokerToken(dataRoot);
         brokerServer = new BrokerServer({ dataRoot, token, v2Service, appVersion: app.getVersion() });
         await brokerServer.start();

@@ -42,6 +42,8 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(html, /id="primaryCredentialStatus"/);
   assert.match(html, /id="pluginFormDiagnostic"/);
   assert.match(html, /id="credentialMigrationNotice"/);
+  assert.match(html, /id="savePluginDraft"/);
+  assert.match(html, /id="deleteCurrentDraft"/);
   assert.match(html, /id="auditBody" class="audit-list"/);
   assert.match(html, /id="clearAudit"/);
   assert.match(html, /id="clearAuditDialog"/);
@@ -110,6 +112,12 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(renderer, /api\.cancelPluginValidation/);
   assert.match(renderer, /api\.savePluginConnectionEdit/);
   assert.match(renderer, /api\.cancelPluginConnectionEdit/);
+  assert.match(renderer, /api\.savePluginDraft/);
+  assert.match(renderer, /api\.resumePluginDraft/);
+  assert.match(renderer, /api\.cancelPluginDraftSession/);
+  assert.match(renderer, /api\.deletePluginDraft/);
+  assert.match(renderer, /api\.promotePluginDraft/);
+  assert.match(renderer, /resourcePaneDrafts/);
   assert.doesNotMatch(renderer, /api\.testPlugin/);
   assert.match(renderer, /api\.updatePluginMetadata/);
   assert.match(renderer, /api\.updatePluginAgentConfiguration/);
@@ -161,6 +169,7 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(styles, /\.plugin-form-diagnostic/);
   assert.match(styles, /\.credential-migration-notice/);
   assert.match(styles, /\.resource-environment-create/);
+  assert.match(styles, /\.resource-draft-row/);
   assert.match(styles, /\.permission-hero/);
   assert.match(styles, /\.permissions-page \.policy-row/);
   assert.match(styles, /@container \(max-width:650px\)/);
@@ -187,6 +196,11 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(preload, /v2:plugin-validation-cancel/);
   assert.match(preload, /v2:plugin-connection-edit-save/);
   assert.match(preload, /v2:plugin-connection-edit-cancel/);
+  assert.match(preload, /v2:plugin-draft-save/);
+  assert.match(preload, /v2:plugin-draft-resume/);
+  assert.match(preload, /v2:plugin-draft-edit-cancel/);
+  assert.match(preload, /v2:plugin-draft-delete/);
+  assert.match(preload, /v2:plugin-draft-promote/);
   assert.match(preload, /requestConnectionIntent/);
   assert.match(preload, /v2:connection-intent/);
   assert.match(preload, /v2:confirmation-list/);

@@ -21,6 +21,8 @@ const plugins = {
   ],
   gray:[{projectId:'member',environmentId:'gray',pluginInstanceId:'gray-server',pluginType:'server',displayName:'灰度服务器',revision:1,configState:'ready',target:{host:'10.0.0.8',port:22,addressFamily:'ipv4Only'},auth:{username:'deploy',type:'password'},uplink:{type:'direct'},sources:[],limits:{maxBytes:262144}}],
 };
+const drafts = {prod:[],gray:[]};
+let expectDraftSessionValidation = false;
 const environments = [
   {projectId:'member',environmentId:'prod',name:'正式环境',revision:1,pluginCount:2,readyPluginCount:2,pluginTypeCounts:{server:1,mysql:1,redis:0},resourcePreview:plugins.prod.map((plugin) => ({pluginInstanceId:plugin.pluginInstanceId,pluginType:plugin.pluginType,displayName:plugin.displayName,configState:plugin.configState,resource:plugin.pluginType === 'server' ? {host:plugin.target.host,port:plugin.target.port} : {database:plugin.target.database}})),runtime:runtime('member','prod',2)},
   {projectId:'member',environmentId:'gray',name:'灰度环境',revision:1,pluginCount:1,readyPluginCount:1,pluginTypeCounts:{server:1,mysql:0,redis:0},resourcePreview:[{pluginInstanceId:'gray-server',pluginType:'server',displayName:'灰度服务器',configState:'ready',resource:{host:'10.0.0.8',port:22}}],runtime:runtime('member','gray',1)},
@@ -44,12 +46,49 @@ handle('v2:environment-create',({projectId,input}) => {
   const environment = {projectId,environmentId,name:input.name,revision:1,pluginCount:0,readyPluginCount:0,pluginTypeCounts:{server:0,mysql:0,redis:0},resourcePreview:[],runtime:runtime(projectId,environmentId,0)};
   environments.push(environment);
   plugins[environmentId] = [];
+  drafts[environmentId] = [];
   const project = projects.find((item) => item.projectId === projectId);
   Object.assign(project,{environmentCount:environments.length,revision:Number(project.revision ?? 0) + 1});
   return environment;
 });
 handle('v2:environment-list',() => environments);
 handle('v2:plugin-list',({environmentId}) => plugins[environmentId] ?? []);
+handle('v2:plugin-draft-list',({environmentId}) => drafts[environmentId] ?? []);
+handle('v2:plugin-draft-save',(payload) => {
+  const list = drafts[payload.environmentId] ??= [];
+  const index = list.findIndex((item) => item.draftId === payload.draftId);
+  const previous = index >= 0 ? list[index] : null;
+  const draftId = previous?.draftId ?? 'draft-00000000-0000-4000-8000-000000000001';
+  const value = {
+    schemaVersion:1,draftId,projectId:payload.projectId,environmentId:payload.environmentId,
+    ...(payload.basePluginInstanceId ? {basePluginInstanceId:payload.basePluginInstanceId,baseRevision:payload.baseRevision} : {}),
+    pluginType:payload.pluginType,revision:(previous?.revision ?? 0) + 1,
+    sanitizedDraft:{...payload.sanitizedDraft,projectId:payload.projectId,environmentId:payload.environmentId,pluginInstanceId:payload.sanitizedDraft.pluginInstanceId ?? 'smoke-draft-plugin',revision:1,configState:'draft'},
+    credentialIntent:payload.credentialIntent,credentialState:Object.values(payload.temporarySecrets ?? {}).some(Boolean) ? 'stored-active' : 'absent',
+    validationState:'stale',createdAt:previous?.createdAt ?? new Date().toISOString(),updatedAt:new Date().toISOString(),
+  };
+  if (index >= 0) list[index] = value; else list.push(value);
+  const environment = environments.find((item) => item.environmentId === payload.environmentId);
+  environment.sidecarDraftCount = list.length;
+  environment.draftCount = list.length;
+  environment.pluginCount = (plugins[payload.environmentId] ?? []).length + list.length;
+  return value;
+});
+handle('v2:plugin-draft-resume',({environmentId,draftId}) => {
+  const value = (drafts[environmentId] ?? []).find((item) => item.draftId === draftId);
+  if (value?.basePluginInstanceId) expectDraftSessionValidation = true;
+  return {...value,draftSessionId:'draft-session-smoke',draftGeneration:0,sequence:0};
+});
+handle('v2:plugin-draft-edit-cancel',() => ({cancelled:true}));
+handle('v2:plugin-draft-delete',({environmentId,draftId}) => {
+  drafts[environmentId] = (drafts[environmentId] ?? []).filter((item) => item.draftId !== draftId);
+  const environment = environments.find((item) => item.environmentId === environmentId);
+  environment.sidecarDraftCount = drafts[environmentId].length;
+  environment.draftCount = drafts[environmentId].length;
+  environment.pluginCount = (plugins[environmentId] ?? []).length + drafts[environmentId].length;
+  return {deleted:true,environmentId,draftId,credentialsPreserved:true};
+});
+handle('v2:plugin-draft-promote',() => { throw new Error('promotion is not exercised by this smoke fixture'); });
 handle('v2:plugin-credential-status',() => ({fields:{primary:false,proxy:false}}));
 handle('v2:environment-status',({projectId,environmentId}) => runtime(projectId,environmentId,(plugins[environmentId] ?? []).length));
 handle('v2:runbook-read',() => ({content:'# 正式环境运维说明\n\n## 上线前检查\n\n- 确认应用包版本与发布单一致\n- 检查磁盘空间与当前服务状态',hash:'a'.repeat(64)}));
@@ -84,14 +123,24 @@ handle('v2:plugin-connection-edit-begin',({prepareToken}) => {
   assert.equal(prepareToken,'prepare-smoke');
   return {editSessionId:'edit-smoke',plugin:plugins.prod.find((plugin) => plugin.pluginInstanceId === 'mysql-member'),affectedIds:['mysql-member'],preEditConnectedSet:[],draftGeneration:0};
 });
-handle('v2:plugin-draft-validate',({editSessionId,requestId,purpose,draftGeneration}) => ({
-  editSessionId,requestId,operationId:'validation-smoke',purpose,draftGeneration,configDigest:'b'.repeat(64),state:'valid',
-  result:{connected:true,diagnosticOnly:true,reused:false,totalElapsedMs:28,checks:[
-    {id:'configuration',label:'配置与依赖',status:'success',detail:'当前配置有效',elapsedMs:4},
-    {id:'connection',label:'路由、MySQL 与认证',status:'success',detail:'数据库路由与身份认证完成',elapsedMs:21},
-    {id:'protocol',label:'SELECT 1 健康检查',status:'success',detail:'数据库返回有效结果',elapsedMs:3},
-  ]},
-}));
+handle('v2:plugin-draft-validate',(payload) => {
+  if (expectDraftSessionValidation) {
+    assert.equal(payload.draftSessionId,'draft-session-smoke');
+    assert.equal(payload.editSessionId,undefined);
+    expectDraftSessionValidation = false;
+  }
+  return {
+    editSessionId:payload.editSessionId,draftSessionId:payload.draftSessionId,
+    requestId:payload.requestId,operationId:'validation-smoke',purpose:payload.purpose,
+    draftGeneration:payload.draftGeneration,sequence:payload.sequence,
+    configDigest:'b'.repeat(64),state:'valid',
+    result:{connected:true,diagnosticOnly:true,reused:false,totalElapsedMs:28,checks:[
+      {id:'configuration',label:'配置与依赖',status:'success',detail:'当前配置有效',elapsedMs:4},
+      {id:'connection',label:'路由、MySQL 与认证',status:'success',detail:'数据库路由与身份认证完成',elapsedMs:21},
+      {id:'protocol',label:'SELECT 1 健康检查',status:'success',detail:'数据库返回有效结果',elapsedMs:3},
+    ]},
+  };
+});
 handle('v2:plugin-validation-cancel',() => ({state:'cancelled'}));
 handle('v2:plugin-connection-edit-cancel',() => ({cancelled:true,connectionPlan:null}));
 
@@ -190,7 +239,22 @@ async function run() {
     click('#confirmClearAudit');
     await wait(()=>document.querySelector('#auditEmpty')&&!document.querySelector('#auditEmpty').classList.contains('hidden'),'cleared plugin audit');
     const auditCleared=document.querySelector('#clearAudit').disabled&&document.querySelector('#toast').textContent.includes('2 条');
-    click('.resource-environment-select[data-resource-environment-id="prod"]');
+    click('[data-detail-tab="configuration"]');
+    await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('当前为只读详情'),'return to mysql configuration');
+    click('[data-action="edit-plugin"]');
+    await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden'),'edit mysql before saving draft');
+    click('#replacePrimaryCredential');
+    document.querySelector('#pluginPassword').value='saved-draft-password';
+    document.querySelector('#pluginPassword').dispatchEvent(new Event('input',{bubbles:true}));
+    click('#savePluginDraft');
+    await wait(()=>Boolean(document.querySelector('[data-resource-draft-id]'))&&!document.querySelector('#runbookView').classList.contains('hidden'),'save mysql draft');
+    click('[data-resource-draft-id]');
+    await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginFormTitle').textContent.includes('继续配置草稿'),'resume mysql draft');
+    click('#validateMysqlDatabase');
+    await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'),'validate resumed mysql draft');
+    const basedDraftValidationUsesDraftSession=document.querySelector('#pluginFormDiagnostic').textContent.includes('28 ms');
+    click('#deleteCurrentDraft');
+    await wait(()=>!document.querySelector('[data-resource-draft-id]')&&!document.querySelector('#runbookView').classList.contains('hidden'),'delete mysql draft');
     await wait(()=>!document.querySelector('#runbookView').classList.contains('hidden'),'return to environment');
     if (!document.querySelector('[data-resource-add-plugin="prod"]')) {
       click('.resource-environment-select[data-resource-environment-id="prod"]');
@@ -202,14 +266,25 @@ async function run() {
     await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginInlineFormHost .plugin-card'),'inline add plugin');
     const addPluginInline=!document.querySelector('#pluginDialog')&&document.querySelector('#pluginDisplayName').value==='';
     const addPluginOpensDetail=!app.classList.contains('detail-collapsed')&&Math.round(detail.getBoundingClientRect().width)>58;
-    click('#cancelPluginEdit');
-    await wait(()=>!document.querySelector('#runbookView').classList.contains('hidden'),'cancel inline add plugin');
+    document.querySelector('#pluginDisplayName').value='未完成 Redis';
+    document.querySelector('input[name="pluginTypeChoice"][value="redis"]').click();
+    document.querySelector('#pluginHost').value='';
+    click('#savePluginDraft');
+    await wait(()=>Boolean(document.querySelector('[data-resource-draft-id]'))&&!document.querySelector('#runbookView').classList.contains('hidden'),'save persistent draft');
+    const savedDraftRow=document.querySelector('[data-resource-draft-id]')?.closest('.resource-draft-row');
+    const draftSaved=savedDraftRow?.textContent.includes('未完成 Redis')&&savedDraftRow.textContent.includes('继续配置');
+    click('[data-resource-draft-id]');
+    await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginDisplayName').value==='未完成 Redis','resume persistent draft');
+    const draftResumed=document.querySelector('#pluginFormTitle').textContent.includes('继续配置草稿')&&!document.querySelector('#deleteCurrentDraft').classList.contains('hidden');
+    click('#deleteCurrentDraft');
+    await wait(()=>!document.querySelector('[data-resource-draft-id]')&&!document.querySelector('#runbookView').classList.contains('hidden'),'delete persistent draft');
+    const draftDeleted=!document.querySelector('[data-resource-draft-id]');
     click('#toggleDetailPane');
     await frame();
     const collapsed={active:app.classList.contains('detail-collapsed'),detailWidth:Math.round(detail.getBoundingClientRect().width),resourceWidth:Math.round(resources.getBoundingClientRect().width),buttonVisible:getComputedStyle(document.querySelector('#expandDetailPane')).display!=='none'};
     click('#expandDetailPane');
     await frame();
-    return {environmentTabs,pluginTabs,selectedHeaderContinuous,compactEnvironmentActions,environmentActionsWrapCleanly,environmentCardToggle,environmentHeaderHeight,railRefined,projectActionsExposed,environmentCreatedInline,confirmationCenter,permissionsRefined,projectRenameInline,projectDeleteDirect,configurationInline,diagnosticInline,formDiagnostic,addPluginInline,addPluginOpensDetail,auditFiltered,auditResponsive,auditPendingNamed,auditClearScoped,auditCleared,collapsed,initialRects:initialRects.map(rect=>({left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width)})),expanded:!app.classList.contains('detail-collapsed'),separators:document.querySelectorAll('[role="separator"]').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};
+    return {environmentTabs,pluginTabs,selectedHeaderContinuous,compactEnvironmentActions,environmentActionsWrapCleanly,environmentCardToggle,environmentHeaderHeight,railRefined,projectActionsExposed,environmentCreatedInline,confirmationCenter,permissionsRefined,projectRenameInline,projectDeleteDirect,configurationInline,diagnosticInline,formDiagnostic,basedDraftValidationUsesDraftSession,addPluginInline,addPluginOpensDetail,draftSaved,draftResumed,draftDeleted,auditFiltered,auditResponsive,auditPendingNamed,auditClearScoped,auditCleared,collapsed,initialRects:initialRects.map(rect=>({left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width)})),expanded:!app.classList.contains('detail-collapsed'),separators:document.querySelectorAll('[role="separator"]').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};
   })()`);
   const screenshotPath = process.argv.find((value) => /\.png$/i.test(value)) || process.env.AI_OPS_SCREENSHOT_PATH;
   if (screenshotPath) {
@@ -239,8 +314,12 @@ async function run() {
   assert.deepEqual(result.configurationInline,{readonlyBeforeEdit:true,noDialog:true,title:true,namePreserved:true,typeCardsHidden:true,credentialUnchanged:true});
   assert.equal(result.diagnosticInline,true);
   assert.equal(result.formDiagnostic,true);
+  assert.equal(result.basedDraftValidationUsesDraftSession,true);
   assert.equal(result.addPluginInline,true);
   assert.equal(result.addPluginOpensDetail,true);
+  assert.equal(result.draftSaved,true);
+  assert.equal(result.draftResumed,true);
+  assert.equal(result.draftDeleted,true);
   assert.equal(result.auditFiltered,true);
   assert.equal(result.auditResponsive,true);
   assert.equal(result.auditPendingNamed,true);

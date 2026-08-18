@@ -34,6 +34,12 @@ export class PluginConfigTransactionJournal {
     this.credentialVault = credentialVault;
     this.blockedScopes = new Map();
     this.blockAll = false;
+    this.additionalGuards = [];
+  }
+
+  addGuard(guard) {
+    if (guard && !this.additionalGuards.includes(guard)) this.additionalGuards.push(guard);
+    return this;
   }
 
   fileFor(plugin) {
@@ -155,6 +161,7 @@ export class PluginConfigTransactionJournal {
         '插件配置与凭据的上次提交状态无法安全确定，已隔离该资源以保留原始凭据。',
       );
     }
+    for (const guard of this.additionalGuards) guard.assertPluginAvailable?.(projectId,environmentId,pluginInstanceId);
   }
 
   assertEnvironmentAvailable(projectId, environmentId) {
@@ -164,10 +171,12 @@ export class PluginConfigTransactionJournal {
         '环境中存在尚未安全恢复的配置与凭据事务，已阻止连接。',
       );
     }
+    for (const guard of this.additionalGuards) guard.assertEnvironmentAvailable?.(projectId,environmentId);
   }
 
   hasUnresolved() {
-    return this.blockAll || this.blockedScopes.size > 0;
+    return this.blockAll || this.blockedScopes.size > 0
+      || this.additionalGuards.some((guard) => guard.hasUnresolved?.());
   }
 
   async credentialRead(plugin) {

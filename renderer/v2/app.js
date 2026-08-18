@@ -34,7 +34,7 @@ function storedResourcePaneWidth() {
 }
 
 const state = {
-  projects: [], environments: [], plugins: [], auditEntries: [], projectId: null,
+  projects: [], environments: [], plugins: [], pluginDrafts: [], auditEntries: [], projectId: null,
   environmentId: null, pluginId: null, view: 'plugins', runtime: null,
   editingPlugin: null, editingEnvironmentId: undefined, environmentDeletePrompt: null, detailTabs: {}, navigationGeneration: 0,
   runbookContent: '', runbookDraft: '', runbookRevision: null, runbookScopeKey: null, runbookEditing: false,
@@ -88,6 +88,7 @@ const state = {
   diagnosticGeneration: 0,
   pluginEditPreparation: null,
   pluginEditSession: null,
+  editingDraft: null,
   pluginValidationSequence: 0,
   metadataEditingPluginId: null,
   agentEditingPluginId: null,
@@ -738,6 +739,7 @@ async function loadProjects(preferredId = state.projectId, generation = ++state.
     state.environmentId = null;
     state.pluginId = null;
     state.plugins = [];
+    state.pluginDrafts = [];
     state.runtime = null;
     renderShell();
     return;
@@ -758,6 +760,7 @@ async function refreshWorkspaceOverview({ render = true } = {}) {
     state.pluginId = null;
     state.selectionKind = 'environment';
     state.plugins = [];
+    state.pluginDrafts = [];
     state.runtime = null;
     state.loadedScopeKey = null;
     resetScopeUi();
@@ -780,6 +783,7 @@ async function loadProject(preferredEnvironment = state.environmentId, projectId
     state.environmentId = null;
     state.pluginId = null;
     state.plugins = [];
+    state.pluginDrafts = [];
     state.runtime = null;
     renderShell();
     return;
@@ -795,14 +799,18 @@ async function loadProject(preferredEnvironment = state.environmentId, projectId
 async function loadEnvironment(preferredPlugin = state.pluginId, scope = { projectId:state.projectId, environmentId:state.environmentId }, generation = ++state.navigationGeneration) {
   let plugins;
   let runtime;
+  let pluginDrafts;
   try {
-    [plugins, runtime] = await Promise.all([call(api.listPlugins(scope)), call(api.environmentStatus(scope))]);
+    [plugins,pluginDrafts,runtime] = await Promise.all([
+      call(api.listPlugins(scope)),call(api.listPluginDrafts(scope)),call(api.environmentStatus(scope)),
+    ]);
   } catch (error) {
     if (generation !== state.navigationGeneration || scope.projectId !== state.projectId || scope.environmentId !== state.environmentId) return false;
     throw error;
   }
   if (generation !== state.navigationGeneration || scope.projectId !== state.projectId || scope.environmentId !== state.environmentId) return false;
   state.plugins = plugins;
+  state.pluginDrafts = pluginDrafts;
   prunePluginScopeCaches(scope,plugins);
   const normalizedRuntime = {...runtime,projectId:runtime.projectId ?? scope.projectId,environmentId:runtime.environmentId ?? scope.environmentId};
   acceptRuntimeSnapshot(normalizedRuntime);
@@ -1340,6 +1348,12 @@ function resourcePanePlugins(environment) {
   return Array.isArray(environment.resourcePreview) ? environment.resourcePreview : [];
 }
 
+function resourcePaneDrafts(environment) {
+  return environment.environmentId === state.environmentId && state.loadedScopeKey === scopeKey()
+    ? state.pluginDrafts
+    : [];
+}
+
 function resourcePluginTarget(plugin) {
   if ('resource' in plugin) return resourceTargetText(plugin);
   return pluginTarget(plugin);
@@ -1366,6 +1380,16 @@ function renderResourcePlugin(projectId,environment,plugin,runtime) {
   return `<div class="resource-plugin-row ${selected ? 'selected' : ''}"><button class="resource-plugin-open" data-resource-project-id="${escapeAttr(projectId)}" data-resource-environment-id="${escapeAttr(environment.environmentId)}" data-resource-plugin-id="${escapeAttr(plugin.pluginInstanceId)}"><span class="resource-plugin-icon ${escapeAttr(plugin.pluginType)}">${icon(typeIcons[plugin.pluginType] ?? 'plug')}</span><span class="resource-plugin-copy"><strong>${escapeHtml(plugin.displayName)}</strong><small>${escapeHtml(resourcePluginTarget(plugin))}</small></span><span class="state-dot ${escapeAttr(phase)}" title="${escapeAttr(presentation.label)}"></span></button>${approvalButton}<button class="resource-plugin-action ${escapeAttr(phase)}" data-overview-project-id="${escapeAttr(projectId)}" data-overview-environment-id="${escapeAttr(environment.environmentId)}" data-overview-plugin-id="${escapeAttr(plugin.pluginInstanceId)}" data-overview-plugin-action="${escapeAttr(action.action)}" ${action.disabled || busy || diagnosticPending ? 'disabled aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${escapeHtml(action.label)}</button></div>`;
 }
 
+function renderResourceDraft(projectId,environment,draft) {
+  const plugin = draft.sanitizedDraft;
+  const selected = state.selectionKind === 'plugin-draft' && state.editingDraft?.draftId === draft.draftId;
+  const credentialLabel = draft.credentialState === 'stored-active' ? '密码已安全保存'
+    : draft.credentialState === 'stored-inactive' ? '密码属于旧身份'
+    : draft.credentialState === 'unreadable' ? '密码暂时不可读'
+    : '尚未保存密码';
+  return `<div class="resource-plugin-row resource-draft-row ${selected ? 'selected' : ''}"><button class="resource-plugin-open" data-resource-project-id="${escapeAttr(projectId)}" data-resource-environment-id="${escapeAttr(environment.environmentId)}" data-resource-draft-id="${escapeAttr(draft.draftId)}"><span class="resource-plugin-icon ${escapeAttr(plugin.pluginType)}">${icon(typeIcons[plugin.pluginType] ?? 'plug')}</span><span class="resource-plugin-copy"><strong>${escapeHtml(plugin.displayName)}</strong><small>草稿 · ${escapeHtml(credentialLabel)}</small></span><span class="state-dot draft" title="需要配置"></span></button><button class="resource-plugin-action draft" data-resource-project-id="${escapeAttr(projectId)}" data-resource-environment-id="${escapeAttr(environment.environmentId)}" data-resource-draft-id="${escapeAttr(draft.draftId)}">继续配置</button><button class="square-button danger-subtle resource-draft-delete" data-delete-plugin-draft="${escapeAttr(draft.draftId)}" data-resource-project-id="${escapeAttr(projectId)}" data-resource-environment-id="${escapeAttr(environment.environmentId)}" title="删除草稿" aria-label="删除${escapeAttr(plugin.displayName)}草稿">${icon('trash')}</button></div>`;
+}
+
 function environmentActionLabel(action) {
   if (action.action === 'connect') return action.label === '连接未连接项' ? action.label : '连接全部';
   if (action.action === 'disconnect') return '断开全部';
@@ -1384,13 +1408,15 @@ function renderResourceEnvironment(projectId,environment) {
   const expanded = state.expandedEnvironmentId === environment.environmentId;
   const selectedEnvironment = state.selectionKind === 'environment' && state.environmentId === environment.environmentId;
   const plugins = resourcePanePlugins(environment);
+  const drafts = resourcePaneDrafts(environment);
   const grouped = ['server','mysql','redis'].map((type) => {
     const items = plugins.filter((plugin) => plugin.pluginType === type);
     if (!items.length) return '';
     return `<section class="resource-plugin-group"><div class="resource-plugin-group-label"><span>${typeNames[type]}</span><b>${items.length}</b></div>${items.map((plugin) => renderResourcePlugin(projectId,environment,plugin,runtime)).join('')}</section>`;
   }).join('');
-  const previewMissing = Math.max(0,Number(environment.pluginCount ?? 0) - plugins.length);
-  const body = expanded ? `<div class="resource-environment-body">${grouped || '<p class="resource-empty">当前环境还没有插件</p>'}${previewMissing ? `<button class="resource-preview-more" data-resource-environment-id="${escapeAttr(environment.environmentId)}">打开后查看另外 ${previewMissing} 个插件</button>` : ''}<button class="resource-add-plugin" data-resource-add-plugin="${escapeAttr(environment.environmentId)}">${icon('plus')}添加插件</button></div>` : '';
+  const draftGroup = drafts.length ? `<section class="resource-plugin-group resource-draft-group"><div class="resource-plugin-group-label"><span>草稿</span><b>${drafts.length}</b></div>${drafts.map((draft) => renderResourceDraft(projectId,environment,draft)).join('')}</section>` : '';
+  const previewMissing = Math.max(0,Number(environment.pluginCount ?? 0) - plugins.length - drafts.length);
+  const body = expanded ? `<div class="resource-environment-body">${grouped}${draftGroup}${!grouped && !draftGroup ? '<p class="resource-empty">当前环境还没有插件</p>' : ''}${previewMissing ? `<button class="resource-preview-more" data-resource-environment-id="${escapeAttr(environment.environmentId)}">打开后查看另外 ${previewMissing} 个插件</button>` : ''}<button class="resource-add-plugin" data-resource-add-plugin="${escapeAttr(environment.environmentId)}">${icon('plus')}添加插件</button></div>` : '';
   const environmentLabel = escapeAttr(environment.name);
   const approvalScope = confirmationScopeData('environment',projectId,environment.environmentId);
   const approvals = confirmationCount(approvalScope);
@@ -1516,12 +1542,14 @@ function renderDetailTopbar() {
   }
   const plugin = state.selectionKind === 'plugin' ? activePlugin() : null;
   const creatingPlugin = state.selectionKind === 'new-plugin';
+  const editingPersistentDraft = state.selectionKind === 'plugin-draft';
   const tabs = creatingPlugin
     ? [['configuration','配置']]
+    : editingPersistentDraft ? [['configuration','配置']]
     : plugin
     ? [['connection','插件详情'],['configuration','配置'],['permissions','Agent 权限'],['audit','操作记录']]
     : [['runbook','运维说明'],['audit','环境操作记录']];
-  const active = creatingPlugin ? 'configuration' : plugin ? detailTab(plugin) : state.environmentDetailTab;
+  const active = creatingPlugin || editingPersistentDraft ? 'configuration' : plugin ? detailTab(plugin) : state.environmentDetailTab;
   $('#detailTopTabs').innerHTML = tabs.map(([value,label]) => `<button class="detail-top-tab ${active === value ? 'active' : ''}" data-detail-tab="${value}">${label}</button>`).join('');
 }
 
@@ -1606,7 +1634,7 @@ function renderRuntime() {
 function renderView() {
   const plugin = state.selectionKind === 'plugin' ? activePlugin() : null;
   if (state.confirmationCenterActive) state.view = 'confirmations';
-  else if (state.selectionKind === 'new-plugin') state.view = 'plugin-config';
+  else if (state.selectionKind === 'new-plugin' || state.selectionKind === 'plugin-draft') state.view = 'plugin-config';
   else if (plugin) state.view = detailTab(plugin) === 'audit'
     ? 'audit'
     : detailTab(plugin) === 'configuration' && state.pluginEditSession?.scope?.pluginInstanceId === plugin.pluginInstanceId
@@ -2328,6 +2356,7 @@ async function beginPluginConnectionEditor(plugin) {
       sequence:++state.pluginValidationSequence,
       validations:{},
     };
+    state.editingDraft = null;
     state.editingPlugin = session.plugin;
     state.inlineConfigPluginId = null;
     state.detailTabs[pluginStateKey(plugin)] = 'configuration';
@@ -2347,13 +2376,26 @@ function pluginValidationPurpose(pluginType, action = 'validate') {
 
 function pluginValidationResultMatches(active, result) {
   if (!active || !result) return false;
-  return ['editSessionId','requestId','draftGeneration','sequence'].every((key) => active[key] === result[key])
+  const sessionMatches = active.editSessionId
+    ? active.editSessionId === result.editSessionId
+    : active.draftSessionId === result.draftSessionId;
+  return sessionMatches
+    && ['requestId','draftGeneration','sequence'].every((key) => active[key] === result[key])
     && (!active.operationId || active.operationId === result.operationId)
     && (!active.configDigest || active.configDigest === result.configDigest);
 }
 
+function pluginValidationSession() {
+  if (state.editingDraft?.draftSessionId) return state.editingDraft;
+  if (state.pluginEditSession?.editSessionId) return state.pluginEditSession;
+  return null;
+}
+
 function activePluginValidation(purpose = null) {
-  const validations = state.pluginEditSession?.validations ?? {};
+  const session = state.editingDraft?.draftSessionId
+    ? state.editingDraft
+    : state.pluginEditSession?.editSessionId ? state.pluginEditSession : null;
+  const validations = session?.validations ?? {};
   if (purpose) return validations[purpose] ?? null;
   return Object.values(validations).find((item) => item.state === 'running') ?? null;
 }
@@ -2365,6 +2407,10 @@ function cancelLocalPluginValidation(validation, stateValue = 'cancelled') {
   if (validation.operationId) {
     void call(api.cancelPluginValidation({
       editSessionId:validation.editSessionId,
+      draftSessionId:validation.draftSessionId,
+      projectId:state.projectId,
+      environmentId:state.environmentId,
+      draftId:state.editingDraft?.draftId,
       operationId:validation.operationId,
     })).catch(() => undefined);
   }
@@ -2373,7 +2419,8 @@ function cancelLocalPluginValidation(validation, stateValue = 'cancelled') {
 async function cancelOwnedPluginEditSession({restorePreEditConnections = true} = {}) {
   const preparation = state.pluginEditPreparation;
   const session = state.pluginEditSession;
-  if (!preparation && !session) return true;
+  const draftSession = state.editingDraft?.draftSessionId ? state.editingDraft : null;
+  if (!preparation && !session && !draftSession) return true;
   for (const validation of Object.values(session?.validations ?? {})) cancelLocalPluginValidation(validation);
   if (session) {
     await call(api.cancelPluginConnectionEdit({
@@ -2383,19 +2430,30 @@ async function cancelOwnedPluginEditSession({restorePreEditConnections = true} =
   } else if (preparation) {
     await call(api.cancelPluginConnectionEdit({prepareToken:preparation.prepareToken}));
   }
+  if (draftSession) {
+    await call(api.cancelPluginDraftSession({
+      projectId:draftSession.projectId,
+      environmentId:draftSession.environmentId,
+      draftId:draftSession.draftId,
+      draftSessionId:draftSession.draftSessionId,
+    })).catch((error) => {
+      if (error?.code !== 'PLUGIN_DRAFT_SESSION_STALE') throw error;
+    });
+  }
   state.pluginEditPreparation = null;
   state.pluginEditSession = null;
   return true;
 }
 
 function markPluginDraftChanged() {
-  const session = state.pluginEditSession;
+  const session = pluginValidationSession();
   if (!session || !pluginFormActive()) return;
   const signature = pluginFormSignature();
   if (signature === session.lastDraftSignature) return;
   session.lastDraftSignature = signature;
   session.draftGeneration += 1;
   session.sequence = ++state.pluginValidationSequence;
+  session.validations ??= {};
   for (const validation of Object.values(session.validations)) cancelLocalPluginValidation(validation,'stale');
   state.pluginFormDiagnostic = null;
 }
@@ -2404,7 +2462,9 @@ function populatePluginForm(plugin = null) {
   resetPluginFormTransition();
   state.credentialRevealGeneration += 1;
   $$('[data-password-target]').forEach((button) => setElementBusy(button,false));
-  state.editingPlugin = plugin;
+  const persistentDraft = state.editingDraft;
+  const hasFormalBase = Boolean(persistentDraft?.basePluginInstanceId);
+  state.editingPlugin = hasFormalBase ? plugin : persistentDraft ? null : plugin;
   state.pluginFormDiagnostic = null;
   state.credentialMigration = null;
   $('#savePlugin').disabled = false;
@@ -2414,12 +2474,12 @@ function populatePluginForm(plugin = null) {
   const credentialProbeGeneration = ++state.credentialProbeGeneration;
   clearPluginFormError();
   const type = plugin?.pluginType ?? 'server';
-  $('#pluginFormTitle').textContent = plugin ? '编辑连接配置' : '添加插件';
+  $('#pluginFormTitle').textContent = persistentDraft ? '继续配置草稿' : plugin ? '编辑连接配置' : '添加插件';
   $('#pluginFormScope').textContent = `${activeProject().name} / ${activeEnvironment().name}`;
   $('#pluginType').value = type;
   $('#pluginTypeBadge').textContent = typeNames[type];
   $('#pluginTypeChoices').classList.toggle('hidden',Boolean(plugin));
-  $('#pluginBasicInfoSection').classList.toggle('hidden',Boolean(plugin));
+  $('#pluginBasicInfoSection').classList.toggle('hidden',Boolean(plugin) && !persistentDraft?.draftId);
   $$('[name=pluginTypeChoice]').forEach((radio) => { radio.checked = radio.value === type; radio.disabled = Boolean(plugin); });
   $('#pluginDisplayName').value = plugin?.displayName ?? '';
   $('#pluginHost').value = plugin?.target?.host ?? '';
@@ -2453,14 +2513,20 @@ function populatePluginForm(plugin = null) {
   if (plugin?.transport?.serverPluginInstanceId) $('#pluginProvider').value = plugin.transport.serverPluginInstanceId;
   state.databaseDiscoverySignature = plugin?.pluginType === 'mysql' ? databaseConnectionSignature() : null;
   state.pluginFormInitial = pluginFormSignature();
-  if (state.pluginEditSession) state.pluginEditSession.lastDraftSignature = state.pluginFormInitial;
+  const validationSession = pluginValidationSession();
+  if (validationSession) validationSession.lastDraftSignature = state.pluginFormInitial;
   const restoreCount = state.pluginEditSession?.preEditConnectedSet?.length ?? 0;
-  $('#pluginEditSafetyStatus').textContent = plugin
+  $('#pluginEditSafetyStatus').textContent = persistentDraft
+    ? `草稿 · ${persistentDraft.credentialState === 'stored-active' ? '密码已安全保存' : persistentDraft.credentialState === 'stored-inactive' ? '密码属于旧身份' : persistentDraft.credentialState === 'unreadable' ? '密码暂时不可读' : '未保存密码'}`
+    : plugin
     ? restoreCount ? `已安全断开 · 可恢复 ${restoreCount} 个连接` : '连接编辑门禁已启用'
     : '保存后才会成为正式配置';
-  $('#savePluginOnly').classList.toggle('hidden',!plugin);
+  $('#deleteCurrentDraft').classList.toggle('hidden',!persistentDraft);
+  $('#savePluginOnly').classList.toggle('hidden',!plugin || Boolean(persistentDraft));
   $('#saveAndConnectPlugin').classList.toggle('hidden',Boolean(restoreCount));
-  $('#savePlugin').textContent = restoreCount ? `保存并恢复 ${restoreCount} 个连接` : '保存配置';
+  $('#savePlugin').textContent = persistentDraft
+    ? restoreCount ? `提升并恢复 ${restoreCount} 个连接` : '保存为正式配置'
+    : restoreCount ? `保存并恢复 ${restoreCount} 个连接` : '保存配置';
   $('#pluginAdvancedSettings').open = Boolean(
     (type === 'server' && (plugin?.uplink?.type ?? 'direct') !== 'direct')
     || (type !== 'server' && ((plugin?.transport?.kind ?? 'direct') !== 'direct' || (plugin?.tls?.mode ?? 'disabled') !== 'disabled'))
@@ -2468,14 +2534,18 @@ function populatePluginForm(plugin = null) {
   );
   renderPluginFormDiagnostic();
   renderCredentialMigrationNotice();
-  loadCredentialIndicators(plugin, credentialProbeGeneration).catch(showPluginFormError);
+  if (persistentDraft && !hasFormalBase) {
+    if (persistentDraft.credentialState === 'stored-active') markPasswordStored('pluginPassword');
+  } else loadCredentialIndicators(plugin, credentialProbeGeneration).catch(showPluginFormError);
 }
 
 function renderInlinePluginConfig(force = false) {
   const creating = state.selectionKind === 'new-plugin';
-  const plugin = creating ? null : activePlugin();
-  if (!creating && (!plugin || state.pluginEditSession?.scope?.pluginInstanceId !== plugin.pluginInstanceId)) return;
-  const formKey = creating ? '__new__' : plugin.pluginInstanceId;
+  const persistentDraft = state.selectionKind === 'plugin-draft' ? state.editingDraft : null;
+  const plugin = persistentDraft?.sanitizedDraft ?? (creating ? null : activePlugin());
+  if (!creating && !persistentDraft && (!plugin || state.pluginEditSession?.scope?.pluginInstanceId !== plugin.pluginInstanceId)) return;
+  if (persistentDraft?.basePluginInstanceId && state.pluginEditSession?.scope?.pluginInstanceId !== persistentDraft.basePluginInstanceId) return;
+  const formKey = persistentDraft ? `draft:${persistentDraft.draftId}:${persistentDraft.revision}` : creating ? '__new__' : plugin.pluginInstanceId;
   mountPluginForm();
   if (force || state.inlineConfigPluginId !== formKey) {
     state.inlineConfigPluginId = formKey;
@@ -2527,7 +2597,7 @@ function invalidateDatabaseDiscovery() {
   state.databaseDiscoverySignature = null;
   cancelLocalPluginValidation(activePluginValidation('resource-discovery'),'stale');
   setElementBusy($('#queryDatabases'),false);
-  $('#queryDatabases').disabled = !state.pluginEditSession?.editSessionId;
+  $('#queryDatabases').disabled = !(state.pluginEditSession?.editSessionId || state.editingDraft?.draftSessionId);
   $('#queryDatabases').textContent = '加载数据库';
   $('#savePlugin').disabled = false;
   $('#pluginDatabaseOptions').innerHTML = '';
@@ -2539,8 +2609,10 @@ function invalidateDatabaseDiscovery() {
 }
 
 async function queryDatabases() {
-  const editSession = state.pluginEditSession;
-  if (!editSession?.editSessionId) throw new Error('请先进入受保护的连接配置编辑会话。');
+  const editSession = state.editingDraft?.draftSessionId
+    ? state.editingDraft
+    : state.pluginEditSession?.editSessionId ? state.pluginEditSession : null;
+  if (!editSession) throw new Error('请先进入受保护的连接配置编辑会话。');
   const host = $('#pluginHost').value.trim();
   const port = Number($('#pluginPort').value);
   const username = $('#pluginUsername').value.trim();
@@ -2550,7 +2622,7 @@ async function queryDatabases() {
   const saveButton = $('#savePlugin');
   const queryGeneration = ++state.databaseQueryGeneration;
   const dialogGeneration = state.credentialProbeGeneration;
-  const requestedScope = { projectId:state.projectId, environmentId:state.environmentId, pluginInstanceId:state.editingPlugin?.pluginInstanceId ?? null };
+  const requestedScope = { projectId:state.projectId, environmentId:state.environmentId, pluginInstanceId:state.editingPlugin?.pluginInstanceId ?? state.editingDraft?.sanitizedDraft?.pluginInstanceId ?? null };
   const requestedSignature = databaseConnectionSignature();
   clearPluginFormError();
   setElementBusy(button,true);
@@ -2563,16 +2635,21 @@ async function queryDatabases() {
     const sequence = ++state.pluginValidationSequence;
     const requestId = `validation-${sequence}`;
     validation = {
-      editSessionId:editSession.editSessionId,requestId,purpose,
+      editSessionId:editSession.editSessionId,draftSessionId:editSession.draftSessionId,requestId,purpose,
       draftGeneration:editSession.draftGeneration,sequence,state:'running',
       operationId:null,configDigest:null,
     };
     editSession.validations[purpose] = validation;
     const response = await call(api.validatePluginDraft({
       editSessionId:editSession.editSessionId,
+      draftSessionId:editSession.draftSessionId,
+      projectId:state.projectId,
+      environmentId:state.environmentId,
+      draftId:state.editingDraft?.draftId,
       requestId,
       purpose,
       draftGeneration:editSession.draftGeneration,
+      sequence,
       draft:input,
       credentialIntent,
       temporarySecrets:secrets,
@@ -2581,7 +2658,7 @@ async function queryDatabases() {
     if (!pluginValidationResultMatches(validation,correlated)) return;
     Object.assign(validation,correlated,{state:'valid'});
     const result = response.result ?? response;
-    if (queryGeneration !== state.databaseQueryGeneration || dialogGeneration !== state.credentialProbeGeneration || !pluginFormActive() || requestedScope.projectId !== state.projectId || requestedScope.environmentId !== state.environmentId || requestedScope.pluginInstanceId !== (state.editingPlugin?.pluginInstanceId ?? null) || requestedSignature !== databaseConnectionSignature()) return;
+    if (queryGeneration !== state.databaseQueryGeneration || dialogGeneration !== state.credentialProbeGeneration || !pluginFormActive() || requestedScope.projectId !== state.projectId || requestedScope.environmentId !== state.environmentId || requestedScope.pluginInstanceId !== (state.editingPlugin?.pluginInstanceId ?? state.editingDraft?.sanitizedDraft?.pluginInstanceId ?? null) || requestedSignature !== databaseConnectionSignature()) return;
     const databases = result.databases ?? [];
     const databaseSelect = $('#pluginDatabase');
     const selectedDatabase = databaseSelect.value;
@@ -2620,7 +2697,7 @@ async function queryDatabases() {
       && dialogGeneration === state.credentialProbeGeneration
       && pluginFormVisible()
       && scopeMatches(requestedScope)
-      && requestedScope.pluginInstanceId === (state.editingPlugin?.pluginInstanceId ?? null)
+      && requestedScope.pluginInstanceId === (state.editingPlugin?.pluginInstanceId ?? state.editingDraft?.sanitizedDraft?.pluginInstanceId ?? null)
       && requestedSignature === databaseConnectionSignature()) throw error;
   } finally {
     if (queryGeneration === state.databaseQueryGeneration) {
@@ -2660,7 +2737,7 @@ function renderPluginForm() {
   $('#validateMysqlDatabase').classList.toggle('hidden',type !== 'mysql');
   $('#validateRedisDraft').classList.toggle('hidden',type !== 'redis');
   $('#validateTlsDraft').classList.toggle('hidden',!data || $('#pluginTls').value === 'disabled');
-  const hasSession = Boolean(state.pluginEditSession?.editSessionId);
+  const hasSession = Boolean(pluginValidationSession());
   for (const id of ['validateServerDraft','validateMysqlDatabase','validateRedisDraft','validateTlsDraft','queryDatabases']) {
     const button = $(`#${id}`);
     if (button && !button.classList.contains('hidden')) button.disabled = !hasSession;
@@ -2673,8 +2750,11 @@ function renderPluginForm() {
 function pluginFormPayload() {
   const type = $('#pluginType').value;
   const input = { pluginType:type, displayName:$('#pluginDisplayName').value.trim(), target:{ host:$('#pluginHost').value.trim(), port:Number($('#pluginPort').value), addressFamily:$('#pluginAddressFamily').value }, auth:{ username:$('#pluginUsername').value.trim() } };
-  if (!state.editingPlugin && !input.displayName) throw new Error('请填写插件名称。');
-  if (state.editingPlugin && !input.displayName) input.displayName = state.editingPlugin.displayName;
+  const formalBase = state.editingDraft?.basePluginInstanceId
+    ? state.plugins.find((plugin) => plugin.pluginInstanceId === state.editingDraft.basePluginInstanceId)
+    : state.editingPlugin;
+  if (!formalBase && !input.displayName) throw new Error('请填写插件名称。');
+  if (formalBase && !input.displayName) input.displayName = formalBase.displayName;
   if (type === 'server') {
     input.auth.type = $('#pluginAuthType').value;
     if (input.auth.type === 'privateKey') {
@@ -2716,6 +2796,67 @@ function pluginFormPayload() {
   };
 }
 
+async function persistPluginDraft({keepEditSession = false} = {}) {
+  const {input,secrets,credentialIntent} = pluginFormPayload();
+  const existingDraft = state.editingDraft;
+  const basePlugin = existingDraft?.basePluginInstanceId
+    ? state.plugins.find((plugin) => plugin.pluginInstanceId === existingDraft.basePluginInstanceId)
+    : state.editingPlugin;
+  if (basePlugin && !state.pluginEditSession?.editSessionId) {
+    throw new Error('连接配置编辑会话已经失效，请返回详情后重新进入。');
+  }
+  const payload = {
+    projectId:state.projectId,
+    environmentId:state.environmentId,
+    draftId:existingDraft?.draftId,
+    draftSessionId:existingDraft?.draftSessionId,
+    expectedDraftRevision:existingDraft?.revision,
+    basePluginInstanceId:existingDraft?.basePluginInstanceId ?? basePlugin?.pluginInstanceId,
+    baseRevision:existingDraft?.baseRevision ?? basePlugin?.revision,
+    pluginType:input.pluginType,
+    sanitizedDraft:input,
+    credentialIntent,
+    temporarySecrets:secrets,
+    editSessionId:basePlugin ? state.pluginEditSession.editSessionId : undefined,
+    keepEditSession,
+  };
+  const saved = await call(api.savePluginDraft(payload));
+  state.editingDraft = existingDraft?.draftSessionId
+    ? {
+        ...saved,
+        draftSessionId:existingDraft.draftSessionId,
+        draftGeneration:existingDraft.draftGeneration,
+        sequence:existingDraft.sequence,
+        validations:existingDraft.validations ?? {},
+      }
+    : saved;
+  state.pluginDrafts = state.pluginDrafts.filter((draft) => draft.draftId !== saved.draftId).concat(saved);
+  return state.editingDraft;
+}
+
+async function saveDraftAndExit() {
+  const scope = {projectId:state.projectId,environmentId:state.environmentId};
+  const operationKey = `plugin-draft-save:${scopeKey()}:${state.editingDraft?.draftId ?? 'new'}`;
+  const token = beginOperation(operationKey);
+  if (!token) return;
+  try {
+    const saved = await persistPluginDraft({keepEditSession:false});
+    clearTransientRevealedCredentials({discardEdited:true});
+    state.pluginEditSession = null;
+    state.pluginEditPreparation = null;
+    state.editingPlugin = null;
+    state.editingDraft = null;
+    state.inlineConfigPluginId = null;
+    state.selectionKind = 'environment';
+    state.pluginId = null;
+    await refreshEnvironmentMetadata(scope);
+    await loadEnvironment(null,scope);
+    toast(`“${saved.sanitizedDraft.displayName}”草稿已保存。`);
+  } finally {
+    finishOperation(operationKey,token);
+  }
+}
+
 async function savePlugin(afterCommit = null) {
   const {input,patch,secrets,credentialIntent} = pluginFormPayload();
   const scope = { projectId:state.projectId,environmentId:state.environmentId };
@@ -2726,11 +2867,25 @@ async function savePlugin(afterCommit = null) {
   try {
     if (editingPlugin && !state.pluginEditSession?.editSessionId) throw new Error('连接配置编辑会话已经失效，请返回详情后重新进入。');
     if (state.pluginEditSession) {
-      for (const validation of Object.values(state.pluginEditSession.validations ?? {})) cancelLocalPluginValidation(validation);
+      const validationSession = state.editingDraft?.draftSessionId ? state.editingDraft : state.pluginEditSession;
+      for (const validation of Object.values(validationSession.validations ?? {})) cancelLocalPluginValidation(validation);
       state.pluginEditSession.phase = 'saving';
       renderPluginFormDiagnostic();
     }
-    const saved = editingPlugin
+    let saved;
+    if (state.editingDraft) {
+      const draft = await persistPluginDraft({keepEditSession:Boolean(state.editingDraft.basePluginInstanceId)});
+      saved = await call(api.promotePluginDraft({
+        projectId:draft.projectId,
+        environmentId:draft.environmentId,
+        draftId:draft.draftId,
+        draftSessionId:draft.draftSessionId,
+        expectedDraftRevision:draft.revision,
+        expectedBaseRevision:draft.baseRevision,
+        editSessionId:draft.basePluginInstanceId ? state.pluginEditSession?.editSessionId : undefined,
+        afterCommit:afterCommit ?? (state.pluginEditSession?.preEditConnectedSet?.length ? 'restore-pre-edit-set' : 'stay-disconnected'),
+      }));
+    } else saved = editingPlugin
       ? await call(api.savePluginConnectionEdit({
         editSessionId:state.pluginEditSession.editSessionId,
         expectedRevision:state.pluginEditSession.baseRecordRevision ?? editingPlugin.revision,
@@ -2750,6 +2905,7 @@ async function savePlugin(afterCommit = null) {
     state.inlineConfigPluginId = null;
     state.pluginEditSession = null;
     state.pluginEditPreparation = null;
+    state.editingDraft = null;
     const loaded = await loadEnvironment(plugin.pluginInstanceId,scope);
     if (!loaded || !scopeMatches(scope)) return;
     state.selectionKind = 'plugin';
@@ -2885,19 +3041,26 @@ function renderPluginFormDiagnostic() {
     const button = $(`#${id}`);
     if (!button || button.classList.contains('hidden')) continue;
     setElementBusy(button,pending);
-    button.disabled = pending || !state.pluginEditSession?.editSessionId;
+    button.disabled = pending || !pluginValidationSession();
   }
   $('#cancelPluginValidation')?.classList.toggle('hidden',!pending);
 }
 
 function applyPluginValidationProgress(message) {
-  const session = state.pluginEditSession;
-  if (!session || message?.editSessionId !== session.editSessionId) return;
+  const session = state.pluginEditSession?.editSessionId
+    ? state.pluginEditSession
+    : state.editingDraft?.draftSessionId ? state.editingDraft : null;
+  if (!session) return;
+  if (session.editSessionId ? message?.editSessionId !== session.editSessionId : message?.draftSessionId !== session.draftSessionId) return;
   const active = session.validations?.[message.purpose];
   if (!active) return;
   if (active.state !== 'running') {
     if (message.operationId && ['cancelled','stale'].includes(active.state)) {
-      void call(api.cancelPluginValidation({editSessionId:session.editSessionId,operationId:message.operationId})).catch(() => undefined);
+      void call(api.cancelPluginValidation({
+        editSessionId:session.editSessionId,draftSessionId:session.draftSessionId,
+        projectId:state.projectId,environmentId:state.environmentId,draftId:state.editingDraft?.draftId,
+        operationId:message.operationId,
+      })).catch(() => undefined);
     }
     return;
   }
@@ -2915,24 +3078,26 @@ function applyPluginValidationProgress(message) {
 
 async function validatePluginDraftAction(action = 'validate') {
   clearPluginFormError();
-  const session = state.pluginEditSession;
-  if (!session?.editSessionId || session.phase !== 'editing') throw new Error('连接配置编辑会话已经失效，请返回详情后重新进入。');
+  const session = pluginValidationSession();
+  if (!session || (session.editSessionId && session.phase !== 'editing')) throw new Error('连接配置编辑会话已经失效，请返回详情后重新进入。');
   if (activePluginValidation()) return null;
   const {input,secrets,credentialIntent} = pluginFormPayload();
   const testedSignature = pluginFormSignature();
   const purpose = pluginValidationPurpose(input.pluginType,action);
   const sequence = ++state.pluginValidationSequence;
   const requestId = `validation-${sequence}`;
+  const pluginSource = state.editingPlugin ?? state.editingDraft?.sanitizedDraft ?? {};
   const plugin = {
-    ...(state.editingPlugin ?? {}),
+    ...pluginSource,
     ...input,
     target:input.target,
     auth:input.auth,
-    pluginInstanceId:state.editingPlugin.pluginInstanceId,
+    pluginInstanceId:pluginSource.pluginInstanceId,
     configState:'ready',
   };
   const active = {
-    editSessionId:session.editSessionId,requestId,purpose,draftGeneration:session.draftGeneration,
+    editSessionId:session.editSessionId,draftSessionId:session.draftSessionId,
+    requestId,purpose,draftGeneration:session.draftGeneration,
     sequence,operationId:null,configDigest:null,state:'running',
   };
   session.validations[purpose] = active;
@@ -2944,15 +3109,20 @@ async function validatePluginDraftAction(action = 'validate') {
   try {
     const result = await call(api.validatePluginDraft({
       editSessionId:session.editSessionId,
+      draftSessionId:session.draftSessionId,
+      projectId:state.projectId,
+      environmentId:state.environmentId,
+      draftId:state.editingDraft?.draftId,
       requestId,
       purpose,
       draftGeneration:session.draftGeneration,
+      sequence,
       draft:input,
       credentialIntent,
       temporarySecrets:secrets,
     }));
     const correlated = {...result,sequence};
-    if (!pluginValidationResultMatches(active,correlated) || state.pluginEditSession !== session) return null;
+    if (!pluginValidationResultMatches(active,correlated) || pluginValidationSession() !== session) return null;
     Object.assign(active,correlated,{state:'valid'});
     state.pluginFormDiagnostic = testedSignature === pluginFormSignature()
       ? {...completedDiagnostic(state.pluginFormDiagnostic,result.result ?? result),plugin,testedSignature,purpose,title:state.pluginFormDiagnostic.title}
@@ -2961,20 +3131,21 @@ async function validatePluginDraftAction(action = 'validate') {
   } catch (error) {
     const correlated = {
       editSessionId:error.details?.editSessionId ?? session.editSessionId,
+      draftSessionId:error.details?.draftSessionId ?? session.draftSessionId,
       requestId,
       operationId:error.details?.operationId ?? active.operationId,
       draftGeneration:error.details?.draftGeneration ?? active.draftGeneration,
       configDigest:error.details?.configDigest ?? active.configDigest,
       sequence,
     };
-    if (!pluginValidationResultMatches(active,correlated) || state.pluginEditSession !== session) return null;
+    if (!pluginValidationResultMatches(active,correlated) || pluginValidationSession() !== session) return null;
     Object.assign(active,correlated,{state:error.code === 'PLUGIN_VALIDATION_CANCELLED' ? 'cancelled' : 'failed'});
     state.pluginFormDiagnostic = testedSignature === pluginFormSignature()
       ? {...failedDiagnostic(state.pluginFormDiagnostic,error),plugin,testedSignature,purpose,title:state.pluginFormDiagnostic.title}
       : null;
     return null;
   } finally {
-    if (state.pluginEditSession === session && pluginFormVisible()) renderPluginFormDiagnostic();
+    if (pluginValidationSession() === session && pluginFormVisible()) renderPluginFormDiagnostic();
   }
 }
 
@@ -3194,7 +3365,8 @@ function currentScopeSaveInFlight() {
   const currentScopeKey = scopeKey();
   if (operationInFlight(`runbook-save:${currentScopeKey}`)) return true;
   const pluginPrefix = `plugin-save:${currentScopeKey}:`;
-  return [...inFlightOperations.keys()].some((key) => key.startsWith(pluginPrefix));
+  const draftPrefix = `plugin-draft-save:${currentScopeKey}:`;
+  return [...inFlightOperations.keys()].some((key) => key.startsWith(pluginPrefix) || key.startsWith(draftPrefix));
 }
 
 async function mayLeaveCurrentScope() {
@@ -3228,6 +3400,8 @@ async function mayLeaveCurrentScope() {
     state.pluginFormDiagnostic = null;
     state.pluginFormInitial = null;
     state.inlineConfigPluginId = null;
+    state.editingDraft = null;
+    state.editingPlugin = null;
   }
   return true;
 }
@@ -3255,6 +3429,7 @@ function resetScopeUi() {
   state.creatingEnvironmentInline = false;
   state.metadataEditingPluginId = null;
   state.agentEditingPluginId = null;
+  state.editingDraft = null;
 }
 
 async function showProjectOverview(projectId) {
@@ -3284,6 +3459,7 @@ async function showProjectOverview(projectId) {
   state.environmentDetailTab = 'runbook';
   state.environments = state.environmentsByProject[projectId] ?? [];
   state.plugins = [];
+  state.pluginDrafts = [];
   state.runtime = null;
   state.loadedScopeKey = null;
   resetScopeUi();
@@ -3314,6 +3490,7 @@ async function openScope(projectId,environmentId,{ pluginId = null, skipLeaveChe
     state.pluginId = null;
     state.environments = state.environmentsByProject[projectId] ?? [];
     state.plugins = [];
+    state.pluginDrafts = [];
     state.runtime = environmentRuntime(projectId,environmentId);
     state.loadedScopeKey = null;
     state.projectEnvironmentMemory[projectId] = environmentId;
@@ -3369,10 +3546,63 @@ async function startAddPlugin(projectId = state.projectId,environmentId = state.
   const opened = await openScope(projectId,environmentId,{skipLeaveCheck:true});
   if (!opened) return;
   state.selectionKind = 'new-plugin';
+  state.editingDraft = null;
   state.pluginId = null;
   state.expandedEnvironmentId = environmentId;
   state.inlineConfigPluginId = null;
   renderShell();
+}
+
+async function openPluginDraft(projectId,environmentId,draftId) {
+  const changingSelection = projectId !== state.projectId
+    || environmentId !== state.environmentId
+    || state.editingDraft?.draftId !== draftId;
+  if (changingSelection && !await mayLeaveCurrentScope()) return false;
+  const opened = await openScope(projectId,environmentId,{skipLeaveCheck:true});
+  if (!opened) return false;
+  const draft = await call(api.resumePluginDraft({projectId,environmentId,draftId}));
+  draft.validations = {};
+  draft.lastDraftSignature = null;
+  if (draft.basePluginInstanceId) {
+    const base = state.plugins.find((plugin) => plugin.pluginInstanceId === draft.basePluginInstanceId);
+    if (!base) throw new Error('草稿对应的正式插件已经不存在，不能继续提升。');
+    state.selectionKind = 'plugin';
+    state.pluginId = base.pluginInstanceId;
+    const started = await beginPluginConnectionEditor(base);
+    if (!started) return false;
+  }
+  state.editingDraft = draft;
+  state.editingPlugin = draft.basePluginInstanceId ? draft.sanitizedDraft : null;
+  state.selectionKind = 'plugin-draft';
+  state.pluginId = draft.basePluginInstanceId ?? null;
+  state.inlineConfigPluginId = null;
+  state.expandedEnvironmentId = environmentId;
+  if (state.detailPaneCollapsed) setDetailPaneCollapsed(false);
+  renderShell();
+  return true;
+}
+
+async function deletePluginDraft(projectId,environmentId,draftId) {
+  const draft = state.pluginDrafts.find((item) => item.draftId === draftId)
+    ?? await call(api.resumePluginDraft({projectId,environmentId,draftId}));
+  if (!confirm(`删除“${draft.sanitizedDraft.displayName}”草稿？加密凭据将按保留策略继续留在本机。`)) return false;
+  if (state.editingDraft?.draftId === draftId) {
+    await cancelOwnedPluginEditSession({restorePreEditConnections:true});
+  }
+  await call(api.deletePluginDraft({projectId,environmentId,draftId}));
+  state.pluginDrafts = state.pluginDrafts.filter((item) => item.draftId !== draftId);
+  if (state.editingDraft?.draftId === draftId) {
+    state.editingDraft = null;
+    state.editingPlugin = null;
+    state.selectionKind = 'environment';
+    state.pluginId = null;
+    state.inlineConfigPluginId = null;
+  }
+  const scope = {projectId,environmentId};
+  await refreshEnvironmentMetadata(scope);
+  if (scopeMatches(scope)) await loadEnvironment(null,scope);
+  toast('草稿已删除；本机加密凭据仍保留。');
+  return true;
 }
 
 function renderRuntimeOperationSurfaces(projectId,environmentId) {
@@ -3389,6 +3619,11 @@ async function handleEnvironmentRuntimeAction(action,projectId,environmentId) {
   if (action === 'configure') {
     const opened = await openScope(projectId,environmentId);
     if (!opened || state.projectId !== projectId || state.environmentId !== environmentId || state.projectOverviewActive) return;
+    const savedDraft = state.pluginDrafts[0];
+    if (savedDraft) {
+      await openPluginDraft(projectId,environmentId,savedDraft.draftId);
+      return;
+    }
     const incomplete = state.plugins.find((plugin) => (
       pluginConnectionViewModel(plugin,pluginRuntime(plugin.pluginInstanceId)).configurationState !== 'complete'
     ));
@@ -3721,6 +3956,22 @@ document.addEventListener('click', async (event) => {
       openDeleteProject();
       return;
     }
+    if (target.dataset.deletePluginDraft) {
+      await deletePluginDraft(
+        target.dataset.resourceProjectId ?? state.projectId,
+        target.dataset.resourceEnvironmentId ?? state.environmentId,
+        target.dataset.deletePluginDraft,
+      );
+      return;
+    }
+    if (target.dataset.resourceDraftId) {
+      await openPluginDraft(
+        target.dataset.resourceProjectId ?? state.projectId,
+        target.dataset.resourceEnvironmentId ?? state.environmentId,
+        target.dataset.resourceDraftId,
+      );
+      return;
+    }
     if (target.dataset.resourcePluginId) {
       await selectResourcePlugin(target.dataset.resourceProjectId ?? state.projectId,target.dataset.resourceEnvironmentId,target.dataset.resourcePluginId);
       return;
@@ -3757,7 +4008,8 @@ document.addEventListener('click', async (event) => {
     if (target.dataset.close) {
       if (target.dataset.close === 'pluginForm' && state.pluginFormMode === 'inline') {
         if (!await mayLeaveCurrentScope()) return;
-        if (state.selectionKind === 'new-plugin') {
+        if (state.selectionKind === 'new-plugin' || state.selectionKind === 'plugin-draft') {
+          state.editingDraft = null;
           state.selectionKind = 'environment';
           state.pluginId = null;
           state.environmentDetailTab = 'runbook';
@@ -3883,7 +4135,7 @@ document.addEventListener('click', async (event) => {
       return;
     }
     if (target.dataset.detailTab) {
-      if (state.selectionKind === 'new-plugin') {
+      if (state.selectionKind === 'new-plugin' || state.selectionKind === 'plugin-draft') {
         renderView();
         return;
       } else if (state.selectionKind === 'plugin') {
@@ -4330,6 +4582,21 @@ $('#savePlugin').addEventListener('click', async (event) => {
   event.preventDefault();
   await submitPluginForm(event.currentTarget);
 });
+$('#savePluginDraft').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  if (button.disabled) return;
+  setElementBusy(button,true);
+  clearPluginFormError();
+  try { await saveDraftAndExit(); }
+  catch (error) { if (pluginFormVisible()) showPluginFormError(error); else showError(error); }
+  finally { if (button.isConnected) setElementBusy(button,false); }
+});
+$('#deleteCurrentDraft').addEventListener('click',async () => {
+  const draft = state.editingDraft;
+  if (!draft) return;
+  try { await deletePluginDraft(draft.projectId,draft.environmentId,draft.draftId); }
+  catch (error) { if (pluginFormVisible()) showPluginFormError(error); else showError(error); }
+});
 $('#savePluginOnly').addEventListener('click', (event) => submitPluginForm(event.currentTarget,'stay-disconnected'));
 $('#saveAndConnectPlugin').addEventListener('click', (event) => submitPluginForm(event.currentTarget,'connect-current'));
 $('#validateServerDraft').addEventListener('click', () => validatePluginDraftAction('validate').catch(showPluginFormError));
@@ -4339,7 +4606,8 @@ $('#validateTlsDraft').addEventListener('click', () => validatePluginDraftAction
 $('#cancelPluginValidation').addEventListener('click', () => cancelPluginValidationAction().catch(showPluginFormError));
 $('#cancelPluginEdit').addEventListener('click', async () => {
   if (!await mayLeaveCurrentScope()) return;
-  if (state.selectionKind === 'new-plugin') {
+  if (state.selectionKind === 'new-plugin' || state.selectionKind === 'plugin-draft') {
+    state.editingDraft = null;
     state.selectionKind = 'environment';
     state.pluginId = null;
     state.environmentDetailTab = 'runbook';
