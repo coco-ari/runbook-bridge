@@ -30,6 +30,7 @@ const plugins = {
 };
 const drafts = {prod:[],gray:[]};
 let expectDraftSessionValidation = false;
+let newDraftPromotionSessionKept = false;
 const environmentUpdateCalls = [];
 const projectUpdateCalls = [];
 const environments = [
@@ -79,6 +80,9 @@ handle('v2:plugin-draft-save',(payload) => {
   const list = drafts[payload.environmentId] ??= [];
   const index = list.findIndex((item) => item.draftId === payload.draftId);
   const previous = index >= 0 ? list[index] : null;
+  if (previous && !previous.basePluginInstanceId && payload.draftSessionId) {
+    newDraftPromotionSessionKept = payload.keepEditSession === true;
+  }
   const draftId = previous?.draftId ?? 'draft-00000000-0000-4000-8000-000000000001';
   const value = {
     schemaVersion:1,draftId,projectId:payload.projectId,environmentId:payload.environmentId,
@@ -98,6 +102,7 @@ handle('v2:plugin-draft-save',(payload) => {
 handle('v2:plugin-draft-resume',({environmentId,draftId}) => {
   const value = (drafts[environmentId] ?? []).find((item) => item.draftId === draftId);
   if (value?.basePluginInstanceId) expectDraftSessionValidation = true;
+  else newDraftPromotionSessionKept = false;
   return {...value,draftSessionId:'draft-session-smoke',draftGeneration:0,sequence:0};
 });
 handle('v2:plugin-draft-edit-cancel',() => ({cancelled:true}));
@@ -109,7 +114,30 @@ handle('v2:plugin-draft-delete',({environmentId,draftId}) => {
   environment.pluginCount = (plugins[environmentId] ?? []).length + drafts[environmentId].length;
   return {deleted:true,environmentId,draftId,credentialsPreserved:true};
 });
-handle('v2:plugin-draft-promote',() => { throw new Error('promotion is not exercised by this smoke fixture'); });
+handle('v2:plugin-draft-promote',(payload) => {
+  const list = drafts[payload.environmentId] ?? [];
+  const index = list.findIndex((item) => item.draftId === payload.draftId);
+  const draft = list[index];
+  assert.ok(draft,'draft promotion requires a saved draft');
+  assert.equal(payload.draftSessionId,'draft-session-smoke');
+  assert.equal(newDraftPromotionSessionKept,true,'draft update must keep its session alive until promotion completes');
+  const plugin = {...draft.sanitizedDraft,configState:'ready',revision:1};
+  plugins[payload.environmentId].push(plugin);
+  list.splice(index,1);
+  const environment = environments.find((item) => item.environmentId === payload.environmentId);
+  environment.sidecarDraftCount = list.length;
+  environment.draftCount = list.length;
+  environment.pluginCount = plugins[payload.environmentId].length;
+  environment.readyPluginCount = plugins[payload.environmentId].filter((item) => item.configState === 'ready').length;
+  environment.pluginTypeCounts = Object.fromEntries(['server','mysql','redis'].map((type) => [type,plugins[payload.environmentId].filter((item) => item.pluginType === type).length]));
+  environment.resourcePreview = plugins[payload.environmentId].map((item) => ({
+    pluginInstanceId:item.pluginInstanceId,pluginType:item.pluginType,displayName:item.displayName,
+    configState:item.configState,resource:item.pluginType === 'server'
+      ? {host:item.target.host,port:item.target.port}
+      : item.pluginType === 'mysql' ? {database:item.target.database} : {db:item.target.db},
+  }));
+  return {committed:true,plugin,connectionPlan:null,runtimeWarning:null};
+});
 handle('v2:plugin-credential-status',() => ({fields:{primary:false,proxy:false}}));
 handle('v2:environment-status',({projectId,environmentId}) => environmentId === 'prod'
   ? connectedRuntime(projectId,environmentId,(plugins[environmentId] ?? []).length)
@@ -162,6 +190,13 @@ handle('v2:plugin-draft-validate',(payload) => {
     result:{connected:true,diagnosticOnly:true,reused:false,totalElapsedMs:28},
   };
 });
+handle('v2:plugin-probe',(payload) => ({
+  projectId:payload.projectId,environmentId:payload.environmentId,formInstanceId:payload.formInstanceId,
+  requestId:payload.requestId,operationId:'probe-smoke',purpose:payload.purpose,
+  draftGeneration:payload.draftGeneration,sequence:payload.sequence,
+  configDigest:'c'.repeat(64),state:'valid',result:{connected:true,diagnosticOnly:true,reused:false,totalElapsedMs:24},
+}));
+handle('v2:plugin-probe-cancel',(payload) => ({...payload,state:'cancelled',cancelled:true}));
 handle('v2:plugin-validation-cancel',() => ({state:'cancelled'}));
 handle('v2:plugin-connection-edit-cancel',() => ({cancelled:true,connectionPlan:null}));
 
@@ -172,21 +207,25 @@ async function run() {
   win.webContents.on('did-fail-load',(_event,code,description) => errors.push(`${code}: ${description}`));
   await win.loadFile(path.join(root,'renderer','v2','index.html'));
   const result = await win.webContents.executeJavaScript(`(async()=>{
-    const wait=async(predicate,label)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: '+label);await new Promise(resolve=>setTimeout(resolve,20));}};
+    const wait=async(predicate,label)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000){const formError=document.querySelector('#pluginFormError:not(.hidden)')?.textContent.trim();throw new Error('timeout: '+label+(formError?' | '+formError:''));}await new Promise(resolve=>setTimeout(resolve,20));}};
     const frame=()=>new Promise(resolve=>requestAnimationFrame(()=>resolve()));
     const click=(selector)=>{const element=document.querySelector(selector);if(!element)throw new Error('missing click target: '+selector);element.click();};
     await wait(()=>document.querySelectorAll('.resource-environment-card').length===2,'environment cards');
-    await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent')?.textContent.includes('环境信息'),'environment information');
+    await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent .scope-information-kind')?.textContent.includes('环境概览'),'environment information');
     const app=document.querySelector('#app'),rail=document.querySelector('.project-rail'),resources=document.querySelector('#resourcePane'),detail=document.querySelector('#detailPane');
     const initialRects=[rail,resources,detail].map(element=>element.getBoundingClientRect());
     const environmentTabs=[...document.querySelectorAll('#detailTopTabs .detail-top-tab')].map(item=>item.textContent.trim());
     const selectedHeaderContinuous=document.querySelector('.resource-environment-card.selected .resource-environment-head')!==null;
     const compactEnvironmentActions=[...document.querySelectorAll('.resource-environment-head')].every(head=>Boolean(head.querySelector(':scope > [data-environment-runtime-action]'))&&!head.querySelector(':scope > [data-resource-rename-environment]')&&!head.querySelector(':scope > [data-resource-delete-environment]')&&!head.querySelector('.action-menu'));
     const environmentActionsWrapCleanly=[...document.querySelectorAll('.resource-environment-head')].every(head=>{const headRect=head.getBoundingClientRect();return [...head.children].every(control=>{const rect=control.getBoundingClientRect();return rect.left>=headRect.left-1&&rect.right<=headRect.right+1&&rect.top>=headRect.top-1&&rect.bottom<=headRect.bottom+1;});});
+    const environmentHeaderControlsAligned=[...document.querySelectorAll('.resource-environment-head')].every(head=>{const controls=[head.querySelector(':scope>.resource-environment-select'),head.querySelector(':scope>.resource-environment-status'),head.querySelector(':scope>.resource-runtime-action')].filter(Boolean);const centers=controls.map(control=>{const rect=control.getBoundingClientRect();return rect.top+rect.height/2;});return Math.max(...centers)-Math.min(...centers)<=1;});
     const environmentHeaderHeight=Math.round(document.querySelector('.resource-environment-head').getBoundingClientRect().height);
+    const workspaceHeaderLinesAligned=(()=>{const bottoms=[document.querySelector('.rail-header'),document.querySelector('.resource-pane-head'),document.querySelector('.detail-topbar')].map(element=>element.getBoundingClientRect().bottom);return Math.max(...bottoms)-Math.min(...bottoms)<=1;})();
     const railRefined=!document.querySelector('.rail-brand')&&!document.querySelector('.rail-project-manage')&&Boolean(document.querySelector('.rail-header .logo-mark use[href="#i-app"]'));
     const projectRailWasExpanded=app.classList.contains('rail-expanded');
     if(!projectRailWasExpanded){click('#toggleProjectRail');await new Promise(resolve=>setTimeout(resolve,340));}
+    const expandedWorkspaceFootersAligned=Math.abs(document.querySelector('.rail-footer').getBoundingClientRect().top-document.querySelector('.resource-pane-footer').getBoundingClientRect().top)<=1;
+    const expandedCreateActionCentered=(()=>{const button=document.querySelector('#createProjectButton'),copy=button.querySelector('.rail-project-copy'),buttonRect=button.getBoundingClientRect(),copyRect=copy.getBoundingClientRect();return Math.abs((buttonRect.left+buttonRect.width/2)-(copyRect.left+copyRect.width/2))<=1;})();
     const connectedProject=document.querySelector('.project-tree-item.active[data-project-state="connected"]');
     const disconnectedProject=document.querySelector('.project-tree-item[data-tree-project="idle"][data-project-state="disconnected"]');
     const connectedHeadStyle=getComputedStyle(connectedProject.querySelector('.project-tree-head'));
@@ -200,9 +239,25 @@ async function run() {
       purpleSelection:connectedHeadStyle.boxShadow.includes('131, 124, 246'),
     };
     if(!projectRailWasExpanded){click('#toggleProjectRail');await new Promise(resolve=>setTimeout(resolve,340));}
-    const secondPaneCommonOnly=Boolean(document.querySelector('.resource-project-actions #resetWorkspaceWidths'))&&!document.querySelector('.resource-pane #projectSettingsShortcut')&&!document.querySelector('.resource-pane #projectDeleteShortcut')&&![...document.querySelectorAll('.resource-environment-head')].some(head=>head.querySelector('[data-resource-rename-environment],[data-resource-delete-environment]'));
+    const secondPaneCommonOnly=!document.querySelector('#resetWorkspaceWidths')&&!document.querySelector('.resource-pane #projectSettingsShortcut')&&!document.querySelector('.resource-pane #projectDeleteShortcut')&&![...document.querySelectorAll('.resource-environment-head')].some(head=>head.querySelector('[data-resource-rename-environment],[data-resource-delete-environment]'));
     const environmentCaretRemoved=!document.querySelector('.resource-chevron');
-    const environmentInformationPage=!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent').textContent.includes('正式环境')&&document.querySelector('#scopeInfoContent').textContent.includes('环境信息');
+    const environmentInformationPage=!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent').textContent.includes('正式环境')&&document.querySelector('#scopeInfoContent .scope-information-kind')?.textContent.includes('环境概览');
+    const environmentOverviewActions=[...document.querySelectorAll('#scopeInfoContent .scope-information-actions>button')].map(button=>button.textContent.trim());
+    const environmentView=document.querySelector('#scopeInfoView');
+    const environmentSections=[...document.querySelectorAll('.environment-overview-section>header h2')].map(heading=>heading.textContent.trim());
+    const environmentOverviewCompact={
+      summary:/6 个插件.+个已配置.+个已连接.+个待确认/.test(document.querySelector('.environment-summary-copy')?.textContent||''),
+      noMetricCards:document.querySelectorAll('[data-environment-stat]').length===0,
+      noRecentActivity:!document.querySelector('.environment-summary-page .scope-activity-row')&&!document.querySelector('.environment-summary-page .scope-overview-layout'),
+      noFold:!document.querySelector('.environment-summary-page details'),
+      usefulSections:environmentSections.join('|')==='需要处理|插件状态|环境资料|运维说明',
+      metadataLabels:[...document.querySelectorAll('.environment-profile-summary dt')].map(item=>item.textContent.trim()).join('|')==='所属项目|环境 ID|创建时间|最近更新',
+      pluginRows:document.querySelectorAll('.environment-plugin-summary .scope-plugin-row').length===3,
+      pluginOverflowCue:document.querySelector('.environment-plugin-summary .scope-overview-more')?.textContent.includes('另有 3 个插件'),
+      runbookVisible:Boolean(document.querySelector('.environment-runbook-section .scope-runbook-summary')),
+      managementActionsGrouped:Boolean(document.querySelector('.scope-overview-head .scope-information-actions [data-resource-rename-environment="prod"]'))&&Boolean(document.querySelector('.scope-overview-head .scope-information-actions [data-resource-delete-environment="prod"]')),
+      boundedToPage:environmentView.scrollHeight<=environmentView.clientHeight*1.15,
+    };
     click('[data-resource-rename-environment="prod"]');
     await wait(()=>Boolean(document.querySelector('#scopeInfoContent [data-resource-environment-editor="prod"]')),'environment information rename');
     const environmentNameInput=document.querySelector('[data-resource-environment-editor="prod"] input');
@@ -242,9 +297,10 @@ async function run() {
     await wait(()=>[...document.querySelectorAll('.resource-environment-card')].some(card=>card.textContent.includes('新增测试环境')),'save inline environment');
     const environmentCreatedInline=environmentCreateInline&&document.querySelector('#resourceEnvironmentCreateForm').classList.contains('hidden')&&!document.querySelector('#showInlineEnvironmentCreate').classList.contains('hidden');
     click('[data-project-id="member"]');
-    await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent')?.textContent.includes('项目信息'),'project information');
+    await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent .scope-information-kind')?.textContent.includes('项目概览'),'project information');
     const projectTabs=[...document.querySelectorAll('#detailTopTabs .detail-top-tab')].map(item=>item.textContent.trim());
     const projectInformationPage=document.querySelector('#scopeInfoContent').textContent.includes('澳大利亚-zip')&&!document.querySelector('.resource-pane #projectSettingsShortcut')&&!document.querySelector('.resource-pane #projectDeleteShortcut');
+    const projectOverviewActions=[...document.querySelectorAll('#scopeInfoContent .scope-information-actions>button')].map(button=>button.textContent.trim());
     click('#projectSettingsShortcut');
     await wait(()=>Boolean(document.querySelector('#scopeInfoContent #projectTitleEditor')),'project information title editor no-op');
     click('#saveProjectTitle');
@@ -285,15 +341,32 @@ async function run() {
     const permissionsRefined={hero:Boolean(permissionPage.querySelector('.permission-hero')),summary:permissionPage.querySelectorAll('.permission-summary-item').length,rows:permissionPage.querySelectorAll('.policy-row').length,fits:permissionPage.scrollWidth<=permissionPage.clientWidth};
     click('[data-resource-plugin-id="mysql-member"]');
     await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('会员业务库')&&Boolean(document.querySelector('.connection-information')),'mysql connection detail');
+    const connectionEditButton=document.querySelector('.connection-information [data-action="edit-plugin"]');
+    const connectButton=document.querySelector('.detail-head [data-action="connect-plugin"]');
+    const pluginDetailHierarchy={
+      targetRemovedFromHeader:!document.querySelector('#pluginDetail .detail-summary'),
+      deleteRemovedFromHeader:!document.querySelector('#pluginDetail .detail-head [data-action="prepare-delete-plugin"]'),
+      flatConnectionFacts:document.querySelectorAll('.connection-facts .connection-fact').length===4&&!document.querySelector('.connection-fact-card'),
+      editIsSecondary:Boolean(connectionEditButton)&&!connectionEditButton.classList.contains('primary'),
+      connectIsPrimary:!connectButton||connectButton.classList.contains('primary'),
+      explicitPanelIcons:document.querySelector('#toggleProjectRail use').getAttribute('href')===(app.classList.contains('rail-expanded')?'#i-panel-left-close':'#i-panel-left-open')&&document.querySelector('#toggleDetailPane use').getAttribute('href')==='#i-panel-right-close'&&document.querySelector('#expandDetailPane use').getAttribute('href')==='#i-panel-right-open',
+    };
     const diagnosticInline=!document.querySelector('#diagnosticDialog')&&!document.querySelector('[data-action="test-plugin"]')&&!document.querySelector('#connectionCheckPanel');
     click('[data-detail-tab="configuration"]');
     await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('当前为只读详情'),'readonly configuration tab');
+    const pluginInformationCopy=document.querySelector('.plugin-information-section .content-title h2')?.textContent.trim()==='基本信息'&&document.querySelector('.plugin-information-section .field-list dt')?.textContent.trim()==='插件名称';
+    const pluginInformationActions=[...document.querySelectorAll('.plugin-information-section .scope-information-actions>button')].map(button=>button.textContent.trim());
+    const deletionPlacement=Boolean(document.querySelector('.plugin-information-section .scope-information-actions [data-action="prepare-delete-plugin"]'))&&!document.querySelector('.detail-head [data-action="prepare-delete-plugin"]')&&!document.querySelector('.plugin-danger-zone');
+    click('.plugin-information-section [data-action="prepare-delete-plugin"]');
+    await wait(()=>document.querySelector('#deletePluginDialog').open,'plugin delete from information');
+    const pluginDeleteFromInformation=document.querySelector('#deletePluginMessage').textContent.includes('会员业务库');
+    click('#deletePluginDialog [data-close="deletePluginDialog"]');
     const renameOnlyMetadata=document.querySelector('#pluginDetail').textContent.includes('插件名称')&&document.querySelector('#pluginDetail').textContent.includes('修改名称')&&!/说明|标签|展示顺序/.test(document.querySelector('#pluginDetail').textContent);
     const readonlyBeforeEdit=document.querySelector('#pluginConfigView').classList.contains('hidden')&&Boolean(document.querySelector('#pluginsView:not(.hidden)'));
     window.confirm=()=>true;
     click('[data-action="edit-plugin"]');
     await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginInlineFormHost .plugin-card'),'fenced configuration editor');
-    const configurationInline={readonlyBeforeEdit,renameOnlyMetadata,noDialog:!document.querySelector('#pluginDialog'),title:document.querySelector('#pluginInlineFormHost').textContent.includes('编辑连接配置'),namePreserved:document.querySelector('#pluginDisplayName').value==='会员业务库',typeCardsHidden:document.querySelector('#pluginTypeChoices').classList.contains('hidden'),credentialUnchanged:document.querySelector('#primaryCredentialStatus').textContent.includes('未修改'),draftActionCollapsed:document.querySelector('#savePluginDraft').classList.contains('hidden')&&!document.querySelector('#pluginDraftOverflow').classList.contains('hidden'),visibleFooterActions:document.querySelectorAll('.plugin-form-actions>button:not(.hidden)').length};
+    const configurationInline={readonlyBeforeEdit,renameOnlyMetadata,noDialog:!document.querySelector('#pluginDialog'),title:document.querySelector('#pluginInlineFormHost').textContent.includes('编辑连接配置'),namePreserved:document.querySelector('#pluginDisplayName').value==='会员业务库',typeCardsHidden:document.querySelector('#pluginTypePicker').classList.contains('hidden'),credentialUnchanged:document.querySelector('#primaryCredentialStatus').textContent.includes('未修改'),draftActionCollapsed:document.querySelector('#savePluginDraft').classList.contains('hidden')&&!document.querySelector('#pluginDraftOverflow').classList.contains('hidden'),visibleFooterActions:document.querySelectorAll('.plugin-form-actions>button:not(.hidden)').length};
     click('#validateMysqlDatabase');
     await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'),'form connection check');
     const formDiagnostic=!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginFormDiagnostic').querySelectorAll('.diagnostic-step.success').length===3&&document.querySelector('#pluginFormDiagnostic').textContent.includes('28 ms');
@@ -303,6 +376,14 @@ async function run() {
     const auditConnectionVisible=document.querySelector('#auditBody').textContent.includes('连接插件');
     const auditResponsive=Boolean(document.querySelector('#auditBody .audit-event'))&&!/发起者\s*操作\s*对象\s*结果/.test(document.querySelector('#auditView').textContent);
     const auditPendingNamed=document.querySelector('#auditBody').textContent.includes('等待确认')&&!document.querySelector('#auditBody').textContent.includes('部分成功');
+    const resourceContextBottom=document.querySelector('.resource-pane-label').getBoundingClientRect().bottom;
+    const auditContextBottom=document.querySelector('#auditView .page-head').getBoundingClientRect().bottom;
+    const firstResourceTop=document.querySelector('.resource-environment-card').getBoundingClientRect().top;
+    const firstAuditControlTop=document.querySelector('#auditSearch').getBoundingClientRect().top;
+    const workspaceTopBandsAligned=Math.abs(resourceContextBottom-auditContextBottom)<=1&&Math.abs(firstResourceTop-firstAuditControlTop)<=1;
+    const workspaceFootersAligned=Math.abs(document.querySelector('.rail-footer').getBoundingClientRect().top-document.querySelector('.resource-pane-footer').getBoundingClientRect().top)<=1;
+    const inactiveEnvironmentActionsSecondary=[...document.querySelectorAll('.resource-environment-card:not(.selected):not(:has(.resource-plugin-row.selected)) .resource-runtime-action')].every(button=>!button.classList.contains('primary'));
+    const auditMetaAligned=(()=>{const record=document.querySelector('#auditBody .audit-record'),items=[record.querySelector('time'),record.querySelector('.audit-actor'),record.querySelector('.result')],centers=items.map(item=>{const rect=item.getBoundingClientRect();return rect.top+rect.height/2;});return Math.max(...centers)-Math.min(...centers)<=1;})();
     click('#clearAudit');
     await wait(()=>document.querySelector('#clearAuditDialog').open,'clear audit confirmation');
     const auditClearScoped=document.querySelector('#clearAuditScope').textContent.includes('会员业务库')&&document.querySelector('#clearAuditScope').textContent.includes('仅当前插件');
@@ -321,10 +402,12 @@ async function run() {
     click('#savePluginDraftOverflow');
     await wait(()=>Boolean(document.querySelector('[data-resource-draft-id]'))&&!document.querySelector('#scopeInfoView').classList.contains('hidden'),'save mysql draft');
     click('[data-resource-draft-id]');
-    await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginFormTitle').textContent.includes('继续配置草稿'),'resume mysql draft');
+    await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginFormTitle').textContent.includes('完成插件配置'),'resume mysql draft');
     click('#validateMysqlDatabase');
     await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'),'validate resumed mysql draft');
     const basedDraftValidationUsesDraftSession=document.querySelector('#pluginFormDiagnostic').textContent.includes('28 ms');
+    click('#pluginDraftOverflow summary');
+    await wait(()=>document.querySelector('#pluginDraftOverflow').open,'open draft actions for deletion');
     click('#deleteCurrentDraft');
     await wait(()=>!document.querySelector('[data-resource-draft-id]')&&!document.querySelector('#scopeInfoView').classList.contains('hidden'),'delete mysql draft');
     await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden'),'return to environment');
@@ -335,11 +418,22 @@ async function run() {
     click('#toggleDetailPane');
     await frame();
     click('[data-resource-add-plugin="prod"]');
-    await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginInlineFormHost .plugin-card'),'inline add plugin');
+    await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&!document.querySelector('#pluginTypePicker').classList.contains('hidden')&&!document.querySelector('#pluginInlineFormHost .plugin-card'),'plugin type picker');
+    const typePickerCatalog=[...document.querySelectorAll('#pluginTypeChoices input[name="pluginTypeChoice"]')].map(input=>input.value);
+    document.querySelector('input[name="pluginTypeChoice"][value="redis"]').click();
+    await wait(()=>document.querySelector('#pluginTypePicker').classList.contains('hidden')&&document.querySelector('#pluginInlineFormHost .plugin-card'),'inline add plugin');
     const addPluginInline=!document.querySelector('#pluginDialog')&&document.querySelector('#pluginDisplayName').value==='';
+    const createFooterLabels=[...document.querySelectorAll('.plugin-form-actions>button:not(.hidden)')].map(button=>button.textContent.trim());
+    const typeIdentity=document.querySelector('#pluginTypeIdentity');
+    const identityStyle=getComputedStyle(typeIdentity);
+    const changeTypeButton=document.querySelector('#changeNewPluginType');
+    const changeTypeStyle=getComputedStyle(changeTypeButton);
+    const hostRect=document.querySelector('#pluginHost').getBoundingClientRect();
+    const portRect=document.querySelector('#pluginPort').getBoundingClientRect();
+    const sectionStyle=getComputedStyle(document.querySelector('#targetAddressSection'));
+    const createActionModel={typePickerCatalog,createFooterLabels,validationHidden:document.querySelector('#pluginValidationSection').classList.contains('hidden'),directDraftVisible:!document.querySelector('#savePluginDraft').classList.contains('hidden'),overflowDraftHidden:document.querySelector('#pluginDraftOverflow').classList.contains('hidden'),typeIdentityPlain:identityStyle.backgroundColor==='rgba(0, 0, 0, 0)'&&identityStyle.borderTopWidth==='0px',changeTypeButtonObvious:changeTypeButton.tagName==='BUTTON'&&changeTypeStyle.borderTopWidth!=='0px'&&changeTypeStyle.backgroundColor!=='rgba(0, 0, 0, 0)',pairedFieldsAligned:Math.abs(hostRect.top-portRect.top)<1&&Math.abs(hostRect.height-portRect.height)<1,flatSections:sectionStyle.borderTopLeftRadius==='0px'&&sectionStyle.boxShadow==='none'&&sectionStyle.backgroundColor==='rgba(0, 0, 0, 0)',advancedSummary:document.querySelector('#pluginAdvancedSummary').textContent.includes('IPv4 优先')};
     const addPluginOpensDetail=!app.classList.contains('detail-collapsed')&&Math.round(detail.getBoundingClientRect().width)>58;
     document.querySelector('#pluginDisplayName').value='未完成 Redis';
-    document.querySelector('input[name="pluginTypeChoice"][value="redis"]').click();
     document.querySelector('#pluginHost').value='';
     click('#savePluginDraft');
     await wait(()=>Boolean(document.querySelector('[data-resource-draft-id]'))&&!document.querySelector('#scopeInfoView').classList.contains('hidden'),'save persistent draft');
@@ -347,10 +441,17 @@ async function run() {
     const draftSaved=savedDraftRow?.textContent.includes('未完成 Redis')&&savedDraftRow.textContent.includes('继续配置');
     click('[data-resource-draft-id]');
     await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginDisplayName').value==='未完成 Redis','resume persistent draft');
-    const draftResumed=document.querySelector('#pluginFormTitle').textContent.includes('继续配置草稿')&&!document.querySelector('#deleteCurrentDraft').classList.contains('hidden');
-    click('#deleteCurrentDraft');
-    await wait(()=>!document.querySelector('[data-resource-draft-id]')&&!document.querySelector('#scopeInfoView').classList.contains('hidden'),'delete persistent draft');
-    const draftDeleted=!document.querySelector('[data-resource-draft-id]');
+    const draftActionModel={
+      title:document.querySelector('#pluginFormTitle').textContent.trim(),
+      footerLabels:[...document.querySelectorAll('.plugin-form-actions>button:not(.hidden)')].map(button=>button.textContent.trim()),
+      deleteInMore:document.querySelector('#deleteCurrentDraft')?.closest('.plugin-draft-overflow-menu')!==null&&!document.querySelector('#deleteCurrentDraft').classList.contains('hidden'),
+    };
+    const draftResumed=draftActionModel.title==='完成插件配置'&&draftActionModel.deleteInMore;
+    document.querySelector('#pluginHost').value='cache.internal';
+    document.querySelector('#pluginHost').dispatchEvent(new Event('input',{bubbles:true}));
+    click('#savePlugin');
+    await wait(()=>!document.querySelector('[data-resource-draft-id]')&&document.querySelector('#pluginDetail')?.textContent.includes('未完成 Redis'),'complete persistent draft');
+    const draftCompleted=document.querySelector('#pluginFormError').classList.contains('hidden')&&!document.querySelector('#pluginConfigView:not(.hidden)');
     const resourceList=document.querySelector('#resourceEnvironmentList');
     resourceList.scrollTop=0;
     click('[data-resource-plugin-id="redis-cache-2"]');
@@ -366,18 +467,58 @@ async function run() {
     const collapsed={active:app.classList.contains('detail-collapsed'),detailWidth:Math.round(detail.getBoundingClientRect().width),resourceWidth:Math.round(resources.getBoundingClientRect().width),buttonVisible:getComputedStyle(document.querySelector('#expandDetailPane')).display!=='none'};
     click('#expandDetailPane');
     await frame();
-    return {environmentTabs,projectTabs,pluginTabs,selectedHeaderContinuous,compactEnvironmentActions,environmentActionsWrapCleanly,environmentCardToggle,environmentHeaderHeight,railRefined,projectConnectionContrast,secondPaneCommonOnly,environmentManagementInInformation,environmentCreatedInline,confirmationCenter,permissionsRefined,projectManagementInInformation,projectDeleteFromInformation,configurationInline,diagnosticInline,formDiagnostic,basedDraftValidationUsesDraftSession,addPluginInline,addPluginOpensDetail,draftSaved,draftResumed,draftDeleted,overflowSelectionVisible,resourceOverflowOwnedByList,auditFiltered,auditConnectionVisible,auditResponsive,auditPendingNamed,auditClearScoped,auditCleared,collapsed,initialRects:initialRects.map(rect=>({left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width)})),expanded:!app.classList.contains('detail-collapsed'),separators:document.querySelectorAll('[role="separator"]').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};
+    return {environmentTabs,projectTabs,pluginTabs,selectedHeaderContinuous,compactEnvironmentActions,environmentActionsWrapCleanly,environmentHeaderControlsAligned,workspaceHeaderLinesAligned,environmentCardToggle,environmentHeaderHeight,railRefined,projectConnectionContrast,expandedWorkspaceFootersAligned,expandedCreateActionCentered,secondPaneCommonOnly,environmentOverviewActions,environmentOverviewCompact,environmentManagementInInformation,environmentCreatedInline,confirmationCenter,permissionsRefined,projectOverviewActions,projectManagementInInformation,projectDeleteFromInformation,pluginDetailHierarchy,pluginInformationCopy,pluginInformationActions,deletionPlacement,pluginDeleteFromInformation,configurationInline,diagnosticInline,formDiagnostic,basedDraftValidationUsesDraftSession,addPluginInline,createActionModel,addPluginOpensDetail,draftSaved,draftResumed,draftActionModel,draftCompleted,overflowSelectionVisible,resourceOverflowOwnedByList,auditFiltered,auditConnectionVisible,auditResponsive,auditPendingNamed,workspaceTopBandsAligned,workspaceFootersAligned,inactiveEnvironmentActionsSecondary,auditMetaAligned,auditClearScoped,auditCleared,collapsed,initialRects:initialRects.map(rect=>({left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width)})),expanded:!app.classList.contains('detail-collapsed'),separators:document.querySelectorAll('[role="separator"]').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};
   })()`);
   const screenshotPath = process.argv.find((value) => /\.png$/i.test(value)) || process.env.AI_OPS_SCREENSHOT_PATH;
   if (screenshotPath) {
-    const screenshotMode = ['confirmation','editor','configuration','audit','resources','environment','project','projects'].includes(process.env.AI_OPS_SCREENSHOT_MODE) ? process.env.AI_OPS_SCREENSHOT_MODE : 'permissions';
+    const screenshotModes = ['add','add-compact','confirmation','editor','configuration','connection','audit','resources','environment','project','projects'];
+    const screenshotMode = process.argv.find((value) => screenshotModes.includes(value)) ?? (screenshotModes.includes(process.env.AI_OPS_SCREENSHOT_MODE) ? process.env.AI_OPS_SCREENSHOT_MODE : 'permissions');
     if (screenshotMode === 'audit') auditEntries = structuredClone(initialAuditEntries);
     if (screenshotMode === 'resources') {
       win.setContentSize(815,900);
       await new Promise((resolve) => setTimeout(resolve,100));
     }
-    const screenshotState = await win.webContents.executeJavaScript(`(async()=>{const wait=async(predicate)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: ${screenshotMode} screenshot');await new Promise(resolve=>setTimeout(resolve,20));}};const click=(selector)=>{const element=document.querySelector(selector);if(!element)throw new Error('missing screenshot target: '+selector);element.click();};const openMysql=async()=>{if(!document.querySelector('[data-resource-plugin-id="mysql-member"]')){click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('[data-resource-plugin-id="mysql-member"]'));}click('[data-resource-plugin-id="mysql-member"]');await wait(()=>document.querySelector('[data-detail-tab="configuration"]')&&document.querySelector('#pluginDetail')?.textContent.includes('会员业务库'));};if('${screenshotMode}'==='confirmation'){click('#confirmationButton');await wait(()=>!document.querySelector('#confirmationView').classList.contains('hidden')&&document.querySelector('#detailTopTabs').textContent.includes('操作确认')&&document.querySelector('[data-confirmation-card]'));}else if('${screenshotMode}'==='editor'){await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('当前为只读详情'));window.confirm=()=>true;click('[data-action="edit-plugin"]');await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden'));click('#validateMysqlDatabase');await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'));document.querySelector('#pluginFormDiagnostic').scrollIntoView({block:'center'});}else if('${screenshotMode}'==='configuration'){await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('修改名称'));}else if('${screenshotMode}'==='audit'){await openMysql();click('[data-detail-tab="audit"]');await wait(()=>!document.querySelector('#auditView').classList.contains('hidden')&&document.querySelector('#auditBody')?.textContent.includes('连接插件'));}else if('${screenshotMode}'==='resources'){if(!document.querySelector('#app').classList.contains('detail-collapsed'))click('#toggleDetailPane');await wait(()=>document.querySelector('#app').classList.contains('detail-collapsed'));const list=document.querySelector('#resourceEnvironmentList');list.scrollTop=list.scrollHeight;await wait(()=>{const row=document.querySelector('[data-resource-plugin-id="redis-cache-2"]')?.closest('.resource-plugin-row');if(!row)return false;const rowRect=row.getBoundingClientRect(),listRect=list.getBoundingClientRect();return rowRect.bottom<=listRect.bottom&&rowRect.top>=listRect.top;});}else if('${screenshotMode}'==='environment'){click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent')?.textContent.includes('环境信息'));if(!document.querySelector('[data-resource-plugin-id="server-app"]')){click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('[data-resource-plugin-id="server-app"]'));}}else if('${screenshotMode}'==='project'){click('[data-project-id="member"]');await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent')?.textContent.includes('项目信息'));}else if('${screenshotMode}'==='projects'){if(!document.querySelector('#app').classList.contains('rail-expanded')){click('#toggleProjectRail');await new Promise(resolve=>setTimeout(resolve,340));}}else{click('[data-resource-plugin-id="server-app"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('应用服务器'));click('[data-detail-tab="permissions"]');await wait(()=>Boolean(document.querySelector('#pluginDetail .permissions-page')));}await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));return{mode:'${screenshotMode}',editorVisible:!document.querySelector('#pluginConfigView').classList.contains('hidden'),successfulChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.success').length,pendingChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.pending, #pluginFormDiagnostic .diagnostic-step.queued').length,visibleFooterActions:document.querySelectorAll('.plugin-form-actions>button:not(.hidden)').length};})()`);
-    if (screenshotMode === 'editor') assert.deepEqual(screenshotState,{mode:'editor',editorVisible:true,successfulChecks:3,pendingChecks:0,visibleFooterActions:3});
+    if (screenshotMode === 'add-compact') {
+      win.setContentSize(815,900);
+      await new Promise((resolve) => setTimeout(resolve,100));
+    }
+    const screenshotState = await win.webContents.executeJavaScript(`(async()=>{
+      const wait=async(predicate)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: ${screenshotMode} screenshot');await new Promise(resolve=>setTimeout(resolve,20));}};
+      const click=(selector)=>{const element=document.querySelector(selector);if(!element)throw new Error('missing screenshot target: '+selector);element.click();};
+      const openMysql=async()=>{if(!document.querySelector('[data-resource-plugin-id="mysql-member"]')){click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('[data-resource-plugin-id="mysql-member"]'));}click('[data-resource-plugin-id="mysql-member"]');await wait(()=>document.querySelector('[data-detail-tab="configuration"]')&&document.querySelector('#pluginDetail')?.textContent.includes('会员业务库'));};
+      if(['add','add-compact'].includes('${screenshotMode}')){
+        click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('[data-resource-add-plugin="prod"]'));click('[data-resource-add-plugin="prod"]');await wait(()=>!document.querySelector('#pluginTypePicker').classList.contains('hidden'));click('input[name="pluginTypeChoice"][value="mysql"]');await wait(()=>document.querySelector('#pluginInlineFormHost .plugin-card')&&!document.querySelector('#pluginInlineFormHost .plugin-card').classList.contains('hidden'));document.querySelector('#pluginHost').value='127.0.0.1';document.querySelector('#pluginHost').dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#pluginUsername').value='root';document.querySelector('#pluginUsername').dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.plugin-dialog-body').scrollTop=0;
+      }else if('${screenshotMode}'==='confirmation'){
+        click('#confirmationButton');
+        await wait(()=>!document.querySelector('#confirmationView').classList.contains('hidden')&&document.querySelector('#detailTopTabs').textContent.includes('操作确认')&&document.querySelector('[data-confirmation-card]'));
+      }else if('${screenshotMode}'==='editor'){
+        await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('当前为只读详情'));window.confirm=()=>true;click('[data-action="edit-plugin"]');await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden'));click('#validateMysqlDatabase');await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'));document.querySelector('#pluginFormDiagnostic').scrollIntoView({block:'center'});
+      }else if('${screenshotMode}'==='configuration'){
+        await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('修改名称'));
+      }else if('${screenshotMode}'==='connection'){
+        click('[data-resource-plugin-id="server-app"]');await wait(()=>document.querySelector('[data-detail-tab="connection"]')&&document.querySelector('#pluginDetail')?.textContent.includes('应用服务器'));click('[data-detail-tab="connection"]');await wait(()=>document.querySelector('#pluginDetail .connection-facts'));
+      }else if('${screenshotMode}'==='audit'){
+        await openMysql();click('[data-detail-tab="audit"]');await wait(()=>!document.querySelector('#auditView').classList.contains('hidden')&&document.querySelector('#auditBody')?.textContent.includes('连接插件'));
+      }else if('${screenshotMode}'==='resources'){
+        if(!document.querySelector('#app').classList.contains('detail-collapsed'))click('#toggleDetailPane');await wait(()=>document.querySelector('#app').classList.contains('detail-collapsed'));const list=document.querySelector('#resourceEnvironmentList');list.scrollTop=list.scrollHeight;await wait(()=>{const row=document.querySelector('[data-resource-plugin-id="redis-cache-2"]')?.closest('.resource-plugin-row');if(!row)return false;const rowRect=row.getBoundingClientRect(),listRect=list.getBoundingClientRect();return rowRect.bottom<=listRect.bottom&&rowRect.top>=listRect.top;});
+      }else if('${screenshotMode}'==='environment'){
+        click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent')?.textContent.includes('环境信息'));if(!document.querySelector('[data-resource-plugin-id="server-app"]')){click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('[data-resource-plugin-id="server-app"]'));}
+      }else if('${screenshotMode}'==='project'){
+        click('[data-project-id="member"]');await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent')?.textContent.includes('项目信息'));
+      }else if('${screenshotMode}'==='projects'){
+        if(!document.querySelector('#app').classList.contains('rail-expanded')){click('#toggleProjectRail');await new Promise(resolve=>setTimeout(resolve,340));}
+      }else{
+        click('[data-resource-plugin-id="server-app"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('应用服务器'));click('[data-detail-tab="permissions"]');await wait(()=>Boolean(document.querySelector('#pluginDetail .permissions-page')));
+      }
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+      const form=document.querySelector('#pluginInlineFormHost .plugin-card');const footerButtons=[...document.querySelectorAll('.plugin-form-actions>button:not(.hidden)')];const buttonRects=footerButtons.map(button=>button.getBoundingClientRect());const footerButtonsOverlap=buttonRects.some((rect,index)=>buttonRects.slice(index+1).some(other=>rect.left<other.right&&rect.right>other.left&&rect.top<other.bottom&&rect.bottom>other.top));
+      return{mode:'${screenshotMode}',editorVisible:!document.querySelector('#pluginConfigView').classList.contains('hidden'),pluginType:document.querySelector('#pluginType')?.value??null,successfulChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.success').length,pendingChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.pending, #pluginFormDiagnostic .diagnostic-step.queued').length,visibleFooterActions:footerButtons.length,formHorizontalOverflow:Boolean(form&&form.scrollWidth>form.clientWidth),footerButtonsOverlap,footerButtonRects:footerButtons.map((button,index)=>({label:button.textContent.trim(),left:Math.round(buttonRects[index].left),right:Math.round(buttonRects[index].right),top:Math.round(buttonRects[index].top),bottom:Math.round(buttonRects[index].bottom)}))};
+    })()`);
+    if (screenshotState.footerButtonsOverlap || screenshotState.formHorizontalOverflow) console.error('Screenshot layout:',JSON.stringify(screenshotState));
+    const {footerButtonRects,...screenshotContract} = screenshotState;
+    if (screenshotMode === 'editor') assert.deepEqual(screenshotContract,{mode:'editor',editorVisible:true,pluginType:'mysql',successfulChecks:3,pendingChecks:0,visibleFooterActions:3,formHorizontalOverflow:false,footerButtonsOverlap:false});
+    if (screenshotMode === 'add') assert.deepEqual(screenshotContract,{mode:'add',editorVisible:true,pluginType:'mysql',successfulChecks:0,pendingChecks:0,visibleFooterActions:3,formHorizontalOverflow:false,footerButtonsOverlap:false});
+    if (screenshotMode === 'add-compact') assert.deepEqual(screenshotContract,{mode:'add-compact',editorVisible:true,pluginType:'mysql',successfulChecks:0,pendingChecks:0,visibleFooterActions:3,formHorizontalOverflow:false,footerButtonsOverlap:false});
     win.showInactive();
     await new Promise((resolve) => setTimeout(resolve,250));
     const image = await win.webContents.capturePage();
@@ -391,22 +532,31 @@ async function run() {
   win.setContentSize(960,720);
   await new Promise((resolve) => setTimeout(resolve,80));
   const compactLayout = await win.webContents.executeJavaScript(`(async()=>{const wait=async(predicate,label)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: '+label);await new Promise(resolve=>setTimeout(resolve,20));}};const click=(selector)=>{const element=document.querySelector(selector);if(!element)throw new Error('missing compact click target: '+selector);element.click();};const app=document.querySelector('#app'),rail=document.querySelector('.project-rail'),resources=document.querySelector('#resourcePane'),detail=document.querySelector('#detailPane');if(!app.classList.contains('rail-expanded')){click('#toggleProjectRail');await new Promise(resolve=>setTimeout(resolve,340));}click('[data-resource-plugin-id="server-app"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('应用服务器')&&document.querySelector('[data-detail-tab="permissions"]'),'compact plugin detail and tabs');click('[data-detail-tab="permissions"]');await wait(()=>Boolean(document.querySelector('#pluginDetail .permissions-page')),'compact permissions');await new Promise(resolve=>requestAnimationFrame(resolve));const permissionPage=document.querySelector('#pluginDetail .permissions-page'),detailContent=document.querySelector('#pluginDetail .detail-content');const connectedStyle=getComputedStyle(document.querySelector('.project-tree-item.active[data-project-state="connected"]>.project-tree-head')),disconnectedStyle=getComputedStyle(document.querySelector('.project-tree-item[data-tree-project="idle"]>.project-tree-head'));const railRect=rail.getBoundingClientRect(),resourceRect=resources.getBoundingClientRect(),detailRect=detail.getBoundingClientRect();return{expanded:app.classList.contains('rail-expanded'),railWidth:Math.round(railRect.width),resourceLeft:Math.round(resourceRect.left),detailWidth:Math.round(detailRect.width),overlaid:railRect.right>resourceRect.left,projectConnectionContrast:connectedStyle.backgroundImage!==disconnectedStyle.backgroundImage&&connectedStyle.boxShadow.includes('85, 214, 161')&&connectedStyle.boxShadow.includes('131, 124, 246'),projectLabelsFit:[...document.querySelectorAll('.rail-project-copy')].every(copy=>copy.scrollWidth<=copy.clientWidth+1),permissionFits:permissionPage.scrollWidth<=permissionPage.clientWidth&&detailContent.scrollWidth<=detailContent.clientWidth,permissionRows:permissionPage.querySelectorAll('.policy-row').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};})()`);
-  assert.deepEqual(result.environmentTabs,['环境信息','运维说明','环境操作记录']);
+  const compactScopeOverview = await win.webContents.executeJavaScript(`(async()=>{const wait=async(predicate,label)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: '+label);await new Promise(resolve=>setTimeout(resolve,20));}};const click=(selector)=>document.querySelector(selector).click();const inspect=()=>{const page=document.querySelector('#scopeInfoContent .scope-overview-page'),head=page.querySelector('.scope-overview-head'),actions=page.querySelector('.scope-information-actions'),stats=[...page.querySelectorAll('.scope-overview-stat')],pageRect=page.getBoundingClientRect(),actionsRect=actions.getBoundingClientRect();return{buttons:[...actions.querySelectorAll(':scope>button')].map(button=>button.textContent.trim()),statRows:new Set(stats.map(stat=>Math.round(stat.getBoundingClientRect().top))).size,fits:page.scrollWidth<=page.clientWidth+1&&head.scrollWidth<=head.clientWidth+1&&actionsRect.left>=pageRect.left-1&&actionsRect.right<=pageRect.right+1};};click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('#scopeInfoContent .scope-information-kind')?.textContent.includes('环境概览'),'compact environment overview');await new Promise(resolve=>requestAnimationFrame(resolve));const environment={...inspect(),boundedOverview:document.querySelector('#scopeInfoView').scrollHeight<=document.querySelector('#scopeInfoView').clientHeight*1.65};click('[data-project-id="member"]');await wait(()=>document.querySelector('#scopeInfoContent .scope-information-kind')?.textContent.includes('项目概览'),'compact project overview');await new Promise(resolve=>requestAnimationFrame(resolve));return{environment,project:inspect()};})()`);
+  assert.deepEqual(result.environmentTabs,['概览','运维说明','环境操作记录']);
   assert.deepEqual(result.projectTabs,['项目信息']);
   assert.deepEqual(result.pluginTabs,['插件详情','配置','Agent 权限','操作记录']);
   assert.equal(result.selectedHeaderContinuous,true);
   assert.equal(result.compactEnvironmentActions,true);
   assert.equal(result.environmentActionsWrapCleanly,true);
   assert.equal(result.environmentCardToggle,true);
-  assert.ok(result.environmentHeaderHeight>=88&&result.environmentHeaderHeight<=104,'environment header should use two aligned compact rows');
+  assert.ok(result.environmentHeaderHeight>=74&&result.environmentHeaderHeight<=80,'environment header should keep title, status, and action on one aligned row');
   assert.equal(result.railRefined,true);
   assert.deepEqual(result.projectConnectionContrast,{statesPresent:true,distinctBackground:true,greenStateBar:true,greenSummary:true,purpleSelection:true});
   assert.equal(result.secondPaneCommonOnly,true);
+  assert.deepEqual(result.environmentOverviewActions,['修改名称','删除环境']);
+  assert.deepEqual(result.environmentOverviewCompact,{summary:true,noMetricCards:true,noRecentActivity:true,noFold:true,usefulSections:true,metadataLabels:true,pluginRows:true,pluginOverflowCue:true,runbookVisible:true,managementActionsGrouped:true,boundedToPage:true});
   assert.equal(result.environmentManagementInInformation,true);
   assert.deepEqual(environmentUpdateCalls,[{projectId:'member',environmentId:'prod',patch:{name:'生产环境'},expectedRevision:1}]);
   assert.deepEqual(projectUpdateCalls,[{projectId:'member',patch:{name:'澳大利亚-zip · 新版'},expectedRevision:2}]);
   assert.equal(result.environmentCreatedInline,true);
   assert.deepEqual(result.permissionsRefined,{hero:true,summary:4,rows:8,fits:true});
+  assert.deepEqual(result.pluginDetailHierarchy,{targetRemovedFromHeader:true,deleteRemovedFromHeader:true,flatConnectionFacts:true,editIsSecondary:true,connectIsPrimary:true,explicitPanelIcons:true});
+  assert.equal(result.pluginInformationCopy,true);
+  assert.deepEqual(result.pluginInformationActions,['修改名称','删除插件']);
+  assert.equal(result.deletionPlacement,true);
+  assert.equal(result.pluginDeleteFromInformation,true);
+  assert.deepEqual(result.projectOverviewActions,['修改名称','删除项目']);
   assert.equal(result.projectManagementInInformation,true);
   assert.equal(result.projectDeleteFromInformation,true);
   assert.deepEqual(result.confirmationCenter,{globalEntry:true,cards:2,shellInitiallyBlocked:true,shellInlineStrongConfirmation:true,executionLinked:true,countAfterApproval:1});
@@ -415,16 +565,27 @@ async function run() {
   assert.equal(result.formDiagnostic,true);
   assert.equal(result.basedDraftValidationUsesDraftSession,true);
   assert.equal(result.addPluginInline,true);
+  assert.deepEqual(result.createActionModel,{typePickerCatalog:['server','mysql','redis'],createFooterLabels:['取消','保存草稿','检查并添加'],validationHidden:true,directDraftVisible:true,overflowDraftHidden:true,typeIdentityPlain:true,changeTypeButtonObvious:true,pairedFieldsAligned:true,flatSections:true,advancedSummary:true});
   assert.equal(result.addPluginOpensDetail,true);
   assert.equal(result.draftSaved,true);
   assert.equal(result.draftResumed,true);
-  assert.equal(result.draftDeleted,true);
+  assert.deepEqual(result.draftActionModel,{title:'完成插件配置',footerLabels:['退出','保存草稿','完成配置'],deleteInMore:true});
+  assert.equal(result.draftCompleted,true);
+  assert.equal(newDraftPromotionSessionKept,true);
   assert.equal(result.overflowSelectionVisible,true);
   assert.equal(result.resourceOverflowOwnedByList,true);
   assert.equal(result.auditFiltered,true);
   assert.equal(result.auditConnectionVisible,true);
   assert.equal(result.auditResponsive,true);
   assert.equal(result.auditPendingNamed,true);
+  assert.equal(result.environmentHeaderControlsAligned,true);
+  assert.equal(result.workspaceHeaderLinesAligned,true);
+  assert.equal(result.workspaceTopBandsAligned,true);
+  assert.equal(result.workspaceFootersAligned,true);
+  assert.equal(result.expandedWorkspaceFootersAligned,true);
+  assert.equal(result.expandedCreateActionCentered,true);
+  assert.equal(result.inactiveEnvironmentActionsSecondary,true);
+  assert.equal(result.auditMetaAligned,true);
   assert.equal(result.auditClearScoped,true);
   assert.equal(result.auditCleared,true);
   assert.equal(result.collapsed.active,true);
@@ -437,6 +598,7 @@ async function run() {
   assert.equal(result.initialRects[0].right,result.initialRects[1].left);
   assert.equal(result.initialRects[1].right,result.initialRects[2].left);
   assert.deepEqual(compactLayout,{expanded:true,railWidth:260,resourceLeft:72,detailWidth:560,overlaid:true,projectConnectionContrast:true,projectLabelsFit:true,permissionFits:true,permissionRows:8,overflow:false});
+  assert.deepEqual(compactScopeOverview,{environment:{buttons:['修改名称','删除环境'],statRows:0,fits:true,boundedOverview:true},project:{buttons:['修改名称','删除项目'],statRows:2,fits:true}});
   assert.deepEqual(errors,[]);
   win.destroy();
 }

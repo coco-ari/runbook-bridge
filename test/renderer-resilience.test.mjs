@@ -84,40 +84,49 @@ function selectElement(optionValues = [''],selectedValue = optionValues[0] ?? ''
   return element;
 }
 
-function databaseRendererHarness(validatePluginDraft,{selectedDatabase = 'orders',savedDatabase = selectedDatabase} = {}) {
+function databaseRendererHarness(validatePluginDraft,{selectedDatabase = 'orders',savedDatabase = selectedDatabase,creating = false,displayName = 'Orders'} = {}) {
   const busyElement = (textContent = '') => ({
     disabled:false,textContent,attributes:new Set(),
     setAttribute(name) { this.attributes.add(name); },
     removeAttribute(name) { this.attributes.delete(name); },
   });
   const elements = {
-    pluginType:{value:'mysql'},pluginDisplayName:{value:'Orders'},pluginHost:{value:'db.internal'},
+    pluginType:{value:'mysql'},pluginDisplayName:{value:displayName},pluginHost:{value:'db.internal'},
     pluginPort:{value:'3306'},pluginUsername:{value:'reader'},pluginAddressFamily:{value:'ipv4Preferred'},
     pluginTransport:{value:'direct'},pluginProvider:{value:''},pluginVpnAlias:{value:''},pluginTls:{value:'disabled'},
     pluginPassword:{value:'',dataset:{credentialState:'empty'}},
     pluginDatabase:selectElement(selectedDatabase ? ['',selectedDatabase] : [''],selectedDatabase),
     pluginDatabaseOptions:{innerHTML:''},
-    databaseHint:{textContent:''},queryDatabases:busyElement('加载数据库'),savePlugin:busyElement(),
+    databaseHint:{textContent:''},queryDatabases:busyElement('读取数据库'),savePlugin:busyElement(),
   };
   const state = {
     projectId:'project',environmentId:'environment',
-    editingPlugin:{pluginInstanceId:'mysql',pluginType:'mysql',target:{database:savedDatabase}},
+    selectionKind:creating ? 'new-plugin' : 'plugin',newPluginType:creating ? 'mysql' : null,
+    pluginFormInstanceId:creating ? 'form-mysql-1' : null,newPluginInstanceId:creating ? 'mysql-random-1' : null,
+    pluginProbe:null,
+    editingPlugin:creating ? null : {pluginInstanceId:'mysql',pluginType:'mysql',target:{database:savedDatabase}},
     databaseDiscoverySignature:null,databaseCredentialRevision:0,databaseQueryGeneration:0,credentialProbeGeneration:4,
     pluginValidationSequence:0,
-    pluginEditSession:{editSessionId:'edit-1',draftGeneration:0,validations:{}},
+    pluginEditSession:creating ? null : {editSessionId:'edit-1',draftGeneration:0,validations:{}},
   };
   const context = vm.createContext({
-    state,api:{validatePluginDraft,cancelPluginValidation:async () => ({ok:true,data:{state:'cancelled'}})},
+    state,api:{validatePluginDraft,probePluginDraft:validatePluginDraft,cancelPluginValidation:async () => ({ok:true,data:{state:'cancelled'}}),cancelPluginProbe:async () => ({ok:true,data:{state:'cancelled'}})},
     $:(selector) => elements[selector.slice(1)],
     pluginFormPayload:() => ({
-      input:{pluginType:'mysql',displayName:'Orders',target:{host:elements.pluginHost.value,port:3306,database:elements.pluginDatabase.value,addressFamily:'ipv4Preferred'},auth:{username:'reader'},transport:{kind:'direct'},tls:{mode:'disabled'}},
+      input:{pluginType:'mysql',displayName,pluginInstanceId:creating ? 'mysql-random-1' : 'mysql',target:{host:elements.pluginHost.value,port:3306,database:elements.pluginDatabase.value,addressFamily:'ipv4Preferred'},auth:{username:'reader'},transport:{kind:'direct'},tls:{mode:'disabled'}},
       secrets:{},credentialIntent:'unchanged',
     }),
-    clearPluginFormError:() => {},pluginFormActive:() => true,pluginFormVisible:() => true,
+    clearPluginFormError:() => {},pluginFormActive:() => true,pluginFormVisible:() => true,renderPluginFormDiagnostic:() => {},
+    pluginProbeIssue:() => null,focusPluginProbeIssue:() => false,
+    pluginDefinition:(type) => ({validationPurpose:type === 'server'
+      ? {validate:'server-auth',tls:'tls-probe'}
+      : type === 'mysql'
+        ? {discover:'resource-discovery',validate:'resource-access',tls:'tls-probe'}
+        : {validate:'resource-access',tls:'tls-probe'}}),
     scopeMatches:(scope) => scope.projectId === state.projectId && scope.environmentId === state.environmentId,
     escapeAttr:(value) => String(value),escapeHtml:(value) => String(value),
   });
-  install(context,['call','setElementBusy','editedPasswordValue','pluginValidationPurpose','pluginValidationResultMatches','activePluginValidation','cancelLocalPluginValidation','databaseConnectionSignature','invalidateDatabaseDiscovery','queryDatabases']);
+  install(context,['call','setElementBusy','editedPasswordValue','pluginValidationPurpose','pluginValidationResultMatches','pluginProbeResultMatches','pluginValidationSession','activePluginValidation','creatingUnsavedPlugin','activePluginProbe','activePluginFormValidation','cancelLocalPluginProbe','cancelLocalPluginValidation','databaseConnectionSignature','setPluginCommitActionsDisabled','invalidateDatabaseDiscovery','queryDatabases']);
   state.databaseDiscoverySignature = vm.runInContext('databaseConnectionSignature()',context);
   return {context,elements,state};
 }
@@ -134,7 +143,7 @@ test('database discovery invalidation preserves the selected database and unlock
   assert.equal(elements.pluginDatabase.value,'orders');
   assert.equal(elements.pluginDatabase.disabled,false);
   assert.equal(elements.queryDatabases.disabled,false);
-  assert.equal(elements.queryDatabases.textContent,'加载数据库');
+  assert.equal(elements.queryDatabases.textContent,'读取数据库');
   assert.equal(elements.savePlugin.disabled,false);
   assert.equal(state.databaseQueryGeneration,1);
   assert.equal(state.databaseDiscoverySignature,null);
@@ -197,7 +206,7 @@ test('database discovery failure preserves the selected database and restores fo
 
   assert.equal(elements.pluginDatabase.value,'orders');
   assert.equal(elements.queryDatabases.disabled,false);
-  assert.equal(elements.queryDatabases.textContent,'加载数据库');
+  assert.equal(elements.queryDatabases.textContent,'读取数据库');
   assert.equal(elements.savePlugin.disabled,false);
 });
 
@@ -224,8 +233,53 @@ test('field invalidation cancels database discovery locally and ignores its late
   assert.equal(state.databaseDiscoverySignature,null);
 });
 
+test('a new MySQL form can read databases without a name or selected database through an isolated probe', async () => {
+  let payload = null;
+  const {context,elements} = databaseRendererHarness(async (value) => {
+    payload = value;
+    return {ok:true,data:{
+      requestId:value.requestId,formInstanceId:value.formInstanceId,purpose:value.purpose,
+      draftGeneration:value.draftGeneration,sequence:value.sequence,state:'valid',
+      result:{databases:['analytics'],truncated:false},
+    }};
+  },{creating:true,displayName:'',selectedDatabase:'',savedDatabase:''});
+
+  await vm.runInContext('queryDatabases()',context);
+
+  assert.equal(payload.formInstanceId,'form-mysql-1');
+  assert.equal(payload.purpose,'resource-discovery');
+  assert.equal(payload.draft.displayName,'');
+  assert.equal(payload.draft.target.database,'');
+  assert.equal(Object.hasOwn(payload,'credentialIntent'),false);
+  assert.match(elements.pluginDatabaseOptions.innerHTML,/analytics/);
+  assert.equal(elements.queryDatabases.disabled,false);
+});
+
+test('a database probe response from an older new-form instance cannot update the replacement form', async () => {
+  const response = deferred();
+  const {context,elements,state} = databaseRendererHarness(() => response.promise,{
+    creating:true,displayName:'',selectedDatabase:'',savedDatabase:'',
+  });
+  const pending = vm.runInContext('queryDatabases()',context);
+  await Promise.resolve();
+  state.pluginFormInstanceId = 'form-mysql-2';
+  state.newPluginInstanceId = 'mysql-random-2';
+  response.resolve({ok:true,data:{
+    requestId:'probe-1',formInstanceId:'form-mysql-1',purpose:'resource-discovery',
+    draftGeneration:1,sequence:1,state:'valid',result:{databases:['stale_database'],truncated:false},
+  }});
+  await pending;
+
+  assert.doesNotMatch(elements.pluginDatabaseOptions.innerHTML,/stale_database/);
+  assert.equal(elements.pluginDatabase.value,'');
+});
+
 test('plugin-specific validation actions map to dedicated backend purposes', () => {
-  const context = vm.createContext({});
+  const context = vm.createContext({pluginDefinition:(type) => ({validationPurpose:type === 'server'
+    ? {validate:'server-auth',tls:'tls-probe'}
+    : type === 'mysql'
+      ? {discover:'resource-discovery',validate:'resource-access',tls:'tls-probe'}
+      : {validate:'resource-access',tls:'tls-probe'}})});
   install(context,['pluginValidationPurpose']);
   assert.equal(vm.runInContext("pluginValidationPurpose('server','validate')",context),'server-auth');
   assert.equal(vm.runInContext("pluginValidationPurpose('mysql','discover')",context),'resource-discovery');
@@ -246,7 +300,7 @@ test('successful validation without step details finalizes every visible check',
   );
 });
 
-test('formal plugin edits move draft persistence out of the primary action row', () => {
+test('formal plugin edits keep draft persistence in overflow while new plugins expose it directly', () => {
   const context = vm.createContext({});
   install(context,['pluginFormActionLayout']);
   context.formal = vm.runInContext('pluginFormActionLayout({plugin:{pluginInstanceId:"server"},persistentDraft:null,restoreCount:1})',context);
@@ -268,8 +322,112 @@ test('formal plugin edits move draft persistence out of the primary action row',
     directDraft:true,
     overflowDraft:false,
     saveOnly:false,
-    saveAndConnect:true,
+    saveAndConnect:false,
   });
+  context.persistentDraft = vm.runInContext('pluginFormActionLayout({plugin:null,persistentDraft:{draftId:"draft"},restoreCount:0})',context);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.persistentDraft)),{
+    directDraft:true,
+    overflowDraft:false,
+    saveOnly:false,
+    saveAndConnect:false,
+  });
+});
+
+function newPluginCreateHarness(probePluginDraft) {
+  const calls = [];
+  const state = {
+    projectId:'project',environmentId:'env',selectionKind:'new-plugin',newPluginType:'mysql',
+    pluginFormInstanceId:'form-create-1',newPluginInstanceId:'mysql-random-1',
+    credentialProbeGeneration:7,pluginValidationSequence:0,pluginProbe:null,pluginFormDiagnostic:null,
+  };
+  const api = {
+    probePluginDraft:async (payload) => {
+      calls.push({kind:'probe',payload});
+      return probePluginDraft(payload);
+    },
+    createPlugin:async (payload) => {
+      calls.push({kind:'create',payload});
+      return {ok:true,data:{...payload.input,projectId:payload.projectId,environmentId:payload.environmentId}};
+    },
+  };
+  const context = vm.createContext({
+    state,api,typeNames:{mysql:'MySQL'},
+    pluginFormSignature:() => 'stable-signature',
+    pluginValidationPurpose:() => 'resource-access',
+    createPendingDiagnostic:(_plugin,requestId) => ({requestId,status:'pending',checks:[]}),
+    completedDiagnostic:(diagnostic) => ({...diagnostic,status:'success',checks:[]}),
+    failedDiagnostic:(diagnostic,error) => ({...diagnostic,status:'failure',summary:error.message,checks:[]}),
+    renderPluginFormDiagnostic:() => {},confirm:() => true,
+  });
+  install(context,[
+    'call','creatingUnsavedPlugin','pluginProbeResultMatches','newPluginFormSnapshot',
+    'newPluginFormSnapshotIsCurrent','pluginProbeDiagnosticTitle','pluginForDraftDiagnostic',
+    'probeNewPluginSnapshot','pluginProbeHostKeyChallenge','checkAndCreateNewPlugin',
+  ]);
+  context.input = {
+    pluginInstanceId:'mysql-random-1',pluginType:'mysql',displayName:'MySQL · db.internal · orders',
+    target:{host:'db.internal',port:3306,addressFamily:'ipv4Preferred',database:'orders'},
+    auth:{username:'reader'},transport:{kind:'direct'},tls:{mode:'disabled'},
+  };
+  context.scope = {projectId:'project',environmentId:'env'};
+  return {context,state,calls};
+}
+
+test('new plugin creation probes the exact snapshot before the first persistent create', async () => {
+  const {context,calls} = newPluginCreateHarness(async (payload) => ({ok:true,data:{
+    requestId:payload.requestId,formInstanceId:payload.formInstanceId,
+    draftGeneration:payload.draftGeneration,sequence:payload.sequence,state:'valid',result:{checks:[]},
+  }}));
+
+  await vm.runInContext('checkAndCreateNewPlugin({input,secrets:{password:"secret"},scope})',context);
+
+  assert.deepEqual(calls.map((entry) => entry.kind),['probe','create']);
+  assert.equal(calls[0].payload.formInstanceId,'form-create-1');
+  assert.equal(Object.hasOwn(calls[0].payload,'credentialIntent'),false);
+  assert.deepEqual(calls[1].payload.input,calls[0].payload.draft);
+  assert.equal(calls[1].payload.input.pluginInstanceId,'mysql-random-1');
+});
+
+test('a failed new plugin probe never writes a plugin', async () => {
+  const {context,calls} = newPluginCreateHarness(async () => ({ok:false,error:{code:'AUTHENTICATION_FAILED',message:'bad credentials'}}));
+
+  await assert.rejects(
+    vm.runInContext('checkAndCreateNewPlugin({input,secrets:{password:"wrong"},scope})',context),
+    /bad credentials/,
+  );
+
+  assert.deepEqual(calls.map((entry) => entry.kind),['probe']);
+});
+
+test('a new Server host-key confirmation retries the same form snapshot and persists only the confirmed fingerprint', async () => {
+  let attempt = 0;
+  const {context,state,calls} = newPluginCreateHarness(async (payload) => {
+    attempt += 1;
+    if (attempt === 1) return {ok:false,error:{
+      code:'SSH_HOST_KEY_CONFIRM_REQUIRED',message:'confirm host key',
+      details:{host:'server.internal',port:22,algorithm:'ssh-ed25519',fingerprint:'SHA256:observed'},
+    }};
+    return {ok:true,data:{
+      requestId:payload.requestId,formInstanceId:payload.formInstanceId,
+      draftGeneration:payload.draftGeneration,sequence:payload.sequence,state:'valid',result:{checks:[]},
+    }};
+  });
+  state.newPluginType = 'server';
+  state.newPluginInstanceId = 'server-random-1';
+  context.pluginValidationPurpose = () => 'server-auth';
+  context.input = {
+    pluginInstanceId:'server-random-1',pluginType:'server',displayName:'Server · server.internal',
+    target:{host:'server.internal',port:22,addressFamily:'ipv4Preferred'},
+    auth:{type:'password',username:'root'},uplink:{type:'direct'},sources:[],
+  };
+
+  await vm.runInContext('checkAndCreateNewPlugin({input,secrets:{password:"secret"},scope})',context);
+
+  assert.deepEqual(calls.map((entry) => entry.kind),['probe','probe','create']);
+  assert.equal(calls[0].payload.draft.target.hostKeyFingerprint,undefined);
+  assert.equal(calls[1].payload.draft.target.hostKeyFingerprint,'SHA256:observed');
+  assert.deepEqual(calls[2].payload.input,calls[1].payload.draft);
+  assert.equal(calls[1].payload.formInstanceId,'form-create-1');
 });
 
 test('only an explicit TLS unsupported result can offer to disable TLS in the current draft', () => {
@@ -776,7 +934,7 @@ test('the unified leave guard preserves edits on cancel and asynchronously relea
     pluginFormDirty:() => true,
     clearTransientRevealedCredentials:(options) => { clearedWith = options; },
   });
-  install(context,['call','scopeKey','operationInFlight','currentScopeSaveInFlight','cancelOwnedPluginEditSession','mayLeaveCurrentScope','scopeDiagnosticPending']);
+  install(context,['call','scopeKey','operationInFlight','activePluginProbe','cancelLocalPluginProbe','currentScopeSaveInFlight','cancelOwnedPluginEditSession','mayLeaveCurrentScope','scopeDiagnosticPending']);
   assert.equal(await vm.runInContext('mayLeaveCurrentScope()',context),false);
   assert.equal(state.runbookDraft,'draft');
   assert.equal(state.pluginFormDiagnostic.status,'pending');

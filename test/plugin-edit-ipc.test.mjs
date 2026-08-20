@@ -70,6 +70,48 @@ test('edit IPC methods bind every request to its renderer owner and expose match
   ]) assert.match(preload,new RegExp(`${method}:`,'u'));
 });
 
+test('probe IPC derives renderer ownership, forwards progress, cancellation, and teardown cleanup', async () => {
+  const calls = [];
+  const pluginProbeManager = {
+    probePluginDraft:async (payload,options) => {
+      calls.push(['probe',payload,options.ownerId]);
+      options.onProgress({requestId:payload.requestId,state:'running'});
+      return {requestId:payload.requestId,state:'valid',result:{databases:['orders']}};
+    },
+    cancelPluginProbe:(payload,options) => {
+      calls.push(['cancel',payload,options.ownerId]);
+      return {requestId:payload.requestId,state:'cancelled'};
+    },
+    invalidateOwner:(ownerId) => calls.push(['destroyed',ownerId]),
+  };
+  const handlers = ipcHarness({pluginProbeManager});
+  const renderer = event(91);
+  const probePayload = {
+    projectId:'p1',environmentId:'e1',formInstanceId:'form-1',requestId:'request-1',
+    purpose:'resource-discovery',draftGeneration:1,sequence:3,draft:{pluginType:'mysql'},
+  };
+
+  const probed = await handlers.get('v2:plugin-probe')(renderer.value,probePayload);
+  const cancelled = await handlers.get('v2:plugin-probe-cancel')(
+    renderer.value,{requestId:'request-1',formInstanceId:'form-1'},
+  );
+
+  assert.equal(probed.ok,true);
+  assert.equal(cancelled.ok,true);
+  assert.deepEqual(calls.slice(0,2).map(([name,,ownerId]) => [name,ownerId]),[
+    ['probe','renderer:91'],['cancel','renderer:91'],
+  ]);
+  assert.deepEqual(renderer.sent,[['v2:plugin-probe-progress',{requestId:'request-1',state:'running'}]]);
+  assert.equal(renderer.destroyed.length,1);
+  renderer.destroyed[0][1]();
+  assert.deepEqual(calls.at(-1),['destroyed','renderer:91']);
+
+  const preload = await fs.readFile(path.join(root,'..','src','preload.cjs'),'utf8');
+  for (const method of ['probePluginDraft','cancelPluginProbe','onPluginProbeProgress']) {
+    assert.match(preload,new RegExp(`${method}:`,'u'));
+  }
+});
+
 test('host-key challenge commits trust with saved credentials before resuming the original plan', async () => {
   const before = {
     projectId:'p1',environmentId:'e1',pluginInstanceId:'server',pluginType:'server',displayName:'Server',

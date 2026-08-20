@@ -95,7 +95,7 @@ function assertSecretFreeDraft(draft) {
 }
 
 export function registerV2Ipc(ipcMain, services) {
-  const { workspaceStore: store, connectionManager, credentialVault, legacyCredentialStore, configTransactionJournal, contextManager, confirmationManager, pluginManager, mysqlRuntime, pluginEditSessionManager, pluginDraftService } = services;
+  const { workspaceStore: store, connectionManager, credentialVault, legacyCredentialStore, configTransactionJournal, contextManager, confirmationManager, pluginManager, mysqlRuntime, pluginEditSessionManager, pluginDraftService, pluginProbeManager } = services;
   const credentialUseResolver = services.credentialUseResolver ?? new CredentialUseResolver(credentialVault);
   const handle = (name, fn) => ipcMain.handle(`v2:${name}`, resultHandler(fn));
   const handleWithEvent = (name, fn) => ipcMain.handle(`v2:${name}`, resultHandlerWithEvent(fn));
@@ -109,6 +109,7 @@ export function registerV2Ipc(ipcMain, services) {
       sender.once?.('destroyed',() => {
         pluginEditSessionManager?.invalidateOwner?.(ownerId);
         pluginDraftService?.invalidateOwner?.(ownerId);
+        pluginProbeManager?.invalidateOwner?.(ownerId);
       });
     }
     return ownerId;
@@ -340,6 +341,12 @@ export function registerV2Ipc(ipcMain, services) {
     }
     return pluginEditSessionManager;
   };
+  const requirePluginProbeManager = () => {
+    if (!pluginProbeManager) {
+      throw new AppError('PLUGIN_PROBE_UNAVAILABLE','插件临时探针服务不可用。');
+    }
+    return pluginProbeManager;
+  };
   const restoreRuntimeWarning = (connectionPlan) => {
     if (!connectionPlan || (connectionPlan.outcome !== 'needs-action' && !connectionPlan.actions?.length)) return null;
     const first = connectionPlan.actions?.[0];
@@ -387,6 +394,18 @@ export function registerV2Ipc(ipcMain, services) {
       : requirePluginEditSessionManager().cancelPluginValidation({
           ...payload,ownerId:rendererOwner(event),
         })
+  ));
+  handleWithEvent('plugin-probe',(event,payload) => (
+    requirePluginProbeManager().probePluginDraft(payload,{
+      ownerId:rendererOwner(event),
+      onProgress:(progress) => {
+        if (event.sender.isDestroyed?.()) return;
+        event.sender.send?.('v2:plugin-probe-progress',progress);
+      },
+    })
+  ));
+  handleWithEvent('plugin-probe-cancel',(event,payload) => (
+    requirePluginProbeManager().cancelPluginProbe(payload,{ownerId:rendererOwner(event)})
   ));
   handleWithEvent('plugin-connection-edit-cancel',(event,payload) => {
     const ownerId = rendererOwner(event);

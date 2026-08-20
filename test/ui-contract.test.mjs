@@ -3,9 +3,10 @@ import fs from 'node:fs/promises';
 import test from 'node:test';
 
 test('production renderer exposes only the structured V2 operations surface', async () => {
-  const [html, renderer, styles, preload, main, ipc, manifest] = await Promise.all([
+  const [html, renderer, catalog, styles, preload, main, ipc, manifest] = await Promise.all([
     fs.readFile('renderer/v2/index.html', 'utf8'),
     fs.readFile('renderer/v2/app.js', 'utf8'),
+    fs.readFile('renderer/v2/plugin-catalog.js', 'utf8'),
     fs.readFile('renderer/v2/styles.css', 'utf8'),
     fs.readFile('src/preload.cjs', 'utf8'),
     fs.readFile('src/main.mjs', 'utf8'),
@@ -32,7 +33,16 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(html, /id="scopeInfoContent"/);
   assert.doesNotMatch(html, /id="projectTitleEditor"|id="projectSettingsShortcut"|id="projectDeleteShortcut"/);
   assert.match(html, /id="pluginConfigView"/);
+  assert.match(html, /id="pluginTypePicker"/);
+  assert.match(html, /id="pluginTypeChoices"/);
   assert.match(html, /id="pluginFormDepot"/);
+  assert.match(html, /<select id="pluginType"[^>]*><\/select>/);
+  assert.match(html, /<input id="pluginDisplayName"(?=[^>]*maxlength="120")(?![^>]*\brequired\b)[^>]*>/);
+  assert.match(html, /id="pluginDisplayNameHint"/);
+  assert.match(html, /id="pluginTypeIdentity"[^>]*class="plugin-type-identity"/);
+  assert.match(html, /id="pluginAdvancedSummary"/);
+  assert.match(html, /id="pluginFormSafetyNote"|class="plugin-form-safety-note"/);
+  assert.match(html, /id="pluginValidationSection"/);
   assert.match(html, /id="validateServerDraft"/);
   assert.match(html, /id="validateMysqlDatabase"/);
   assert.match(html, /id="validateRedisDraft"/);
@@ -45,12 +55,18 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(html, /id="pluginFormDiagnostic"/);
   assert.match(html, /id="credentialMigrationNotice"/);
   assert.match(html, /id="savePluginDraft"/);
+  assert.match(html, /id="savePluginDraftOverflow"/);
   assert.match(html, /id="deleteCurrentDraft"/);
   assert.match(html, /id="auditBody" class="audit-list"/);
   assert.match(html, /id="clearAudit"/);
   assert.match(html, /id="clearAuditDialog"/);
   assert.match(html, /value="pending">等待确认/);
   assert.match(html, /href="#i-app"/);
+  assert.match(html, /id="i-panel-left-open"/);
+  assert.match(html, /id="i-panel-left-close"/);
+  assert.match(html, /id="i-panel-right-open"/);
+  assert.match(html, /id="i-panel-right-close"/);
+  assert.doesNotMatch(html, /id="i-panel"/);
   assert.doesNotMatch(html, /id="overviewManageEnvironments"/);
   assert.match(html, /id="projectSettingsDialog"/);
   assert.match(html, /id="deleteProjectDialog"/);
@@ -72,10 +88,17 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.doesNotMatch(renderer, /manager-current|当前查看/);
   assert.match(renderer, /prepare-delete-plugin/);
   assert.doesNotMatch(renderer, /api\.listPluginDatabases/);
+  assert.match(renderer, /api\.probePluginDraft/);
+  assert.match(renderer, /api\.cancelPluginProbe/);
+  assert.match(renderer, /function checkAndCreateNewPlugin/);
+  assert.match(renderer, /pluginFormInstanceId/);
+  assert.match(renderer, /newPluginInstanceId/);
+  assert.match(renderer, /'检查并添加'/);
   assert.match(renderer, /revealCredential/);
   assert.match(renderer, /navigationGeneration/);
   assert.match(renderer, /projectRailExpanded/);
   assert.match(renderer, /PROJECT_RAIL_WIDTH_KEY/);
+  assert.match(renderer, /#i-panel-left-close/);
   assert.match(renderer, /setPointerCapture/);
   assert.match(renderer, /resourcePreview/);
   assert.match(renderer, /data-overview-rename-environment/);
@@ -128,6 +151,10 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.doesNotMatch(renderer, /renderDiagnosticPanel|pluginDiagnostics|connectionCheckPanel/);
   assert.doesNotMatch(preload, /testPlugin|onPluginTestProgress|v2:plugin-test/);
   assert.doesNotMatch(ipc, /v2:plugin-test|plugin-test-progress/);
+  assert.match(preload, /probePluginDraft:[^\n]*v2:plugin-probe/);
+  assert.match(preload, /cancelPluginProbe:[^\n]*v2:plugin-probe-cancel/);
+  assert.match(ipc, /handleWithEvent\('plugin-probe'/);
+  assert.match(ipc, /handleWithEvent\('plugin-probe-cancel'/);
   assert.match(renderer, /api\.updatePluginMetadata/);
   assert.match(renderer, /api\.updatePluginAgentConfiguration/);
   assert.match(renderer, /\$\('#pluginType'\)\.setAttribute\('tabindex','-1'\)/);
@@ -140,7 +167,9 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(renderer, /function renderProjectInformation/);
   assert.match(renderer, /function renderEnvironmentInformation/);
   assert.match(renderer, /state\.selectionKind === 'project'/);
-  assert.match(renderer, /\['information','环境信息'\]/);
+  assert.match(renderer, /\['information','概览'\]/);
+  assert.doesNotMatch(renderer, /data-environment-overview-details/);
+  assert.match(renderer, /environment-overview-content/);
   assert.doesNotMatch(renderer, /resource-environment-head[^`]*data-resource-rename-environment/s);
   assert.doesNotMatch(renderer, /resource-environment-head[^`]*data-resource-delete-environment/s);
   assert.match(renderer, /saveInlineEnvironmentCreate/);
@@ -183,14 +212,22 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(styles, /\.audit-record/);
   assert.doesNotMatch(styles, /\.connection-check-section|\.connection-section-head(?!ing)|\.connection-diagnostic/);
   assert.match(styles, /\.diagnostic-steps/);
-  assert.match(styles, /\.connection-overview/);
+  assert.match(styles, /\.connection-facts/);
+  assert.doesNotMatch(styles, /\.connection-fact-card|\.connection-route-card/);
+  assert.doesNotMatch(styles, /\.plugin-danger-zone/);
   assert.match(styles, /\.plugin-form-diagnostic/);
   assert.match(styles, /\.credential-migration-notice/);
   assert.match(styles, /\.resource-environment-create/);
   assert.match(styles, /\.resource-environment-rename-form/);
   assert.match(styles, /\.scope-delete-decision/);
   assert.match(styles, /\.scope-information-page/);
-  assert.match(styles, /\.scope-information-danger/);
+  assert.match(styles, /\.scope-information-actions/);
+  assert.match(styles, /\.scope-overview-stats/);
+  assert.doesNotMatch(styles, /\.environment-overview-details/);
+  assert.match(styles, /\.environment-overview-content/);
+  assert.match(styles, /\.environment-overview-attention/);
+  assert.doesNotMatch(styles, /\.environment-danger-zone/);
+  assert.match(styles, /@container scope-detail \(max-width:719px\)/);
   assert.match(styles, /\.resource-draft-row/);
   assert.match(styles, /\.permission-hero/);
   assert.match(styles, /\.permissions-page \.policy-row/);
@@ -206,9 +243,9 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(styles, /\.rail-expanded \.project-tree-item\[data-project-state="connected"\] \.rail-project-copy small\{[^}]*color:#72dcb0/s);
   assert.match(styles, /\.rail-expanded \.project-tree-item\.active\[data-project-state="connected"\]>\.project-tree-head\{[^}]*box-shadow:inset 3px 0 #55d6a1,[^}]*rgba\(131,124,246,/s);
   assert.ok(
-    styles.lastIndexOf('@container (max-width:650px)')
+    styles.lastIndexOf('@container (max-width:360px)')
       > styles.lastIndexOf('.resource-environment-head:has(>.scope-confirmation-badge){grid-template-columns'),
-    'the compact resource header contract must override the late single-row rule',
+    'the extra-narrow resource header contract must override the late single-row rule',
   );
 
   assert.match(preload, /contextBridge\.exposeInMainWorld\('aiOps', \{\s*v2:/s);
@@ -226,6 +263,10 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(preload, /v2:plugin-draft-edit-cancel/);
   assert.match(preload, /v2:plugin-draft-delete/);
   assert.match(preload, /v2:plugin-draft-promote/);
+  assert.match(catalog, /defaultPort/);
+  assert.match(catalog, /capabilities:\{resourceDiscovery:/);
+  assert.match(catalog, /validationPurpose:/);
+  assert.match(catalog, /pluginCatalogByType/);
   assert.match(preload, /requestConnectionIntent/);
   assert.match(preload, /v2:connection-intent/);
   assert.match(preload, /v2:confirmation-list/);
@@ -239,6 +280,7 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(ipc, /handle\('connection-intent'/);
 
   const packageJson = JSON.parse(manifest);
+  assert.match(packageJson.scripts.check,/renderer\/v2\/plugin-catalog\.js/);
   assert.ok(packageJson.build.files.includes('renderer/v2/**/*'));
   assert.ok(!packageJson.build.files.includes('renderer/**/*'));
   assert.ok(packageJson.build.files.includes('!src/mcp.mjs'));

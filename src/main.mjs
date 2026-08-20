@@ -31,6 +31,7 @@ import { PluginDraftCredentialVault } from './plugin-draft-credential-vault.mjs'
 import { PluginDraftStore } from './plugin-draft-store.mjs';
 import { PluginDraftPromotionJournal } from './plugin-draft-promotion-journal.mjs';
 import { PluginDraftService } from './plugin-draft-service.mjs';
+import { PluginProbeManager } from './plugin-probe-manager.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataRoot = defaultDataRoot();
@@ -206,6 +207,13 @@ if (process.argv.includes('--mcp')) {
         const credentialUseResolver = new CredentialUseResolver(pluginCredentialVault);
         const validationRuntime = new PluginValidationRuntime({pluginManager,mysqlRuntime});
         pluginDraftService.validationRuntime = validationRuntime;
+        const pluginProbeManager = new PluginProbeManager({
+          workspaceStore,
+          mutationCoordinator,
+          credentialUseResolver,
+          validationRuntime,
+          configurationJournal:configTransactionJournal,
+        });
         const pluginEditSessionManager = new PluginEditSessionManager({
           workspaceStore,
           connectionManager:environmentConnectionManager,
@@ -220,7 +228,7 @@ if (process.argv.includes('--mcp')) {
           }
         };
         const v2Service = new V2Service({ workspaceStore, connectionManager: environmentConnectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault: pluginCredentialVault, mutationCoordinator, workspaceChanged:(payload) => broadcast('v2:workspace-changed', payload) });
-        v2 = { workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, pluginDraftCredentialVault, pluginDraftStore, pluginDraftPromotionJournal, pluginDraftService, mutationCoordinator, credentialUseResolver, validationRuntime, pluginEditSessionManager, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
+        v2 = { workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, pluginDraftCredentialVault, pluginDraftStore, pluginDraftPromotionJournal, pluginDraftService, mutationCoordinator, credentialUseResolver, validationRuntime, pluginProbeManager, pluginEditSessionManager, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
         const token = await rotateBrokerToken(dataRoot);
         brokerServer = new BrokerServer({ dataRoot, token, v2Service, appVersion: app.getVersion() });
         await brokerServer.start();
@@ -244,6 +252,7 @@ if (process.argv.includes('--mcp')) {
       event.preventDefault();
       app.__aiOpsClosing = true;
       v2?.networkWatcher?.stop();
+      v2?.pluginProbeManager?.invalidateAll?.();
       v2?.pluginEditSessionManager?.invalidateAll?.({allowSaving:true});
       const watchdog = setTimeout(() => app.quit(), SHUTDOWN_WATCHDOG_MS);
       Promise.all([v2?.connectionManager?.closeAll(), brokerServer?.stop()])
