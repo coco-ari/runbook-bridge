@@ -56,10 +56,6 @@
         </span>
         <div><h2 id="pluginFormTitle">添加插件</h2><p id="pluginFormScope"></p></div>
         <button id="changeNewPluginType" type="button" class="button small plugin-type-change hidden"><svg class="icon"><use href="#i-refresh"/></svg>重新选择类型</button>
-        <details id="pluginDraftOverflow" class="plugin-draft-overflow hidden">
-          <summary class="square-button" aria-label="更多操作" title="更多操作"><svg class="icon"><use href="#i-more"/></svg></summary>
-          <div class="plugin-draft-overflow-menu"><button id="savePluginDraftOverflow" type="button" class="button">保存为草稿</button><button id="deleteCurrentDraft" type="button" class="button danger-subtle hidden"><svg class="icon"><use href="#i-trash"/></svg>删除草稿</button></div>
-        </details>
       </div>
       <div class="dialog-body plugin-dialog-body">
         <select id="pluginType" class="sr-only" aria-hidden="true" tabindex="-1"></select>
@@ -112,7 +108,7 @@
       <div id="credentialMigrationNotice" class="credential-migration-notice hidden" aria-live="polite"></div>
       <div id="pluginFormDiagnostic" class="plugin-form-diagnostic hidden" aria-live="polite"></div>
       <div id="pluginFormError" class="dialog-inline-error hidden" role="alert"></div>
-      <div class="dialog-actions plugin-form-actions"><div class="plugin-form-safety-note"><svg class="icon"><use href="#i-shield"/></svg><span id="pluginEditSafetyStatus"></span></div><span class="action-spacer"></span><button id="cancelPluginEdit" type="button" class="button">取消更改</button><button id="savePluginDraft" type="button" class="button">保存草稿</button><button id="savePluginOnly" type="button" class="button">仅保存</button><button id="saveAndConnectPlugin" type="button" class="button">保存并连接</button><button id="savePlugin" type="submit" class="button primary">保存配置</button></div>
+      <div class="dialog-actions plugin-form-actions"><div class="plugin-form-safety-note"><svg class="icon"><use href="#i-shield"/></svg><span id="pluginEditSafetyStatus"></span></div><span class="action-spacer"></span><button id="cancelPluginEdit" type="button" class="button">取消更改</button><button id="savePluginOnly" type="button" class="button">仅保存</button><button id="savePlugin" type="submit" class="button primary">保存配置</button><button id="saveAndConnectPlugin" type="button" class="button">保存并连接</button></div>
     </form>
   </div>
   <dialog id="environmentSwitcherDialog" class="compact-dialog" aria-labelledby="environmentSwitcherDialogTitle"><div class="dialog-card compact"><div class="dialog-head"><h2 id="environmentSwitcherDialogTitle">切换环境</h2><button class="square-button dialog-close" data-close="environmentSwitcherDialog" aria-label="关闭"><svg class="icon"><use href="#i-x"/></svg></button></div><div id="environmentSwitcherList" class="dialog-body switcher-list"></div></div></dialog>

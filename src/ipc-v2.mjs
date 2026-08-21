@@ -10,7 +10,10 @@ import {
 } from './plugin-readiness-service.mjs';
 import { workspaceInternals } from './workspace-store.mjs';
 import { WorkspaceMutationCoordinator } from './workspace-mutation-coordinator.mjs';
-import { getPluginConnectionAdapter } from './plugin-connection-adapters.mjs';
+import {
+  assertPluginConfigurationReady,
+  getPluginConnectionAdapter,
+} from './plugin-connection-adapters.mjs';
 
 function resultHandler(handler) {
   return async (_event, ...args) => {
@@ -95,7 +98,7 @@ function assertSecretFreeDraft(draft) {
 }
 
 export function registerV2Ipc(ipcMain, services) {
-  const { workspaceStore: store, connectionManager, credentialVault, legacyCredentialStore, configTransactionJournal, contextManager, confirmationManager, pluginManager, mysqlRuntime, pluginEditSessionManager, pluginDraftService, pluginProbeManager } = services;
+  const { workspaceStore: store, connectionManager, credentialVault, legacyCredentialStore, configTransactionJournal, contextManager, confirmationManager, pluginManager, mysqlRuntime, pluginEditSessionManager, pluginProbeManager } = services;
   const credentialUseResolver = services.credentialUseResolver ?? new CredentialUseResolver(credentialVault);
   const handle = (name, fn) => ipcMain.handle(`v2:${name}`, resultHandler(fn));
   const handleWithEvent = (name, fn) => ipcMain.handle(`v2:${name}`, resultHandlerWithEvent(fn));
@@ -108,7 +111,6 @@ export function registerV2Ipc(ipcMain, services) {
       rendererCleanupInstalled.add(sender);
       sender.once?.('destroyed',() => {
         pluginEditSessionManager?.invalidateOwner?.(ownerId);
-        pluginDraftService?.invalidateOwner?.(ownerId);
         pluginProbeManager?.invalidateOwner?.(ownerId);
       });
     }
@@ -162,20 +164,6 @@ export function registerV2Ipc(ipcMain, services) {
       : {projectId,environmentId,phase:'disconnected',sequence:0,plugins:{}};
     return catalog ? assessEnvironmentSnapshot({plugins:catalog,runtimeSnapshot:runtime}) : runtime;
   };
-  const environmentWithDraftSummary = async (environment) => {
-    if (!pluginDraftService) return environment;
-    const sidecarDraftCount = await pluginDraftService.draftStore.count(
-      environment.projectId,environment.environmentId,
-    );
-    const committedDraftCount = Math.max(0,environment.pluginCount - environment.readyPluginCount);
-    return {
-      ...environment,
-      committedPluginCount:environment.pluginCount,
-      pluginCount:environment.pluginCount + sidecarDraftCount,
-      draftCount:committedDraftCount + sidecarDraftCount,
-      sidecarDraftCount,
-    };
-  };
   const pluginWithAssessment = (plugin,snapshot) => ({
     ...plugin,
     assessment:publicPluginAssessment(snapshot?.plugins?.[plugin.pluginInstanceId]),
@@ -228,12 +216,23 @@ export function registerV2Ipc(ipcMain, services) {
       && prepared.before.revision !== expectedRevision) {
       throw new AppError('CONFIG_REVISION_CONFLICT', '插件配置已经变化，请刷新后重试。');
     }
-    return {
+    const result = {
       ...prepared,
       change:prepared.change ?? {kind:'session-affecting',credentialMutation},
       credentialMutation,
       replacements,
     };
+    const connectionSave = patchScope === 'connection'
+      || (patchScope === null && ['session-affecting','dependency-affecting'].includes(result.change.kind));
+    if (connectionSave) {
+      const candidate = result.after ?? result.candidate ?? workspaceInternals.normalizePluginCandidate(
+        {...(patch ?? {}),pluginInstanceId,pluginType:result.before.pluginType},
+        {projectId,environmentId},
+        result.before,
+      );
+      assertPluginConfigurationReady(candidate);
+    }
+    return result;
   };
   const commitPreparedPlugin = (prepared, payload) => {
     if (prepared.change.kind === 'none') return prepared.before;
@@ -369,16 +368,6 @@ export function registerV2Ipc(ipcMain, services) {
   ));
   handleWithEvent('plugin-draft-validate',(event,payload) => {
     const ownerId = rendererOwner(event);
-    if (payload?.draftSessionId) {
-      if (!pluginDraftService) throw new AppError('PLUGIN_DRAFT_UNAVAILABLE','插件草稿服务不可用。');
-      return pluginDraftService.validate(payload,{
-        ownerId,
-        onProgress:(progress) => {
-          if (event.sender.isDestroyed?.()) return;
-          event.sender.send?.('v2:plugin-validation-progress',progress);
-        },
-      });
-    }
     return requirePluginEditSessionManager().validatePluginDraft({
       ...payload,
       ownerId,
@@ -389,11 +378,9 @@ export function registerV2Ipc(ipcMain, services) {
     });
   });
   handleWithEvent('plugin-validation-cancel',(event,payload) => (
-    payload?.draftSessionId
-      ? pluginDraftService.cancelValidation(payload,{ownerId:rendererOwner(event)})
-      : requirePluginEditSessionManager().cancelPluginValidation({
-          ...payload,ownerId:rendererOwner(event),
-        })
+    requirePluginEditSessionManager().cancelPluginValidation({
+      ...payload,ownerId:rendererOwner(event),
+    })
   ));
   handleWithEvent('plugin-probe',(event,payload) => (
     requirePluginProbeManager().probePluginDraft(payload,{
@@ -493,7 +480,7 @@ export function registerV2Ipc(ipcMain, services) {
       : await Promise.all((await store.listProjects()).map(async (project) => ({ ...project, environments:await store.listEnvironments(project.projectId) })));
     return Promise.all(projects.map(async (project) => {
       const environments = await Promise.all((project.environments ?? []).map(async (rawEnvironment) => {
-          const environment = await environmentWithDraftSummary(rawEnvironment);
+          const environment = rawEnvironment;
           const runtime = await environmentAssessmentSnapshot(project.projectId, environment.environmentId);
           const previewIds = new Set((environment.resourcePreview ?? []).map((plugin) => plugin.pluginInstanceId));
           const resourcePreview = (environment.resourcePreview ?? []).map((plugin) => (
@@ -576,9 +563,7 @@ export function registerV2Ipc(ipcMain, services) {
       mutationCoordinator.endProjectDelete(projectId);
     }
   });
-  handle('environment-list', async (projectId) => Promise.all(
-    (await store.listEnvironments(projectId)).map(environmentWithDraftSummary),
-  ));
+  handle('environment-list', (projectId) => store.listEnvironments(projectId));
   handle('environment-create', ({ projectId, input }) => {
     assertProjectAvailable(projectId);
     return store.createEnvironment(projectId, input);
@@ -718,158 +703,6 @@ export function registerV2Ipc(ipcMain, services) {
     const snapshot = await environmentAssessmentSnapshot(projectId,environmentId,plugins);
     return plugins.map((plugin) => pluginWithAssessment(plugin,snapshot));
   });
-  handle('plugin-draft-list',async ({projectId,environmentId}) => {
-    if (!pluginDraftService) return [];
-    return pluginDraftService.list(projectId,environmentId);
-  });
-  handleWithEvent('plugin-draft-save',async (event,payload = {}) => {
-    if (!pluginDraftService) throw new AppError('PLUGIN_DRAFT_UNAVAILABLE','插件草稿服务不可用。');
-    const ownerId = rendererOwner(event);
-    const draftSession = payload.draftId
-      ? pluginDraftService.requireSession(payload.draftSessionId,ownerId,payload)
-      : null;
-    const previousDraftRevision = draftSession?.draftRevision ?? null;
-    let scopedPayload = payload;
-    let session = null;
-    if (payload.editSessionId) {
-      const manager = requirePluginEditSessionManager();
-      manager.captureCredentialIntent?.(payload.editSessionId,{...payload,ownerId});
-      manager.beginSave(payload.editSessionId,{ownerId});
-      const material = manager.commitMaterial(payload.editSessionId,{ownerId});
-      session = manager;
-      scopedPayload = {
-        ...payload,
-        ...material.scope,
-        basePluginInstanceId:material.scope.pluginInstanceId,
-        baseRevision:material.baseRecordRevision,
-        credentialIntent:material.credentialIntent,
-        temporarySecrets:material.temporarySecrets,
-      };
-    }
-    let value;
-    try {
-      value = await enqueuePluginMutation(
-        scopedPayload.projectId,scopedPayload.environmentId,
-        () => pluginDraftService.save(scopedPayload),payload.editSessionId ?? null,
-      );
-    } catch (error) {
-      if (session) session.saveFailed(payload.editSessionId);
-      throw error;
-    }
-    if (session) {
-      session.saveFailed(payload.editSessionId);
-      if (!payload.keepEditSession) {
-        await session.cancelPluginConnectionEdit({
-          editSessionId:payload.editSessionId,ownerId,restorePreEditConnections:true,
-        });
-      }
-    }
-    const changed = previousDraftRevision === null || value.revision !== previousDraftRevision;
-    if (draftSession) draftSession.draftRevision = value.revision;
-    if (!payload.keepEditSession && payload.draftSessionId) {
-      pluginDraftService.endSession(payload.draftSessionId,ownerId);
-    }
-    if (changed) {
-      await store.appendAudit(scopedPayload.projectId,{
-        type:'plugin-draft-saved',environmentId:scopedPayload.environmentId,
-        pluginInstanceId:value.basePluginInstanceId ?? null,draftId:value.draftId,
-        pluginType:value.pluginType,revision:value.revision,actor:'user',result:'success',
-      }).catch(() => undefined);
-      services.broadcast?.('v2:workspace-changed',{type:'plugin-draft-saved',projectId:value.projectId,environmentId:value.environmentId,draftId:value.draftId});
-    }
-    return {...value,changed};
-  });
-  handleWithEvent('plugin-draft-resume',(event,payload) => {
-    if (!pluginDraftService) throw new AppError('PLUGIN_DRAFT_UNAVAILABLE','插件草稿服务不可用。');
-    return pluginDraftService.resumeForOwner(payload,rendererOwner(event));
-  });
-  handleWithEvent('plugin-draft-edit-cancel',(event,payload) => {
-    if (!pluginDraftService) throw new AppError('PLUGIN_DRAFT_UNAVAILABLE','插件草稿服务不可用。');
-    const ownerId = rendererOwner(event);
-    pluginDraftService.requireSession(payload.draftSessionId,ownerId,payload);
-    return {cancelled:pluginDraftService.endSession(payload.draftSessionId,ownerId)};
-  });
-  handle('plugin-draft-delete',async (payload) => {
-    if (!pluginDraftService) throw new AppError('PLUGIN_DRAFT_UNAVAILABLE','插件草稿服务不可用。');
-    const value = await enqueuePluginMutation(
-      payload.projectId,payload.environmentId,() => pluginDraftService.delete(payload),
-    );
-    await store.appendAudit(payload.projectId,{
-      type:'plugin-draft-deleted',environmentId:payload.environmentId,draftId:payload.draftId,
-      actor:'user',result:'success',credentialsPreserved:true,
-    }).catch(() => undefined);
-    services.broadcast?.('v2:workspace-changed',{type:'plugin-draft-deleted',...payload});
-    return value;
-  });
-  handleWithEvent('plugin-draft-promote',async (event,payload = {}) => {
-    if (!pluginDraftService) throw new AppError('PLUGIN_DRAFT_UNAVAILABLE','插件草稿服务不可用。');
-    const ownerId = rendererOwner(event);
-    pluginDraftService.requireSession(payload.draftSessionId,ownerId,payload);
-    const draft = await pluginDraftService.resume(payload);
-    const manager = draft.basePluginInstanceId ? requirePluginEditSessionManager() : null;
-    if (manager) {
-      manager.beginSave(payload.editSessionId,{ownerId});
-      const material = manager.commitMaterial(payload.editSessionId,{ownerId});
-      if (material.scope.pluginInstanceId !== draft.basePluginInstanceId) {
-        manager.saveFailed(payload.editSessionId);
-        throw new AppError('PLUGIN_EDIT_SESSION_STALE','编辑会话与待提升草稿不匹配。');
-      }
-    }
-    let committed = false;
-    try {
-      const plugin = await enqueuePluginMutation(
-        draft.projectId,draft.environmentId,
-        () => withConfigurationMutation(
-          draft.projectId,draft.environmentId,
-          draft.basePluginInstanceId ?? draft.sanitizedDraft.pluginInstanceId,
-          () => pluginDraftService.promote(payload),
-          payload.editSessionId ?? null,
-        ),
-        payload.editSessionId ?? null,
-      );
-      committed = true;
-      let connectionPlan = null;
-      let runtimeWarning = null;
-      if (manager) {
-        try {
-          connectionPlan = await manager.completeSave(payload.editSessionId,{
-            afterCommit:payload.afterCommit ?? 'stay-disconnected',ownerId,
-          });
-          runtimeWarning = restoreRuntimeWarning(connectionPlan);
-        } catch (error) {
-          const publicError = toPublicError(error);
-          runtimeWarning = {code:publicError.code,message:`配置和密码已保存，但连接失败。 ${publicError.message}`};
-        }
-      } else {
-        try { await connectionManager.configurationChanged?.(draft.projectId,draft.environmentId,plugin.pluginInstanceId); }
-        catch (error) { runtimeWarning = toPublicError(error); }
-        if (payload.afterCommit === 'connect-current') {
-          try {
-            connectionPlan = await requestConnectionIntent({
-              requestId:crypto.randomUUID(),projectId:draft.projectId,environmentId:draft.environmentId,
-              pluginInstanceId:plugin.pluginInstanceId,intent:'connect',source:'draft-promotion',
-            });
-            runtimeWarning ??= restoreRuntimeWarning(connectionPlan);
-          } catch (error) {
-            const publicError = toPublicError(error);
-            runtimeWarning = {code:publicError.code,message:`配置和密码已保存，但连接失败。 ${publicError.message}`};
-          }
-        }
-      }
-      contextManager.invalidateEnvironment?.(draft.projectId,draft.environmentId);
-      await store.appendAudit(draft.projectId,{
-        type:'plugin-draft-promoted',environmentId:draft.environmentId,draftId:draft.draftId,
-        pluginInstanceId:plugin.pluginInstanceId,pluginType:plugin.pluginType,revision:plugin.revision,
-        actor:'user',result:'success',
-      }).catch(() => undefined);
-      services.broadcast?.('v2:workspace-changed',{type:'plugin-draft-promoted',projectId:draft.projectId,environmentId:draft.environmentId,draftId:draft.draftId,pluginInstanceId:plugin.pluginInstanceId});
-      pluginDraftService.endSession(payload.draftSessionId,ownerId);
-      return {committed:true,plugin:store.publicPlugin?.(plugin) ?? plugin,connectionPlan,runtimeWarning};
-    } catch (error) {
-      if (manager && !committed) manager.saveFailed(payload.editSessionId);
-      throw error;
-    }
-  });
   handle('plugin-assess', async ({
     projectId,
     environmentId,
@@ -909,6 +742,8 @@ export function registerV2Ipc(ipcMain, services) {
     });
   });
   handle('plugin-create', ({ projectId, environmentId, input, secrets }) => enqueuePluginMutation(projectId, environmentId, () => withConfigurationMutation(projectId, environmentId, null, async () => {
+    const candidate = workspaceInternals.normalizePlugin(input,{projectId,environmentId});
+    assertPluginConfigurationReady(candidate);
     const plugin = await store.createPlugin(projectId, environmentId, input);
     try {
       if (secrets && Object.values(secrets).some(Boolean)) await credentialVault.save(plugin, secrets);

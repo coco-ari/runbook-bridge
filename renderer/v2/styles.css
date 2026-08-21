@@ -1429,10 +1429,6 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 .danger-subtle{color:var(--red);border-color:rgba(241,123,134,.3);background:rgba(241,123,134,.07)}
 .resource-environment-body{padding:10px 14px 12px;border-top:1px solid var(--soft-line);background:#0d0e12}
 .resource-plugin-group+.resource-plugin-group{margin-top:8px}
-.resource-draft-group{padding-top:4px;border-top:1px solid var(--soft-line)}
-.resource-draft-row .resource-plugin-icon{color:var(--amber);background:rgba(239,185,104,.055)}
-.resource-draft-row .resource-plugin-action{min-width:68px}
-.resource-draft-delete{width:30px;height:30px;margin-right:6px}
 .resource-plugin-group-label{height:32px;display:flex;align-items:center;gap:8px;color:#8f90a0;font-size:11px;font-weight:680;letter-spacing:.08em}
 .resource-plugin-group-label::after{content:"";height:1px;flex:1;background:var(--soft-line)}
 .resource-plugin-group-label b{order:3;font-weight:550}
@@ -1833,15 +1829,6 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 .plugin-form-diagnostic .diagnostic-overview-icon .icon{width:18px;height:18px}
 .plugin-form-diagnostic .diagnostic-step{padding:9px 2px}
 .plugin-form-actions .action-spacer{flex:1}
-.plugin-draft-overflow{position:relative;flex:0 0 auto}
-.plugin-draft-overflow>summary{list-style:none;cursor:pointer}
-.plugin-draft-overflow>summary::-webkit-details-marker{display:none}
-.plugin-draft-overflow[open]>summary{color:var(--text);border-color:rgba(139,140,255,.55);background:rgba(139,140,255,.12)}
-.plugin-draft-overflow-menu{position:absolute;z-index:6;top:calc(100% + 8px);right:0;width:160px;padding:6px;border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:var(--shadow)}
-.plugin-draft-overflow-menu .button{width:100%;justify-content:flex-start;border-color:transparent;background:transparent}
-.plugin-draft-overflow-menu .button:hover{background:rgba(255,255,255,.06)}
-.plugin-draft-overflow-menu .button.danger-subtle{color:var(--red)}
-.plugin-draft-overflow-menu .button.danger-subtle:hover{background:rgba(241,123,134,.075)}
 .plugin-detail{overflow-x:hidden}
 .detail-content{width:100%;container-type:inline-size}
 .plugin-information-section .content-title{gap:16px}
@@ -2155,7 +2142,6 @@ button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:spin .9s linear
   .plugin-inline-form-host .dialog-head{align-items:flex-start;flex-wrap:wrap;min-height:0;padding:14px}
   .plugin-inline-form-host .plugin-dialog-body{padding:18px 14px 22px}
   .plugin-edit-safety-status{width:100%;margin-left:0;text-align:left}
-  .plugin-draft-overflow{position:absolute;top:10px;right:14px}
   .plugin-validation-section{align-items:stretch;flex-direction:column}
   .plugin-validation-actions{justify-content:flex-start}
   .plugin-form-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:12px 14px}
@@ -2798,8 +2784,8 @@ button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:spin .9s linear
 .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>#cancelPluginEdit{order:1}
 .plugin-form-actions.is-create-flow>.action-spacer,
 .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>.action-spacer{order:2;display:block;flex:1}
-.plugin-form-actions.is-create-flow>:is(#savePluginDraft,#savePluginOnly,#saveAndConnectPlugin),
-.plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>:is(#savePluginDraft,#savePluginOnly,#saveAndConnectPlugin){order:3}
+.plugin-form-actions.is-create-flow>:is(#savePluginOnly,#saveAndConnectPlugin),
+.plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>:is(#savePluginOnly,#saveAndConnectPlugin){order:3}
 .plugin-form-actions.is-create-flow>:is(#savePlugin,.plugin-primary-action),
 .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>:is(#savePlugin,.plugin-primary-action){order:4;min-width:176px}
 .plugin-form-action-copy{min-width:0;order:2;flex:1;color:var(--faint);font-size:11px;line-height:1.5}
@@ -2839,8 +2825,8 @@ button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:spin .9s linear
   .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>#cancelPluginEdit{grid-column:1;grid-row:1;width:auto}
   .plugin-form-actions.is-create-flow>:is(#savePlugin,.plugin-primary-action),
   .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>:is(#savePlugin,.plugin-primary-action){grid-column:2;grid-row:1;width:100%;min-width:0}
-  .plugin-form-actions.is-create-flow>:is(#savePluginDraft,#savePluginOnly,#saveAndConnectPlugin):not(.hidden),
-  .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>:is(#savePluginDraft,#savePluginOnly,#saveAndConnectPlugin):not(.hidden){grid-column:1/-1;width:100%}
+  .plugin-form-actions.is-create-flow>:is(#savePluginOnly,#saveAndConnectPlugin):not(.hidden),
+  .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>:is(#savePluginOnly,#saveAndConnectPlugin):not(.hidden){grid-column:1/-1;width:100%}
 }
 @container (max-width:460px){
   .plugin-inline-form-host .plugin-type-badge{order:0}
@@ -2954,7 +2940,6 @@ button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:spin .9s linear
   background:rgba(139,140,255,.13);
 }
 .plugin-inline-form-host #changeNewPluginType .icon{width:14px;height:14px}
-.plugin-inline-form-host .plugin-draft-overflow{margin-left:auto}
 .plugin-inline-form-host .plugin-dialog-body{padding:18px clamp(22px,3.5cqi,38px) 22px}
 .plugin-inline-form-host .plugin-form-grid{gap:0}
 .plugin-inline-form-host .plugin-form-section{
@@ -3066,11 +3051,31 @@ button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:spin .9s linear
 }
 .plugin-inline-form-host .plugin-form-actions .button{min-height:40px}
 .plugin-inline-form-host .plugin-form-actions #savePlugin{width:200px;min-width:176px;max-width:220px;min-height:40px}
+.plugin-inline-form-host .plugin-form-actions.is-formal-edit{flex-wrap:nowrap}
+.plugin-inline-form-host .plugin-form-actions.is-formal-edit .button{width:auto;min-width:0;padding-inline:12px;white-space:nowrap}
+.plugin-inline-form-host .plugin-form-actions.is-formal-edit #savePlugin{width:auto;min-width:0;max-width:none}
+.plugin-inline-form-host .plugin-form-actions.is-formal-edit .primary{min-width:132px;font-weight:660;box-shadow:0 8px 22px rgba(73,61,181,.2)}
 .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>.action-spacer{order:1;display:block;flex:1}
 .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>.plugin-form-safety-note{order:0}
 .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>#cancelPluginEdit{order:2}
-.plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>#savePluginDraft{order:3;border-color:rgba(139,140,255,.25);color:#d9d8ff}
 .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>#savePlugin{order:4}
+
+@container (max-width:650px){
+  .plugin-inline-form-host .plugin-form-actions.is-formal-edit{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) repeat(3,max-content);
+    justify-content:end;
+    gap:8px;
+    padding:10px 14px 12px;
+  }
+  .plugin-inline-form-host .plugin-form-actions.is-formal-edit>.plugin-form-safety-note{grid-column:1/-1;grid-row:1;justify-self:start;max-width:none}
+  .plugin-inline-form-host .plugin-form-actions.is-formal-edit>.action-spacer{display:none}
+  .plugin-inline-form-host .plugin-form-actions.is-formal-edit>.button{width:auto;min-width:0}
+  .plugin-inline-form-host .plugin-form-actions.is-formal-edit>#cancelPluginEdit{grid-column:2;grid-row:2}
+  .plugin-inline-form-host .plugin-form-actions.is-formal-edit>#savePluginOnly,
+  .plugin-inline-form-host .plugin-form-actions.is-formal-edit>#savePlugin:not(.primary){grid-column:3;grid-row:2}
+  .plugin-inline-form-host .plugin-form-actions.is-formal-edit>.primary{grid-column:4;grid-row:2}
+}
 
 @container (max-width:620px){
   .plugin-inline-form-host .plugin-card>.dialog-head{padding-inline:14px}
@@ -3078,10 +3083,10 @@ button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:spin .9s linear
   .plugin-inline-form-host .plugin-dialog-body{padding:16px 14px 20px}
   .plugin-inline-form-host .plugin-form-section{padding:14px 0 16px}
   .plugin-inline-form-host .plugin-form-section .form-grid,
-  .plugin-inline-form-host .advanced-form-grid,
-  .plugin-inline-form-host .plugin-target-section .form-grid{grid-template-columns:minmax(0,1fr)}
+  .plugin-inline-form-host .advanced-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .plugin-inline-form-host .plugin-target-section .form-grid{grid-template-columns:minmax(0,3fr) minmax(96px,1fr)}
   .plugin-inline-form-host .plugin-form-section .field.full,
-  .plugin-inline-form-host .advanced-form-grid .field.full{grid-column:auto}
+  .plugin-inline-form-host .advanced-form-grid .field.full{grid-column:1/-1}
   .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions{
     display:grid;
     grid-template-columns:repeat(2,minmax(0,1fr));
@@ -3091,14 +3096,23 @@ button:is([data-busy="true"],[aria-busy="true"]) .icon{animation:spin .9s linear
   .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>.action-spacer{display:none}
   .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>.plugin-form-safety-note{grid-column:1/-1;grid-row:1;max-width:none}
   .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>#savePlugin{grid-column:1/-1!important;grid-row:2;width:100%;max-width:none}
-  .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>#cancelPluginEdit{grid-column:1!important;grid-row:3;width:100%}
-  .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>#savePluginDraft{grid-column:2!important;grid-row:3;width:100%}
+  .plugin-card:has(#changeNewPluginType:not(.hidden)) .plugin-form-actions>#cancelPluginEdit{grid-column:1/-1!important;grid-row:3;width:100%}
 }
 @container (max-width:460px){
   .plugin-inline-form-host .plugin-type-identity{min-width:0}
   .plugin-inline-form-host .plugin-card>.dialog-head>div{order:0;width:auto;flex:1}
   .plugin-inline-form-host #changeNewPluginType{order:0;margin-left:0}
   .plugin-inline-form-host .plugin-card>.dialog-head h2{white-space:nowrap}
+  .plugin-inline-form-host .plugin-form-section .form-grid,
+  .plugin-inline-form-host .advanced-form-grid,
+  .plugin-inline-form-host .plugin-target-section .form-grid{grid-template-columns:minmax(0,1fr)}
+  .plugin-inline-form-host .plugin-form-section .field.full,
+  .plugin-inline-form-host .advanced-form-grid .field.full{grid-column:auto}
   .plugin-inline-form-host .plugin-advanced-settings>summary{align-items:flex-start;flex-direction:column;gap:4px;padding-block:10px}
   .plugin-inline-form-host .plugin-advanced-settings>summary small{width:100%;margin-left:0}
+  .plugin-inline-form-host .plugin-form-actions.is-formal-edit{grid-template-columns:repeat(2,minmax(0,1fr));justify-content:stretch}
+  .plugin-inline-form-host .plugin-form-actions.is-formal-edit>.primary{grid-column:1/-1;grid-row:2;width:100%;max-width:none}
+  .plugin-inline-form-host .plugin-form-actions.is-formal-edit>#cancelPluginEdit{grid-column:1;grid-row:3;width:100%}
+  .plugin-inline-form-host .plugin-form-actions.is-formal-edit>#savePluginOnly,
+  .plugin-inline-form-host .plugin-form-actions.is-formal-edit>#savePlugin:not(.primary){grid-column:2;grid-row:3;width:100%}
 }

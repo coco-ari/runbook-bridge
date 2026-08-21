@@ -268,6 +268,19 @@ export function getPluginConnectionAdapter(pluginType) {
   return adapter;
 }
 
+export function assertPluginConfigurationReady(plugin) {
+  const assessment = getPluginConnectionAdapter(plugin?.pluginType)
+    .assessConfiguration(plugin,'connection');
+  if (plugin?.configState === 'ready' && assessment.state === 'complete') return plugin;
+  const invalid = assessment.state === 'invalid';
+  throw new AppError(
+    invalid ? 'PLUGIN_CONFIGURATION_INVALID' : 'PLUGIN_CONFIGURATION_INCOMPLETE',
+    assessment.issues[0]?.message
+      ?? (invalid ? '插件配置包含无效字段。' : '请补全插件配置后再保存。'),
+    {configState:plugin?.configState ?? null,issues:assessment.issues},
+  );
+}
+
 export const pluginConnectionAdapterInternals = {
   canonicalize,
   configurationResult,

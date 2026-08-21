@@ -258,6 +258,56 @@ function committedPlugin(overrides = {}) {
   };
 }
 
+test('formal create and edit IPC reject incomplete configuration before persistence', async () => {
+  const createCalls = {store:0,vault:0};
+  const createHandlers = ipcHarness({
+    workspaceStore:{
+      createPlugin:async () => { createCalls.store += 1; throw new Error('must not persist'); },
+    },
+    credentialVault:{save:async () => { createCalls.vault += 1; }},
+  });
+  const created = await createHandlers.get('v2:plugin-create')({}, {
+    projectId:'p1',environmentId:'e1',
+    input:{pluginType:'mysql',displayName:'Incomplete DB',target:{host:'db.internal'},auth:{username:'reader'}},
+    secrets:{password:'temporary'},
+  });
+  assert.equal(created.ok,false);
+  assert.equal(created.error.code,'PLUGIN_CONFIGURATION_INCOMPLETE');
+  assert.deepEqual(createCalls,{store:0,vault:0});
+
+  const before = committedPlugin();
+  const incomplete = committedPlugin({
+    revision:5,
+    configState:'draft',
+    target:{...before.target,database:''},
+  });
+  const editCalls = {commit:0,vault:0,failed:0};
+  const editHandlers = ipcHarness({
+    pluginEditSessionManager:{
+      beginSave:() => ({phase:'saving'}),
+      commitMaterial:() => ({
+        scope:{projectId:'p1',environmentId:'e1',pluginInstanceId:'db1'},
+        baseRecordRevision:4,credentialIntent:'unchanged',temporarySecrets:{},
+      }),
+      saveFailed:() => { editCalls.failed += 1; },
+    },
+    workspaceStore:{
+      preparePluginConnectionUpdate:async () => ({
+        before,after:incomplete,candidate:incomplete,
+        change:{kind:'session-affecting',credentialMutation:'none'},
+      }),
+      commitPluginSnapshot:async () => { editCalls.commit += 1; return incomplete; },
+    },
+    credentialVault:{saveMerged:async () => { editCalls.vault += 1; }},
+  });
+  const edited = await editHandlers.get('v2:plugin-connection-edit-save')(event().value,{
+    editSessionId:'edit-1',expectedRevision:4,patch:{target:incomplete.target},
+  });
+  assert.equal(edited.ok,false);
+  assert.equal(edited.error.code,'PLUGIN_CONFIGURATION_INCOMPLETE');
+  assert.deepEqual(editCalls,{commit:0,vault:0,failed:1});
+});
+
 test('edit save no-op exits through restore handoff without touching YAML, vault, or runtime mutation', async () => {
   const plugin = committedPlugin();
   const calls = {prepare:0,commit:0,vault:0,beginMutation:0,changed:0,completed:0,failed:0};

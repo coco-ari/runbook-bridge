@@ -54,9 +54,7 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(html, /id="primaryCredentialStatus"/);
   assert.match(html, /id="pluginFormDiagnostic"/);
   assert.match(html, /id="credentialMigrationNotice"/);
-  assert.match(html, /id="savePluginDraft"/);
-  assert.match(html, /id="savePluginDraftOverflow"/);
-  assert.match(html, /id="deleteCurrentDraft"/);
+  assert.doesNotMatch(html, /id="savePluginDraft"|id="savePluginDraftOverflow"|id="deleteCurrentDraft"|保存草稿|保存为草稿/);
   assert.match(html, /id="auditBody" class="audit-list"/);
   assert.match(html, /id="clearAudit"/);
   assert.match(html, /id="clearAuditDialog"/);
@@ -141,12 +139,7 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(renderer, /api\.cancelPluginValidation/);
   assert.match(renderer, /api\.savePluginConnectionEdit/);
   assert.match(renderer, /api\.cancelPluginConnectionEdit/);
-  assert.match(renderer, /api\.savePluginDraft/);
-  assert.match(renderer, /api\.resumePluginDraft/);
-  assert.match(renderer, /api\.cancelPluginDraftSession/);
-  assert.match(renderer, /api\.deletePluginDraft/);
-  assert.match(renderer, /api\.promotePluginDraft/);
-  assert.match(renderer, /resourcePaneDrafts/);
+  assert.doesNotMatch(renderer, /api\.(?:savePluginDraft|resumePluginDraft|cancelPluginDraftSession|deletePluginDraft|promotePluginDraft)|resourcePaneDrafts|selectionKind === ['"]plugin-draft['"]/);
   assert.doesNotMatch(renderer, /api\.testPlugin/);
   assert.doesNotMatch(renderer, /renderDiagnosticPanel|pluginDiagnostics|connectionCheckPanel/);
   assert.doesNotMatch(preload, /testPlugin|onPluginTestProgress|v2:plugin-test/);
@@ -228,7 +221,7 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(styles, /\.environment-overview-attention/);
   assert.doesNotMatch(styles, /\.environment-danger-zone/);
   assert.match(styles, /@container scope-detail \(max-width:719px\)/);
-  assert.match(styles, /\.resource-draft-row/);
+  assert.doesNotMatch(styles, /\.resource-draft-row|\.resource-draft-group|\.plugin-draft-overflow|#savePluginDraft/);
   assert.match(styles, /\.permission-hero/);
   assert.match(styles, /\.permissions-page \.policy-row/);
   assert.match(styles, /@container \(max-width:650px\)/);
@@ -258,11 +251,9 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(preload, /v2:plugin-validation-cancel/);
   assert.match(preload, /v2:plugin-connection-edit-save/);
   assert.match(preload, /v2:plugin-connection-edit-cancel/);
-  assert.match(preload, /v2:plugin-draft-save/);
-  assert.match(preload, /v2:plugin-draft-resume/);
-  assert.match(preload, /v2:plugin-draft-edit-cancel/);
-  assert.match(preload, /v2:plugin-draft-delete/);
-  assert.match(preload, /v2:plugin-draft-promote/);
+  assert.doesNotMatch(preload, /v2:plugin-draft-(?:list|save|resume|edit-cancel|delete|promote)/);
+  assert.doesNotMatch(ipc, /handle(?:WithEvent)?\('plugin-draft-(?:list|save|resume|edit-cancel|delete|promote)'/);
+  assert.doesNotMatch(main, /PluginDraftService/);
   assert.match(catalog, /defaultPort/);
   assert.match(catalog, /capabilities:\{resourceDiscovery:/);
   assert.match(catalog, /validationPurpose:/);

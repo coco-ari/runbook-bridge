@@ -30,7 +30,6 @@ import { PluginEditSessionManager } from './plugin-edit-session-manager.mjs';
 import { PluginDraftCredentialVault } from './plugin-draft-credential-vault.mjs';
 import { PluginDraftStore } from './plugin-draft-store.mjs';
 import { PluginDraftPromotionJournal } from './plugin-draft-promotion-journal.mjs';
-import { PluginDraftService } from './plugin-draft-service.mjs';
 import { PluginProbeManager } from './plugin-probe-manager.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -150,15 +149,10 @@ if (process.argv.includes('--mcp')) {
         const pluginDraftPromotionJournal = new PluginDraftPromotionJournal(
           dataRoot,workspaceStore,pluginDraftStore,pluginDraftCredentialVault,pluginCredentialVault,
         );
+        // Recover promotions started by older releases. Saved draft data stays
+        // untouched for rollback, but is no longer exposed to the application.
         await pluginDraftPromotionJournal.recoverAll();
         configTransactionJournal.addGuard(pluginDraftPromotionJournal);
-        const pluginDraftService = new PluginDraftService({
-          workspaceStore,
-          draftStore:pluginDraftStore,
-          draftCredentialVault:pluginDraftCredentialVault,
-          credentialVault:pluginCredentialVault,
-          promotionJournal:pluginDraftPromotionJournal,
-        });
         // Recovery must precede legacy materialization/import: otherwise an
         // unresolved old envelope could be mistaken for an absent credential.
         if (!configTransactionJournal.hasUnresolved()) await workspaceStore.migrateLegacyProjects();
@@ -206,7 +200,6 @@ if (process.argv.includes('--mcp')) {
         const confirmationManager = new ConfirmationManager();
         const credentialUseResolver = new CredentialUseResolver(pluginCredentialVault);
         const validationRuntime = new PluginValidationRuntime({pluginManager,mysqlRuntime});
-        pluginDraftService.validationRuntime = validationRuntime;
         const pluginProbeManager = new PluginProbeManager({
           workspaceStore,
           mutationCoordinator,
@@ -228,7 +221,7 @@ if (process.argv.includes('--mcp')) {
           }
         };
         const v2Service = new V2Service({ workspaceStore, connectionManager: environmentConnectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault: pluginCredentialVault, mutationCoordinator, workspaceChanged:(payload) => broadcast('v2:workspace-changed', payload) });
-        v2 = { workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, pluginDraftCredentialVault, pluginDraftStore, pluginDraftPromotionJournal, pluginDraftService, mutationCoordinator, credentialUseResolver, validationRuntime, pluginProbeManager, pluginEditSessionManager, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
+        v2 = { workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, mutationCoordinator, credentialUseResolver, validationRuntime, pluginProbeManager, pluginEditSessionManager, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
         const token = await rotateBrokerToken(dataRoot);
         brokerServer = new BrokerServer({ dataRoot, token, v2Service, appVersion: app.getVersion() });
         await brokerServer.start();

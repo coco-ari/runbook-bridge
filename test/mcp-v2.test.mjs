@@ -17,6 +17,9 @@ test('V2 MCP exposes unrestricted bounded reads and confirmation-gated server ch
   assert.ok(names.includes('redis_scan'));
   for (const name of ['server_stat','server_list_directory','server_find_files','server_read_file','server_search_files','server_system_snapshot','server_service_inspect','server_journal_query','server_container_inspect','server_upload_file','server_control_service','server_execute_shell']) assert.ok(names.includes(name));
   assert.ok(!names.some((name) => /execute_command|raw|connect/.test(name)));
+  const addPlugin = listed.tools.find((tool) => tool.name === 'add_plugin');
+  assert.ok(addPlugin.inputSchema.required.includes('configuration'));
+  assert.doesNotMatch(addPlugin.description,/草稿/u);
   const serverAction = listed.tools.find((tool) => tool.name === 'server_run_action');
   assert.deepEqual(serverAction.inputSchema.properties.actionId.enum, ['system.summary', 'process.summary', 'network.listen', 'filesystem.usage', 'service.status']);
   assert.equal('command' in serverAction.inputSchema.properties, false);

@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
 import { AppError, toPublicError } from './errors.mjs';
 import { OperationGate, capabilityRule } from './operation-gate.mjs';
+import { assertPluginConfigurationReady } from './plugin-connection-adapters.mjs';
 import { assessEnvironmentSnapshot, publicPluginAssessment } from './plugin-readiness-service.mjs';
 import { pluginWithRunbookSources } from './runbook-sources.mjs';
+import { workspaceInternals } from './workspace-store.mjs';
 
 const MAX_RUNBOOK_BYTES = 64 * 1024;
 const AGENT_PLUGIN_FIELDS = {
@@ -163,6 +165,11 @@ export class V2Service {
   async addPluginUnlocked(params) {
     const verified = await this.contextManager.verifyEnvironment(params.projectId, params.environmentId, params.contextToken, params.clientInstanceId);
     const input = agentPluginInput(params);
+    const candidate = workspaceInternals.normalizePlugin(input,{
+      projectId:params.projectId,
+      environmentId:params.environmentId,
+    });
+    assertPluginConfigurationReady(candidate);
     const mutationToken = this.connectionManager.beginConfigurationMutation?.(params.projectId,params.environmentId,null) ?? null;
     let plugin;
     try {
@@ -183,7 +190,7 @@ export class V2Service {
     const auditWarning = await this.workspaceStore.appendAudit(params.projectId, {
       type:'plugin-added', environmentId:params.environmentId, pluginInstanceId:plugin.pluginInstanceId,
       pluginType:plugin.pluginType, pluginNameSnapshot:plugin.displayName, actor:'agent', result:'success',
-      configState:plugin.configState, operationSummary:plugin.configState === 'ready' ? '已填写非敏感连接配置，保持断开' : '已创建待配置插件草稿',
+      configState:plugin.configState, operationSummary:'已填写非敏感连接配置，保持断开',
     }).then(() => false, () => true);
     this.workspaceChanged?.({ type:'plugin-added', projectId:params.projectId, environmentId:params.environmentId, pluginInstanceId:plugin.pluginInstanceId, pluginName:plugin.displayName });
     const catalog = typeof this.workspaceStore.listPlugins === 'function'
@@ -197,7 +204,7 @@ export class V2Service {
       },
       connection:'disconnected',
       contextStale:true,
-      message:plugin.configState === 'ready' ? '插件已配置并保持断开，请人工点击连接。' : '插件草稿已创建，请人工补齐配置后连接。',
+      message:'插件已配置并保持断开，请人工点击连接。',
       ...(auditWarning ? { auditWarning:true } : {}),
       ...(runtimeWarning ? {runtimeWarning,manualReconnectRequired:true} : {}),
     };

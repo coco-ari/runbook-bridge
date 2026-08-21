@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { ProjectStore } from '../src/project-store.mjs';
-import { WorkspaceStore } from '../src/workspace-store.mjs';
+import { WorkspaceStore, workspaceInternals } from '../src/workspace-store.mjs';
 import { PluginCredentialVault } from '../src/plugin-credential-vault.mjs';
 
 async function fixture(t) {
@@ -68,8 +68,12 @@ test('operation records can be cleared by current plugin or environment without 
   const project = await store.createProject({ name:'审计范围', environmentName:'生产环境' });
   const [production] = await store.listEnvironments(project.projectId);
   const staging = await store.createEnvironment(project.projectId,{ name:'预发环境' });
-  const server = await store.createPlugin(project.projectId, production.environmentId, { pluginType:'server', displayName:'应用服务器' });
-  const database = await store.createPlugin(project.projectId, production.environmentId, { pluginType:'mysql', displayName:'业务数据库' });
+  const server = await store.createPlugin(project.projectId, production.environmentId, {
+    pluginType:'server',displayName:'应用服务器',target:{host:'server.internal'},auth:{username:'reader'},
+  });
+  const database = await store.createPlugin(project.projectId, production.environmentId, {
+    pluginType:'mysql',displayName:'业务数据库',target:{host:'db.internal',database:'orders'},auth:{username:'reader'},
+  });
   await store.appendAudit(project.projectId,{ environmentId:production.environmentId, pluginInstanceId:server.pluginInstanceId, type:'plugin-operation', result:'success' });
   await store.appendAudit(project.projectId,{ environmentId:production.environmentId, pluginInstanceId:database.pluginInstanceId, type:'plugin-operation', result:'success' });
   await store.appendAudit(project.projectId,{ environmentId:production.environmentId, type:'environment-disconnected', result:'success' });
@@ -85,17 +89,51 @@ test('operation records can be cleared by current plugin or environment without 
   assert.equal((await store.listAudit(project.projectId,{ environmentId:staging.environmentId })).entries.length,1);
 });
 
-test('a plugin name and type are sufficient to save disconnected drafts', async (t) => {
+test('formal creation rejects incomplete plugins while legacy draft snapshots remain readable', async (t) => {
   const { store } = await fixture(t);
   const project = await store.createProject({ name:'越南项目', environmentName:'测试环境' });
   const [environment] = await store.listEnvironments(project.projectId);
   for (const [pluginType, displayName] of [['server','应用服务器'],['mysql','业务数据库'],['redis','业务缓存']]) {
-    const plugin = await store.createPlugin(project.projectId, environment.environmentId, { pluginType, displayName });
-    assert.equal(plugin.configState, 'draft');
+    await assert.rejects(
+      () => store.createPlugin(project.projectId,environment.environmentId,{pluginType,displayName}),
+      (error) => error.code === 'PLUGIN_CONFIGURATION_INCOMPLETE',
+    );
   }
-  const plugins = await store.listPlugins(project.projectId, environment.environmentId);
-  assert.equal(plugins.length, 3);
-  assert.ok(plugins.every((plugin) => plugin.configState === 'draft'));
+  assert.equal((await store.listPlugins(project.projectId,environment.environmentId)).length,0);
+
+  const legacy = workspaceInternals.normalizePlugin(
+    {pluginType:'server',pluginInstanceId:'legacy-server',displayName:'旧版待配置服务器'},
+    {projectId:project.projectId,environmentId:environment.environmentId},
+  );
+  assert.equal(legacy.configState,'draft');
+  await store.commitNewPluginSnapshot(legacy);
+  assert.equal(
+    (await store.getPlugin(project.projectId,environment.environmentId,legacy.pluginInstanceId)).configState,
+    'draft',
+  );
+});
+
+test('formal connection updates cannot persist an incomplete candidate', async (t) => {
+  const {store} = await fixture(t);
+  const project = await store.createProject({name:'订单服务',environmentName:'生产环境'});
+  const [environment] = await store.listEnvironments(project.projectId);
+  const plugin = await store.createPlugin(project.projectId,environment.environmentId,{
+    pluginType:'mysql',pluginInstanceId:'orders-db',displayName:'订单库',
+    target:{host:'db.internal',database:'orders'},auth:{username:'reader'},transport:{kind:'direct'},
+  });
+  const file = store.pluginPath(project.projectId,environment.environmentId,plugin.pluginInstanceId);
+  const before = await fs.readFile(file);
+
+  await assert.rejects(
+    () => store.preparePluginConnectionUpdate(
+      project.projectId,environment.environmentId,plugin.pluginInstanceId,
+      {target:{...plugin.target,database:''}},plugin.revision,
+    ),
+    (error) => error.code === 'PLUGIN_CONFIGURATION_INCOMPLETE'
+      && error.details?.issues?.[0]?.field === 'target.database',
+  );
+  assert.deepEqual(await fs.readFile(file),before);
+  assert.equal((await store.getPlugin(project.projectId,environment.environmentId,plugin.pluginInstanceId)).revision,plugin.revision);
 });
 
 test('workspace rejects cross-environment tunnel references and protects providers', async (t) => {

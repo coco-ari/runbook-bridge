@@ -34,7 +34,7 @@ const tools = [
   tool('list_projects', '列出本机项目摘要，不连接任何环境。', [], {}),
   tool('list_environments', '列出项目的用户自定义环境，不连接插件。', ['projectId'], { projectId: scope.projectId }),
   tool('open_environment', '读取一个环境的运维说明、插件目录、连接状态并取得短期上下文令牌。', ['projectId', 'environmentId'], { projectId: scope.projectId, environmentId: scope.environmentId }),
-  tool('add_plugin', '在已打开环境中添加一个保持断开的 Server、MySQL 或 Redis 插件。只接收结构化非敏感配置；仅填写名称也可保存为待配置草稿。', ['projectId','environmentId','contextToken','pluginType','displayName'], {
+  tool('add_plugin', '在已打开环境中添加一个配置完整且保持断开的 Server、MySQL 或 Redis 插件。只接收结构化非敏感配置。', ['projectId','environmentId','contextToken','pluginType','displayName','configuration'], {
     projectId:scope.projectId, environmentId:scope.environmentId, contextToken:scope.contextToken,
     pluginType:{ type:'string', enum:['server','mysql','redis'] }, displayName:{ type:'string', minLength:1, maxLength:120 },
     configuration:{ type:'object', additionalProperties:false, properties:{

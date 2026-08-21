@@ -300,34 +300,21 @@ test('successful validation without step details finalizes every visible check',
   );
 });
 
-test('formal plugin edits keep draft persistence in overflow while new plugins expose it directly', () => {
+test('plugin forms expose only formal save actions', () => {
   const context = vm.createContext({});
   install(context,['pluginFormActionLayout']);
-  context.formal = vm.runInContext('pluginFormActionLayout({plugin:{pluginInstanceId:"server"},persistentDraft:null,restoreCount:1})',context);
+  context.formal = vm.runInContext('pluginFormActionLayout({plugin:{pluginInstanceId:"server"},restoreCount:1})',context);
   assert.deepEqual(JSON.parse(JSON.stringify(context.formal)),{
-    directDraft:false,
-    overflowDraft:true,
     saveOnly:true,
     saveAndConnect:false,
   });
-  context.formalDisconnected = vm.runInContext('pluginFormActionLayout({plugin:{pluginInstanceId:"server"},persistentDraft:null,restoreCount:0})',context);
+  context.formalDisconnected = vm.runInContext('pluginFormActionLayout({plugin:{pluginInstanceId:"server"},restoreCount:0})',context);
   assert.deepEqual(JSON.parse(JSON.stringify(context.formalDisconnected)),{
-    directDraft:false,
-    overflowDraft:true,
     saveOnly:false,
     saveAndConnect:true,
   });
-  context.newPlugin = vm.runInContext('pluginFormActionLayout({plugin:null,persistentDraft:null,restoreCount:0})',context);
+  context.newPlugin = vm.runInContext('pluginFormActionLayout({plugin:null,restoreCount:0})',context);
   assert.deepEqual(JSON.parse(JSON.stringify(context.newPlugin)),{
-    directDraft:true,
-    overflowDraft:false,
-    saveOnly:false,
-    saveAndConnect:false,
-  });
-  context.persistentDraft = vm.runInContext('pluginFormActionLayout({plugin:null,persistentDraft:{draftId:"draft"},restoreCount:0})',context);
-  assert.deepEqual(JSON.parse(JSON.stringify(context.persistentDraft)),{
-    directDraft:true,
-    overflowDraft:false,
     saveOnly:false,
     saveAndConnect:false,
   });
@@ -992,6 +979,8 @@ test('a failed plugin save leaves the form draft and credential state untouched'
     state,
     inFlightOperations:new Map(),
     pluginFormPayload:() => ({input:{displayName:'Draft'},patch:{target:{host:'draft'}},secrets:{password:'unsaved-secret'},credentialIntent:'replace'}),
+    pluginProbeIssue:() => null,
+    focusPluginProbeIssue:() => false,
     api:{savePluginConnectionEdit:async () => ({ok:false,error:{message:'save failed'}})},
     renderPluginFormDiagnostic:() => {},
     refreshEnvironmentMetadata:async () => { throw new Error('must not refresh after failed save'); },
@@ -1016,6 +1005,8 @@ test('a committed plugin save with a runtime warning clears the saved credential
   const context = vm.createContext({
     state,inFlightOperations:new Map(),
     pluginFormPayload:() => ({input:{displayName:'Saved'},patch:{target:{host:'saved'}},secrets:{password:'new-secret'},credentialIntent:'replace'}),
+    pluginProbeIssue:() => null,
+    focusPluginProbeIssue:() => false,
     api:{savePluginConnectionEdit:async () => {
       updateCalls += 1;
       return {ok:true,data:{
@@ -1064,6 +1055,8 @@ test('a committed plugin save with a pending recovery journal asks for restart w
   const context = vm.createContext({
     state,inFlightOperations:new Map(),
     pluginFormPayload:() => ({input:{displayName:'Saved'},patch:{target:{host:'saved'}},secrets:{password:'new-secret'},credentialIntent:'replace'}),
+    pluginProbeIssue:() => null,
+    focusPluginProbeIssue:() => false,
     api:{savePluginConnectionEdit:async () => ({ok:true,data:{
       committed:true,
       plugin:{projectId:'project',environmentId:'env',pluginInstanceId:'plugin',revision:4,configState:'ready'},

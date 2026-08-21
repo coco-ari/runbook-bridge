@@ -10,7 +10,6 @@ import { PluginDraftCredentialVault } from '../src/plugin-draft-credential-vault
 import { PluginDraftPromotionJournal } from '../src/plugin-draft-promotion-journal.mjs';
 import { PluginDraftService } from '../src/plugin-draft-service.mjs';
 import { registerV2Ipc } from '../src/ipc-v2.mjs';
-import { WorkspaceMutationCoordinator } from '../src/workspace-mutation-coordinator.mjs';
 
 function encryption(control = {}) {
   return {
@@ -494,29 +493,25 @@ test('persistent draft validation never sends an inactive old-identity credentia
   assert.equal(runtimeCalls,0);
 });
 
-test('draft IPC persists only the sidecar namespace and augments summaries without polluting plugin-list', async (t) => {
+test('legacy sidecar drafts are not exposed through IPC or environment summaries', async (t) => {
   const values = await fixture(t);
-  const auditEntries = [];
-  values.workspaceStore.appendAudit = async (_projectId,entry) => { auditEntries.push(entry); };
-  const activeVault = new PluginCredentialVault(values.root,encryption());
   const draftVault = new PluginDraftCredentialVault(values.root,encryption());
   const draftStore = new PluginDraftStore(values.workspaceStore,draftVault);
-  const promotionJournal = new PluginDraftPromotionJournal(
-    values.root,values.workspaceStore,draftStore,draftVault,activeVault,
-  );
-  const service = new PluginDraftService({
-    workspaceStore:values.workspaceStore,draftStore,draftCredentialVault:draftVault,
-    credentialVault:activeVault,promotionJournal,
+  await draftStore.save({
+    projectId:values.project.projectId,
+    environmentId:values.environment.environmentId,
+    pluginType:'mysql',
+    sanitizedDraft:mysqlDraft({target:{...mysqlDraft().target,database:''}}),
+    credentialIntent:'replace',
+    temporarySecrets:{password:'legacy-draft-password'},
   });
   const handlers = new Map();
-  const broadcasts = [];
   registerV2Ipc({
     handle:(name,handler) => handlers.set(name,handler),
     on:() => undefined,
   },{
     workspaceStore:values.workspaceStore,
-    credentialVault:activeVault,
-    pluginDraftService:service,
+    credentialVault:new PluginCredentialVault(values.root,encryption()),
     connectionManager:{
       on:() => undefined,
       snapshot:(projectId,environmentId) => ({projectId,environmentId,phase:'disconnected',sequence:0,plugins:{}}),
@@ -526,107 +521,19 @@ test('draft IPC persists only the sidecar namespace and augments summaries witho
     confirmationManager:{on:() => undefined},
     pluginManager:{},
     mysqlRuntime:{},
-    broadcast:(channel,payload) => broadcasts.push({channel,payload}),
   });
   const event = {sender:{id:41,isDestroyed:() => false,once:() => undefined,send:() => undefined}};
-  const payload = {
-    projectId:values.project.projectId,environmentId:values.environment.environmentId,
-    pluginType:'mysql',sanitizedDraft:mysqlDraft({target:{...mysqlDraft().target,database:''}}),
-    credentialIntent:'replace',temporarySecrets:{password:'ipc-draft-password'},
-  };
-  const savedResult = await handlers.get('v2:plugin-draft-save')(event,payload);
-  assert.equal(savedResult.ok,true);
-  assert.equal(savedResult.data.credentialState,'stored-active');
-  await assert.rejects(() => fs.access(activeVault.file),(error) => error.code === 'ENOENT');
-  const sidecar = await fs.readFile(draftStore.fileFor(savedResult.data),'utf8');
-  assert.doesNotMatch(sidecar,/ipc-draft-password|ciphertext/);
-
   const environmentResult = await handlers.get('v2:environment-list')(event,values.project.projectId);
-  assert.equal(environmentResult.data.pluginCount,undefined);
-  assert.equal(environmentResult.data[0].pluginCount,1);
+  assert.equal(environmentResult.data[0].pluginCount,0);
   assert.equal(environmentResult.data[0].readyPluginCount,0);
-  assert.equal(environmentResult.data[0].sidecarDraftCount,1);
-  assert.equal(environmentResult.data[0].draftCount,1);
+  assert.equal(environmentResult.data[0].sidecarDraftCount,undefined);
   const pluginResult = await handlers.get('v2:plugin-list')(event,{
     projectId:values.project.projectId,environmentId:values.environment.environmentId,
   });
   assert.deepEqual(pluginResult.data,[]);
-  const draftResult = await handlers.get('v2:plugin-draft-list')(event,{
-    projectId:values.project.projectId,environmentId:values.environment.environmentId,
-  });
-  assert.equal(draftResult.data.length,1);
-  assert.equal(draftResult.data[0].draftId,savedResult.data.draftId);
-
-  const resumed = await handlers.get('v2:plugin-draft-resume')(event,{
-    projectId:savedResult.data.projectId,environmentId:savedResult.data.environmentId,
-    draftId:savedResult.data.draftId,
-  });
-  const noOpResult = await handlers.get('v2:plugin-draft-save')(event,{
-    projectId:resumed.data.projectId,environmentId:resumed.data.environmentId,draftId:resumed.data.draftId,
-    draftSessionId:resumed.data.draftSessionId,expectedDraftRevision:resumed.data.revision,
-    pluginType:resumed.data.pluginType,sanitizedDraft:resumed.data.sanitizedDraft,
-    credentialIntent:'unchanged',temporarySecrets:{},keepEditSession:true,
-  });
-  assert.equal(noOpResult.ok,true);
-  assert.equal(noOpResult.data.revision,savedResult.data.revision);
-  assert.equal(noOpResult.data.changed,false);
-  assert.equal(auditEntries.length,1);
-  assert.equal(broadcasts.length,1);
-});
-
-test('draft IPC mutation uses the edit session id that owns the installed environment fence', async (t) => {
-  const values = await fixture(t);
-  const base = await values.workspaceStore.createPlugin(
-    values.project.projectId,values.environment.environmentId,
-    mysqlDraft({displayName:'Fenced base',pluginInstanceId:'fenced-base'}),
-  );
-  const mutationCoordinator = new WorkspaceMutationCoordinator();
-  mutationCoordinator.installEnvironmentEditFence(
-    base.projectId,base.environmentId,'edit-fence-owner',[base.pluginInstanceId],
-  );
-  let savedPayload = null;
-  const pluginDraftService = {
-    draftStore:{count:async () => 0},
-    save:async (payload) => {
-      savedPayload = payload;
-      return {
-        schemaVersion:1,draftId:'draft-00000000-0000-4000-8000-000000000010',
-        projectId:payload.projectId,environmentId:payload.environmentId,
-        basePluginInstanceId:base.pluginInstanceId,baseRevision:base.revision,
-        pluginType:base.pluginType,revision:1,sanitizedDraft:payload.sanitizedDraft,
-        credentialIntent:'unchanged',credentialState:'absent',validationState:'stale',
-      };
-    },
-  };
-  const pluginEditSessionManager = {
-    captureCredentialIntent:() => undefined,
-    beginSave:() => undefined,
-    commitMaterial:() => ({
-      scope:{projectId:base.projectId,environmentId:base.environmentId,pluginInstanceId:base.pluginInstanceId},
-      baseRecordRevision:base.revision,credentialIntent:'unchanged',temporarySecrets:{},
-    }),
-    saveFailed:() => undefined,
-  };
-  const handlers = new Map();
-  registerV2Ipc({
-    handle:(name,handler) => handlers.set(name,handler),on:() => undefined,
-  },{
-    workspaceStore:values.workspaceStore,pluginDraftService,pluginEditSessionManager,mutationCoordinator,
-    credentialVault:new PluginCredentialVault(values.root,encryption()),
-    connectionManager:{
-      on:() => undefined,snapshot:() => ({phase:'disconnected',plugins:{}}),
-      status:async () => ({phase:'disconnected',plugins:{}}),
-    },
-    contextManager:{},confirmationManager:{on:() => undefined},pluginManager:{},mysqlRuntime:{},
-  });
-  const event = {sender:{id:73,isDestroyed:() => false,once:() => undefined,send:() => undefined}};
-  const result = await handlers.get('v2:plugin-draft-save')(event,{
-    projectId:base.projectId,environmentId:base.environmentId,pluginType:base.pluginType,
-    sanitizedDraft:{...base,description:'saved behind the edit fence'},
-    credentialIntent:'unchanged',temporarySecrets:{},editSessionId:'edit-fence-owner',keepEditSession:true,
-  });
-  assert.equal(result.ok,true);
-  assert.equal(savedPayload.basePluginInstanceId,base.pluginInstanceId);
+  for (const channel of ['list','save','resume','edit-cancel','delete','promote']) {
+    assert.equal(handlers.has(`v2:plugin-draft-${channel}`),false);
+  }
 });
 
 test('an unchanged draft save is a true no-op with no revision, sidecar, or draft-vault access', async (t) => {

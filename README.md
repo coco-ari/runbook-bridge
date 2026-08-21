@@ -29,11 +29,12 @@
 
 - 插件详情默认只读。基本信息和 Agent 策略使用独立轻量编辑，不会断开现有网络连接。
 - 点击“修改连接配置”后，应用会先显示影响范围，等待正在进行的操作结束，再断开受影响连接并进入受保护的编辑会话。
-- Server 使用 SSH 专属验证，MySQL 使用数据库发现与固定库验证，Redis 使用 Logical DB 验证；TLS 另有显式探测。所有验证只使用当前草稿，不改变正式连接或 Agent context。
-- “保存配置”只提交配置和凭据；“保存并恢复连接”在提交成功后按进入编辑前的连接集合恢复。配置保存成功但连接失败时，无需再次保存。
+- Server 使用 SSH 专属验证，MySQL 使用数据库发现与固定库验证，Redis 使用 Logical DB 验证；TLS 另有显式探测。所有验证只使用当前表单，不改变正式连接或 Agent context。
+- 新增插件只有“取消”和“检查并添加”：离开或取消会丢弃本次填写的配置与临时凭据，检查通过并正式添加后才会保存。
+- 修改连接配置只提供正式保存动作；“取消更改”会丢弃未保存修改。“保存并恢复连接”在提交成功后按进入编辑前的连接集合恢复。配置保存成功但连接失败时，无需再次保存。
 - 正式连接只读取已提交配置和 active 凭据。MySQL 只修改数据库、Redis 只修改 Logical DB 时会沿用同一账号的已保存凭据。
 - 密码控件显示“已保存 · 未修改”“未设置 · 未修改”或“将替换”。空密码、未填写密码和未点击“更换密码”都表示保持原凭据，不会清空旧密码。
-- 新插件或未完成编辑只有明确点击“保存草稿”后才会跨重启保留。持久草稿不参与正式连接、Connect All 或 Agent 操作。
+- 应用不提供插件草稿保存、恢复或删除入口，未保存的新增和修改内容不会跨页面或重启保留。
 
 ### Server
 
@@ -108,10 +109,10 @@ Agent 的“连接并继续”也必须由用户明确触发；连接成功后�
 ├── credentials\
 │   ├── plugins.enc.json
 │   ├── plugins.enc.backup.json
-│   ├── plugin-drafts.enc.json
-│   └── plugin-drafts.enc.backup.json
+│   ├── plugin-drafts.enc.json            # 旧版本遗留，当前版本不再写入
+│   └── plugin-drafts.enc.backup.json     # 旧版本遗留，当前版本不再写入
 ├── runtime\
-│   └── plugin-draft-promotions\
+│   └── plugin-draft-promotions\          # 仅用于恢复旧版本未完成的提交事务
 └── projects\<projectId>\
     ├── project.yaml
     ├── workspace.yaml
@@ -119,12 +120,12 @@ Agent 的“连接并继续”也必须由用户明确触发；连接成功后�
     │   ├── environment.yaml
     │   ├── README.md
     │   ├── plugins\<pluginInstanceId>.yaml
-    │   └── plugin-drafts\<draftId>.json
+    │   └── plugin-drafts\<draftId>.json   # 旧版本遗留，当前 UI/API 忽略
     ├── downloads\<environmentId>\<pluginInstanceId>\
     └── audit\operations-v3.jsonl
 ```
 
-密码、私钥口令和代理密码通过 Electron `safeStorage` 与 Windows DPAPI 加密保存，不写入 YAML、README、草稿 sidecar 或审计日志。active vault 和 draft vault 相互隔离并各自维护加密备份；草稿提升通过恢复 journal 提交。软件升级、覆盖安装、卸载后重装、删除项目、删除插件和删除草稿都不会由应用主动永久删除凭据文件。旧凭据不可读时，应用保留原密文字节并阻止普通保存覆盖。
+密码、私钥口令和代理密码通过 Electron `safeStorage` 与 Windows DPAPI 加密保存，不写入 YAML、README 或审计日志。旧版本可能留下草稿 sidecar、draft vault 和恢复 journal；当前版本不会展示或写入这些持久草稿数据，只会在启动时完成旧版未结束事务的兼容恢复，并保留遗留文件以便回退和数据恢复。软件升级、覆盖安装、卸载后重装、删除项目和删除插件都不会由应用主动永久删除凭据文件。旧凭据不可读时，应用保留原密文字节并阻止普通保存覆盖。
 
 请勿手工删除 `%LOCALAPPDATA%\AIOpsTool`。Windows 用户账户被删除、DPAPI 主密钥损坏或数据目录被外部清理时，加密凭据可能无法恢复。
 
@@ -145,8 +146,8 @@ codex mcp add --env ELECTRON_RUN_AS_NODE=1 agent-ops -- `
 ## 使用流程
 
 1. 在桌面应用中新建项目和环境。
-2. 为环境添加 Server、MySQL 或 Redis 插件并填写连接信息；未完成时可明确保存为草稿。
-3. 在连接编辑器中执行插件专属验证，然后选择“保存配置”或“保存并恢复连接”。
+2. 为环境添加 Server、MySQL 或 Redis 插件，填写完整连接信息并点击“检查并添加”；取消或离开页面会丢弃本次填写。
+3. 在连接编辑器中执行插件专属验证，然后正式保存；取消或离开页面会丢弃未保存修改。
 4. 在环境 `README.md` 中维护真实、准确的服务器手册。
 5. 点击“连接环境”或单独连接插件，确认目标插件显示为已连接；待处理插件不会阻止其它独立分支连接。
 6. 在 Codex 中描述运维目标，Agent 会先打开环境，再调用对应结构化工具。

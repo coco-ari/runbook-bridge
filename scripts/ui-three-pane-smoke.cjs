@@ -7,6 +7,7 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 app.disableHardwareAcceleration();
 const root = path.resolve(__dirname,'..');
 const dataRoot = path.join(os.tmpdir(),`ai-ops-three-pane-smoke-${process.pid}`);
+const disconnectedEditScreenshot = process.argv.some((value) => ['edit-form','edit-form-medium','edit-form-compact'].includes(value));
 app.setPath('userData',dataRoot);
 app.setPath('sessionData',path.join(dataRoot,'session'));
 
@@ -28,9 +29,8 @@ const plugins = {
   ],
   gray:[{projectId:'member',environmentId:'gray',pluginInstanceId:'gray-server',pluginType:'server',displayName:'灰度服务器',revision:1,configState:'ready',target:{host:'10.0.0.8',port:22,addressFamily:'ipv4Only'},auth:{username:'deploy',type:'password'},uplink:{type:'direct'},sources:[],limits:{maxBytes:262144}}],
 };
-const drafts = {prod:[],gray:[]};
-let expectDraftSessionValidation = false;
-let newDraftPromotionSessionKept = false;
+const pluginCreateCalls = [];
+let editValidationUsesSession = false;
 const environmentUpdateCalls = [];
 const projectUpdateCalls = [];
 const environments = [
@@ -61,7 +61,6 @@ handle('v2:environment-create',({projectId,input}) => {
   const environment = {projectId,environmentId,name:input.name,revision:1,pluginCount:0,readyPluginCount:0,pluginTypeCounts:{server:0,mysql:0,redis:0},resourcePreview:[],runtime:runtime(projectId,environmentId,0)};
   environments.push(environment);
   plugins[environmentId] = [];
-  drafts[environmentId] = [];
   const project = projects.find((item) => item.projectId === projectId);
   Object.assign(project,{environmentCount:environments.length,revision:Number(project.revision ?? 0) + 1});
   return environment;
@@ -75,68 +74,9 @@ handle('v2:environment-update',(payload) => {
   return environment;
 });
 handle('v2:plugin-list',({environmentId}) => plugins[environmentId] ?? []);
-handle('v2:plugin-draft-list',({environmentId}) => drafts[environmentId] ?? []);
-handle('v2:plugin-draft-save',(payload) => {
-  const list = drafts[payload.environmentId] ??= [];
-  const index = list.findIndex((item) => item.draftId === payload.draftId);
-  const previous = index >= 0 ? list[index] : null;
-  if (previous && !previous.basePluginInstanceId && payload.draftSessionId) {
-    newDraftPromotionSessionKept = payload.keepEditSession === true;
-  }
-  const draftId = previous?.draftId ?? 'draft-00000000-0000-4000-8000-000000000001';
-  const value = {
-    schemaVersion:1,draftId,projectId:payload.projectId,environmentId:payload.environmentId,
-    ...(payload.basePluginInstanceId ? {basePluginInstanceId:payload.basePluginInstanceId,baseRevision:payload.baseRevision} : {}),
-    pluginType:payload.pluginType,revision:(previous?.revision ?? 0) + 1,
-    sanitizedDraft:{...payload.sanitizedDraft,projectId:payload.projectId,environmentId:payload.environmentId,pluginInstanceId:payload.sanitizedDraft.pluginInstanceId ?? 'smoke-draft-plugin',revision:1,configState:'draft'},
-    credentialIntent:payload.credentialIntent,credentialState:Object.values(payload.temporarySecrets ?? {}).some(Boolean) ? 'stored-active' : 'absent',
-    validationState:'stale',createdAt:previous?.createdAt ?? new Date().toISOString(),updatedAt:new Date().toISOString(),
-  };
-  if (index >= 0) list[index] = value; else list.push(value);
-  const environment = environments.find((item) => item.environmentId === payload.environmentId);
-  environment.sidecarDraftCount = list.length;
-  environment.draftCount = list.length;
-  environment.pluginCount = (plugins[payload.environmentId] ?? []).length + list.length;
-  return value;
-});
-handle('v2:plugin-draft-resume',({environmentId,draftId}) => {
-  const value = (drafts[environmentId] ?? []).find((item) => item.draftId === draftId);
-  if (value?.basePluginInstanceId) expectDraftSessionValidation = true;
-  else newDraftPromotionSessionKept = false;
-  return {...value,draftSessionId:'draft-session-smoke',draftGeneration:0,sequence:0};
-});
-handle('v2:plugin-draft-edit-cancel',() => ({cancelled:true}));
-handle('v2:plugin-draft-delete',({environmentId,draftId}) => {
-  drafts[environmentId] = (drafts[environmentId] ?? []).filter((item) => item.draftId !== draftId);
-  const environment = environments.find((item) => item.environmentId === environmentId);
-  environment.sidecarDraftCount = drafts[environmentId].length;
-  environment.draftCount = drafts[environmentId].length;
-  environment.pluginCount = (plugins[environmentId] ?? []).length + drafts[environmentId].length;
-  return {deleted:true,environmentId,draftId,credentialsPreserved:true};
-});
-handle('v2:plugin-draft-promote',(payload) => {
-  const list = drafts[payload.environmentId] ?? [];
-  const index = list.findIndex((item) => item.draftId === payload.draftId);
-  const draft = list[index];
-  assert.ok(draft,'draft promotion requires a saved draft');
-  assert.equal(payload.draftSessionId,'draft-session-smoke');
-  assert.equal(newDraftPromotionSessionKept,true,'draft update must keep its session alive until promotion completes');
-  const plugin = {...draft.sanitizedDraft,configState:'ready',revision:1};
-  plugins[payload.environmentId].push(plugin);
-  list.splice(index,1);
-  const environment = environments.find((item) => item.environmentId === payload.environmentId);
-  environment.sidecarDraftCount = list.length;
-  environment.draftCount = list.length;
-  environment.pluginCount = plugins[payload.environmentId].length;
-  environment.readyPluginCount = plugins[payload.environmentId].filter((item) => item.configState === 'ready').length;
-  environment.pluginTypeCounts = Object.fromEntries(['server','mysql','redis'].map((type) => [type,plugins[payload.environmentId].filter((item) => item.pluginType === type).length]));
-  environment.resourcePreview = plugins[payload.environmentId].map((item) => ({
-    pluginInstanceId:item.pluginInstanceId,pluginType:item.pluginType,displayName:item.displayName,
-    configState:item.configState,resource:item.pluginType === 'server'
-      ? {host:item.target.host,port:item.target.port}
-      : item.pluginType === 'mysql' ? {database:item.target.database} : {db:item.target.db},
-  }));
-  return {committed:true,plugin,connectionPlan:null,runtimeWarning:null};
+handle('v2:plugin-create',(payload) => {
+  pluginCreateCalls.push(structuredClone(payload));
+  throw new Error('the cancel-flow smoke must not create a plugin');
 });
 handle('v2:plugin-credential-status',() => ({fields:{primary:false,proxy:false}}));
 handle('v2:environment-status',({projectId,environmentId}) => environmentId === 'prod'
@@ -174,16 +114,14 @@ handle('v2:plugin-connection-edit-prepare',({projectId,environmentId,pluginInsta
 }));
 handle('v2:plugin-connection-edit-begin',({prepareToken}) => {
   assert.equal(prepareToken,'prepare-smoke');
-  return {editSessionId:'edit-smoke',plugin:plugins.prod.find((plugin) => plugin.pluginInstanceId === 'mysql-member'),affectedIds:['mysql-member'],preEditConnectedSet:['mysql-member'],draftGeneration:0};
+  return {editSessionId:'edit-smoke',plugin:plugins.prod.find((plugin) => plugin.pluginInstanceId === 'mysql-member'),affectedIds:['mysql-member'],preEditConnectedSet:disconnectedEditScreenshot ? [] : ['mysql-member'],draftGeneration:0};
 });
 handle('v2:plugin-draft-validate',(payload) => {
-  if (expectDraftSessionValidation) {
-    assert.equal(payload.draftSessionId,'draft-session-smoke');
-    assert.equal(payload.editSessionId,undefined);
-    expectDraftSessionValidation = false;
-  }
+  assert.equal(payload.editSessionId,'edit-smoke');
+  assert.equal(payload.draftSessionId,undefined);
+  editValidationUsesSession = true;
   return {
-    editSessionId:payload.editSessionId,draftSessionId:payload.draftSessionId,
+    editSessionId:payload.editSessionId,
     requestId:payload.requestId,operationId:'validation-smoke',purpose:payload.purpose,
     draftGeneration:payload.draftGeneration,sequence:payload.sequence,
     configDigest:'b'.repeat(64),state:'valid',
@@ -366,7 +304,28 @@ async function run() {
     window.confirm=()=>true;
     click('[data-action="edit-plugin"]');
     await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginInlineFormHost .plugin-card'),'fenced configuration editor');
-    const configurationInline={readonlyBeforeEdit,renameOnlyMetadata,noDialog:!document.querySelector('#pluginDialog'),title:document.querySelector('#pluginInlineFormHost').textContent.includes('编辑连接配置'),namePreserved:document.querySelector('#pluginDisplayName').value==='会员业务库',typeCardsHidden:document.querySelector('#pluginTypePicker').classList.contains('hidden'),credentialUnchanged:document.querySelector('#primaryCredentialStatus').textContent.includes('未修改'),draftActionCollapsed:document.querySelector('#savePluginDraft').classList.contains('hidden')&&!document.querySelector('#pluginDraftOverflow').classList.contains('hidden'),visibleFooterActions:document.querySelectorAll('.plugin-form-actions>button:not(.hidden)').length};
+    const editFooterActions=[...document.querySelectorAll('.plugin-form-actions>button:not(.hidden)')];
+    const editFooterRects=editFooterActions.map(button=>button.getBoundingClientRect());
+    const editHostRect=document.querySelector('#pluginHost').getBoundingClientRect();
+    const editPortRect=document.querySelector('#pluginPort').getBoundingClientRect();
+    const editUsernameRect=document.querySelector('#pluginUsernameField').getBoundingClientRect();
+    const editCredentialRect=document.querySelector('#primaryCredentialField').getBoundingClientRect();
+    const configurationInline={
+      readonlyBeforeEdit,
+      renameOnlyMetadata,
+      noDialog:!document.querySelector('#pluginDialog'),
+      title:document.querySelector('#pluginInlineFormHost').textContent.includes('编辑连接配置'),
+      namePreserved:document.querySelector('#pluginDisplayName').value==='会员业务库',
+      typeCardsHidden:document.querySelector('#pluginTypePicker').classList.contains('hidden'),
+      credentialUnchanged:document.querySelector('#primaryCredentialStatus').textContent.includes('未修改'),
+      draftControlsAbsent:!document.querySelector('#savePluginDraft')&&!document.querySelector('#pluginDraftOverflow')&&!document.querySelector('#deleteCurrentDraft'),
+      footerLabels:editFooterActions.map(button=>button.textContent.trim()),
+      primaryFooterLabels:editFooterActions.filter(button=>button.classList.contains('primary')).map(button=>button.textContent.trim()),
+      safetyCopy:document.querySelector('#pluginEditSafetyStatus').textContent.trim(),
+      pairedFieldsAligned:Math.abs(editHostRect.top-editPortRect.top)<1&&Math.abs(editUsernameRect.top-editCredentialRect.top)<1,
+      footerButtonsShareRow:new Set(editFooterRects.map(rect=>Math.round(rect.top))).size===1,
+      footerButtonsOverlap:editFooterRects.some((rect,index)=>editFooterRects.slice(index+1).some(other=>rect.left<other.right&&rect.right>other.left&&rect.top<other.bottom&&rect.bottom>other.top)),
+    };
     click('#validateMysqlDatabase');
     await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'),'form connection check');
     const formDiagnostic=!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginFormDiagnostic').querySelectorAll('.diagnostic-step.success').length===3&&document.querySelector('#pluginFormDiagnostic').textContent.includes('28 ms');
@@ -393,23 +352,16 @@ async function run() {
     click('[data-detail-tab="configuration"]');
     await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('当前为只读详情'),'return to mysql configuration');
     click('[data-action="edit-plugin"]');
-    await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden'),'edit mysql before saving draft');
+    await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden'),'edit mysql before cancelling changes');
     click('#replacePrimaryCredential');
-    document.querySelector('#pluginPassword').value='saved-draft-password';
+    document.querySelector('#pluginPassword').value='discarded-password';
     document.querySelector('#pluginPassword').dispatchEvent(new Event('input',{bubbles:true}));
-    click('#pluginDraftOverflow summary');
-    await wait(()=>document.querySelector('#pluginDraftOverflow').open,'open formal draft actions');
-    click('#savePluginDraftOverflow');
-    await wait(()=>Boolean(document.querySelector('[data-resource-draft-id]'))&&!document.querySelector('#scopeInfoView').classList.contains('hidden'),'save mysql draft');
-    click('[data-resource-draft-id]');
-    await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginFormTitle').textContent.includes('完成插件配置'),'resume mysql draft');
-    click('#validateMysqlDatabase');
-    await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'),'validate resumed mysql draft');
-    const basedDraftValidationUsesDraftSession=document.querySelector('#pluginFormDiagnostic').textContent.includes('28 ms');
-    click('#pluginDraftOverflow summary');
-    await wait(()=>document.querySelector('#pluginDraftOverflow').open,'open draft actions for deletion');
-    click('#deleteCurrentDraft');
-    await wait(()=>!document.querySelector('[data-resource-draft-id]')&&!document.querySelector('#scopeInfoView').classList.contains('hidden'),'delete mysql draft');
+    document.querySelector('#pluginHost').value='discarded.internal';
+    document.querySelector('#pluginHost').dispatchEvent(new Event('input',{bubbles:true}));
+    click('#cancelPluginEdit');
+    await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('当前为只读详情'),'cancel mysql edit');
+    const editCancelDiscarded=document.querySelector('#pluginDetail').textContent.includes('127.0.0.1')&&!document.querySelector('#pluginDetail').textContent.includes('discarded.internal');
+    click('.resource-environment-select[data-resource-environment-id="prod"]');
     await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden'),'return to environment');
     if (!document.querySelector('[data-resource-add-plugin="prod"]')) {
       click('.resource-environment-select[data-resource-environment-id="prod"]');
@@ -431,27 +383,22 @@ async function run() {
     const hostRect=document.querySelector('#pluginHost').getBoundingClientRect();
     const portRect=document.querySelector('#pluginPort').getBoundingClientRect();
     const sectionStyle=getComputedStyle(document.querySelector('#targetAddressSection'));
-    const createActionModel={typePickerCatalog,createFooterLabels,validationHidden:document.querySelector('#pluginValidationSection').classList.contains('hidden'),directDraftVisible:!document.querySelector('#savePluginDraft').classList.contains('hidden'),overflowDraftHidden:document.querySelector('#pluginDraftOverflow').classList.contains('hidden'),typeIdentityPlain:identityStyle.backgroundColor==='rgba(0, 0, 0, 0)'&&identityStyle.borderTopWidth==='0px',changeTypeButtonObvious:changeTypeButton.tagName==='BUTTON'&&changeTypeStyle.borderTopWidth!=='0px'&&changeTypeStyle.backgroundColor!=='rgba(0, 0, 0, 0)',pairedFieldsAligned:Math.abs(hostRect.top-portRect.top)<1&&Math.abs(hostRect.height-portRect.height)<1,flatSections:sectionStyle.borderTopLeftRadius==='0px'&&sectionStyle.boxShadow==='none'&&sectionStyle.backgroundColor==='rgba(0, 0, 0, 0)',advancedSummary:document.querySelector('#pluginAdvancedSummary').textContent.includes('IPv4 优先')};
+    const createActionModel={typePickerCatalog,createFooterLabels,validationHidden:document.querySelector('#pluginValidationSection').classList.contains('hidden'),draftControlsAbsent:!document.querySelector('#savePluginDraft')&&!document.querySelector('#pluginDraftOverflow')&&!document.querySelector('#deleteCurrentDraft'),typeIdentityPlain:identityStyle.backgroundColor==='rgba(0, 0, 0, 0)'&&identityStyle.borderTopWidth==='0px',changeTypeButtonObvious:changeTypeButton.tagName==='BUTTON'&&changeTypeStyle.borderTopWidth!=='0px'&&changeTypeStyle.backgroundColor!=='rgba(0, 0, 0, 0)',pairedFieldsAligned:Math.abs(hostRect.top-portRect.top)<1&&Math.abs(hostRect.height-portRect.height)<1,flatSections:sectionStyle.borderTopLeftRadius==='0px'&&sectionStyle.boxShadow==='none'&&sectionStyle.backgroundColor==='rgba(0, 0, 0, 0)',advancedSummary:document.querySelector('#pluginAdvancedSummary').textContent.includes('IPv4 优先')};
     const addPluginOpensDetail=!app.classList.contains('detail-collapsed')&&Math.round(detail.getBoundingClientRect().width)>58;
-    document.querySelector('#pluginDisplayName').value='未完成 Redis';
-    document.querySelector('#pluginHost').value='';
-    click('#savePluginDraft');
-    await wait(()=>Boolean(document.querySelector('[data-resource-draft-id]'))&&!document.querySelector('#scopeInfoView').classList.contains('hidden'),'save persistent draft');
-    const savedDraftRow=document.querySelector('[data-resource-draft-id]')?.closest('.resource-draft-row');
-    const draftSaved=savedDraftRow?.textContent.includes('未完成 Redis')&&savedDraftRow.textContent.includes('继续配置');
-    click('[data-resource-draft-id]');
-    await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden')&&document.querySelector('#pluginDisplayName').value==='未完成 Redis','resume persistent draft');
-    const draftActionModel={
-      title:document.querySelector('#pluginFormTitle').textContent.trim(),
-      footerLabels:[...document.querySelectorAll('.plugin-form-actions>button:not(.hidden)')].map(button=>button.textContent.trim()),
-      deleteInMore:document.querySelector('#deleteCurrentDraft')?.closest('.plugin-draft-overflow-menu')!==null&&!document.querySelector('#deleteCurrentDraft').classList.contains('hidden'),
-    };
-    const draftResumed=draftActionModel.title==='完成插件配置'&&draftActionModel.deleteInMore;
+    document.querySelector('#pluginDisplayName').value='不应保存的 Redis';
+    document.querySelector('#pluginDisplayName').dispatchEvent(new Event('input',{bubbles:true}));
     document.querySelector('#pluginHost').value='cache.internal';
     document.querySelector('#pluginHost').dispatchEvent(new Event('input',{bubbles:true}));
-    click('#savePlugin');
-    await wait(()=>!document.querySelector('[data-resource-draft-id]')&&document.querySelector('#pluginDetail')?.textContent.includes('未完成 Redis'),'complete persistent draft');
-    const draftCompleted=document.querySelector('#pluginFormError').classList.contains('hidden')&&!document.querySelector('#pluginConfigView:not(.hidden)');
+    click('#cancelPluginEdit');
+    await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden'),'cancel new plugin');
+    const cancelledPluginAbsent=![...document.querySelectorAll('.resource-plugin-copy strong')].some(element=>element.textContent.includes('不应保存的 Redis'));
+    click('[data-resource-add-plugin="prod"]');
+    await wait(()=>!document.querySelector('#pluginTypePicker').classList.contains('hidden'),'reopen plugin type picker');
+    document.querySelector('input[name="pluginTypeChoice"][value="redis"]').click();
+    await wait(()=>document.querySelector('#pluginInlineFormHost .plugin-card'),'reopen empty plugin form');
+    const addCancelDiscarded=cancelledPluginAbsent&&document.querySelector('#pluginDisplayName').value===''&&document.querySelector('#pluginHost').value==='';
+    click('#cancelPluginEdit');
+    await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden'),'leave reopened plugin form');
     const resourceList=document.querySelector('#resourceEnvironmentList');
     resourceList.scrollTop=0;
     click('[data-resource-plugin-id="redis-cache-2"]');
@@ -467,18 +414,22 @@ async function run() {
     const collapsed={active:app.classList.contains('detail-collapsed'),detailWidth:Math.round(detail.getBoundingClientRect().width),resourceWidth:Math.round(resources.getBoundingClientRect().width),buttonVisible:getComputedStyle(document.querySelector('#expandDetailPane')).display!=='none'};
     click('#expandDetailPane');
     await frame();
-    return {environmentTabs,projectTabs,pluginTabs,selectedHeaderContinuous,compactEnvironmentActions,environmentActionsWrapCleanly,environmentHeaderControlsAligned,workspaceHeaderLinesAligned,environmentCardToggle,environmentHeaderHeight,railRefined,projectConnectionContrast,expandedWorkspaceFootersAligned,expandedCreateActionCentered,secondPaneCommonOnly,environmentOverviewActions,environmentOverviewCompact,environmentManagementInInformation,environmentCreatedInline,confirmationCenter,permissionsRefined,projectOverviewActions,projectManagementInInformation,projectDeleteFromInformation,pluginDetailHierarchy,pluginInformationCopy,pluginInformationActions,deletionPlacement,pluginDeleteFromInformation,configurationInline,diagnosticInline,formDiagnostic,basedDraftValidationUsesDraftSession,addPluginInline,createActionModel,addPluginOpensDetail,draftSaved,draftResumed,draftActionModel,draftCompleted,overflowSelectionVisible,resourceOverflowOwnedByList,auditFiltered,auditConnectionVisible,auditResponsive,auditPendingNamed,workspaceTopBandsAligned,workspaceFootersAligned,inactiveEnvironmentActionsSecondary,auditMetaAligned,auditClearScoped,auditCleared,collapsed,initialRects:initialRects.map(rect=>({left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width)})),expanded:!app.classList.contains('detail-collapsed'),separators:document.querySelectorAll('[role="separator"]').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};
+    return {environmentTabs,projectTabs,pluginTabs,selectedHeaderContinuous,compactEnvironmentActions,environmentActionsWrapCleanly,environmentHeaderControlsAligned,workspaceHeaderLinesAligned,environmentCardToggle,environmentHeaderHeight,railRefined,projectConnectionContrast,expandedWorkspaceFootersAligned,expandedCreateActionCentered,secondPaneCommonOnly,environmentOverviewActions,environmentOverviewCompact,environmentManagementInInformation,environmentCreatedInline,confirmationCenter,permissionsRefined,projectOverviewActions,projectManagementInInformation,projectDeleteFromInformation,pluginDetailHierarchy,pluginInformationCopy,pluginInformationActions,deletionPlacement,pluginDeleteFromInformation,configurationInline,diagnosticInline,formDiagnostic,editCancelDiscarded,addPluginInline,createActionModel,addPluginOpensDetail,addCancelDiscarded,overflowSelectionVisible,resourceOverflowOwnedByList,auditFiltered,auditConnectionVisible,auditResponsive,auditPendingNamed,workspaceTopBandsAligned,workspaceFootersAligned,inactiveEnvironmentActionsSecondary,auditMetaAligned,auditClearScoped,auditCleared,collapsed,initialRects:initialRects.map(rect=>({left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width)})),expanded:!app.classList.contains('detail-collapsed'),separators:document.querySelectorAll('[role="separator"]').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};
   })()`);
   const screenshotPath = process.argv.find((value) => /\.png$/i.test(value)) || process.env.AI_OPS_SCREENSHOT_PATH;
   if (screenshotPath) {
-    const screenshotModes = ['add','add-compact','confirmation','editor','configuration','connection','audit','resources','environment','project','projects'];
+    const screenshotModes = ['add','add-compact','confirmation','editor','edit-form','edit-form-medium','edit-form-compact','configuration','connection','audit','resources','environment','project','projects'];
     const screenshotMode = process.argv.find((value) => screenshotModes.includes(value)) ?? (screenshotModes.includes(process.env.AI_OPS_SCREENSHOT_MODE) ? process.env.AI_OPS_SCREENSHOT_MODE : 'permissions');
     if (screenshotMode === 'audit') auditEntries = structuredClone(initialAuditEntries);
     if (screenshotMode === 'resources') {
       win.setContentSize(815,900);
       await new Promise((resolve) => setTimeout(resolve,100));
     }
-    if (screenshotMode === 'add-compact') {
+    if (screenshotMode === 'edit-form-medium') {
+      win.setContentSize(960,900);
+      await new Promise((resolve) => setTimeout(resolve,100));
+    }
+    if (['add-compact','edit-form-compact'].includes(screenshotMode)) {
       win.setContentSize(815,900);
       await new Promise((resolve) => setTimeout(resolve,100));
     }
@@ -493,6 +444,8 @@ async function run() {
         await wait(()=>!document.querySelector('#confirmationView').classList.contains('hidden')&&document.querySelector('#detailTopTabs').textContent.includes('操作确认')&&document.querySelector('[data-confirmation-card]'));
       }else if('${screenshotMode}'==='editor'){
         await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('当前为只读详情'));window.confirm=()=>true;click('[data-action="edit-plugin"]');await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden'));click('#validateMysqlDatabase');await wait(()=>document.querySelector('#pluginFormDiagnostic .diagnostic-overview.success'));document.querySelector('#pluginFormDiagnostic').scrollIntoView({block:'center'});
+      }else if(['edit-form','edit-form-medium','edit-form-compact'].includes('${screenshotMode}')){
+        await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('当前为只读详情'));window.confirm=()=>true;click('[data-action="edit-plugin"]');await wait(()=>!document.querySelector('#pluginConfigView').classList.contains('hidden'));document.querySelector('.plugin-dialog-body').scrollTop=0;
       }else if('${screenshotMode}'==='configuration'){
         await openMysql();click('[data-detail-tab="configuration"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('修改名称'));
       }else if('${screenshotMode}'==='connection'){
@@ -512,13 +465,29 @@ async function run() {
       }
       await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
       const form=document.querySelector('#pluginInlineFormHost .plugin-card');const footerButtons=[...document.querySelectorAll('.plugin-form-actions>button:not(.hidden)')];const buttonRects=footerButtons.map(button=>button.getBoundingClientRect());const footerButtonsOverlap=buttonRects.some((rect,index)=>buttonRects.slice(index+1).some(other=>rect.left<other.right&&rect.right>other.left&&rect.top<other.bottom&&rect.bottom>other.top));
-      return{mode:'${screenshotMode}',editorVisible:!document.querySelector('#pluginConfigView').classList.contains('hidden'),pluginType:document.querySelector('#pluginType')?.value??null,successfulChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.success').length,pendingChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.pending, #pluginFormDiagnostic .diagnostic-step.queued').length,visibleFooterActions:footerButtons.length,formHorizontalOverflow:Boolean(form&&form.scrollWidth>form.clientWidth),footerButtonsOverlap,footerButtonRects:footerButtons.map((button,index)=>({label:button.textContent.trim(),left:Math.round(buttonRects[index].left),right:Math.round(buttonRects[index].right),top:Math.round(buttonRects[index].top),bottom:Math.round(buttonRects[index].bottom)}))};
+      const hostRect=document.querySelector('#pluginHost')?.getBoundingClientRect();const portRect=document.querySelector('#pluginPort')?.getBoundingClientRect();const usernameRect=document.querySelector('#pluginUsernameField')?.getBoundingClientRect();const credentialRect=document.querySelector('#primaryCredentialField')?.getBoundingClientRect();
+      return{mode:'${screenshotMode}',editorVisible:!document.querySelector('#pluginConfigView').classList.contains('hidden'),pluginType:document.querySelector('#pluginType')?.value??null,successfulChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.success').length,pendingChecks:document.querySelectorAll('#pluginFormDiagnostic .diagnostic-step.pending, #pluginFormDiagnostic .diagnostic-step.queued').length,visibleFooterActions:footerButtons.length,formHorizontalOverflow:Boolean(form&&form.scrollWidth>form.clientWidth),footerButtonsOverlap,footerButtonsShareRow:new Set(buttonRects.map(rect=>Math.round(rect.top))).size===1,footerLabels:footerButtons.map(button=>button.textContent.trim()),primaryLabels:footerButtons.filter(button=>button.classList.contains('primary')).map(button=>button.textContent.trim()),pairedFieldsAligned:Boolean(hostRect&&portRect&&usernameRect&&credentialRect&&Math.abs(hostRect.top-portRect.top)<1&&Math.abs(usernameRect.top-credentialRect.top)<1),footerButtonRects:footerButtons.map((button,index)=>({label:button.textContent.trim(),left:Math.round(buttonRects[index].left),right:Math.round(buttonRects[index].right),top:Math.round(buttonRects[index].top),bottom:Math.round(buttonRects[index].bottom)}))};
     })()`);
     if (screenshotState.footerButtonsOverlap || screenshotState.formHorizontalOverflow) console.error('Screenshot layout:',JSON.stringify(screenshotState));
-    const {footerButtonRects,...screenshotContract} = screenshotState;
+    const {footerButtonRects,footerLabels,primaryLabels,pairedFieldsAligned,footerButtonsShareRow,...screenshotContract} = screenshotState;
     if (screenshotMode === 'editor') assert.deepEqual(screenshotContract,{mode:'editor',editorVisible:true,pluginType:'mysql',successfulChecks:3,pendingChecks:0,visibleFooterActions:3,formHorizontalOverflow:false,footerButtonsOverlap:false});
-    if (screenshotMode === 'add') assert.deepEqual(screenshotContract,{mode:'add',editorVisible:true,pluginType:'mysql',successfulChecks:0,pendingChecks:0,visibleFooterActions:3,formHorizontalOverflow:false,footerButtonsOverlap:false});
-    if (screenshotMode === 'add-compact') assert.deepEqual(screenshotContract,{mode:'add-compact',editorVisible:true,pluginType:'mysql',successfulChecks:0,pendingChecks:0,visibleFooterActions:3,formHorizontalOverflow:false,footerButtonsOverlap:false});
+    if (['editor','edit-form','edit-form-medium','edit-form-compact'].includes(screenshotMode)) {
+      const expectedPrimary = disconnectedEditScreenshot ? '保存并连接' : '保存并恢复 1 个连接';
+      assert.deepEqual(footerLabels,['取消更改','保存但不连接',expectedPrimary]);
+      assert.deepEqual(primaryLabels,[expectedPrimary]);
+    }
+    if (screenshotMode === 'edit-form') {
+      assert.deepEqual(screenshotContract,{mode:'edit-form',editorVisible:true,pluginType:'mysql',successfulChecks:0,pendingChecks:0,visibleFooterActions:3,formHorizontalOverflow:false,footerButtonsOverlap:false});
+      assert.equal(pairedFieldsAligned,true);
+    }
+    if (screenshotMode === 'edit-form-medium') {
+      assert.deepEqual(screenshotContract,{mode:'edit-form-medium',editorVisible:true,pluginType:'mysql',successfulChecks:0,pendingChecks:0,visibleFooterActions:3,formHorizontalOverflow:false,footerButtonsOverlap:false});
+      assert.equal(pairedFieldsAligned,true);
+      assert.equal(footerButtonsShareRow,true);
+    }
+    if (screenshotMode === 'edit-form-compact') assert.deepEqual(screenshotContract,{mode:'edit-form-compact',editorVisible:true,pluginType:'mysql',successfulChecks:0,pendingChecks:0,visibleFooterActions:3,formHorizontalOverflow:false,footerButtonsOverlap:false});
+    if (screenshotMode === 'add') assert.deepEqual(screenshotContract,{mode:'add',editorVisible:true,pluginType:'mysql',successfulChecks:0,pendingChecks:0,visibleFooterActions:2,formHorizontalOverflow:false,footerButtonsOverlap:false});
+    if (screenshotMode === 'add-compact') assert.deepEqual(screenshotContract,{mode:'add-compact',editorVisible:true,pluginType:'mysql',successfulChecks:0,pendingChecks:0,visibleFooterActions:2,formHorizontalOverflow:false,footerButtonsOverlap:false});
     win.showInactive();
     await new Promise((resolve) => setTimeout(resolve,250));
     const image = await win.webContents.capturePage();
@@ -560,18 +529,18 @@ async function run() {
   assert.equal(result.projectManagementInInformation,true);
   assert.equal(result.projectDeleteFromInformation,true);
   assert.deepEqual(result.confirmationCenter,{globalEntry:true,cards:2,shellInitiallyBlocked:true,shellInlineStrongConfirmation:true,executionLinked:true,countAfterApproval:1});
-  assert.deepEqual(result.configurationInline,{readonlyBeforeEdit:true,renameOnlyMetadata:true,noDialog:true,title:true,namePreserved:true,typeCardsHidden:true,credentialUnchanged:true,draftActionCollapsed:true,visibleFooterActions:3});
+  const expectedEditPrimary = disconnectedEditScreenshot ? '保存并连接' : '保存并恢复 1 个连接';
+  const expectedEditSafetyCopy = disconnectedEditScreenshot ? '保存前不会更改当前运行状态' : '已暂停 1 个连接，保存后将自动恢复';
+  assert.deepEqual(result.configurationInline,{readonlyBeforeEdit:true,renameOnlyMetadata:true,noDialog:true,title:true,namePreserved:true,typeCardsHidden:true,credentialUnchanged:true,draftControlsAbsent:true,footerLabels:['取消更改','保存但不连接',expectedEditPrimary],primaryFooterLabels:[expectedEditPrimary],safetyCopy:expectedEditSafetyCopy,pairedFieldsAligned:true,footerButtonsShareRow:true,footerButtonsOverlap:false});
   assert.equal(result.diagnosticInline,true);
   assert.equal(result.formDiagnostic,true);
-  assert.equal(result.basedDraftValidationUsesDraftSession,true);
+  assert.equal(editValidationUsesSession,true);
+  assert.equal(result.editCancelDiscarded,true);
   assert.equal(result.addPluginInline,true);
-  assert.deepEqual(result.createActionModel,{typePickerCatalog:['server','mysql','redis'],createFooterLabels:['取消','保存草稿','检查并添加'],validationHidden:true,directDraftVisible:true,overflowDraftHidden:true,typeIdentityPlain:true,changeTypeButtonObvious:true,pairedFieldsAligned:true,flatSections:true,advancedSummary:true});
+  assert.deepEqual(result.createActionModel,{typePickerCatalog:['server','mysql','redis'],createFooterLabels:['取消','检查并添加'],validationHidden:true,draftControlsAbsent:true,typeIdentityPlain:true,changeTypeButtonObvious:true,pairedFieldsAligned:true,flatSections:true,advancedSummary:true});
   assert.equal(result.addPluginOpensDetail,true);
-  assert.equal(result.draftSaved,true);
-  assert.equal(result.draftResumed,true);
-  assert.deepEqual(result.draftActionModel,{title:'完成插件配置',footerLabels:['退出','保存草稿','完成配置'],deleteInMore:true});
-  assert.equal(result.draftCompleted,true);
-  assert.equal(newDraftPromotionSessionKept,true);
+  assert.equal(result.addCancelDiscarded,true);
+  assert.equal(pluginCreateCalls.length,0);
   assert.equal(result.overflowSelectionVisible,true);
   assert.equal(result.resourceOverflowOwnedByList,true);
   assert.equal(result.auditFiltered,true);

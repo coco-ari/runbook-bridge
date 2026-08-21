@@ -160,6 +160,40 @@ test('legacy no-op update returns before YAML, vault, journal, runtime, and Agen
   });
 });
 
+test('modern and compatibility connection update channels reject incomplete formal saves', async (t) => {
+  const {store,project,environment,plugin} = await createMysqlFixture(t);
+  const file = store.pluginPath(project.projectId,environment.environmentId,plugin.pluginInstanceId);
+  const yamlBefore = await fs.readFile(file);
+  const {handlers,counters} = registerUpdateHarness(store);
+  const payload = {
+    projectId:project.projectId,
+    environmentId:environment.environmentId,
+    pluginInstanceId:plugin.pluginInstanceId,
+    expectedRevision:plugin.revision,
+    patch:{target:{...plugin.target,database:''}},
+  };
+
+  for (const channel of ['v2:plugin-connection-update','v2:plugin-update']) {
+    const result = await handlers.get(channel)({},payload);
+    assert.equal(result.ok,false,channel);
+    assert.equal(result.error.code,'PLUGIN_CONFIGURATION_INCOMPLETE',channel);
+    assert.equal(result.error.details.issues[0].field,'target.database',channel);
+  }
+  assert.deepEqual(await fs.readFile(file),yamlBefore);
+  assert.equal((await store.getPlugin(
+    project.projectId,environment.environmentId,plugin.pluginInstanceId,
+  )).revision,plugin.revision);
+  assert.deepEqual(counters,{
+    beginConfigurationMutation:0,
+    configurationChanged:0,
+    vaultLoads:0,
+    vaultWrites:0,
+    journalPrepares:0,
+    contextInvalidations:0,
+    confirmationInvalidations:0,
+  });
+});
+
 test('metadata and Agent update channels enforce allow-lists and isolate side effects', async (t) => {
   const {store,project,environment,plugin} = await createMysqlFixture(t);
   const {handlers,counters} = registerUpdateHarness(store);

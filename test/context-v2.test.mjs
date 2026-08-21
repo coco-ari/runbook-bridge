@@ -89,11 +89,11 @@ test('repeated Agent calls return connect-and-continue without starting network 
 });
 
 test('Agent can add one disconnected plugin without credentials or network activity', async () => {
-  let createdInput; let createdOptions; let changed = false; let invalidated = false; const audits = [];
+  let createdInput; let createdOptions; let createCalls = 0; let changed = false; let invalidated = false; const audits = [];
   const plugin = { projectId:'p1', environmentId:'e1', pluginInstanceId:'orders-db', pluginType:'mysql', displayName:'订单库', configState:'ready', revision:1, target:{ database:'orders' }, policy:{}, limits:{} };
   const service = new V2Service({
     workspaceStore: {
-      createPlugin: async (_projectId,_environmentId,input,options) => { createdInput=input; createdOptions=options; return plugin; },
+      createPlugin: async (_projectId,_environmentId,input,options) => { createCalls += 1; createdInput=input; createdOptions=options; return plugin; },
       publicPlugin: (value) => ({ pluginInstanceId:value.pluginInstanceId, configState:value.configState }),
       appendAudit: async (_projectId,entry) => { audits.push(entry); },
     },
@@ -116,6 +116,13 @@ test('Agent can add one disconnected plugin without credentials or network activ
   assert.equal(result.contextStale,true);
   assert.equal(audits[0].actor,'agent');
   assert.equal(audits[0].type,'plugin-added');
+  await assert.rejects(() => service.addPlugin({
+    projectId:'p1',environmentId:'e1',contextToken:'token-incomplete',clientInstanceId:'agent-a',
+    pluginType:'mysql',displayName:'未完成订单库',
+    configuration:{host:'db.internal',username:'reader',connectionMode:'direct'},
+  }), (error) => error.code === 'PLUGIN_CONFIGURATION_INCOMPLETE'
+    && error.details?.issues?.some((issue) => issue.field === 'target.database'));
+  assert.equal(createCalls,1,'incomplete Agent input must not reach persistence');
   await assert.rejects(() => service.addPlugin({
     projectId:'p1', environmentId:'e1', contextToken:'token-2', clientInstanceId:'agent-a', pluginType:'mysql', displayName:'危险输入',
     configuration:{ password:'must-not-pass' },

@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from 'node:util';
 import YAML from 'yaml';
 import { AppError } from './errors.mjs';
 import { classifyPluginChange } from './plugin-change-classifier.mjs';
+import { assertPluginConfigurationReady } from './plugin-connection-adapters.mjs';
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{1,62}$/;
 const CONTROL_RE = /[\u0000-\u001f\u007f]/;
@@ -1152,6 +1153,7 @@ export class WorkspaceStore {
       if (environment.pluginOrder.length >= 100) throw new AppError('RESULT_LIMIT_EXCEEDED', '每个环境最多 100 个插件。');
       const plugin = normalizePlugin(input, { projectId, environmentId });
       if (environment.pluginOrder.includes(plugin.pluginInstanceId)) throw new AppError('PLUGIN_ALREADY_EXISTS', '插件标识已经存在。');
+      assertPluginConfigurationReady(plugin);
       await this.assertPluginReferences(plugin);
       await this.writeYaml(this.pluginPath(projectId, environmentId, plugin.pluginInstanceId), plugin);
       const nextEnvironment = { ...environment, pluginOrder: [...environment.pluginOrder, plugin.pluginInstanceId], revision: environment.revision + 1, updatedAt: now() };
@@ -1205,7 +1207,9 @@ export class WorkspaceStore {
   }
 
   async updatePlugin(projectId, environmentId, pluginInstanceId, patch, expectedRevision = null) {
-    const prepared = await this.preparePluginUpdate(projectId,environmentId,pluginInstanceId,patch,expectedRevision);
+    const prepared = await this.preparePluginUpdate(
+      projectId,environmentId,pluginInstanceId,patch,expectedRevision,{requireReady:true},
+    );
     if (prepared.change.kind === 'none') return prepared.before;
     return this.commitPluginSnapshot(prepared.after,prepared.before.revision);
   }
@@ -1213,6 +1217,7 @@ export class WorkspaceStore {
   async preparePluginUpdate(projectId, environmentId, pluginInstanceId, patch, expectedRevision = null, {
     credentialMutation = 'none',
     patchScope = null,
+    requireReady = false,
   } = {}) {
     const before = await this.getPlugin(projectId, environmentId, pluginInstanceId);
     if (expectedRevision !== null && expectedRevision !== undefined && before.revision !== expectedRevision) {
@@ -1254,6 +1259,7 @@ export class WorkspaceStore {
       credentialMutation,
       dependentPluginInstanceIds,
     });
+    if (requireReady) assertPluginConfigurationReady(candidate);
     const after = change.kind === 'none' ? before : materializePluginCandidate(candidate,before);
     return {before,candidate,after,change};
   }
@@ -1274,6 +1280,7 @@ export class WorkspaceStore {
     return this.preparePluginUpdate(projectId,environmentId,pluginInstanceId,patch,expectedRevision,{
       patchScope:'connection',
       credentialMutation,
+      requireReady:true,
     });
   }
 
