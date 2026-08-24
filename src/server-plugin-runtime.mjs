@@ -221,7 +221,7 @@ export class ServerPluginRuntime extends EventEmitter {
       if (signal?.aborted) throw new AppError('CONNECT_CANCELLED', '连接已取消。');
       sock = await this.createUplinkSocket(plugin,secrets);
       assertOwned();
-      const result = await this.broker.connect(resource,secrets,{sock});
+      const result = await this.broker.connect(resource,secrets,{sock,signal});
       assertOwned();
       connected = true;
       return result;

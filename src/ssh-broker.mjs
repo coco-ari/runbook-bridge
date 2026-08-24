@@ -598,7 +598,10 @@ function boundLogSearchSummary(summary) {
 }
 
 export class SshBroker {
-  constructor(projectStore, { reconnectDelaysMs = DEFAULT_RECONNECT_DELAYS_MS } = {}) {
+  constructor(projectStore, {
+    reconnectDelaysMs = DEFAULT_RECONNECT_DELAYS_MS,
+    clientFactory = () => new Client(),
+  } = {}) {
     this.store = projectStore;
     this.sessions = new Map();
     this.generations = new Map();
@@ -614,6 +617,7 @@ export class SshBroker {
     this.reconnectHandler = null;
     this.lifecycleHandler = null;
     this.reconnectDelaysMs = reconnectDelaysMs.length ? [...reconnectDelaysMs] : [1_000];
+    this.clientFactory = clientFactory;
     this.shuttingDown = false;
   }
 
@@ -745,9 +749,14 @@ export class SshBroker {
     });
   }
 
-  runConnectionOperation(projectId, operation) {
+  runConnectionOperation(projectId, operation, { signal = null } = {}) {
     const previous = this.connectionOperations.get(projectId) ?? Promise.resolve();
-    const current = previous.catch(() => undefined).then(operation);
+    const current = previous.catch(() => undefined).then(() => {
+      if (signal?.aborted) {
+        throw new AppError('SSH_CONNECTION_CANCELLED', 'SSH 连接已取消。');
+      }
+      return operation();
+    });
     this.connectionOperations.set(projectId, current);
     return current.finally(() => {
       if (this.connectionOperations.get(projectId) === current) {
@@ -757,12 +766,25 @@ export class SshBroker {
   }
 
   connect(projectId, secrets = {}, runtimeOptions = {}) {
-    return this.runConnectionOperation(projectId, () => this.connectUnlocked(projectId, secrets, runtimeOptions));
+    return this.runConnectionOperation(
+      projectId,
+      () => this.connectUnlocked(projectId, secrets, runtimeOptions),
+      { signal: runtimeOptions.signal },
+    );
   }
 
   async connectUnlocked(projectId, secrets = {}, runtimeOptions = {}) {
+    if (runtimeOptions.signal?.aborted) {
+      throw new AppError('SSH_CONNECTION_CANCELLED', 'SSH 连接已取消。');
+    }
     const config = await this.store.get(projectId);
+    if (runtimeOptions.signal?.aborted) {
+      throw new AppError('SSH_CONNECTION_CANCELLED', 'SSH 连接已取消。');
+    }
     await this.disconnectUnlocked(projectId, 'reconnect');
+    if (runtimeOptions.signal?.aborted) {
+      throw new AppError('SSH_CONNECTION_CANCELLED', 'SSH 连接已取消。');
+    }
     const attempt = {
       id: crypto.randomUUID(),
       cancelled: false,
@@ -771,6 +793,13 @@ export class SshBroker {
       sock: null,
     };
     this.pendingConnections.set(projectId, attempt);
+    const abortPendingConnection = () => {
+      if (this.pendingConnections.get(projectId) === attempt) {
+        this.cancelPendingConnection(projectId);
+      }
+    };
+    runtimeOptions.signal?.addEventListener('abort', abortPendingConnection, { once:true });
+    if (runtimeOptions.signal?.aborted) abortPendingConnection();
     let sock;
     let client;
     let observedFingerprint = null;
@@ -806,7 +835,7 @@ export class SshBroker {
       );
       attempt.sock = sock;
       this.assertPendingConnection(projectId, attempt);
-      client = new Client();
+      client = this.clientFactory();
       attempt.client = client;
       const connectionConfig = {
         host: config.ssh.host,
@@ -868,6 +897,7 @@ export class SshBroker {
         // connection has settled it becomes a no-op, but it still prevents a
         // later TCP reset from surfacing as an uncaught EventEmitter error.
         client.on('error', fail);
+        client.once('close', () => fail(new Error('SSH connection closed before ready.')));
         client.once('ready', () => {
           if (settled) return;
           settled = true;
@@ -929,6 +959,7 @@ export class SshBroker {
       sock?.destroy();
       throw error;
     } finally {
+      runtimeOptions.signal?.removeEventListener('abort', abortPendingConnection);
       privateKey?.fill(0);
       if (this.pendingConnections.get(projectId) === attempt) {
         this.pendingConnections.delete(projectId);

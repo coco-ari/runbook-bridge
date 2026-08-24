@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +14,7 @@ import { PluginCredentialVault, pluginCredentialInternals } from '../src/plugin-
 import { PluginConfigTransactionJournal } from '../src/plugin-config-transaction.mjs';
 import { AddressResolver, RouteManager } from '../src/route-manager.mjs';
 import { ServerOperations } from '../src/server-operations.mjs';
+import { ServerPluginRuntime } from '../src/server-plugin-runtime.mjs';
 import { WorkspaceStore } from '../src/workspace-store.mjs';
 import { V2Service } from '../src/v2-service.mjs';
 import { MysqlPluginRuntime } from '../src/mysql-plugin-runtime.mjs';
@@ -139,6 +141,80 @@ test('cancel followed immediately by reconnect queues stale cleanup before the n
   assert.equal(connected.phase, 'connected');
   assert.equal(liveSession, 2);
   assert.deepEqual(disconnectReasons, ['user-cancel']);
+});
+
+test('an aborted SSH connect waiting in the broker queue never starts', async () => {
+  const broker = new SshBroker({});
+  let releaseFirst;
+  const firstPending = new Promise((resolve) => { releaseFirst = resolve; });
+  const first = broker.runConnectionOperation('server-1', () => firstPending);
+  let connectCalls = 0;
+  broker.connectUnlocked = async () => {
+    connectCalls += 1;
+    return { connectedAt:'unexpected' };
+  };
+  const controller = new AbortController();
+  const queued = broker.connect('server-1', {}, {signal:controller.signal});
+  controller.abort();
+  releaseFirst();
+  await first;
+  await assert.rejects(
+    queued,
+    (error) => error.code === 'SSH_CONNECTION_CANCELLED',
+  );
+  assert.equal(connectCalls,0);
+  assert.equal(broker.connectionOperations.size,0);
+});
+
+test('cancelling an active SSH handshake settles the broker queue', async () => {
+  let announceConnect;
+  const connectStarted = new Promise((resolve) => { announceConnect = resolve; });
+  const client = new EventEmitter();
+  client.connect = () => announceConnect();
+  client.end = () => queueMicrotask(() => client.emit('close'));
+  const broker = new SshBroker({
+    get:async () => ({
+      ssh:{host:'server.internal',port:22,username:'root'},
+      auth:{type:'password'},proxy:{type:'direct'},
+    }),
+  }, {clientFactory:() => client});
+  const socket = {destroyed:false,destroy(){ this.destroyed = true; }};
+  const controller = new AbortController();
+  const connecting = broker.connect(
+    'server-1',
+    {password:'saved'},
+    {sock:socket,signal:controller.signal},
+  );
+  await connectStarted;
+  controller.abort();
+  await assert.rejects(
+    Promise.race([
+      connecting,
+      delay(200).then(() => { throw new Error('cancelled SSH handshake did not settle'); }),
+    ]),
+    (error) => error.code === 'SSH_CONNECTION_CANCELLED',
+  );
+  assert.equal(socket.destroyed,true);
+  assert.equal(broker.pendingConnections.size,0);
+  assert.equal(broker.connectionOperations.size,0);
+});
+
+test('server runtime forwards cancellation to the SSH broker', async () => {
+  const plugin = vaultPlugin({configState:'ready',uplink:{type:'direct'}});
+  const runtime = new ServerPluginRuntime(
+    {},
+    {load:async () => ({password:'saved'})},
+    {resolver:{},vpnGuard:{}},
+  );
+  const socket = {destroyed:false,destroy(){ this.destroyed = true; }};
+  runtime.createUplinkSocket = async () => socket;
+  const controller = new AbortController();
+  runtime.broker.connect = async (_resource,_secrets,options) => {
+    assert.equal(options.sock,socket);
+    assert.equal(options.signal,controller.signal);
+    return {connectedAt:'now'};
+  };
+  await runtime.connect(plugin,{}, {signal:controller.signal,attemptToken:1});
 });
 
 test('a slow cancellation audit cannot suppress cleanup for a later cancelled attempt', async () => {
