@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   QUICK_QUESTION_OPENING_MAX_LENGTH,
   buildQuickQuestionPreview,
+  formatQuickQuestionDiscoveredDate,
   normalizeQuickQuestionOpening,
   normalizeQuickQuestionResponse,
   quickQuestionHasStrictCredential,
@@ -96,6 +97,20 @@ test('renderer preview contains only opening, human-readable scope, and question
     '这个订单为什么一直待支付？',
   ].join('\n'));
   assert.doesNotMatch(preview,/projectId|environmentId|plugin|resource|时区/iu);
+});
+
+test('renderer preview shows the optional discovery date as month and day only', () => {
+  assert.equal(formatQuickQuestionDiscoveredDate('2026-08-24'),'8月24日');
+  assert.equal(formatQuickQuestionDiscoveredDate('2026-02-30'),'');
+  const preview = buildQuickQuestionPreview({
+    opening:'请使用 AI Ops MCP 排查。',
+    projectName:'企业版',
+    environmentName:'生产环境',
+    question:'为什么连接失败？',
+    discoveredDate:'2026-08-24',
+  });
+  assert.match(preview,/环境：生产环境\n问题发现时间：8月24日\n\n【问题】/u);
+  assert.doesNotMatch(preview,/2026|00:00|时区/u);
 });
 
 test('renderer credential feedback is strict without flagging ordinary URLs or business tokens', () => {

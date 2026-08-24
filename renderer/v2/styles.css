@@ -1944,6 +1944,12 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
 .quick-question-composer-head h2,.quick-question-section-head h2{margin:0;font-size:15px;font-weight:650}
 .quick-question-composer-head p,.quick-question-section-head p{margin:4px 0 0;color:var(--muted);font-size:11px;line-height:1.5}
 #quickQuestionCount,#quickQuestionLoading{flex:none;color:var(--faint);font-size:11px;white-space:nowrap}
+.quick-question-discovered-date{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:13px;padding:10px 12px;border:1px solid var(--soft-line);border-radius:9px;background:rgba(255,255,255,.014)}
+.quick-question-discovered-date>span{min-width:0;display:grid;gap:3px}
+.quick-question-discovered-date strong{color:#dedee8;font-size:12px;font-weight:650}
+.quick-question-discovered-date small{color:var(--faint);font-size:10.5px}
+#quickQuestionDiscoveredDate{width:168px;height:34px;flex:none;padding:0 9px;border:1px solid var(--line);border-radius:7px;color:var(--text);background:#0b0d11;color-scheme:dark;outline:0}
+#quickQuestionDiscoveredDate:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(131,124,246,.1)}
 #quickQuestionInput{width:100%;min-height:154px;margin-top:13px;resize:vertical;padding:14px 15px;border:1px solid rgba(131,124,246,.25);border-radius:9px;color:var(--text);background:#0b0d11;font-size:15px;line-height:1.65;outline:0}
 #quickQuestionInput::placeholder{color:#737681}
 #quickQuestionInput:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(131,124,246,.1)}
@@ -1984,6 +1990,8 @@ button.overview-activity-row:hover{background:rgba(255,255,255,.025)}
   .quick-question-composer{padding:14px}
   .quick-question-composer-head{display:block}
   #quickQuestionCount{display:block;margin-top:6px}
+  .quick-question-discovered-date{align-items:flex-start;flex-direction:column;gap:8px}
+  #quickQuestionDiscoveredDate{width:100%}
   #quickQuestionInput{min-height:138px;font-size:14px}
   .quick-question-opening-head,.quick-question-section-head{align-items:flex-start}
   .quick-question-opening-head{flex-wrap:wrap}

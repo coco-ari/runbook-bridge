@@ -155,7 +155,29 @@ export function prepareQuickQuestionForSave(value) {
   return parameterizeQuickQuestion(text);
 }
 
-export function buildQuickQuestionCopyText({ openingText, projectName, environmentName, question }) {
+export function normalizeQuickQuestionDiscoveredDate(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(text);
+  if (!match) throw new AppError('INVALID_ARGUMENT', '问题发现时间必须是有效日期。');
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year,month - 1,day));
+  if (year < 1000 || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    throw new AppError('INVALID_ARGUMENT', '问题发现时间必须是有效日期。');
+  }
+  return text;
+}
+
+export function formatQuickQuestionDiscoveredDate(value) {
+  const normalized = normalizeQuickQuestionDiscoveredDate(value);
+  if (!normalized) return '';
+  const [,month,day] = normalized.split('-');
+  return `${Number(month)}月${Number(day)}日`;
+}
+
+export function buildQuickQuestionCopyText({ openingText, projectName, environmentName, question, discoveredDate }) {
   const opening = normalizeQuickQuestionOpening(openingText);
   const project = String(projectName ?? '').normalize('NFKC').trim();
   const environment = String(environmentName ?? '').normalize('NFKC').trim();
@@ -168,12 +190,14 @@ export function buildQuickQuestionCopyText({ openingText, projectName, environme
   }
   const normalized = normalizeQuickQuestionText(question);
   const safeQuestion = redactQuickQuestionCredentials(normalized);
+  const formattedDiscoveredDate = formatQuickQuestionDiscoveredDate(discoveredDate);
   return [
     opening,
     '',
     '【当前范围】',
     `项目：${project}`,
     `环境：${environment}`,
+    ...(formattedDiscoveredDate ? [`问题发现时间：${formattedDiscoveredDate}`] : []),
     '',
     '【问题】',
     safeQuestion,

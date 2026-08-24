@@ -4,6 +4,8 @@ import {
   DEFAULT_QUICK_QUESTION_OPENING,
   buildQuickQuestionCopyText,
   containsQuickQuestionCredential,
+  formatQuickQuestionDiscoveredDate,
+  normalizeQuickQuestionDiscoveredDate,
   normalizeQuickQuestionOpening,
   parameterizeQuickQuestion,
   prepareQuickQuestionForSave,
@@ -126,4 +128,34 @@ test('copy text has only the canonical opening, range, and redacted question sec
     () => buildQuickQuestionCopyText({openingText,projectName:'订单中心',environmentName:'生产环境',question:''}),
     (error) => error.code === 'INVALID_ARGUMENT',
   );
+});
+
+test('copy includes an optional month-day discovery date and rejects invalid dates', () => {
+  const base = {
+    openingText:'请使用 AI Ops MCP 排查。',
+    projectName:'订单中心',
+    environmentName:'生产环境',
+    question:'检查服务状态',
+  };
+  assert.equal(normalizeQuickQuestionDiscoveredDate(''), '');
+  assert.equal(normalizeQuickQuestionDiscoveredDate('2026-08-24'), '2026-08-24');
+  assert.equal(formatQuickQuestionDiscoveredDate('2026-08-24'), '8月24日');
+  assert.equal(buildQuickQuestionCopyText({...base,discoveredDate:'2026-08-24'}),[
+    '请使用 AI Ops MCP 排查。',
+    '',
+    '【当前范围】',
+    '项目：订单中心',
+    '环境：生产环境',
+    '问题发现时间：8月24日',
+    '',
+    '【问题】',
+    '检查服务状态',
+  ].join('\n'));
+  for (const value of ['2026-02-30','08-24-2026','2026-8-24']) {
+    assert.throws(
+      () => buildQuickQuestionCopyText({...base,discoveredDate:value}),
+      (error) => error.code === 'INVALID_ARGUMENT',
+      value,
+    );
+  }
 });

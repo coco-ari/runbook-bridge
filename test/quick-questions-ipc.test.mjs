@@ -111,6 +111,7 @@ test('copy uses canonical names and revision-bound global opening, redacts the q
   const result = await handlers.get('v2:quick-question-copy')({}, {
     projectId:'project-a',environmentId:'production',
     text:'排查 access_token="secret with spaces" 对应请求',
+    discoveredDate:'2026-08-24',
     expectedOpeningRevision:2,
   });
   assert.deepEqual(result,{ok:true,data:{copied:true}});
@@ -121,11 +122,24 @@ test('copy uses canonical names and revision-bound global opening, redacts the q
     '【当前范围】',
     '项目：订单中心',
     '环境：生产环境',
+    '问题发现时间：8月24日',
     '',
     '【问题】',
     '排查 access_token="[已脱敏]" 对应请求',
   ].join('\n'));
   assert.doesNotMatch(writes[0],/secret with spaces|默认只读|作用域锁定|project-a|production/u);
+});
+
+test('copy rejects an invalid discovery date before touching the clipboard', async () => {
+  let writes = 0;
+  const {handlers} = harness(baseStore(),{writeText:() => { writes += 1; }});
+  const result = await handlers.get('v2:quick-question-copy')({}, {
+    projectId:'project-a',environmentId:'production',text:'检查服务',
+    discoveredDate:'2026-02-30',expectedOpeningRevision:2,
+  });
+  assert.equal(result.ok,false);
+  assert.equal(result.error.code,'INVALID_ARGUMENT');
+  assert.equal(writes,0);
 });
 
 test('copy fails closed for old attachment, saved-id, and renderer-spoofed scope or opening fields', async () => {

@@ -47,10 +47,33 @@ export function normalizeQuickQuestionResponse(value) {
   };
 }
 
-export function buildQuickQuestionPreview({ opening, projectName, environmentName, question }) {
+export function formatQuickQuestionDiscoveredDate(value) {
+  const text = String(value ?? '').trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(text);
+  if (!match) return '';
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year,month - 1,day));
+  if (year < 1000 || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return '';
+  return `${Number(month)}月${Number(day)}日`;
+}
+
+export function buildQuickQuestionPreview({ opening, projectName, environmentName, question, discoveredDate }) {
   const normalizedOpening = String(opening ?? '').trim();
   const normalizedProject = String(projectName ?? '').trim();
   const normalizedEnvironment = String(environmentName ?? '').trim();
   const normalizedQuestion = String(question ?? '').trim() || '（请先输入问题）';
-  return `${normalizedOpening}\n\n【当前范围】\n项目：${normalizedProject}\n环境：${normalizedEnvironment}\n\n【问题】\n${normalizedQuestion}`;
+  const formattedDiscoveredDate = formatQuickQuestionDiscoveredDate(discoveredDate);
+  return [
+    normalizedOpening,
+    '',
+    '【当前范围】',
+    `项目：${normalizedProject}`,
+    `环境：${normalizedEnvironment}`,
+    ...(formattedDiscoveredDate ? [`问题发现时间：${formattedDiscoveredDate}`] : []),
+    '',
+    '【问题】',
+    normalizedQuestion,
+  ].join('\n');
 }

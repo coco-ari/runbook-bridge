@@ -637,7 +637,7 @@ export function registerV2Ipc(ipcMain, services) {
   ));
   handle('quick-question-copy', async (payload = {}) => {
     assertExactQuickQuestionPayload(
-      payload,new Set(['projectId','environmentId','text','expectedOpeningRevision']),'复制快捷提问',
+      payload,new Set(['projectId','environmentId','text','discoveredDate','expectedOpeningRevision']),'复制快捷提问',
     );
     const { projectId, environmentId, expectedOpeningRevision } = payload;
     return mutationCoordinator.runEnvironmentOperation(projectId,environmentId,async () => {
@@ -654,6 +654,7 @@ export function registerV2Ipc(ipcMain, services) {
           projectName:project.name,
           environmentName:environment.name,
           question:payload.text,
+          discoveredDate:payload.discoveredDate,
         });
         await clipboardAdapter.writeText(text);
         return {copied:true};

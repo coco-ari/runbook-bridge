@@ -50,6 +50,7 @@
             </section>
             <section class="quick-question-composer" aria-labelledby="quickQuestionComposerTitle">
               <div class="quick-question-composer-head"><div><h2 id="quickQuestionComposerTitle">要排查什么问题？</h2><p>可粘贴订单号、错误原文或接口地址，复制前仍可修改。</p></div><span id="quickQuestionCount">0 / 1200</span></div>
+              <label class="quick-question-discovered-date" for="quickQuestionDiscoveredDate"><span><strong>问题发现时间</strong><small>可选；复制时仅显示几月几号</small></span><input id="quickQuestionDiscoveredDate" type="date" autocomplete="off"></label>
               <textarea id="quickQuestionInput" maxlength="1200" placeholder="例如：这个订单为什么一直待支付？"></textarea>
               <div id="quickQuestionSensitiveWarning" class="quick-question-warning hidden" role="alert"><svg class="icon"><use href="#i-alert"/></svg><span>检测到可能的登录凭据、密码或私钥。当前内容不能保存为常用；复制时仍会由后台执行最终脱敏。</span></div>
             </section>

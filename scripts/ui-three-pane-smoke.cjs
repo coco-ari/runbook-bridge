@@ -210,8 +210,10 @@ async function run() {
     const quickQuestionView=document.querySelector('#quickQuestionsView');
     const quickQuestionPage=quickQuestionView.querySelector('.quick-question-page');
     const quickQuestionInput=document.querySelector('#quickQuestionInput');
+    const quickQuestionDiscoveredDate=document.querySelector('#quickQuestionDiscoveredDate');
     await wait(()=>!document.querySelector('#editQuickQuestionOpening').disabled,'quick question opening loaded');
-    const minimalSurface=document.querySelectorAll('#quickQuestionsView input').length===0&&document.querySelectorAll('#quickQuestionCustomList [data-quick-question-fill]').length===0;
+    const quickQuestionInputs=[...document.querySelectorAll('#quickQuestionsView input')];
+    const minimalSurface=quickQuestionInputs.length===1&&quickQuestionInputs[0]===quickQuestionDiscoveredDate&&quickQuestionDiscoveredDate.type==='date'&&document.querySelectorAll('#quickQuestionCustomList [data-quick-question-fill]').length===0;
     const scopeNamed=document.querySelector('#quickQuestionProjectName').textContent.trim()==='澳大利亚-zip'&&document.querySelector('#quickQuestionEnvironmentName').textContent.trim()==='正式环境'&&!document.querySelector('.quick-question-scope').textContent.includes('只读');
     const openingGlobalLabel=document.querySelector('#quickQuestionOpeningTitle').textContent.trim()==='全部环境通用';
     click('#editQuickQuestionOpening');
@@ -256,7 +258,11 @@ async function run() {
     click('[data-quick-question-fill]');
     await wait(()=>quickQuestionInput.value==='排查支付回调积压并给出证据','fill saved quick question');
     const customFilled=document.activeElement===quickQuestionInput;
-    const expectedPreview=['请使用 AI-Ops MCP 进行只读排查并给出证据。','','【当前范围】','项目：澳大利亚-zip','环境：正式环境','','【问题】','排查支付回调积压并给出证据'].join('\\n');
+    const previewWithoutDate=['请使用 AI-Ops MCP 进行只读排查并给出证据。','','【当前范围】','项目：澳大利亚-zip','环境：正式环境','','【问题】','排查支付回调积压并给出证据'].join('\\n');
+    const optionalDateOmitted=document.querySelector('#quickQuestionFinalPreview').textContent===previewWithoutDate&&!previewWithoutDate.includes('问题发现时间');
+    quickQuestionDiscoveredDate.value='2026-08-24';
+    quickQuestionDiscoveredDate.dispatchEvent(new Event('input',{bubbles:true}));
+    const expectedPreview=['请使用 AI-Ops MCP 进行只读排查并给出证据。','','【当前范围】','项目：澳大利亚-zip','环境：正式环境','问题发现时间：8月24日','','【问题】','排查支付回调积压并给出证据'].join('\\n');
     const finalPreviewCorrect=document.querySelector('#quickQuestionFinalPreview').textContent===expectedPreview;
     click('#copyQuickQuestion');
     await wait(()=>document.querySelector('#toast').textContent.includes('已复制'),'text quick question copied');
@@ -265,11 +271,11 @@ async function run() {
     const commonCrud=saveActionPrefilled&&customCreated&&customFilled&&document.querySelector('#quickQuestionCustomList').classList.contains('hidden');
     await frame();
     const quickQuestionPageRect=quickQuestionPage.getBoundingClientRect();
-    const quickQuestionFits=quickQuestionView.scrollWidth<=quickQuestionView.clientWidth+1&&quickQuestionPage.scrollWidth<=quickQuestionPage.clientWidth+1&&[...quickQuestionView.querySelectorAll('button,textarea')].filter((element)=>element.offsetParent!==null).every((element)=>{const rect=element.getBoundingClientRect();return rect.left>=quickQuestionPageRect.left-1&&rect.right<=quickQuestionPageRect.right+1;});
+    const quickQuestionFits=quickQuestionView.scrollWidth<=quickQuestionView.clientWidth+1&&quickQuestionPage.scrollWidth<=quickQuestionPage.clientWidth+1&&[...quickQuestionView.querySelectorAll('button,textarea,input')].filter((element)=>element.offsetParent!==null).every((element)=>{const rect=element.getBoundingClientRect();return rect.left>=quickQuestionPageRect.left-1&&rect.right<=quickQuestionPageRect.right+1;});
     const quickQuestionViewRect=quickQuestionView.getBoundingClientRect();
     const quickQuestionCopyRect=document.querySelector('#copyQuickQuestion').getBoundingClientRect();
     const primaryVisible=quickQuestionCopyRect.top>=quickQuestionViewRect.top-1&&quickQuestionCopyRect.bottom<=quickQuestionViewRect.bottom+1;
-    const quickQuestions={minimalSurface,scopeNamed,openingInvalidBlocked,openingResetFromBackend,openingGlobalSaved,sensitiveSaveDisabled,conflictRetryReady,commonCrud,finalPreviewCorrect,fits:quickQuestionFits,primaryVisible};
+    const quickQuestions={minimalSurface,scopeNamed,openingInvalidBlocked,openingResetFromBackend,openingGlobalSaved,sensitiveSaveDisabled,conflictRetryReady,commonCrud,optionalDateOmitted,finalPreviewCorrect,fits:quickQuestionFits,primaryVisible};
     click('[data-detail-tab="information"]');
     await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent .scope-information-kind')?.textContent.includes('环境概览'),'return from quick questions');
     const selectedHeaderContinuous=document.querySelector('.resource-environment-card.selected .resource-environment-head')!==null;
@@ -638,7 +644,7 @@ async function run() {
   const compactLayout = await win.webContents.executeJavaScript(`(async()=>{const wait=async(predicate,label)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: '+label);await new Promise(resolve=>setTimeout(resolve,20));}};const click=(selector)=>{const element=document.querySelector(selector);if(!element)throw new Error('missing compact click target: '+selector);element.click();};const app=document.querySelector('#app'),rail=document.querySelector('.project-rail'),resources=document.querySelector('#resourcePane'),detail=document.querySelector('#detailPane');if(!app.classList.contains('rail-expanded')){click('#toggleProjectRail');await new Promise(resolve=>setTimeout(resolve,340));}click('[data-resource-plugin-id="server-app"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('应用服务器')&&document.querySelector('[data-detail-tab="permissions"]'),'compact plugin detail and tabs');click('[data-detail-tab="permissions"]');await wait(()=>Boolean(document.querySelector('#pluginDetail .permissions-page')),'compact permissions');await new Promise(resolve=>requestAnimationFrame(resolve));const permissionPage=document.querySelector('#pluginDetail .permissions-page'),detailContent=document.querySelector('#pluginDetail .detail-content');const connectedStyle=getComputedStyle(document.querySelector('.project-tree-item.active[data-project-state="connected"]>.project-tree-head')),disconnectedStyle=getComputedStyle(document.querySelector('.project-tree-item[data-tree-project="idle"]>.project-tree-head'));const railRect=rail.getBoundingClientRect(),resourceRect=resources.getBoundingClientRect(),detailRect=detail.getBoundingClientRect();return{expanded:app.classList.contains('rail-expanded'),railWidth:Math.round(railRect.width),resourceLeft:Math.round(resourceRect.left),detailWidth:Math.round(detailRect.width),overlaid:railRect.right>resourceRect.left,projectConnectionContrast:connectedStyle.backgroundImage!==disconnectedStyle.backgroundImage&&connectedStyle.boxShadow.includes('85, 214, 161')&&connectedStyle.boxShadow.includes('131, 124, 246'),projectLabelsFit:[...document.querySelectorAll('.rail-project-copy')].every(copy=>copy.scrollWidth<=copy.clientWidth+1),permissionFits:permissionPage.scrollWidth<=permissionPage.clientWidth&&detailContent.scrollWidth<=detailContent.clientWidth,permissionRows:permissionPage.querySelectorAll('.policy-row').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};})()`);
   const compactScopeOverview = await win.webContents.executeJavaScript(`(async()=>{const wait=async(predicate,label)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: '+label);await new Promise(resolve=>setTimeout(resolve,20));}};const click=(selector)=>document.querySelector(selector).click();const inspect=()=>{const page=document.querySelector('#scopeInfoContent .scope-overview-page'),head=page.querySelector('.scope-overview-head'),actions=page.querySelector('.scope-information-actions'),stats=[...page.querySelectorAll('.scope-overview-stat')],pageRect=page.getBoundingClientRect(),actionsRect=actions.getBoundingClientRect();return{buttons:[...actions.querySelectorAll(':scope>button')].map(button=>button.textContent.trim()),statRows:new Set(stats.map(stat=>Math.round(stat.getBoundingClientRect().top))).size,fits:page.scrollWidth<=page.clientWidth+1&&head.scrollWidth<=head.clientWidth+1&&actionsRect.left>=pageRect.left-1&&actionsRect.right<=pageRect.right+1};};click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('#scopeInfoContent .scope-information-kind')?.textContent.includes('环境概览'),'compact environment overview');await new Promise(resolve=>requestAnimationFrame(resolve));const environment={...inspect(),boundedOverview:document.querySelector('#scopeInfoView').scrollHeight<=document.querySelector('#scopeInfoView').clientHeight*1.65};click('[data-project-id="member"]');await wait(()=>document.querySelector('#scopeInfoContent .scope-information-kind')?.textContent.includes('项目概览'),'compact project overview');await new Promise(resolve=>requestAnimationFrame(resolve));return{environment,project:inspect()};})()`);
   assert.deepEqual(result.environmentTabs,['概览','运维说明','环境操作记录','快捷提问']);
-  assert.deepEqual(result.quickQuestions,{minimalSurface:true,scopeNamed:true,openingInvalidBlocked:true,openingResetFromBackend:true,openingGlobalSaved:true,sensitiveSaveDisabled:true,conflictRetryReady:true,commonCrud:true,finalPreviewCorrect:true,fits:true,primaryVisible:true});
+  assert.deepEqual(result.quickQuestions,{minimalSurface:true,scopeNamed:true,openingInvalidBlocked:true,openingResetFromBackend:true,openingGlobalSaved:true,sensitiveSaveDisabled:true,conflictRetryReady:true,commonCrud:true,optionalDateOmitted:true,finalPreviewCorrect:true,fits:true,primaryVisible:true});
   assert.ok(quickQuestionCalls.openingGet.length>=1);
   assert.deepEqual(quickQuestionCalls.openingSave,[{text:'请使用 AI-Ops MCP 进行只读排查并给出证据。',expectedRevision:2}]);
   assert.deepEqual(Object.keys(quickQuestionCalls.openingSave[0]).sort(),['expectedRevision','text']);
@@ -651,7 +657,7 @@ async function run() {
   assert.equal(quickQuestionUpdateConflictInjected,true);
   assert.deepEqual(quickQuestionCalls.delete,[{projectId:'member',environmentId:'prod',questionId:'quick-smoke-1',expectedRevision:6}]);
   assert.equal(quickQuestionCalls.copy.length,1);
-  assert.deepEqual(quickQuestionCalls.copy,[{projectId:'member',environmentId:'prod',text:'排查支付回调积压并给出证据',expectedOpeningRevision:3}]);
+  assert.deepEqual(quickQuestionCalls.copy,[{projectId:'member',environmentId:'prod',text:'排查支付回调积压并给出证据',discoveredDate:'2026-08-24',expectedOpeningRevision:3}]);
   assert.deepEqual(result.projectTabs,['项目信息']);
   assert.deepEqual(result.pluginTabs,['插件详情','配置','Agent 权限','操作记录']);
   assert.equal(result.selectedHeaderContinuous,true);

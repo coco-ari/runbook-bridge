@@ -33,6 +33,7 @@ test('production renderer exposes only the structured V2 operations surface', as
   assert.match(html, /id="scopeInfoContent"/);
   assert.match(html, /id="quickQuestionsView"/);
   assert.match(html, /<textarea\b[^>]*\bid="quickQuestionInput"/);
+  assert.match(html, /<input\b[^>]*\bid="quickQuestionDiscoveredDate"[^>]*\btype="date"/);
   assert.match(html, /id="quickQuestionOpeningText"/);
   assert.match(html, /id="editQuickQuestionOpening"/);
   assert.match(html, /id="quickQuestionOpeningDialog"/);

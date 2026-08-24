@@ -114,6 +114,7 @@ const state = {
   quickQuestionRevision: null,
   quickQuestionLoading: false,
   quickQuestionDraft: '',
+  quickQuestionDiscoveredDate: '',
   quickQuestionScopeKey: null,
   quickQuestionScopeGeneration: 0,
   quickQuestionLoadGeneration: 0,
@@ -2323,6 +2324,7 @@ function syncQuickQuestionComposer() {
       projectName:activeProject()?.name,
       environmentName:activeEnvironment()?.name,
       question:draft,
+      discoveredDate:state.quickQuestionDiscoveredDate,
     })
     : '正在加载开场词…';
   $('#quickQuestionFinalPreview').textContent = preview;
@@ -2340,6 +2342,8 @@ function renderQuickQuestions() {
   $('#quickQuestionOpeningNotice').classList.add('hidden');
   const input = $('#quickQuestionInput');
   if (input.value !== state.quickQuestionDraft) input.value = state.quickQuestionDraft;
+  const discoveredDate = $('#quickQuestionDiscoveredDate');
+  if (discoveredDate.value !== state.quickQuestionDiscoveredDate) discoveredDate.value = state.quickQuestionDiscoveredDate;
   renderQuickQuestionItems();
   syncQuickQuestionComposer();
 }
@@ -2635,6 +2639,7 @@ async function copyCurrentQuickQuestion() {
     const value = await call(api.copyQuickQuestion({
       ...requestedScope,
       text,
+      ...(state.quickQuestionDiscoveredDate ? {discoveredDate:state.quickQuestionDiscoveredDate} : {}),
       expectedOpeningRevision:state.quickQuestionOpeningRevision,
     }));
     if (value?.copied === false) throw new Error('复制失败，请重试。');
@@ -4511,6 +4516,7 @@ function resetScopeUi() {
   state.quickQuestionRevision = null;
   state.quickQuestionLoading = false;
   state.quickQuestionDraft = '';
+  state.quickQuestionDiscoveredDate = '';
   state.quickQuestionScopeKey = null;
   state.quickQuestionRefreshPending = false;
   state.quickQuestionEditingId = null;
@@ -5773,6 +5779,10 @@ $('#auditSearch').addEventListener('input', renderAudit);
 $('#auditResult').addEventListener('change', renderAudit);
 $('#quickQuestionInput').addEventListener('input',(event) => {
   state.quickQuestionDraft = event.currentTarget.value;
+  syncQuickQuestionComposer();
+});
+$('#quickQuestionDiscoveredDate').addEventListener('input',(event) => {
+  state.quickQuestionDiscoveredDate = event.currentTarget.value;
   syncQuickQuestionComposer();
 });
 $('#quickQuestionInput').addEventListener('keydown',(event) => {
