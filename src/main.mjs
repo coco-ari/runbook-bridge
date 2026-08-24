@@ -2,7 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, powerMonitor, session } from 'electron';
 import { ProjectStore } from './project-store.mjs';
 import { BrokerServer } from './broker-server.mjs';
 import { rotateBrokerToken } from './broker-auth.mjs';
@@ -228,6 +228,7 @@ if (process.argv.includes('--mcp')) {
         registerV2Ipc(ipcMain, {
           ...v2,
           broadcast,
+          quickQuestionClipboard:clipboard,
         });
         createWindow();
         powerMonitor.on('resume', () => environmentConnectionManager.networkChanged('system-resume').catch(() => undefined));

@@ -8,6 +8,16 @@ import YAML from 'yaml';
 import { AppError } from './errors.mjs';
 import { classifyPluginChange } from './plugin-change-classifier.mjs';
 import { assertPluginConfigurationReady } from './plugin-connection-adapters.mjs';
+import {
+  DEFAULT_QUICK_QUESTION_OPENING,
+  QUICK_QUESTION_LIMIT,
+  QUICK_QUESTION_OPENING_SCHEMA_VERSION,
+  QUICK_QUESTION_SCHEMA_VERSION,
+  containsQuickQuestionCredential,
+  normalizeQuickQuestionOpening,
+  normalizeQuickQuestionText,
+  prepareQuickQuestionForSave,
+} from './quick-questions.mjs';
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{1,62}$/;
 const CONTROL_RE = /[\u0000-\u001f\u007f]/;
@@ -84,6 +94,24 @@ function clone(value) {
 
 function now() {
   return new Date().toISOString();
+}
+
+function validIsoTimestamp(value) {
+  if (typeof value !== 'string') return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+function assertExpectedQuickQuestionRevision(value) {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new AppError('INVALID_ARGUMENT', '更新常用提问必须提供有效的 expectedRevision。');
+  }
+}
+
+function assertExpectedQuickQuestionOpeningRevision(value) {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new AppError('INVALID_ARGUMENT', '更新快捷提问开场白必须提供有效的 expectedRevision。');
+  }
 }
 
 function normalizeName(value, label = '名称') {
@@ -699,6 +727,14 @@ export class WorkspaceStore {
     return path.join(this.environmentDir(projectId, environmentId), 'README.md');
   }
 
+  quickQuestionsPath(projectId, environmentId) {
+    return path.join(this.environmentDir(projectId, environmentId), 'quick-questions.json');
+  }
+
+  quickQuestionSettingsPath() {
+    return path.join(this.dataRoot,'quick-question-settings.json');
+  }
+
   async readYaml(file, missingCode, missingMessage) {
     try {
       return YAML.parse(await fs.readFile(file, 'utf8'));
@@ -1120,6 +1156,214 @@ export class WorkspaceStore {
       const next = { ...environment, revision: environment.revision + 1, updatedAt: now() };
       await this.writeYaml(this.environmentPath(projectId, environmentId), next);
       return { environment: next, ...(await this.readRunbook(projectId, environmentId)) };
+    });
+  }
+
+  emptyQuickQuestionOpening() {
+    return {
+      schemaVersion:QUICK_QUESTION_OPENING_SCHEMA_VERSION,
+      revision:0,
+      openingText:DEFAULT_QUICK_QUESTION_OPENING,
+      updatedAt:null,
+    };
+  }
+
+  validateQuickQuestionOpeningDocument(value) {
+    let normalized;
+    try { normalized = normalizeQuickQuestionOpening(value?.openingText); }
+    catch {
+      throw new AppError('QUICK_QUESTION_SETTINGS_INVALID', '快捷提问全局设置文件损坏。');
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || value.schemaVersion !== QUICK_QUESTION_OPENING_SCHEMA_VERSION
+      || !Number.isInteger(value.revision) || value.revision < 1
+      || normalized !== value.openingText
+      || (value.updatedAt !== undefined && !validIsoTimestamp(value.updatedAt))) {
+      throw new AppError('QUICK_QUESTION_SETTINGS_INVALID', '快捷提问全局设置文件损坏。');
+    }
+    return value;
+  }
+
+  async readQuickQuestionOpeningDocument() {
+    let value;
+    try {
+      value = JSON.parse(await fs.readFile(this.quickQuestionSettingsPath(),'utf8'));
+    } catch (error) {
+      if (error?.code === 'ENOENT') return this.emptyQuickQuestionOpening();
+      if (error instanceof SyntaxError) {
+        throw new AppError('QUICK_QUESTION_SETTINGS_INVALID', '快捷提问全局设置文件无法解析。');
+      }
+      throw error;
+    }
+    return this.validateQuickQuestionOpeningDocument(value);
+  }
+
+  async getQuickQuestionOpening() {
+    const value = await this.readQuickQuestionOpeningDocument();
+    return {
+      schemaVersion:value.schemaVersion,
+      revision:value.revision,
+      text:value.openingText,
+      defaultText:DEFAULT_QUICK_QUESTION_OPENING,
+    };
+  }
+
+  async useQuickQuestionOpening(expectedRevision, operation) {
+    assertExpectedQuickQuestionOpeningRevision(expectedRevision);
+    if (typeof operation !== 'function') throw new AppError('INVALID_ARGUMENT', '快捷提问开场白操作无效。');
+    return this.enqueue('quick-question-opening',async () => {
+      const current = await this.readQuickQuestionOpeningDocument();
+      if (current.revision !== expectedRevision) {
+        throw new AppError('CONFIG_REVISION_CONFLICT', '快捷提问开场白已经变化，请刷新预览后重试。');
+      }
+      return operation({
+        schemaVersion:current.schemaVersion,
+        revision:current.revision,
+        text:current.openingText,
+        defaultText:DEFAULT_QUICK_QUESTION_OPENING,
+      });
+    });
+  }
+
+  async saveQuickQuestionOpening(text, expectedRevision) {
+    assertExpectedQuickQuestionOpeningRevision(expectedRevision);
+    const openingText = normalizeQuickQuestionOpening(text);
+    return this.enqueue('quick-question-opening',async () => {
+      const current = await this.readQuickQuestionOpeningDocument();
+      if (current.revision !== expectedRevision) {
+        throw new AppError('CONFIG_REVISION_CONFLICT', '快捷提问开场白已经变化，请刷新后重试。');
+      }
+      const next = {
+        schemaVersion:QUICK_QUESTION_OPENING_SCHEMA_VERSION,
+        revision:current.revision + 1,
+        openingText,
+        updatedAt:now(),
+      };
+      await this.atomicWrite(this.quickQuestionSettingsPath(),`${JSON.stringify(next,null,2)}\n`);
+      return {
+        schemaVersion:next.schemaVersion,
+        revision:next.revision,
+        text:next.openingText,
+        defaultText:DEFAULT_QUICK_QUESTION_OPENING,
+      };
+    });
+  }
+
+  emptyQuickQuestions(projectId, environmentId) {
+    return {
+      schemaVersion:QUICK_QUESTION_SCHEMA_VERSION,
+      projectId,
+      environmentId,
+      revision:0,
+      items:[],
+    };
+  }
+
+  validateQuickQuestionsDocument(value, projectId, environmentId) {
+    const validItems = Array.isArray(value?.items)
+      && value.items.length <= QUICK_QUESTION_LIMIT
+      && value.items.every((item) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)
+          || !ID_RE.test(String(item.questionId ?? ''))
+          || !validIsoTimestamp(item.createdAt) || !validIsoTimestamp(item.updatedAt)
+          || item.createdAt > item.updatedAt || typeof item.text !== 'string'
+          || containsQuickQuestionCredential(item.text)) return false;
+        try { return normalizeQuickQuestionText(item.text) === item.text; }
+        catch { return false; }
+      });
+    const uniqueIds = validItems && new Set(value.items.map((item) => item.questionId)).size === value.items.length;
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || value.schemaVersion !== QUICK_QUESTION_SCHEMA_VERSION
+      || value.projectId !== projectId || value.environmentId !== environmentId
+      || !Number.isInteger(value.revision) || value.revision < 1
+      || !validItems || !uniqueIds) {
+      throw new AppError('QUICK_QUESTIONS_CONFIG_INVALID', '常用提问文件损坏或范围不匹配。');
+    }
+    return value;
+  }
+
+  async readQuickQuestionsDocument(projectId, environmentId) {
+    const file = this.quickQuestionsPath(projectId, environmentId);
+    let value;
+    try {
+      value = JSON.parse(await fs.readFile(file,'utf8'));
+    } catch (error) {
+      if (error?.code === 'ENOENT') return this.emptyQuickQuestions(projectId,environmentId);
+      if (error instanceof SyntaxError) {
+        throw new AppError('QUICK_QUESTIONS_CONFIG_INVALID', '常用提问文件无法解析。');
+      }
+      throw error;
+    }
+    return this.validateQuickQuestionsDocument(value,projectId,environmentId);
+  }
+
+  async listQuickQuestions(projectId, environmentId) {
+    await this.getEnvironment(projectId,environmentId);
+    return clone(await this.readQuickQuestionsDocument(projectId,environmentId));
+  }
+
+  async saveQuickQuestion(projectId, environmentId, input, expectedRevision = input?.expectedRevision) {
+    return this.upsertQuickQuestion(projectId,environmentId,input,expectedRevision);
+  }
+
+  async upsertQuickQuestion(projectId, environmentId, input, expectedRevision = input?.expectedRevision) {
+    assertExpectedQuickQuestionRevision(expectedRevision);
+    const text = prepareQuickQuestionForSave(input?.text);
+    const requestedId = input?.questionId === undefined || input?.questionId === null
+      ? null
+      : assertId(input.questionId,'常用提问标识');
+    return this.enqueue(`quick-questions:${projectId}:${environmentId}`, async () => {
+      await this.getEnvironment(projectId,environmentId);
+      const current = await this.readQuickQuestionsDocument(projectId,environmentId);
+      if (current.revision !== expectedRevision) {
+        throw new AppError('CONFIG_REVISION_CONFLICT', '常用提问已经变化，请刷新后重试。');
+      }
+      const items = current.items.map((item) => ({...item}));
+      const timestamp = now();
+      if (requestedId) {
+        const index = items.findIndex((item) => item.questionId === requestedId);
+        if (index < 0) throw new AppError('QUICK_QUESTION_NOT_FOUND', '常用提问不存在。');
+        items[index] = {...items[index],text,updatedAt:timestamp};
+      } else {
+        if (items.length >= QUICK_QUESTION_LIMIT) {
+          throw new AppError('RESULT_LIMIT_EXCEEDED', `每个环境最多保存 ${QUICK_QUESTION_LIMIT} 条常用提问。`);
+        }
+        let questionId;
+        do { questionId = `question-${crypto.randomBytes(8).toString('hex')}`; }
+        while (items.some((item) => item.questionId === questionId));
+        items.push({questionId,text,createdAt:timestamp,updatedAt:timestamp});
+      }
+      const next = {
+        schemaVersion:QUICK_QUESTION_SCHEMA_VERSION,
+        projectId,
+        environmentId,
+        revision:current.revision + 1,
+        items,
+      };
+      await this.atomicWrite(this.quickQuestionsPath(projectId,environmentId),`${JSON.stringify(next,null,2)}\n`);
+      return clone(next);
+    });
+  }
+
+  async deleteQuickQuestion(projectId, environmentId, questionId, expectedRevision) {
+    assertExpectedQuickQuestionRevision(expectedRevision);
+    const normalizedId = assertId(questionId,'常用提问标识');
+    return this.enqueue(`quick-questions:${projectId}:${environmentId}`, async () => {
+      await this.getEnvironment(projectId,environmentId);
+      const current = await this.readQuickQuestionsDocument(projectId,environmentId);
+      if (current.revision !== expectedRevision) {
+        throw new AppError('CONFIG_REVISION_CONFLICT', '常用提问已经变化，请刷新后重试。');
+      }
+      if (!current.items.some((item) => item.questionId === normalizedId)) {
+        throw new AppError('QUICK_QUESTION_NOT_FOUND', '常用提问不存在。');
+      }
+      const next = {
+        ...current,
+        revision:current.revision + 1,
+        items:current.items.filter((item) => item.questionId !== normalizedId),
+      };
+      await this.atomicWrite(this.quickQuestionsPath(projectId,environmentId),`${JSON.stringify(next,null,2)}\n`);
+      return clone(next);
     });
   }
 

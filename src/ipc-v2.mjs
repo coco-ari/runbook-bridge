@@ -14,6 +14,7 @@ import {
   assertPluginConfigurationReady,
   getPluginConnectionAdapter,
 } from './plugin-connection-adapters.mjs';
+import { buildQuickQuestionCopyText } from './quick-questions.mjs';
 
 function resultHandler(handler) {
   return async (_event, ...args) => {
@@ -94,6 +95,44 @@ function assertSecretFreeDraft(draft) {
       }
       if (item && typeof item === 'object') pending.push(item);
     }
+  }
+}
+
+function scopeNameKey(value) {
+  return String(value ?? '').normalize('NFKC').trim().toLocaleLowerCase('zh-CN');
+}
+
+async function assertQuickQuestionScopeNamesUnique(store, projectName, environmentName) {
+  const projectKey = scopeNameKey(projectName);
+  const environmentKey = scopeNameKey(environmentName);
+  const overviews = typeof store.listProjectOverviews === 'function'
+    ? await store.listProjectOverviews()
+    : await Promise.all((await store.listProjects()).map(async (project) => ({
+      ...project,
+      environments:await store.listEnvironments(project.projectId),
+    })));
+  let matches = 0;
+  for (const project of overviews) {
+    if (scopeNameKey(project.name) !== projectKey || project.configurationError) continue;
+    for (const environment of project.environments ?? []) {
+      if (scopeNameKey(environment.name) === environmentKey) matches += 1;
+      if (matches > 1) {
+        throw new AppError(
+          'AMBIGUOUS_QUICK_QUESTION_SCOPE',
+          '存在同名的项目和环境组合，无法生成不含内部标识的精确提问。请先重命名项目或环境。',
+        );
+      }
+    }
+  }
+}
+
+function assertExactQuickQuestionPayload(payload, allowedFields, label) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new AppError('INVALID_ARGUMENT', `${label}请求无效。`);
+  }
+  const unexpected = Object.keys(payload).filter((field) => !allowedFields.has(field));
+  if (unexpected.length) {
+    throw new AppError('INVALID_ARGUMENT', `${label}请求包含不允许的字段。`,{fields:unexpected});
   }
 }
 
@@ -564,6 +603,63 @@ export function registerV2Ipc(ipcMain, services) {
     }
   });
   handle('environment-list', (projectId) => store.listEnvironments(projectId));
+  handle('quick-question-opening-get', () => store.getQuickQuestionOpening());
+  handle('quick-question-opening-save', async (payload) => {
+    assertExactQuickQuestionPayload(
+      payload,new Set(['text','expectedRevision']),'保存快捷提问开场白',
+    );
+    const value = await store.saveQuickQuestionOpening(payload.text,payload.expectedRevision);
+    services.broadcast?.('v2:workspace-changed',{type:'quick-question-opening-updated'});
+    return value;
+  });
+  handle('quick-question-list', ({ projectId, environmentId }) => (
+    mutationCoordinator.runEnvironmentOperation(
+      projectId,environmentId,() => store.listQuickQuestions(projectId,environmentId),
+    )
+  ));
+  handle('quick-question-save', ({ projectId, environmentId, questionId = null, text, expectedRevision }) => (
+    enqueuePluginMutation(projectId,environmentId,async () => {
+    const value = await store.saveQuickQuestion(
+      projectId,environmentId,{questionId,text},expectedRevision,
+    );
+    services.broadcast?.('v2:workspace-changed',{type:'quick-questions-updated',projectId,environmentId});
+    return value;
+    })
+  ));
+  handle('quick-question-delete', ({ projectId, environmentId, questionId, expectedRevision }) => (
+    enqueuePluginMutation(projectId,environmentId,async () => {
+    const value = await store.deleteQuickQuestion(
+      projectId,environmentId,questionId,expectedRevision,
+    );
+    services.broadcast?.('v2:workspace-changed',{type:'quick-questions-updated',projectId,environmentId});
+    return value;
+    })
+  ));
+  handle('quick-question-copy', async (payload = {}) => {
+    assertExactQuickQuestionPayload(
+      payload,new Set(['projectId','environmentId','text','expectedOpeningRevision']),'复制快捷提问',
+    );
+    const { projectId, environmentId, expectedOpeningRevision } = payload;
+    return mutationCoordinator.runEnvironmentOperation(projectId,environmentId,async () => {
+      const project = await store.getProject(projectId);
+      const environment = await store.getEnvironment(projectId,environmentId);
+      await assertQuickQuestionScopeNamesUnique(store,project.name,environment.name);
+      const clipboardAdapter = services.quickQuestionClipboard;
+      if (!clipboardAdapter || typeof clipboardAdapter.writeText !== 'function') {
+        throw new AppError('CLIPBOARD_UNAVAILABLE', '系统剪贴板当前不可用。');
+      }
+      return store.useQuickQuestionOpening(expectedOpeningRevision,async (opening) => {
+        const text = buildQuickQuestionCopyText({
+          openingText:opening.text,
+          projectName:project.name,
+          environmentName:environment.name,
+          question:payload.text,
+        });
+        await clipboardAdapter.writeText(text);
+        return {copied:true};
+      });
+    });
+  });
   handle('environment-create', ({ projectId, input }) => {
     assertProjectAvailable(projectId);
     return store.createEnvironment(projectId, input);

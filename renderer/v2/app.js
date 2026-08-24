@@ -1,5 +1,12 @@
 import { pluginConnectionViewModel } from './connection-view-model.js';
 import { pluginCatalog, pluginDefinition, pluginTypeIcons, pluginTypeNames } from './plugin-catalog.js';
+import {
+  buildQuickQuestionPreview,
+  normalizeQuickQuestionOpening,
+  normalizeQuickQuestionResponse,
+  quickQuestionHasStrictCredential,
+  quickQuestionOpeningIssue,
+} from './quick-questions.js';
 
 const api = window.aiOps.v2;
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -103,6 +110,23 @@ const state = {
   agentEditingPluginId: null,
   credentialRevealGeneration: 0,
   auditLoadGeneration: 0,
+  quickQuestionItems: [],
+  quickQuestionRevision: null,
+  quickQuestionLoading: false,
+  quickQuestionDraft: '',
+  quickQuestionScopeKey: null,
+  quickQuestionScopeGeneration: 0,
+  quickQuestionLoadGeneration: 0,
+  quickQuestionRefreshPending: false,
+  quickQuestionEditingId: null,
+  quickQuestionOpeningText: null,
+  quickQuestionOpeningDefaultText: null,
+  quickQuestionOpeningRevision: null,
+  quickQuestionOpeningLoading: false,
+  quickQuestionOpeningLoaded: false,
+  quickQuestionOpeningLoadGeneration: 0,
+  quickQuestionOpeningRefreshPending: false,
+  quickQuestionOpeningEditorStale: false,
   confirmationLoadGeneration: 0,
   confirmationOpenGeneration: 0,
 };
@@ -1782,7 +1806,7 @@ function renderDetailTopbar() {
     ? [['configuration','添加插件']]
     : plugin
     ? [['connection','插件详情'],['configuration','配置'],['permissions','Agent 权限'],['audit','操作记录']]
-    : [['information','概览'],['runbook','运维说明'],['audit','环境操作记录']];
+    : [['information','概览'],['runbook','运维说明'],['audit','环境操作记录'],['quick-questions','快捷提问']];
   const active = projectSelected ? 'information' : creatingPlugin ? 'configuration' : plugin ? detailTab(plugin) : state.environmentDetailTab;
   $('#detailTopTabs').innerHTML = tabs.map(([value,label]) => `<button class="detail-top-tab ${active === value ? 'active' : ''}" data-detail-tab="${value}">${label}</button>`).join('');
 }
@@ -1803,7 +1827,7 @@ function renderShell() {
   }
   if (!scopeSelected) {
     $('#detailTopTabs').innerHTML = '';
-    ['pluginsView','pluginConfigView','scopeInfoView','runbookView','auditView','confirmationView'].forEach((id) => $(`#${id}`).classList.add('hidden'));
+    ['pluginsView','pluginConfigView','scopeInfoView','runbookView','auditView','quickQuestionsView','confirmationView'].forEach((id) => $(`#${id}`).classList.add('hidden'));
     return;
   }
   renderDetailTopbar();
@@ -1883,6 +1907,7 @@ function renderView() {
   $('#scopeInfoView').classList.toggle('hidden',state.view !== 'scope-info');
   $('#runbookView').classList.toggle('hidden',state.view !== 'runbook');
   $('#auditView').classList.toggle('hidden',state.view !== 'audit');
+  $('#quickQuestionsView').classList.toggle('hidden',state.view !== 'quick-questions');
   $('#confirmationView').classList.toggle('hidden',state.view !== 'confirmations');
   if (state.view === 'confirmations') renderConfirmationCenter();
   else if (state.view === 'plugins') renderPlugins();
@@ -1891,6 +1916,10 @@ function renderView() {
   else if (state.view === 'runbook') {
     if (state.runbookScopeKey === scopeKey()) renderRunbook();
     else loadRunbook().catch(showError);
+  } else if (state.view === 'quick-questions') {
+    renderQuickQuestions();
+    if (!state.quickQuestionOpeningLoaded && !state.quickQuestionOpeningLoading) loadQuickQuestionOpening().catch(showError);
+    if (state.quickQuestionScopeKey !== scopeKey() && !state.quickQuestionLoading) loadQuickQuestions().catch(showError);
   } else loadAudit().catch(showError);
 }
 
@@ -2206,6 +2235,420 @@ function renderRunbook() {
   $('#editRunbook').classList.toggle('hidden', state.runbookEditing);
   $('#saveRunbook').classList.toggle('hidden', !state.runbookEditing);
   $('#cancelRunbook').classList.toggle('hidden', !state.runbookEditing);
+}
+
+function currentQuickQuestionScope() {
+  return { projectId:state.projectId, environmentId:state.environmentId };
+}
+
+function quickQuestionScopeIsCurrent(scope,generation = state.quickQuestionScopeGeneration) {
+  return generation === state.quickQuestionScopeGeneration
+    && scope.projectId === state.projectId
+    && scope.environmentId === state.environmentId;
+}
+
+function quickQuestionOperationKey(action,questionId = '') {
+  return `quick-question:${scopeKey()}:${action}${questionId ? `:${questionId}` : ''}`;
+}
+
+function quickQuestionMutationOperationKey() {
+  return quickQuestionOperationKey('mutation');
+}
+
+function quickQuestionOpeningOperationKey(action) {
+  return `quick-question-opening:${action}`;
+}
+
+function quickQuestionOpeningDialogIsOpen() {
+  return Boolean($('#quickQuestionOpeningDialog')?.open);
+}
+
+function renderQuickQuestionItems() {
+  const list = $('#quickQuestionCustomList');
+  const empty = $('#quickQuestionCommonEmpty');
+  const hasItems = state.quickQuestionItems.length > 0;
+  const mutationBusy = operationInFlight(quickQuestionMutationOperationKey());
+  list.classList.toggle('hidden',!hasItems);
+  empty.classList.toggle('hidden',hasItems || state.quickQuestionLoading);
+  list.replaceChildren();
+  for (const item of state.quickQuestionItems) {
+    const card = document.createElement('article');
+    card.className = 'quick-question-common-card';
+    const fill = document.createElement('button');
+    fill.type = 'button';
+    fill.className = 'quick-question-custom-fill';
+    fill.dataset.quickQuestionFill = item.questionId;
+    fill.textContent = item.text;
+    fill.title = item.text;
+    const tools = document.createElement('span');
+    tools.className = 'quick-question-common-tools';
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.dataset.quickQuestionEdit = item.questionId;
+    edit.setAttribute('aria-label',`编辑常见问题：${item.text}`);
+    edit.innerHTML = icon('edit');
+    edit.disabled = mutationBusy;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.dataset.quickQuestionDelete = item.questionId;
+    remove.setAttribute('aria-label',`删除常见问题：${item.text}`);
+    remove.innerHTML = icon('trash');
+    remove.disabled = mutationBusy;
+    tools.append(edit,remove);
+    card.append(fill,tools);
+    list.append(card);
+  }
+}
+
+function syncQuickQuestionComposer() {
+  const draft = state.quickQuestionDraft;
+  const hasQuestion = Boolean(draft.trim());
+  const sensitive = quickQuestionHasStrictCredential(draft);
+  const mutationBusy = operationInFlight(quickQuestionMutationOperationKey());
+  $('#quickQuestionCount').textContent = `${draft.length} / 1200`;
+  $('#quickQuestionSensitiveWarning').classList.toggle('hidden',!sensitive);
+  $('#quickQuestionLoading').classList.toggle('hidden',!state.quickQuestionLoading);
+  const copyBusy = operationInFlight(quickQuestionOperationKey('copy'));
+  const saveButton = $('#saveQuickQuestion');
+  const copyButton = $('#copyQuickQuestion');
+  setElementBusy(copyButton,copyBusy);
+  saveButton.disabled = !hasQuestion || sensitive || state.quickQuestionLoading || state.quickQuestionRevision === null || mutationBusy;
+  copyButton.disabled = !hasQuestion || copyBusy || !state.quickQuestionOpeningLoaded || state.quickQuestionOpeningRevision === null;
+  $('#addQuickQuestionCommon').disabled = state.quickQuestionLoading || state.quickQuestionRevision === null || mutationBusy;
+  $('#editQuickQuestionOpening').disabled = state.quickQuestionOpeningLoading || state.quickQuestionOpeningRevision === null;
+
+  const preview = state.quickQuestionOpeningLoaded
+    ? buildQuickQuestionPreview({
+      opening:state.quickQuestionOpeningText,
+      projectName:activeProject()?.name,
+      environmentName:activeEnvironment()?.name,
+      question:draft,
+    })
+    : '正在加载开场词…';
+  $('#quickQuestionFinalPreview').textContent = preview;
+}
+
+function renderQuickQuestions() {
+  const project = activeProject();
+  const environment = activeEnvironment();
+  if (!project || !environment) return;
+  $('#quickQuestionProjectName').textContent = project.name;
+  $('#quickQuestionEnvironmentName').textContent = environment.name;
+  $('#quickQuestionOpeningText').textContent = state.quickQuestionOpeningLoaded
+    ? state.quickQuestionOpeningText
+    : '正在加载开场词…';
+  $('#quickQuestionOpeningNotice').classList.add('hidden');
+  const input = $('#quickQuestionInput');
+  if (input.value !== state.quickQuestionDraft) input.value = state.quickQuestionDraft;
+  renderQuickQuestionItems();
+  syncQuickQuestionComposer();
+}
+
+async function loadQuickQuestionOpening() {
+  if (state.quickQuestionOpeningLoading) {
+    state.quickQuestionOpeningRefreshPending = true;
+    return;
+  }
+  const loadGeneration = ++state.quickQuestionOpeningLoadGeneration;
+  state.quickQuestionOpeningLoading = true;
+  state.quickQuestionOpeningRefreshPending = false;
+  if (state.view === 'quick-questions') renderQuickQuestions();
+  try {
+    const normalized = normalizeQuickQuestionOpening(await call(api.getQuickQuestionOpening()));
+    if (loadGeneration !== state.quickQuestionOpeningLoadGeneration) return;
+    state.quickQuestionOpeningText = normalized.text;
+    state.quickQuestionOpeningDefaultText = normalized.defaultText;
+    state.quickQuestionOpeningRevision = normalized.revision;
+    state.quickQuestionOpeningLoaded = true;
+  } catch (error) {
+    if (loadGeneration === state.quickQuestionOpeningLoadGeneration) state.quickQuestionOpeningLoaded = false;
+    throw error;
+  } finally {
+    if (loadGeneration === state.quickQuestionOpeningLoadGeneration) {
+      const shouldRefresh = state.quickQuestionOpeningRefreshPending;
+      state.quickQuestionOpeningRefreshPending = false;
+      state.quickQuestionOpeningLoading = false;
+      if (state.view === 'quick-questions') renderQuickQuestions();
+      if (shouldRefresh && !quickQuestionOpeningDialogIsOpen()) loadQuickQuestionOpening().catch(showError);
+    }
+  }
+}
+
+function requestQuickQuestionOpeningRefresh() {
+  if (quickQuestionOpeningDialogIsOpen()) {
+    state.quickQuestionOpeningEditorStale = true;
+    syncQuickQuestionOpeningDialog();
+    return;
+  }
+  state.quickQuestionOpeningLoaded = false;
+  if (state.quickQuestionOpeningLoading) {
+    state.quickQuestionOpeningRefreshPending = true;
+    return;
+  }
+  if (state.view === 'quick-questions') loadQuickQuestionOpening().catch(showError);
+}
+
+async function loadQuickQuestions() {
+  const requestedScope = currentQuickQuestionScope();
+  if (!requestedScope.projectId || !requestedScope.environmentId) return;
+  const requestedKey = scopeKey(requestedScope.projectId,requestedScope.environmentId);
+  const scopeGeneration = state.quickQuestionScopeGeneration;
+  const loadGeneration = ++state.quickQuestionLoadGeneration;
+  const loadIsCurrent = () => quickQuestionScopeIsCurrent(requestedScope,scopeGeneration)
+    && loadGeneration === state.quickQuestionLoadGeneration;
+  state.quickQuestionScopeKey = requestedKey;
+  state.quickQuestionLoading = true;
+  state.quickQuestionRefreshPending = false;
+  state.quickQuestionItems = [];
+  state.quickQuestionRevision = null;
+  if (state.view === 'quick-questions') renderQuickQuestions();
+  try {
+    const value = await call(api.listQuickQuestions(requestedScope));
+    if (!loadIsCurrent()) return;
+    const normalized = normalizeQuickQuestionResponse(value);
+    state.quickQuestionItems = normalized.items;
+    state.quickQuestionRevision = normalized.revision;
+  } catch (error) {
+    if (loadIsCurrent()) state.quickQuestionScopeKey = null;
+    throw error;
+  } finally {
+    if (loadIsCurrent()) {
+      const shouldRefresh = state.quickQuestionRefreshPending;
+      state.quickQuestionRefreshPending = false;
+      state.quickQuestionLoading = false;
+      if (state.view === 'quick-questions') renderQuickQuestions();
+      if ($('#quickQuestionCommonDialog')?.open) syncQuickQuestionCommonDialog();
+      if (shouldRefresh && state.view === 'quick-questions') loadQuickQuestions().catch(showError);
+    }
+  }
+}
+
+function requestQuickQuestionRefresh(scope = currentQuickQuestionScope()) {
+  if (!quickQuestionScopeIsCurrent(scope)) return;
+  state.quickQuestionScopeKey = null;
+  if (state.quickQuestionLoading) {
+    state.quickQuestionRefreshPending = true;
+    return;
+  }
+  if (state.view === 'quick-questions') loadQuickQuestions().catch(showError);
+}
+
+function fillQuickQuestion(text) {
+  state.quickQuestionDraft = String(text ?? '').slice(0,1200);
+  renderQuickQuestions();
+  const input = $('#quickQuestionInput');
+  input.focus();
+  input.setSelectionRange(input.value.length,input.value.length);
+}
+
+function syncQuickQuestionOpeningDialog() {
+  const input = $('#quickQuestionOpeningInput');
+  const text = input.value;
+  const issue = quickQuestionOpeningIssue(text);
+  const busy = operationInFlight(quickQuestionOpeningOperationKey('save'));
+  $('#quickQuestionOpeningCount').textContent = `${Array.from(text).length} / 500`;
+  const error = $('#quickQuestionOpeningError');
+  const message = issue || (state.quickQuestionOpeningEditorStale
+    ? '设置已在其他窗口更新；你的编辑内容已保留。保存时会先校验最新版本。'
+    : '');
+  error.textContent = message;
+  error.classList.toggle('hidden',!message);
+  const save = $('#saveQuickQuestionOpening');
+  setElementBusy(save,busy);
+  save.disabled = Boolean(issue) || busy || state.quickQuestionOpeningRevision === null;
+  $('#resetQuickQuestionOpening').disabled = busy || !state.quickQuestionOpeningDefaultText;
+}
+
+function openQuickQuestionOpeningDialog() {
+  if (!state.quickQuestionOpeningLoaded || state.quickQuestionOpeningRevision === null) return;
+  state.quickQuestionOpeningEditorStale = false;
+  $('#quickQuestionOpeningInput').value = state.quickQuestionOpeningText;
+  syncQuickQuestionOpeningDialog();
+  $('#quickQuestionOpeningDialog').showModal();
+  $('#quickQuestionOpeningInput').focus();
+}
+
+async function saveQuickQuestionOpeningSetting() {
+  const text = $('#quickQuestionOpeningInput').value.trim();
+  const issue = quickQuestionOpeningIssue(text);
+  if (issue || state.quickQuestionOpeningRevision === null) {
+    syncQuickQuestionOpeningDialog();
+    return;
+  }
+  const operationKey = quickQuestionOpeningOperationKey('save');
+  const token = beginOperation(operationKey);
+  if (!token) return;
+  syncQuickQuestionOpeningDialog();
+  try {
+    const normalized = normalizeQuickQuestionOpening(await call(api.saveQuickQuestionOpening({
+      text,
+      expectedRevision:state.quickQuestionOpeningRevision,
+    })));
+    state.quickQuestionOpeningText = normalized.text;
+    state.quickQuestionOpeningDefaultText = normalized.defaultText;
+    state.quickQuestionOpeningRevision = normalized.revision;
+    state.quickQuestionOpeningLoaded = true;
+    state.quickQuestionOpeningEditorStale = false;
+    $('#quickQuestionOpeningDialog').close();
+    if (state.view === 'quick-questions') renderQuickQuestions();
+    toast('开场词已更新，所有环境都会使用。');
+  } catch (error) {
+    if (error?.code !== 'CONFIG_REVISION_CONFLICT') throw error;
+    try {
+      await loadQuickQuestionOpening();
+      state.quickQuestionOpeningEditorStale = true;
+      syncQuickQuestionOpeningDialog();
+      toast('开场词已更新，你的编辑内容已保留；请确认后再次保存。',true);
+    } catch (refreshError) {
+      throw refreshError;
+    }
+  } finally {
+    finishOperation(operationKey,token);
+    if (quickQuestionOpeningDialogIsOpen()) syncQuickQuestionOpeningDialog();
+  }
+}
+
+function quickQuestionCommonDialogIssue(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return '问题正文不能为空。';
+  if (Array.from(text).length > 1200) return '问题正文不能超过 1200 个字符。';
+  if (quickQuestionHasStrictCredential(text)) return '常见问题不能包含密码、密钥或其他明确凭据。';
+  return null;
+}
+
+function syncQuickQuestionCommonDialog() {
+  const input = $('#quickQuestionCommonInput');
+  const text = input.value;
+  const issue = quickQuestionCommonDialogIssue(text);
+  const operationKey = quickQuestionMutationOperationKey();
+  const busy = operationInFlight(operationKey);
+  $('#quickQuestionCommonCount').textContent = `${Array.from(text).length} / 1200`;
+  $('#quickQuestionCommonError').textContent = issue || '';
+  $('#quickQuestionCommonError').classList.toggle('hidden',!issue);
+  const save = $('#saveQuickQuestionFromDialog');
+  setElementBusy(save,busy);
+  save.disabled = Boolean(issue) || busy || state.quickQuestionRevision === null;
+  const remove = $('#deleteQuickQuestionFromDialog');
+  remove.classList.toggle('hidden',!state.quickQuestionEditingId);
+  remove.disabled = busy;
+}
+
+function openQuickQuestionCommonDialog(item = null, initialText = '') {
+  if (state.quickQuestionRevision === null || operationInFlight(quickQuestionMutationOperationKey())) return;
+  const project = activeProject();
+  const environment = activeEnvironment();
+  if (!project || !environment) return;
+  state.quickQuestionEditingId = item?.questionId ?? null;
+  $('#quickQuestionCommonDialogTitle').textContent = item ? '编辑常见问题' : '新增常见问题';
+  $('#quickQuestionCommonDialogScope').textContent = `${project.name} / ${environment.name}`;
+  $('#quickQuestionCommonInput').value = item?.text ?? initialText;
+  syncQuickQuestionCommonDialog();
+  $('#quickQuestionCommonDialog').showModal();
+  $('#quickQuestionCommonInput').focus();
+}
+
+async function saveQuickQuestionFromDialog() {
+  const text = $('#quickQuestionCommonInput').value.trim();
+  const issue = quickQuestionCommonDialogIssue(text);
+  if (issue || state.quickQuestionRevision === null) {
+    syncQuickQuestionCommonDialog();
+    return;
+  }
+  const requestedScope = currentQuickQuestionScope();
+  const requestedGeneration = state.quickQuestionScopeGeneration;
+  const questionId = state.quickQuestionEditingId;
+  const operationKey = quickQuestionMutationOperationKey();
+  const token = beginOperation(operationKey);
+  if (!token) return;
+  syncQuickQuestionCommonDialog();
+  if (state.view === 'quick-questions') renderQuickQuestions();
+  try {
+    const value = await call(api.saveQuickQuestion({
+      ...requestedScope,
+      ...(questionId ? {questionId} : {}),
+      text,
+      expectedRevision:state.quickQuestionRevision,
+    }));
+    if (!quickQuestionScopeIsCurrent(requestedScope,requestedGeneration)) return;
+    const normalized = normalizeQuickQuestionResponse(value);
+    state.quickQuestionItems = normalized.items;
+    state.quickQuestionRevision = normalized.revision;
+    state.quickQuestionEditingId = null;
+    $('#quickQuestionCommonDialog').close();
+    renderQuickQuestions();
+    toast(questionId ? '常见问题已更新。' : '已保存为当前环境的常见问题。');
+  } catch (error) {
+    if (error?.code === 'CONFIG_REVISION_CONFLICT') {
+      requestQuickQuestionRefresh(requestedScope);
+      toast('常见问题已在其他窗口更新；你的编辑内容已保留，请稍后重试。',true);
+      return;
+    }
+    throw error;
+  } finally {
+    finishOperation(operationKey,token);
+    if ($('#quickQuestionCommonDialog').open) syncQuickQuestionCommonDialog();
+    if (quickQuestionScopeIsCurrent(requestedScope,requestedGeneration)) renderQuickQuestions();
+  }
+}
+
+async function deleteCurrentQuickQuestion(questionId,{closeDialog = false} = {}) {
+  if (!questionId || state.quickQuestionRevision === null) return;
+  const requestedScope = currentQuickQuestionScope();
+  const requestedGeneration = state.quickQuestionScopeGeneration;
+  const operationKey = quickQuestionMutationOperationKey();
+  const token = beginOperation(operationKey);
+  if (!token) return;
+  renderQuickQuestions();
+  try {
+    const value = await call(api.deleteQuickQuestion({
+      ...requestedScope,
+      questionId,
+      expectedRevision:state.quickQuestionRevision,
+    }));
+    if (!quickQuestionScopeIsCurrent(requestedScope,requestedGeneration)) return;
+    const normalized = normalizeQuickQuestionResponse(value);
+    state.quickQuestionItems = normalized.items;
+    state.quickQuestionRevision = normalized.revision;
+    if (closeDialog && $('#quickQuestionCommonDialog').open) $('#quickQuestionCommonDialog').close();
+    if (state.quickQuestionEditingId === questionId) state.quickQuestionEditingId = null;
+    renderQuickQuestions();
+    toast('已删除常见问题。');
+  } catch (error) {
+    if (error?.code === 'CONFIG_REVISION_CONFLICT') requestQuickQuestionRefresh(requestedScope);
+    throw error;
+  } finally {
+    finishOperation(operationKey,token);
+    if (quickQuestionScopeIsCurrent(requestedScope,requestedGeneration)) renderQuickQuestions();
+  }
+}
+
+async function copyCurrentQuickQuestion() {
+  const text = state.quickQuestionDraft.trim();
+  if (!text || state.quickQuestionOpeningRevision === null) return;
+  const requestedScope = currentQuickQuestionScope();
+  const requestedGeneration = state.quickQuestionScopeGeneration;
+  const operationKey = quickQuestionOperationKey('copy');
+  const token = beginOperation(operationKey);
+  if (!token) return;
+  syncQuickQuestionComposer();
+  try {
+    const value = await call(api.copyQuickQuestion({
+      ...requestedScope,
+      text,
+      expectedOpeningRevision:state.quickQuestionOpeningRevision,
+    }));
+    if (value?.copied === false) throw new Error('复制失败，请重试。');
+    if (quickQuestionScopeIsCurrent(requestedScope,requestedGeneration)) toast('已复制，可粘贴到 Agent');
+  } catch (error) {
+    if (error?.code !== 'CONFIG_REVISION_CONFLICT') throw error;
+    await loadQuickQuestionOpening();
+    if (quickQuestionScopeIsCurrent(requestedScope,requestedGeneration)) {
+      toast('开场词已更新，预览已刷新；请再次复制。',true);
+    }
+  } finally {
+    finishOperation(operationKey,token);
+    if (quickQuestionScopeIsCurrent(requestedScope,requestedGeneration)) syncQuickQuestionComposer();
+  }
 }
 
 function currentAuditScope() {
@@ -4054,6 +4497,8 @@ function rememberCurrentScope() {
 function resetScopeUi() {
   state.runbookLoadGeneration += 1;
   state.auditLoadGeneration += 1;
+  state.quickQuestionScopeGeneration += 1;
+  state.quickQuestionLoadGeneration += 1;
   state.scopeInformationSupplementGeneration += 1;
   state.scopeInformationSupplementKey = null;
   state.scopeInformationSupplement = null;
@@ -4062,6 +4507,14 @@ function resetScopeUi() {
   state.runbookScopeKey = null;
   state.runbookEditing = false;
   state.runbookLoading = false;
+  state.quickQuestionItems = [];
+  state.quickQuestionRevision = null;
+  state.quickQuestionLoading = false;
+  state.quickQuestionDraft = '';
+  state.quickQuestionScopeKey = null;
+  state.quickQuestionRefreshPending = false;
+  state.quickQuestionEditingId = null;
+  if ($('#quickQuestionCommonDialog')?.open) $('#quickQuestionCommonDialog').close();
   if (!state.runbookDirty) {
     state.runbookContent = '';
     state.runbookDraft = '';
@@ -5318,6 +5771,59 @@ $('#confirmClearAudit').addEventListener('click', () => clearSelectedAudit().cat
 $('#clearAuditDialog').addEventListener('close', () => { state.clearingAuditScope = null; });
 $('#auditSearch').addEventListener('input', renderAudit);
 $('#auditResult').addEventListener('change', renderAudit);
+$('#quickQuestionInput').addEventListener('input',(event) => {
+  state.quickQuestionDraft = event.currentTarget.value;
+  syncQuickQuestionComposer();
+});
+$('#quickQuestionInput').addEventListener('keydown',(event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && state.quickQuestionDraft.trim()) {
+    event.preventDefault();
+    copyCurrentQuickQuestion().catch(showError);
+  }
+});
+$('#quickQuestionCustomList').addEventListener('click',(event) => {
+  const remove = event.target.closest('[data-quick-question-delete]');
+  if (remove) {
+    deleteCurrentQuickQuestion(remove.dataset.quickQuestionDelete).catch(showError);
+    return;
+  }
+  const edit = event.target.closest('[data-quick-question-edit]');
+  if (edit) {
+    const item = state.quickQuestionItems.find((entry) => entry.questionId === edit.dataset.quickQuestionEdit);
+    if (item) openQuickQuestionCommonDialog(item);
+    return;
+  }
+  const fill = event.target.closest('[data-quick-question-fill]');
+  if (!fill) return;
+  const item = state.quickQuestionItems.find((entry) => entry.questionId === fill.dataset.quickQuestionFill);
+  if (item) fillQuickQuestion(item.text);
+});
+$('#addQuickQuestionCommon').addEventListener('click',() => openQuickQuestionCommonDialog());
+$('#saveQuickQuestion').addEventListener('click',() => openQuickQuestionCommonDialog(null,state.quickQuestionDraft.trim()));
+$('#copyQuickQuestion').addEventListener('click',() => copyCurrentQuickQuestion().catch(showError));
+$('#editQuickQuestionOpening').addEventListener('click',openQuickQuestionOpeningDialog);
+$('#quickQuestionOpeningInput').addEventListener('input',syncQuickQuestionOpeningDialog);
+$('#resetQuickQuestionOpening').addEventListener('click',() => {
+  if (!state.quickQuestionOpeningDefaultText) return;
+  $('#quickQuestionOpeningInput').value = state.quickQuestionOpeningDefaultText;
+  syncQuickQuestionOpeningDialog();
+});
+$('#saveQuickQuestionOpening').addEventListener('click',() => saveQuickQuestionOpeningSetting().catch(showError));
+$('#quickQuestionOpeningDialog').addEventListener('close',() => {
+  if (!state.quickQuestionOpeningEditorStale) return;
+  state.quickQuestionOpeningEditorStale = false;
+  requestQuickQuestionOpeningRefresh();
+});
+$('#quickQuestionCommonInput').addEventListener('input',syncQuickQuestionCommonDialog);
+$('#saveQuickQuestionFromDialog').addEventListener('click',() => saveQuickQuestionFromDialog().catch(showError));
+$('#deleteQuickQuestionFromDialog').addEventListener('click',() => {
+  if (state.quickQuestionEditingId) deleteCurrentQuickQuestion(state.quickQuestionEditingId,{closeDialog:true}).catch(showError);
+});
+$('#quickQuestionCommonDialog').addEventListener('close',() => {
+  state.quickQuestionEditingId = null;
+  $('#quickQuestionCommonError').textContent = '';
+  $('#quickQuestionCommonError').classList.add('hidden');
+});
 function activateToastAction() {
   if ($('#toast').dataset.action === 'confirmations') openConfirmations().catch(showError);
 }
@@ -5411,6 +5917,14 @@ function queueWorkspaceChange(change) {
 }
 
 api.onWorkspaceChanged((change) => {
+  if (change.type === 'quick-question-opening-updated') {
+    requestQuickQuestionOpeningRefresh();
+    return;
+  }
+  if (change.type === 'quick-questions-updated') {
+    if (scopeMatches(change)) requestQuickQuestionRefresh(change);
+    return;
+  }
   if (change.type === 'confirmation-execution' && change.confirmationId) {
     rememberConfirmationExecution(change);
     if (state.confirmationFeedback?.item?.requestId === change.confirmationId) state.confirmationFeedback.status = change.status;

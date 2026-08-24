@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Agent 运维工作台 · 快捷提问第三版原型</title>
+  <style>
+    :root{
+      color-scheme:dark;
+      --bg:#090b0e;--rail:#0d0f13;--middle:#0f1116;--detail:#0c0e12;--panel:#12151a;--panel-2:#0f1217;
+      --line:rgba(255,255,255,.08);--soft:rgba(255,255,255,.045);--accent:#837cf6;--accent-2:#7167df;
+      --text:#f2f2f5;--muted:#a2a4ad;--faint:#777a85;--green:#55d6a1;--red:#f17b86;--amber:#efb968;
+      font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;font-size:14px;
+    }
+    *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;background:var(--bg);color:var(--text)}
+    body{overflow:hidden}button,input,textarea{font:inherit}button{color:inherit;cursor:pointer}button:disabled{cursor:default;opacity:.45}
+    .hidden{display:none!important}.svg-sprite{position:absolute;width:0;height:0;overflow:hidden}.icon{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+    :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    .app{height:100%;display:grid;grid-template-columns:270px 430px minmax(560px,1fr);overflow:hidden}
+    .rail,.environments,.detail{min-width:0;min-height:0}.rail{display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--rail)}
+    .brand{height:72px;display:flex;align-items:center;gap:11px;padding:0 16px;border-bottom:1px solid var(--line)}
+    .logo,.env-icon,.page-icon{display:grid;place-items:center;border:1px solid rgba(131,124,246,.25);border-radius:11px;color:#bbb7ff;background:rgba(131,124,246,.1)}
+    .logo{width:42px;height:42px}.brand strong{font-size:15px}.brand small{display:block;margin-top:3px;color:var(--muted);font-size:10px}
+    .confirm{display:flex;align-items:center;gap:11px;margin:16px 14px 8px;padding:12px;border:1px solid var(--line);border-radius:10px;color:var(--muted);background:rgba(255,255,255,.015)}
+    .confirm .icon{color:#b8b5c9}.confirm strong,.confirm small{display:block}.confirm strong{color:#dedee3;font-size:12px}.confirm small{margin-top:3px;font-size:10px}
+    .section-label{padding:20px 20px 8px;color:var(--faint);font-size:10px;font-weight:700;letter-spacing:.08em}.project-list{min-height:0;overflow:auto;padding:0 10px}
+    .project{width:100%;display:block;padding:13px 14px;border:1px solid transparent;border-left:3px solid transparent;border-radius:9px;color:var(--muted);background:transparent;text-align:left}
+    .project:hover{background:rgba(255,255,255,.025)}.project.active{color:var(--text);border-color:rgba(131,124,246,.12);border-left-color:var(--accent);background:rgba(131,124,246,.085)}
+    .project strong,.project small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.project small{margin-top:5px;color:var(--faint);font-size:10.5px}
+    .column-footer{margin-top:auto;padding:12px 14px;border-top:1px solid var(--line)}
+    .environments{display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--middle)}.env-head{height:90px;padding:18px 23px;border-bottom:1px solid var(--line)}
+    .env-head h1{margin:0;font-size:20px}.env-head p{margin:6px 0 0;color:var(--muted);font-size:11px}.env-title{display:flex;justify-content:space-between;padding:20px 22px 10px;color:var(--faint);font-size:10px}
+    .env-list{overflow:auto;padding:0 17px}.env-card{margin-bottom:12px;border:1px solid var(--line);border-radius:11px;background:var(--panel)}.env-card.active{border-color:rgba(131,124,246,.48);box-shadow:inset 3px 0 var(--accent)}
+    .env-card-head{display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;gap:12px;padding:15px}.env-icon{width:42px;height:42px}.env-card h2{margin:0;font-size:15px}.env-card p{margin:5px 0 0;color:var(--muted);font-size:10.5px}
+    .runtime{display:flex;align-items:center;gap:7px;color:var(--green);font-size:10.5px}.dot{width:7px;height:7px;border-radius:50%;background:currentColor}.resource-lines{padding:0 16px 12px 69px;color:var(--faint);font-size:10px}.resource-lines div{padding:9px 0;border-top:1px solid var(--soft)}
+    .detail{display:grid;grid-template-rows:88px 55px minmax(0,1fr);background:var(--detail)}.detail-head{display:flex;align-items:center;gap:12px;padding:0 24px;border-bottom:1px solid var(--line);background:#101218}
+    .detail-head h1{margin:0;font-size:21px}.detail-head p{margin:5px 0 0;color:var(--muted);font-size:11px}.detail-state{display:flex;align-items:center;gap:7px;margin-left:auto;color:var(--green);font-size:10.5px}
+    .tabs{display:flex;align-items:stretch;gap:10px;padding:0 19px;border-bottom:1px solid var(--line);background:#101218;overflow:auto}.tab{position:relative;flex:none;padding:0 12px;border:0;color:var(--muted);background:transparent;font-size:12px;font-weight:600}.tab.active{color:var(--text)}.tab.active::after{content:"";position:absolute;left:9px;right:9px;bottom:0;height:2px;background:var(--accent)}
+    .prototype-badge{align-self:center;margin-left:auto;padding:3px 8px;border:1px solid var(--line);border-radius:999px;color:var(--faint);font-size:9px;white-space:nowrap}
+    .detail-body{min-height:0;overflow:hidden}.quick-view{height:100%;display:grid;grid-template-rows:minmax(0,1fr) auto;overflow:hidden}.quick-scroll{min-height:0;overflow:auto}.quick-page{width:min(100%,980px);margin:0 auto;padding:26px 30px 28px}
+    .page-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:15px}.page-icon{width:36px;height:36px;flex:none}.page-head h2{margin:0;font-size:22px}.page-head p{margin:5px 0 0;color:var(--muted);font-size:11.5px;line-height:1.5}
+    .scope{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:11px;margin-bottom:12px;padding:11px 13px;border:1px solid rgba(131,124,246,.18);border-radius:10px;background:rgba(131,124,246,.045)}
+    .scope>.icon{color:#aaa6ff}.scope-copy{min-width:0;display:flex;align-items:center;gap:8px;overflow:hidden;white-space:nowrap}.scope-copy strong{overflow:hidden;text-overflow:ellipsis}.scope-sep{color:var(--faint)}.scope-note{color:var(--faint);font-size:10px;white-space:nowrap}
+    .opener{margin-bottom:12px;padding:15px 16px;border:1px solid var(--line);border-radius:11px;background:var(--panel)}.opener-head{display:flex;align-items:center;gap:8px}.opener-head h3{margin:0;font-size:13px}.global-tag{padding:3px 7px;border:1px solid rgba(85,214,161,.22);border-radius:999px;color:var(--green);background:rgba(85,214,161,.045);font-size:9px}.opener-head .button{margin-left:auto}.opener-text{margin:11px 0 0;color:#dedee5;font-size:12px;line-height:1.65}.opener-hint{margin:8px 0 0;color:var(--faint);font-size:10px;line-height:1.5}
+    .composer{padding:17px;border:1px solid rgba(131,124,246,.25);border-radius:12px;background:linear-gradient(180deg,rgba(131,124,246,.035),rgba(255,255,255,.012)),var(--panel);box-shadow:0 15px 38px rgba(0,0,0,.15)}
+    .composer-head,.section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.composer-head h3,.section-head h3{margin:0;font-size:15px}.composer-head p,.section-head p{margin:4px 0 0;color:var(--muted);font-size:10.5px}.counter{color:var(--faint);font-size:10px;white-space:nowrap}
+    #question{width:100%;min-height:142px;margin-top:12px;resize:vertical;padding:14px 15px;border:1px solid rgba(131,124,246,.25);border-radius:9px;color:var(--text);background:#0a0c10;font-size:15px;line-height:1.65;outline:none}#question::placeholder{color:#6f727c}#question:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(131,124,246,.1)}
+    .common{margin-top:20px}.common-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px}.empty{margin-top:10px;padding:18px;border:1px dashed rgba(255,255,255,.12);border-radius:10px;color:var(--faint);background:rgba(255,255,255,.012);text-align:center;font-size:10.5px}.empty strong{display:block;margin-bottom:5px;color:var(--muted);font-size:12px}
+    .common-card{min-width:0;display:grid;grid-template-columns:minmax(0,1fr) auto;border:1px solid var(--line);border-radius:9px;background:var(--panel-2);overflow:hidden}.common-fill{min-width:0;padding:11px 12px;border:0;background:transparent;text-align:left}.common-fill strong,.common-fill small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.common-fill strong{font-size:11.5px}.common-fill small{margin-top:4px;color:var(--muted);font-size:9.5px}.common-tools{display:flex;align-items:center;padding:0 6px;border-left:1px solid var(--soft)}
+    .icon-button{width:30px;height:30px;display:grid;place-items:center;padding:0;border:0;border-radius:7px;color:var(--faint);background:transparent}.icon-button:hover{color:var(--text);background:rgba(255,255,255,.04)}.icon-button.delete:hover{color:var(--red)}.icon-button .icon{width:14px;height:14px}
+    details.preview{margin-top:16px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.012)}details.preview summary{display:flex;align-items:center;gap:8px;padding:12px 13px;color:var(--muted);font-size:11px;cursor:pointer;list-style:none}details.preview summary::-webkit-details-marker{display:none}details.preview summary::after{content:"展开";margin-left:auto;color:var(--faint);font-size:9.5px}details.preview[open] summary::after{content:"收起"}.prompt-preview{margin:0;padding:13px;border-top:1px solid var(--soft);color:#d8d8df;background:#090b0e;font:11px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+    .actions{position:relative;z-index:5;display:flex;align-items:center;gap:8px;padding:14px 30px 17px;border-top:1px solid var(--line);background:linear-gradient(180deg,rgba(15,18,23,.98),var(--detail));box-shadow:0 -12px 22px rgba(0,0,0,.25)}.actions-inner{width:min(100%,920px);display:flex;align-items:center;gap:8px;margin:0 auto}.spacer{flex:1}
+    .button{min-height:36px;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:7px 12px;border:1px solid var(--line);border-radius:8px;color:var(--text);background:#17191f;font-size:11px;font-weight:620;white-space:nowrap}.button:hover{border-color:rgba(255,255,255,.16);background:#1c1f26}.button.primary{min-width:148px;border-color:var(--accent-2);background:var(--accent-2);box-shadow:0 8px 24px rgba(65,54,173,.2)}.button.primary:hover{background:#8077e8}.button.subtle{color:var(--muted);background:transparent}.button.danger{color:var(--red);background:transparent}.button .icon{width:16px;height:16px}
+    dialog{width:min(560px,calc(100vw - 32px));padding:0;border:1px solid rgba(255,255,255,.12);border-radius:13px;color:var(--text);background:#12151a;box-shadow:0 30px 90px rgba(0,0,0,.65)}dialog::backdrop{background:rgba(3,4,7,.72);backdrop-filter:blur(3px)}.dialog-head{display:flex;align-items:flex-start;gap:10px;padding:17px 18px;border-bottom:1px solid var(--line)}.dialog-head h3{margin:0;font-size:16px}.dialog-head p{margin:5px 0 0;color:var(--muted);font-size:10.5px;line-height:1.5}.dialog-head .icon-button{margin-left:auto}.dialog-body{padding:17px 18px}.field{display:block;margin-bottom:14px;color:var(--muted);font-size:10.5px}.field span{display:block;margin-bottom:7px}.control{width:100%;padding:10px 11px;border:1px solid var(--line);border-radius:8px;color:var(--text);background:#0b0d11;outline:none}.control:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(131,124,246,.1)}textarea.control{min-height:112px;resize:vertical;line-height:1.6}.dialog-note{padding:10px 11px;border:1px solid rgba(131,124,246,.18);border-radius:8px;color:var(--muted);background:rgba(131,124,246,.04);font-size:10px;line-height:1.55}.dialog-actions{display:flex;align-items:center;gap:8px;padding:13px 18px;border-top:1px solid var(--line)}
+    .toast{position:fixed;right:22px;bottom:22px;z-index:50;max-width:420px;padding:10px 13px;border:1px solid rgba(85,214,161,.28);border-radius:9px;color:#dff9ec;background:#15211d;box-shadow:0 18px 60px rgba(0,0,0,.5);font-size:11px}.toast.error{color:#ffd7db;border-color:rgba(241,123,134,.3);background:#25161a}
+    .placeholder{height:100%;display:grid;place-items:center;padding:30px;color:var(--muted)}.placeholder>div{max-width:520px;padding:26px;border:1px solid var(--line);border-radius:12px;background:var(--panel);text-align:center}.placeholder h2{margin:0;color:var(--text)}.placeholder p{margin:9px 0 0;line-height:1.65}
+    @media(max-width:1380px){.app{grid-template-columns:230px 380px minmax(520px,1fr)}.quick-page{padding-inline:22px}.actions{padding-inline:22px}}
+    @media(max-width:1050px){.app{grid-template-columns:74px 340px minmax(480px,1fr)}.brand>div:not(.logo),.section-label,.project small,.confirm div,.column-footer span{display:none}.brand{justify-content:center;padding:0}.confirm{justify-content:center}.project{width:48px;height:48px;margin:5px auto;padding:0;text-align:center}.project strong{font-size:0}.project strong::first-letter{font-size:15px}.common-list{grid-template-columns:minmax(0,1fr)}}
+    @media(max-width:780px){body{overflow:auto}.app{min-width:680px;grid-template-columns:74px minmax(0,1fr)}.environments{display:none}.detail{min-height:760px}.scope{grid-template-columns:auto minmax(0,1fr)}.scope-note{grid-column:2}.actions-inner{flex-wrap:wrap}.spacer{display:none}.actions .primary{width:100%;order:-1}}
+  </style>
+</head>
+<body>
+  <svg class="svg-sprite" aria-hidden="true">
+    <symbol id="i-app" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><ellipse cx="12" cy="12" rx="9" ry="4.2"/><ellipse cx="12" cy="12" rx="9" ry="4.2" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="9" ry="4.2" transform="rotate(120 12 12)"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 20 6v6c0 5-3.4 8-8 10-4.6-2-8-5-8-10V6z"/><path d="m9 12 2 2 4-5"/></symbol>
+    <symbol id="i-env" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h8M8 12h8M8 16h5"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5zM18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="m4 20 4.5-1 10-10a2 2 0 0 0-3-3l-10 10zM14 7l3 3"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><circle cx="12" cy="12" r="2.5"/></symbol>
+  </svg>
+  <main class="app">
+    <aside class="rail">
+      <header class="brand"><div class="logo"><svg class="icon"><use href="#i-app"/></svg></div><div><strong>Agent 运维工作台</strong><small>企业版 · 本地安全接入</small></div></header>
+      <div class="confirm"><svg class="icon"><use href="#i-shield"/></svg><div><strong>操作确认</strong><small>当前没有待确认操作</small></div></div>
+      <div class="section-label">企业版 · 8 个项目</div>
+      <nav class="project-list">
+        <button class="project active"><strong>企业版</strong><small>2 个环境 · 测试环境已连接</small></button>
+        <button class="project"><strong>越南-soltech</strong><small>2 个环境 · 1 个已连接</small></button>
+        <button class="project"><strong>荷兰-voltstation</strong><small>2 个环境 · 生产环境已连接</small></button>
+        <button class="project"><strong>英国-bytoo</strong><small>1 个环境 · 未连接</small></button>
+        <button class="project"><strong>美国-万城通</strong><small>1 个环境 · 未连接</small></button>
+      </nav>
+      <footer class="column-footer"><button class="button" style="width:100%"><svg class="icon"><use href="#i-plus"/></svg><span>新建项目</span></button></footer>
+    </aside>
+    <section class="environments">
+      <header class="env-head"><h1>企业版</h1><p>2 个环境 · 4 个插件</p></header>
+      <div class="env-title"><strong>环境与插件</strong><span>2 个环境</span></div>
+      <div class="env-list">
+        <article class="env-card active"><div class="env-card-head"><div class="env-icon"><svg class="icon"><use href="#i-env"/></svg></div><div><h2>测试环境</h2><p>2 个插件</p></div><span class="runtime"><i class="dot"></i>已连接</span></div><div class="resource-lines"><div>测试服务器</div><div>测试业务库</div></div></article>
+        <article class="env-card"><div class="env-card-head"><div class="env-icon"><svg class="icon"><use href="#i-env"/></svg></div><div><h2>生产环境</h2><p>2 个插件</p></div><span class="runtime" style="color:var(--faint)"><i class="dot"></i>未连接</span></div></article>
+      </div>
+      <footer class="column-footer"><button class="button" style="width:100%"><svg class="icon"><use href="#i-plus"/></svg>新增环境</button></footer>
+    </section>
+    <section class="detail">
+      <header class="detail-head"><div class="env-icon"><svg class="icon"><use href="#i-env"/></svg></div><div><h1>测试环境</h1><p>企业版 · 2 个插件</p></div><span class="detail-state"><i class="dot"></i>已连接</span></header>
+      <nav class="tabs"><button class="tab" data-page="overview">概览</button><button class="tab" data-page="runbook">运维说明</button><button class="tab" data-page="audit">环境操作记录</button><button class="tab active" data-page="quick">快捷提问</button><span class="prototype-badge">第三版可点击原型</span></nav>
+      <section class="detail-body">
+        <div class="quick-view" data-view="quick">
+          <div class="quick-scroll"><div class="quick-page">
+            <header class="page-head"><div class="page-icon"><svg class="icon"><use href="#i-spark"/></svg></div><div><h2>快捷提问</h2><p>写下问题，系统只附加当前项目和环境，然后复制给 Agent。</p></div></header>
+            <section class="scope"><svg class="icon"><use href="#i-env"/></svg><div class="scope-copy"><strong>企业版</strong><span class="scope-sep">/</span><strong>测试环境</strong></div><span class="scope-note">系统自动附加，不包含 ID、插件、资源或时区</span></section>
+            <section class="opener">
+              <div class="opener-head"><h3>开场词</h3><span class="global-tag">全部环境通用</span><button class="button subtle" id="editOpener"><svg class="icon"><use href="#i-edit"/></svg>编辑</button></div>
+              <p class="opener-text" id="openerText"></p>
+              <p class="opener-hint">开场词完全由你控制。系统不会再固定添加“默认只读”或“作用域锁定”等句子。</p>
+            </section>
+            <section class="composer">
+              <div class="composer-head"><div><h3>要排查什么问题？</h3><p>直接写业务问题，不需要重复项目、环境或 MCP 名称。</p></div><span class="counter" id="counter">0 / 1200</span></div>
+              <textarea id="question" maxlength="1200" placeholder="例如：订单 202608240001 为什么一直是待支付？请说明原因和证据。"></textarea>
+            </section>
+            <section class="common">
+              <div class="section-head"><div><h3>我的常见问题</h3><p>由你自己新增，只保存在当前项目和环境。</p></div><button class="button" id="addCommon"><svg class="icon"><use href="#i-plus"/></svg>新增常见问题</button></div>
+              <div class="empty" id="commonEmpty"><strong>还没有常见问题</strong>不会再显示系统固定模板。点击“新增常见问题”，创建适合这个环境的内容。</div>
+              <div class="common-list hidden" id="commonList"></div>
+            </section>
+            <details class="preview"><summary><svg class="icon"><use href="#i-eye"/></svg>查看最终复制内容</summary><pre class="prompt-preview" id="promptPreview"></pre></details>
+          </div></div>
+          <footer class="actions"><div class="actions-inner"><button class="button" id="saveCurrent" disabled><svg class="icon"><use href="#i-star"/></svg>保存为常见问题</button><span class="spacer"></span><button class="button primary" id="copyPrompt" disabled><svg class="icon"><use href="#i-copy"/></svg>复制给 Agent</button></div></footer>
+        </div>
+        <div class="placeholder hidden" data-view="placeholder"><div><h2 id="placeholderTitle"></h2><p>此原型只演示新版“快捷提问”的自定义开场词和常见问题交互。</p></div></div>
+      </section>
+    </section>
+  </main>
+
+  <dialog id="openerDialog">
+    <header class="dialog-head"><div><h3>编辑开场词</h3><p>这是全局设置，应用于所有项目和环境；项目与环境由系统在后面自动补充。</p></div><button class="icon-button" data-close="openerDialog" aria-label="关闭"><svg class="icon"><use href="#i-x"/></svg></button></header>
+    <div class="dialog-body"><label class="field"><span>开场词</span><textarea class="control" id="openerInput" maxlength="500"></textarea></label><div class="dialog-note">建议至少包含“使用 AI Ops MCP”，以便 Agent 明确通过本工具排查。系统不会替你追加其他固定规则。</div></div>
+    <footer class="dialog-actions"><button class="button subtle" id="resetOpener">恢复简洁默认</button><span class="spacer"></span><button class="button" data-close="openerDialog">取消</button><button class="button primary" id="saveOpener">保存开场词</button></footer>
+  </dialog>
+
+  <dialog id="commonDialog">
+    <header class="dialog-head"><div><h3 id="commonDialogTitle">新增常见问题</h3><p>常见问题属于“企业版 / 测试环境”，不会出现在其他环境。</p></div><button class="icon-button" data-close="commonDialog" aria-label="关闭"><svg class="icon"><use href="#i-x"/></svg></button></header>
+    <div class="dialog-body"><label class="field"><span>显示名称（可选）</span><input class="control" id="commonName" maxlength="40" placeholder="例如：待支付订单排查"></label><label class="field"><span>问题内容</span><textarea class="control" id="commonQuestion" maxlength="1200" placeholder="例如：这个订单为什么一直是待支付？请说明原因和证据。"></textarea></label></div>
+    <footer class="dialog-actions"><button class="button danger hidden" id="deleteCommon">删除</button><span class="spacer"></span><button class="button" data-close="commonDialog">取消</button><button class="button primary" id="saveCommon">保存</button></footer>
+  </dialog>
+  <div class="toast hidden" id="toast"></div>
+
+  <script>
+    (()=>{
+      const DEFAULT_OPENER='请使用 AI Ops MCP，在以下项目和环境中排查问题。';
+      const scope={project:'企业版',environment:'测试环境'};
+      const state={opener:DEFAULT_OPENER,commons:[],editingId:null};
+      const $=(selector,root=document)=>root.querySelector(selector);
+      const escapeHtml=(value)=>String(value??'').replace(/[&<>"']/g,(char)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+      const icon=(name)=>`<svg class="icon"><use href="#i-${name}"/></svg>`;
+      function buildPrompt(){const question=$('#question').value.trim();return `${state.opener.trim()}\n\n【当前范围】\n项目：${scope.project}\n环境：${scope.environment}\n\n【问题】\n${question||'（请先输入问题）'}`}
+      function showToast(message,error=false){const toast=$('#toast');toast.textContent=message;toast.classList.toggle('error',error);toast.classList.remove('hidden');clearTimeout(showToast.timer);showToast.timer=setTimeout(()=>toast.classList.add('hidden'),2400)}
+      function render(){
+        const question=$('#question').value;
+        $('#openerText').textContent=state.opener;
+        $('#counter').textContent=`${question.length} / 1200`;
+        $('#promptPreview').textContent=buildPrompt();
+        $('#saveCurrent').disabled=!question.trim();$('#copyPrompt').disabled=!question.trim();
+        $('#commonEmpty').classList.toggle('hidden',state.commons.length>0);$('#commonList').classList.toggle('hidden',state.commons.length===0);
+        $('#commonList').innerHTML=state.commons.map(item=>`<article class="common-card"><button class="common-fill" data-fill="${item.id}"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.question)}</small></button><span class="common-tools"><button class="icon-button" data-edit="${item.id}" aria-label="编辑">${icon('edit')}</button><button class="icon-button delete" data-delete="${item.id}" aria-label="删除">${icon('trash')}</button></span></article>`).join('');
+      }
+      function openCommon(item=null){state.editingId=item?.id??null;$('#commonDialogTitle').textContent=item?'编辑常见问题':'新增常见问题';$('#commonName').value=item?.name??'';$('#commonQuestion').value=item?.question??'';$('#deleteCommon').classList.toggle('hidden',!item);$('#commonDialog').showModal();setTimeout(()=>$('#commonName').focus(),0)}
+      async function copyText(text){try{await navigator.clipboard.writeText(text);return true}catch{const area=document.createElement('textarea');area.value=text;area.style.position='fixed';area.style.opacity='0';document.body.append(area);area.select();const copied=document.execCommand('copy');area.remove();return copied}}
+      $('#question').addEventListener('input',render);
+      $('#editOpener').addEventListener('click',()=>{$('#openerInput').value=state.opener;$('#openerDialog').showModal();setTimeout(()=>$('#openerInput').focus(),0)});
+      $('#resetOpener').addEventListener('click',()=>{$('#openerInput').value=DEFAULT_OPENER});
+      $('#saveOpener').addEventListener('click',()=>{const value=$('#openerInput').value.trim();if(!value){showToast('开场词不能为空',true);return}state.opener=value;$('#openerDialog').close();render();showToast('开场词已更新，所有环境都会使用')});
+      $('#addCommon').addEventListener('click',()=>openCommon());
+      $('#saveCurrent').addEventListener('click',()=>{openCommon({name:'',question:$('#question').value.trim()});state.editingId=null});
+      $('#saveCommon').addEventListener('click',()=>{const question=$('#commonQuestion').value.trim();if(!question){showToast('请输入常见问题内容',true);return}const name=$('#commonName').value.trim()||question.slice(0,18);if(state.editingId){const item=state.commons.find(entry=>entry.id===state.editingId);if(item){item.name=name;item.question=question}}else{state.commons.push({id:`common-${Date.now()}`,name,question})}$('#commonDialog').close();state.editingId=null;render();showToast('已保存到当前环境的常见问题')});
+      $('#deleteCommon').addEventListener('click',()=>{if(state.editingId)state.commons=state.commons.filter(item=>item.id!==state.editingId);$('#commonDialog').close();state.editingId=null;render();showToast('常见问题已删除')});
+      $('#commonList').addEventListener('click',(event)=>{const fill=event.target.closest('[data-fill]'),edit=event.target.closest('[data-edit]'),remove=event.target.closest('[data-delete]');const id=fill?.dataset.fill||edit?.dataset.edit||remove?.dataset.delete;if(!id)return;const item=state.commons.find(entry=>entry.id===id);if(!item)return;if(fill){$('#question').value=item.question;render();$('#question').focus()}else if(edit)openCommon(item);else{state.commons=state.commons.filter(entry=>entry.id!==id);render();showToast('常见问题已删除')}});
+      $('#copyPrompt').addEventListener('click',async()=>{const ok=await copyText(buildPrompt());showToast(ok?'已复制，可粘贴到 Agent':'浏览器未允许复制，请展开预览后手动复制',!ok)});
+      document.addEventListener('click',(event)=>{const closer=event.target.closest('[data-close]');if(closer)document.getElementById(closer.dataset.close)?.close()});
+      document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(item=>item.classList.toggle('active',item===tab));const quick=tab.dataset.page==='quick';$('[data-view="quick"]').classList.toggle('hidden',!quick);$('[data-view="placeholder"]').classList.toggle('hidden',quick);if(!quick)$('#placeholderTitle').textContent=tab.textContent}));
+      render();
+    })();
+  </script>
+</body>
+</html>

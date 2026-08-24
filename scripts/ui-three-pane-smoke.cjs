@@ -33,6 +33,15 @@ const pluginCreateCalls = [];
 let editValidationUsesSession = false;
 const environmentUpdateCalls = [];
 const projectUpdateCalls = [];
+const quickQuestionCalls = {openingGet:[],openingSave:[],list:[],save:[],delete:[],copy:[]};
+let quickQuestionOpeningState = {
+  schemaVersion:1,
+  revision:2,
+  text:'请使用 AI Ops MCP 排查当前项目和环境中的问题。',
+  defaultText:'请使用 AI Ops MCP 排查当前项目和环境中的问题。',
+};
+let quickQuestionState = {schemaVersion:1,projectId:'member',environmentId:'prod',items:[],revision:3};
+let quickQuestionUpdateConflictInjected = false;
 const environments = [
   {projectId:'member',environmentId:'prod',name:'正式环境',revision:1,pluginCount:6,readyPluginCount:6,pluginTypeCounts:{server:2,mysql:2,redis:2},resourcePreview:plugins.prod.map((plugin) => ({pluginInstanceId:plugin.pluginInstanceId,pluginType:plugin.pluginType,displayName:plugin.displayName,configState:plugin.configState,resource:plugin.pluginType === 'server' ? {host:plugin.target.host,port:plugin.target.port} : plugin.pluginType === 'mysql' ? {database:plugin.target.database} : {db:plugin.target.db}})),runtime:connectedRuntime('member','prod',6)},
   {projectId:'member',environmentId:'gray',name:'灰度环境',revision:1,pluginCount:1,readyPluginCount:1,pluginTypeCounts:{server:1,mysql:0,redis:0},resourcePreview:[{pluginInstanceId:'gray-server',pluginType:'server',displayName:'灰度服务器',configState:'ready',resource:{host:'10.0.0.8',port:22}}],runtime:runtime('member','gray',1)},
@@ -83,6 +92,48 @@ handle('v2:environment-status',({projectId,environmentId}) => environmentId === 
   ? connectedRuntime(projectId,environmentId,(plugins[environmentId] ?? []).length)
   : runtime(projectId,environmentId,(plugins[environmentId] ?? []).length));
 handle('v2:runbook-read',() => ({content:'# 正式环境运维说明\n\n## 上线前检查\n\n- 确认应用包版本与发布单一致\n- 检查磁盘空间与当前服务状态',hash:'a'.repeat(64)}));
+handle('v2:quick-question-opening-get',() => {
+  quickQuestionCalls.openingGet.push({});
+  return structuredClone(quickQuestionOpeningState);
+});
+handle('v2:quick-question-opening-save',(payload,event) => {
+  quickQuestionCalls.openingSave.push(structuredClone(payload));
+  assert.equal(payload.expectedRevision,quickQuestionOpeningState.revision);
+  quickQuestionOpeningState = {...quickQuestionOpeningState,text:payload.text,revision:quickQuestionOpeningState.revision + 1};
+  event.sender.send('v2:workspace-changed',{type:'quick-question-opening-updated'});
+  return structuredClone(quickQuestionOpeningState);
+});
+handle('v2:quick-question-list',(payload) => {
+  quickQuestionCalls.list.push(structuredClone(payload));
+  return structuredClone(quickQuestionState);
+});
+ipcMain.handle('v2:quick-question-save',async (event,payload) => {
+  quickQuestionCalls.save.push(structuredClone(payload));
+  assert.equal(payload.expectedRevision,quickQuestionState.revision);
+  if (payload.questionId && !quickQuestionUpdateConflictInjected) {
+    quickQuestionUpdateConflictInjected = true;
+    quickQuestionState = {...quickQuestionState,revision:quickQuestionState.revision + 1};
+    event.sender.send('v2:workspace-changed',{type:'quick-questions-updated',projectId:payload.projectId,environmentId:payload.environmentId});
+    return {ok:false,error:{code:'CONFIG_REVISION_CONFLICT',message:'常见问题已经变化，请刷新后重试。'}};
+  }
+  const questionId = payload.questionId ?? `quick-smoke-${quickQuestionState.items.length + 1}`;
+  const previous = quickQuestionState.items.find((entry) => entry.questionId === questionId);
+  const item = {questionId,text:payload.text,createdAt:previous?.createdAt ?? '2026-08-17T09:00:00.000Z'};
+  quickQuestionState = {...quickQuestionState,items:[item,...quickQuestionState.items.filter((entry) => entry.questionId !== questionId)],revision:quickQuestionState.revision + 1};
+  event.sender.send('v2:workspace-changed',{type:'quick-questions-updated',projectId:payload.projectId,environmentId:payload.environmentId});
+  return ok(structuredClone(quickQuestionState));
+});
+handle('v2:quick-question-delete',(payload,event) => {
+  quickQuestionCalls.delete.push(structuredClone(payload));
+  assert.equal(payload.expectedRevision,quickQuestionState.revision);
+  quickQuestionState = {...quickQuestionState,items:quickQuestionState.items.filter((item) => item.questionId !== payload.questionId),revision:quickQuestionState.revision + 1};
+  event.sender.send('v2:workspace-changed',{type:'quick-questions-updated',projectId:payload.projectId,environmentId:payload.environmentId});
+  return structuredClone(quickQuestionState);
+});
+handle('v2:quick-question-copy',(payload) => {
+  quickQuestionCalls.copy.push(structuredClone(payload));
+  return {copied:true};
+});
 const initialAuditEntries = [
   {id:'mysql-connect',time:'2026-08-17T08:02:00.000Z',type:'plugin-connected',environmentId:'prod',pluginInstanceId:'mysql-member',pluginNameSnapshot:'会员业务库',actor:'user',planId:'plan-connect',operationId:'operation-connect',result:'success',durationMs:28},
   {id:'mysql-pending',time:'2026-08-17T08:01:00.000Z',type:'plugin-operation-decision',environmentId:'prod',pluginInstanceId:'mysql-member',capability:'select',result:'pending-confirmation',errorCode:'CONFIRMATION_REQUIRED'},
@@ -153,6 +204,74 @@ async function run() {
     const app=document.querySelector('#app'),rail=document.querySelector('.project-rail'),resources=document.querySelector('#resourcePane'),detail=document.querySelector('#detailPane');
     const initialRects=[rail,resources,detail].map(element=>element.getBoundingClientRect());
     const environmentTabs=[...document.querySelectorAll('#detailTopTabs .detail-top-tab')].map(item=>item.textContent.trim());
+    click('[data-detail-tab="quick-questions"]');
+    await wait(()=>!document.querySelector('#quickQuestionsView').classList.contains('hidden'),'quick questions view');
+    await wait(()=>document.querySelector('#quickQuestionLoading').classList.contains('hidden'),'quick questions loaded');
+    const quickQuestionView=document.querySelector('#quickQuestionsView');
+    const quickQuestionPage=quickQuestionView.querySelector('.quick-question-page');
+    const quickQuestionInput=document.querySelector('#quickQuestionInput');
+    await wait(()=>!document.querySelector('#editQuickQuestionOpening').disabled,'quick question opening loaded');
+    const minimalSurface=document.querySelectorAll('#quickQuestionsView input').length===0&&document.querySelectorAll('#quickQuestionCustomList [data-quick-question-fill]').length===0;
+    const scopeNamed=document.querySelector('#quickQuestionProjectName').textContent.trim()==='澳大利亚-zip'&&document.querySelector('#quickQuestionEnvironmentName').textContent.trim()==='正式环境'&&!document.querySelector('.quick-question-scope').textContent.includes('只读');
+    const openingGlobalLabel=document.querySelector('#quickQuestionOpeningTitle').textContent.trim()==='全部环境通用';
+    click('#editQuickQuestionOpening');
+    await wait(()=>document.querySelector('#quickQuestionOpeningDialog').open,'opening editor');
+    const openingInput=document.querySelector('#quickQuestionOpeningInput');
+    openingInput.value='请排查当前问题';
+    openingInput.dispatchEvent(new Event('input',{bubbles:true}));
+    await frame();
+    const openingInvalidBlocked=document.querySelector('#saveQuickQuestionOpening').disabled&&document.querySelector('#quickQuestionOpeningError').textContent.includes('AI Ops MCP');
+    click('#resetQuickQuestionOpening');
+    const openingResetFromBackend=openingInput.value==='请使用 AI Ops MCP 排查当前项目和环境中的问题。';
+    openingInput.value='请使用 AI-Ops MCP 进行只读排查并给出证据。';
+    openingInput.dispatchEvent(new Event('input',{bubbles:true}));
+    click('#saveQuickQuestionOpening');
+    await wait(()=>!document.querySelector('#quickQuestionOpeningDialog').open&&document.querySelector('#quickQuestionOpeningText').textContent.includes('AI-Ops MCP'),'opening saved');
+    const openingGlobalSaved=openingGlobalLabel&&document.querySelector('#quickQuestionOpeningText').textContent==='请使用 AI-Ops MCP 进行只读排查并给出证据。';
+    quickQuestionInput.value='password=smoke-secret-value';
+    quickQuestionInput.dispatchEvent(new Event('input',{bubbles:true}));
+    await frame();
+    const sensitiveSaveDisabled=document.querySelector('#saveQuickQuestion').disabled&&!document.querySelector('#quickQuestionSensitiveWarning').classList.contains('hidden');
+    quickQuestionInput.value='排查支付回调是否积压';
+    quickQuestionInput.dispatchEvent(new Event('input',{bubbles:true}));
+    await wait(()=>!document.querySelector('#saveQuickQuestion').disabled,'savable quick question');
+    click('#saveQuickQuestion');
+    await wait(()=>document.querySelector('#quickQuestionCommonDialog').open,'create common question dialog');
+    const saveActionPrefilled=document.querySelector('#quickQuestionCommonInput').value==='排查支付回调是否积压';
+    click('#saveQuickQuestionFromDialog');
+    await wait(()=>!document.querySelector('#quickQuestionCommonDialog').open&&Boolean(document.querySelector('[data-quick-question-fill]')),'created common question');
+    const customCreated=document.querySelector('#quickQuestionCustomList').textContent.includes('排查支付回调是否积压');
+    click('[data-quick-question-edit]');
+    await wait(()=>document.querySelector('#quickQuestionCommonDialog').open,'edit common question dialog');
+    const commonInput=document.querySelector('#quickQuestionCommonInput');
+    commonInput.value='排查支付回调积压并给出证据';
+    commonInput.dispatchEvent(new Event('input',{bubbles:true}));
+    click('#saveQuickQuestionFromDialog');
+    await wait(()=>document.querySelector('#quickQuestionCommonDialog').open&&commonInput.value==='排查支付回调积压并给出证据'&&!document.querySelector('#saveQuickQuestionFromDialog').disabled,'common question conflict refresh and retry');
+    const conflictRetryReady=commonInput.value==='排查支付回调积压并给出证据'&&!document.querySelector('#saveQuickQuestionFromDialog').disabled;
+    click('#saveQuickQuestionFromDialog');
+    await wait(()=>!document.querySelector('#quickQuestionCommonDialog').open&&document.querySelector('#quickQuestionCustomList').textContent.includes('排查支付回调积压并给出证据'),'updated common question');
+    quickQuestionInput.value='';
+    quickQuestionInput.dispatchEvent(new Event('input',{bubbles:true}));
+    click('[data-quick-question-fill]');
+    await wait(()=>quickQuestionInput.value==='排查支付回调积压并给出证据','fill saved quick question');
+    const customFilled=document.activeElement===quickQuestionInput;
+    const expectedPreview=['请使用 AI-Ops MCP 进行只读排查并给出证据。','','【当前范围】','项目：澳大利亚-zip','环境：正式环境','','【问题】','排查支付回调积压并给出证据'].join('\\n');
+    const finalPreviewCorrect=document.querySelector('#quickQuestionFinalPreview').textContent===expectedPreview;
+    click('#copyQuickQuestion');
+    await wait(()=>document.querySelector('#toast').textContent.includes('已复制'),'text quick question copied');
+    click('[data-quick-question-delete]');
+    await wait(()=>!document.querySelector('[data-quick-question-delete]')&&!document.querySelector('#quickQuestionCommonEmpty').classList.contains('hidden'),'delete saved quick question');
+    const commonCrud=saveActionPrefilled&&customCreated&&customFilled&&document.querySelector('#quickQuestionCustomList').classList.contains('hidden');
+    await frame();
+    const quickQuestionPageRect=quickQuestionPage.getBoundingClientRect();
+    const quickQuestionFits=quickQuestionView.scrollWidth<=quickQuestionView.clientWidth+1&&quickQuestionPage.scrollWidth<=quickQuestionPage.clientWidth+1&&[...quickQuestionView.querySelectorAll('button,textarea')].filter((element)=>element.offsetParent!==null).every((element)=>{const rect=element.getBoundingClientRect();return rect.left>=quickQuestionPageRect.left-1&&rect.right<=quickQuestionPageRect.right+1;});
+    const quickQuestionViewRect=quickQuestionView.getBoundingClientRect();
+    const quickQuestionCopyRect=document.querySelector('#copyQuickQuestion').getBoundingClientRect();
+    const primaryVisible=quickQuestionCopyRect.top>=quickQuestionViewRect.top-1&&quickQuestionCopyRect.bottom<=quickQuestionViewRect.bottom+1;
+    const quickQuestions={minimalSurface,scopeNamed,openingInvalidBlocked,openingResetFromBackend,openingGlobalSaved,sensitiveSaveDisabled,conflictRetryReady,commonCrud,finalPreviewCorrect,fits:quickQuestionFits,primaryVisible};
+    click('[data-detail-tab="information"]');
+    await wait(()=>!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent .scope-information-kind')?.textContent.includes('环境概览'),'return from quick questions');
     const selectedHeaderContinuous=document.querySelector('.resource-environment-card.selected .resource-environment-head')!==null;
     const compactEnvironmentActions=[...document.querySelectorAll('.resource-environment-head')].every(head=>Boolean(head.querySelector(':scope > [data-environment-runtime-action]'))&&!head.querySelector(':scope > [data-resource-rename-environment]')&&!head.querySelector(':scope > [data-resource-delete-environment]')&&!head.querySelector('.action-menu'));
     const environmentActionsWrapCleanly=[...document.querySelectorAll('.resource-environment-head')].every(head=>{const headRect=head.getBoundingClientRect();return [...head.children].every(control=>{const rect=control.getBoundingClientRect();return rect.left>=headRect.left-1&&rect.right<=headRect.right+1&&rect.top>=headRect.top-1&&rect.bottom<=headRect.bottom+1;});});
@@ -414,11 +533,11 @@ async function run() {
     const collapsed={active:app.classList.contains('detail-collapsed'),detailWidth:Math.round(detail.getBoundingClientRect().width),resourceWidth:Math.round(resources.getBoundingClientRect().width),buttonVisible:getComputedStyle(document.querySelector('#expandDetailPane')).display!=='none'};
     click('#expandDetailPane');
     await frame();
-    return {environmentTabs,projectTabs,pluginTabs,selectedHeaderContinuous,compactEnvironmentActions,environmentActionsWrapCleanly,environmentHeaderControlsAligned,workspaceHeaderLinesAligned,environmentCardToggle,environmentHeaderHeight,railRefined,projectConnectionContrast,expandedWorkspaceFootersAligned,expandedCreateActionCentered,secondPaneCommonOnly,environmentOverviewActions,environmentOverviewCompact,environmentManagementInInformation,environmentCreatedInline,confirmationCenter,permissionsRefined,projectOverviewActions,projectManagementInInformation,projectDeleteFromInformation,pluginDetailHierarchy,pluginInformationCopy,pluginInformationActions,deletionPlacement,pluginDeleteFromInformation,configurationInline,diagnosticInline,formDiagnostic,editCancelDiscarded,addPluginInline,createActionModel,addPluginOpensDetail,addCancelDiscarded,overflowSelectionVisible,resourceOverflowOwnedByList,auditFiltered,auditConnectionVisible,auditResponsive,auditPendingNamed,workspaceTopBandsAligned,workspaceFootersAligned,inactiveEnvironmentActionsSecondary,auditMetaAligned,auditClearScoped,auditCleared,collapsed,initialRects:initialRects.map(rect=>({left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width)})),expanded:!app.classList.contains('detail-collapsed'),separators:document.querySelectorAll('[role="separator"]').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};
+    return {environmentTabs,quickQuestions,projectTabs,pluginTabs,selectedHeaderContinuous,compactEnvironmentActions,environmentActionsWrapCleanly,environmentHeaderControlsAligned,workspaceHeaderLinesAligned,environmentCardToggle,environmentHeaderHeight,railRefined,projectConnectionContrast,expandedWorkspaceFootersAligned,expandedCreateActionCentered,secondPaneCommonOnly,environmentOverviewActions,environmentOverviewCompact,environmentManagementInInformation,environmentCreatedInline,confirmationCenter,permissionsRefined,projectOverviewActions,projectManagementInInformation,projectDeleteFromInformation,pluginDetailHierarchy,pluginInformationCopy,pluginInformationActions,deletionPlacement,pluginDeleteFromInformation,configurationInline,diagnosticInline,formDiagnostic,editCancelDiscarded,addPluginInline,createActionModel,addPluginOpensDetail,addCancelDiscarded,overflowSelectionVisible,resourceOverflowOwnedByList,auditFiltered,auditConnectionVisible,auditResponsive,auditPendingNamed,workspaceTopBandsAligned,workspaceFootersAligned,inactiveEnvironmentActionsSecondary,auditMetaAligned,auditClearScoped,auditCleared,collapsed,initialRects:initialRects.map(rect=>({left:Math.round(rect.left),right:Math.round(rect.right),width:Math.round(rect.width)})),expanded:!app.classList.contains('detail-collapsed'),separators:document.querySelectorAll('[role="separator"]').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};
   })()`);
   const screenshotPath = process.argv.find((value) => /\.png$/i.test(value)) || process.env.AI_OPS_SCREENSHOT_PATH;
   if (screenshotPath) {
-    const screenshotModes = ['add','add-compact','confirmation','editor','edit-form','edit-form-medium','edit-form-compact','configuration','connection','audit','resources','environment','project','projects'];
+    const screenshotModes = ['add','add-compact','confirmation','editor','edit-form','edit-form-medium','edit-form-compact','configuration','connection','audit','resources','environment','project','projects','quick-questions'];
     const screenshotMode = process.argv.find((value) => screenshotModes.includes(value)) ?? (screenshotModes.includes(process.env.AI_OPS_SCREENSHOT_MODE) ? process.env.AI_OPS_SCREENSHOT_MODE : 'permissions');
     if (screenshotMode === 'audit') auditEntries = structuredClone(initialAuditEntries);
     if (screenshotMode === 'resources') {
@@ -439,6 +558,15 @@ async function run() {
       const openMysql=async()=>{if(!document.querySelector('[data-resource-plugin-id="mysql-member"]')){click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('[data-resource-plugin-id="mysql-member"]'));}click('[data-resource-plugin-id="mysql-member"]');await wait(()=>document.querySelector('[data-detail-tab="configuration"]')&&document.querySelector('#pluginDetail')?.textContent.includes('会员业务库'));};
       if(['add','add-compact'].includes('${screenshotMode}')){
         click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('[data-resource-add-plugin="prod"]'));click('[data-resource-add-plugin="prod"]');await wait(()=>!document.querySelector('#pluginTypePicker').classList.contains('hidden'));click('input[name="pluginTypeChoice"][value="mysql"]');await wait(()=>document.querySelector('#pluginInlineFormHost .plugin-card')&&!document.querySelector('#pluginInlineFormHost .plugin-card').classList.contains('hidden'));document.querySelector('#pluginHost').value='127.0.0.1';document.querySelector('#pluginHost').dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('#pluginUsername').value='root';document.querySelector('#pluginUsername').dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('.plugin-dialog-body').scrollTop=0;
+      }else if('${screenshotMode}'==='quick-questions'){
+        click('.resource-environment-select[data-resource-environment-id="prod"]');
+        await wait(()=>document.querySelector('[data-detail-tab="quick-questions"]'));
+        click('[data-detail-tab="quick-questions"]');
+        await wait(()=>!document.querySelector('#quickQuestionsView').classList.contains('hidden')&&document.querySelector('#quickQuestionLoading').classList.contains('hidden')&&!document.querySelector('#editQuickQuestionOpening').disabled);
+        const input=document.querySelector('#quickQuestionInput');
+        input.value='排查订单为什么一直待支付，并给出证据。';
+        input.dispatchEvent(new Event('input',{bubbles:true}));
+        await wait(()=>document.querySelector('#quickQuestionFinalPreview').textContent.includes('订单为什么一直待支付'));
       }else if('${screenshotMode}'==='confirmation'){
         click('#confirmationButton');
         await wait(()=>!document.querySelector('#confirmationView').classList.contains('hidden')&&document.querySelector('#detailTopTabs').textContent.includes('操作确认')&&document.querySelector('[data-confirmation-card]'));
@@ -488,10 +616,17 @@ async function run() {
     if (screenshotMode === 'edit-form-compact') assert.deepEqual(screenshotContract,{mode:'edit-form-compact',editorVisible:true,pluginType:'mysql',successfulChecks:0,pendingChecks:0,visibleFooterActions:3,formHorizontalOverflow:false,footerButtonsOverlap:false});
     if (screenshotMode === 'add') assert.deepEqual(screenshotContract,{mode:'add',editorVisible:true,pluginType:'mysql',successfulChecks:0,pendingChecks:0,visibleFooterActions:2,formHorizontalOverflow:false,footerButtonsOverlap:false});
     if (screenshotMode === 'add-compact') assert.deepEqual(screenshotContract,{mode:'add-compact',editorVisible:true,pluginType:'mysql',successfulChecks:0,pendingChecks:0,visibleFooterActions:2,formHorizontalOverflow:false,footerButtonsOverlap:false});
+    if (screenshotMode === 'quick-questions') {
+      const quickQuestionLayout = await win.webContents.executeJavaScript("(()=>{const view=document.querySelector('#quickQuestionsView'),page=view?.querySelector('.quick-question-page'),copy=document.querySelector('#copyQuickQuestion');if(!view||!page||!copy||view.classList.contains('hidden'))return{fits:false,primaryVisible:false};const viewRect=view.getBoundingClientRect(),copyRect=copy.getBoundingClientRect();return{fits:view.scrollWidth<=view.clientWidth+1&&page.scrollWidth<=page.clientWidth+1,primaryVisible:copyRect.top>=viewRect.top-1&&copyRect.bottom<=viewRect.bottom+1};})()");
+      assert.deepEqual(quickQuestionLayout,{fits:true,primaryVisible:true});
+    }
     win.showInactive();
     await new Promise((resolve) => setTimeout(resolve,250));
     const image = await win.webContents.capturePage();
     fs.writeFileSync(screenshotPath,image.toPNG());
+    if (screenshotMode === 'quick-questions') {
+      await win.webContents.executeJavaScript(`(async()=>{if(document.querySelector('[data-resource-plugin-id="server-app"]'))return;document.querySelector('.resource-environment-select[data-resource-environment-id="prod"]').click();const started=Date.now();while(!document.querySelector('[data-resource-plugin-id="server-app"]')){if(Date.now()-started>4000)throw new Error('timeout: restore resources after quick-questions screenshot');await new Promise(resolve=>setTimeout(resolve,20));}})()`);
+    }
     if (screenshotMode === 'resources') {
       await win.webContents.executeJavaScript("document.querySelector('#expandDetailPane').click()");
       win.setContentSize(1280,900);
@@ -502,7 +637,21 @@ async function run() {
   await new Promise((resolve) => setTimeout(resolve,80));
   const compactLayout = await win.webContents.executeJavaScript(`(async()=>{const wait=async(predicate,label)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: '+label);await new Promise(resolve=>setTimeout(resolve,20));}};const click=(selector)=>{const element=document.querySelector(selector);if(!element)throw new Error('missing compact click target: '+selector);element.click();};const app=document.querySelector('#app'),rail=document.querySelector('.project-rail'),resources=document.querySelector('#resourcePane'),detail=document.querySelector('#detailPane');if(!app.classList.contains('rail-expanded')){click('#toggleProjectRail');await new Promise(resolve=>setTimeout(resolve,340));}click('[data-resource-plugin-id="server-app"]');await wait(()=>document.querySelector('#pluginDetail')?.textContent.includes('应用服务器')&&document.querySelector('[data-detail-tab="permissions"]'),'compact plugin detail and tabs');click('[data-detail-tab="permissions"]');await wait(()=>Boolean(document.querySelector('#pluginDetail .permissions-page')),'compact permissions');await new Promise(resolve=>requestAnimationFrame(resolve));const permissionPage=document.querySelector('#pluginDetail .permissions-page'),detailContent=document.querySelector('#pluginDetail .detail-content');const connectedStyle=getComputedStyle(document.querySelector('.project-tree-item.active[data-project-state="connected"]>.project-tree-head')),disconnectedStyle=getComputedStyle(document.querySelector('.project-tree-item[data-tree-project="idle"]>.project-tree-head'));const railRect=rail.getBoundingClientRect(),resourceRect=resources.getBoundingClientRect(),detailRect=detail.getBoundingClientRect();return{expanded:app.classList.contains('rail-expanded'),railWidth:Math.round(railRect.width),resourceLeft:Math.round(resourceRect.left),detailWidth:Math.round(detailRect.width),overlaid:railRect.right>resourceRect.left,projectConnectionContrast:connectedStyle.backgroundImage!==disconnectedStyle.backgroundImage&&connectedStyle.boxShadow.includes('85, 214, 161')&&connectedStyle.boxShadow.includes('131, 124, 246'),projectLabelsFit:[...document.querySelectorAll('.rail-project-copy')].every(copy=>copy.scrollWidth<=copy.clientWidth+1),permissionFits:permissionPage.scrollWidth<=permissionPage.clientWidth&&detailContent.scrollWidth<=detailContent.clientWidth,permissionRows:permissionPage.querySelectorAll('.policy-row').length,overflow:document.documentElement.scrollWidth>document.documentElement.clientWidth};})()`);
   const compactScopeOverview = await win.webContents.executeJavaScript(`(async()=>{const wait=async(predicate,label)=>{const started=Date.now();while(!predicate()){if(Date.now()-started>4000)throw new Error('timeout: '+label);await new Promise(resolve=>setTimeout(resolve,20));}};const click=(selector)=>document.querySelector(selector).click();const inspect=()=>{const page=document.querySelector('#scopeInfoContent .scope-overview-page'),head=page.querySelector('.scope-overview-head'),actions=page.querySelector('.scope-information-actions'),stats=[...page.querySelectorAll('.scope-overview-stat')],pageRect=page.getBoundingClientRect(),actionsRect=actions.getBoundingClientRect();return{buttons:[...actions.querySelectorAll(':scope>button')].map(button=>button.textContent.trim()),statRows:new Set(stats.map(stat=>Math.round(stat.getBoundingClientRect().top))).size,fits:page.scrollWidth<=page.clientWidth+1&&head.scrollWidth<=head.clientWidth+1&&actionsRect.left>=pageRect.left-1&&actionsRect.right<=pageRect.right+1};};click('.resource-environment-select[data-resource-environment-id="prod"]');await wait(()=>document.querySelector('#scopeInfoContent .scope-information-kind')?.textContent.includes('环境概览'),'compact environment overview');await new Promise(resolve=>requestAnimationFrame(resolve));const environment={...inspect(),boundedOverview:document.querySelector('#scopeInfoView').scrollHeight<=document.querySelector('#scopeInfoView').clientHeight*1.65};click('[data-project-id="member"]');await wait(()=>document.querySelector('#scopeInfoContent .scope-information-kind')?.textContent.includes('项目概览'),'compact project overview');await new Promise(resolve=>requestAnimationFrame(resolve));return{environment,project:inspect()};})()`);
-  assert.deepEqual(result.environmentTabs,['概览','运维说明','环境操作记录']);
+  assert.deepEqual(result.environmentTabs,['概览','运维说明','环境操作记录','快捷提问']);
+  assert.deepEqual(result.quickQuestions,{minimalSurface:true,scopeNamed:true,openingInvalidBlocked:true,openingResetFromBackend:true,openingGlobalSaved:true,sensitiveSaveDisabled:true,conflictRetryReady:true,commonCrud:true,finalPreviewCorrect:true,fits:true,primaryVisible:true});
+  assert.ok(quickQuestionCalls.openingGet.length>=1);
+  assert.deepEqual(quickQuestionCalls.openingSave,[{text:'请使用 AI-Ops MCP 进行只读排查并给出证据。',expectedRevision:2}]);
+  assert.deepEqual(Object.keys(quickQuestionCalls.openingSave[0]).sort(),['expectedRevision','text']);
+  assert.deepEqual(quickQuestionCalls.list[0],{projectId:'member',environmentId:'prod'});
+  assert.deepEqual(quickQuestionCalls.save,[
+    {projectId:'member',environmentId:'prod',text:'排查支付回调是否积压',expectedRevision:3},
+    {projectId:'member',environmentId:'prod',questionId:'quick-smoke-1',text:'排查支付回调积压并给出证据',expectedRevision:4},
+    {projectId:'member',environmentId:'prod',questionId:'quick-smoke-1',text:'排查支付回调积压并给出证据',expectedRevision:5},
+  ]);
+  assert.equal(quickQuestionUpdateConflictInjected,true);
+  assert.deepEqual(quickQuestionCalls.delete,[{projectId:'member',environmentId:'prod',questionId:'quick-smoke-1',expectedRevision:6}]);
+  assert.equal(quickQuestionCalls.copy.length,1);
+  assert.deepEqual(quickQuestionCalls.copy,[{projectId:'member',environmentId:'prod',text:'排查支付回调积压并给出证据',expectedOpeningRevision:3}]);
   assert.deepEqual(result.projectTabs,['项目信息']);
   assert.deepEqual(result.pluginTabs,['插件详情','配置','Agent 权限','操作记录']);
   assert.equal(result.selectedHeaderContinuous,true);
