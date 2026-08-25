@@ -189,7 +189,7 @@ export class PluginCredentialVault {
     });
   }
 
-  async saveUnlocked(plugin, normalized, slots = null) {
+  async saveUnlocked(plugin, normalized, slots = null, { removeResourceKeys = [] } = {}) {
     if (!this.encryption?.isEncryptionAvailable?.()) throw new AppError('CREDENTIAL_ENCRYPTION_UNAVAILABLE', 'Windows 安全存储当前不可用。');
     const currentSlots = slots ?? await this.readEnvelopeSlots();
     const validBase = currentSlots.primary.envelope ?? currentSlots.backup.envelope;
@@ -210,6 +210,11 @@ export class PluginCredentialVault {
     // primary entry for plugin A over A's only good backup entry.
     const primary = cloneEnvelope(currentSlots.primary.envelope ?? currentSlots.backup.envelope ?? emptyEnvelope());
     const backup = cloneEnvelope(currentSlots.backup.envelope ?? currentSlots.primary.envelope ?? emptyEnvelope());
+    for (const key of new Set(removeResourceKeys.map((value) => String(value)))) {
+      if (key === resourceKey(plugin)) continue;
+      delete primary.entries[key];
+      delete backup.entries[key];
+    }
     primary.entries[resourceKey(plugin)] = entry;
     backup.entries[resourceKey(plugin)] = entry;
     await this.writeEnvelopes(primary, backup);
@@ -246,6 +251,44 @@ export class PluginCredentialVault {
       const merged = this.normalizeSecrets(nextPlugin, { ...existing, ...replacements });
       if (!Object.keys(merged).length) return { saved: false };
       return this.saveUnlocked(nextPlugin, merged, slots);
+    });
+  }
+
+  async replaceUnreadable(previousPlugin, nextPlugin, secrets = {}) {
+    // This is deliberately separate from saveMerged: callers must first try the
+    // lossless merge and obtain explicit user confirmation before choosing to
+    // discard fields that cannot be decrypted. A recovered credential is merged
+    // normally so a stale confirmation can never erase readable historical data.
+    const replacements = this.normalizeSecrets(nextPlugin, secrets);
+    if (!Object.keys(replacements).length) {
+      throw new AppError('INVALID_ARGUMENT', '强制替换凭据必须提供至少一个新的凭据字段。');
+    }
+    if (!this.encryption?.isEncryptionAvailable?.()) {
+      throw new AppError('CREDENTIAL_ENCRYPTION_UNAVAILABLE', 'Windows 安全存储当前不可用。');
+    }
+    const previous = previousPlugin ?? nextPlugin;
+    return this.enqueue(async () => {
+      const slots = await this.readEnvelopeSlots();
+      let merged = replacements;
+      let discardedCause = null;
+      try {
+        const existing = (await this.loadFromSlots(previous, slots)).secrets ?? {};
+        merged = this.normalizeSecrets(nextPlugin, { ...existing, ...replacements });
+      } catch (error) {
+        if (!(error instanceof AppError)
+          || !['CREDENTIAL_BINDING_MISMATCH', 'CREDENTIAL_DECRYPT_FAILED'].includes(error.code)) {
+          throw error;
+        }
+        discardedCause = error.code;
+      }
+      const result = await this.saveUnlocked(nextPlugin, merged, slots, {
+        removeResourceKeys:[resourceKey(previous)],
+      });
+      return {
+        ...result,forcedReplacement:true,
+        discardedUnreadable:Boolean(discardedCause),
+        ...(discardedCause ? {causeCode:discardedCause} : {}),
+      };
     });
   }
 

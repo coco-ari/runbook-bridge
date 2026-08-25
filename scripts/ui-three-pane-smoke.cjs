@@ -301,7 +301,10 @@ async function run() {
       greenSummary:connectedSummaryStyle.color==='rgb(114, 220, 176)',
       purpleSelection:connectedHeadStyle.boxShadow.includes('131, 124, 246'),
     };
-    if(!projectRailWasExpanded){click('#toggleProjectRail');await new Promise(resolve=>setTimeout(resolve,340));}
+    const expandedDetailLeft=Math.round(detail.getBoundingClientRect().left);
+    click('#toggleProjectRail');await new Promise(resolve=>setTimeout(resolve,340));
+    if(Math.abs(expandedDetailLeft-Math.round(detail.getBoundingClientRect().left))>1)throw new Error('project rail toggle moved the detail pane boundary');
+    if(projectRailWasExpanded){click('#toggleProjectRail');await new Promise(resolve=>setTimeout(resolve,340));}
     const secondPaneCommonOnly=!document.querySelector('#resetWorkspaceWidths')&&!document.querySelector('.resource-pane #projectSettingsShortcut')&&!document.querySelector('.resource-pane #projectDeleteShortcut')&&![...document.querySelectorAll('.resource-environment-head')].some(head=>head.querySelector('[data-resource-rename-environment],[data-resource-delete-environment]'));
     const environmentCaretRemoved=!document.querySelector('.resource-chevron');
     const environmentInformationPage=!document.querySelector('#scopeInfoView').classList.contains('hidden')&&document.querySelector('#scopeInfoContent').textContent.includes('正式环境')&&document.querySelector('#scopeInfoContent .scope-information-kind')?.textContent.includes('环境概览');

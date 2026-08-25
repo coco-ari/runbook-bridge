@@ -59,7 +59,7 @@ function assertExpectedPluginRevision(expectedRevision) {
 }
 
 function assertCredentialFreeUpdate(payload, label) {
-  const unexpected = ['secrets','temporarySecrets','credentialIntent','oneTimeGrant']
+  const unexpected = ['secrets','temporarySecrets','credentialIntent','oneTimeGrant','forceCredentialReplacement']
     .filter((key) => Object.hasOwn(payload ?? {},key));
   if (unexpected.length) {
     throw new AppError('INVALID_ARGUMENT', `${label}更新不能携带连接凭据字段。`, {
@@ -230,6 +230,14 @@ export function registerV2Ipc(ipcMain, services) {
       projectId,environmentId,pluginInstanceId,patch,expectedRevision,
     } = payload;
     const {credentialMutation,replacements} = credentialMutationFromPayload(payload);
+    if (Object.hasOwn(payload,'forceCredentialReplacement')
+      && typeof payload.forceCredentialReplacement !== 'boolean') {
+      throw new AppError('INVALID_ARGUMENT', '强制替换凭据标志无效。');
+    }
+    const forceCredentialReplacement = payload.forceCredentialReplacement === true;
+    if (forceCredentialReplacement && !Object.keys(replacements).length) {
+      throw new AppError('INVALID_ARGUMENT', '强制替换凭据必须提供至少一个新的凭据字段。');
+    }
     const method = patchScope === 'metadata'
       ? store.preparePluginMetadataUpdate
       : patchScope === 'agent-policy-scope'
@@ -259,6 +267,7 @@ export function registerV2Ipc(ipcMain, services) {
       ...prepared,
       change:prepared.change ?? {kind:'session-affecting',credentialMutation},
       credentialMutation,
+      forceCredentialReplacement,
       replacements,
     };
     const connectionSave = patchScope === 'connection'
@@ -324,7 +333,11 @@ export function registerV2Ipc(ipcMain, services) {
         throw error;
       }
       try {
-        await credentialVault.saveMerged(prepared.before,plugin,prepared.replacements);
+        if (prepared.forceCredentialReplacement) {
+          await credentialVault.replaceUnreadable(prepared.before,plugin,prepared.replacements);
+        } else {
+          await credentialVault.saveMerged(prepared.before,plugin,prepared.replacements);
+        }
       } catch (error) {
         try {
           await store.restorePluginSnapshot(prepared.before,plugin.revision);

@@ -494,6 +494,36 @@ test('unreadable credentials reject every replacement and preserve inactive hist
   assert.deepEqual(await vault.load(mysql), {password:'mysql-old',tlsPassphrase:'inactive-tls',caPem:'inactive-ca'});
 });
 
+test('explicit replacement discards only unreadable credential fields and preserves recovered fields', async (t) => {
+  const root = await tempRoot(t);
+  const control = {failDecrypt:false};
+  const server = vaultPlugin();
+  const vault = new PluginCredentialVault(root, plainEncryption(control));
+  await vault.save(server, {password:'ssh-old',proxyPassword:'proxy-old',privateKeyPassphrase:'inactive-key'});
+  const primaryBefore = await fs.readFile(vault.file, 'utf8');
+  const backupBefore = await fs.readFile(vault.backupFile, 'utf8');
+
+  control.failDecrypt = true;
+  const replaced = await vault.replaceUnreadable(server, server, {password:'ssh-new'});
+  assert.equal(replaced.saved, true);
+  assert.equal(replaced.forcedReplacement, true);
+  assert.equal(replaced.discardedUnreadable, true);
+  assert.equal(replaced.causeCode, 'CREDENTIAL_DECRYPT_FAILED');
+  assert.notEqual(await fs.readFile(vault.file, 'utf8'), primaryBefore);
+  assert.notEqual(await fs.readFile(vault.backupFile, 'utf8'), backupBefore);
+
+  control.failDecrypt = false;
+  assert.deepEqual(await vault.load(server), {password:'ssh-new'});
+  await vault.save(server, {proxyPassword:'proxy-recovered'});
+  const recovered = await vault.replaceUnreadable(server, server, {password:'ssh-newest'});
+  assert.equal(recovered.discardedUnreadable, false);
+  assert.deepEqual(await vault.load(server), {password:'ssh-newest',proxyPassword:'proxy-recovered'});
+  await assert.rejects(
+    () => vault.replaceUnreadable(server, server, {}),
+    (error) => error.code === 'INVALID_ARGUMENT',
+  );
+});
+
 test('a failed primary credential commit leaves the prior envelope authoritative', async (t) => {
   const root = await tempRoot(t);
   const plugin = vaultPlugin();

@@ -851,7 +851,8 @@ function projectRailWidthBounds() {
   const overlay = window.innerWidth <= 1100;
   const min = overlay ? 220 : PROJECT_RAIL_MIN_WIDTH;
   const contentMinimum = overlay ? 96 : 980;
-  const max = Math.max(min,Math.min(overlay ? 300 : PROJECT_RAIL_MAX_WIDTH,window.innerWidth - contentMinimum));
+  const stablePaneMax = PROJECT_RAIL_DEFAULT_WIDTH + state.resourcePaneWidth - RESOURCE_PANE_MIN_WIDTH;
+  const max = Math.max(min,Math.min(overlay ? 300 : PROJECT_RAIL_MAX_WIDTH,window.innerWidth - contentMinimum,overlay ? 300 : stablePaneMax));
   return { min, max };
 }
 function applyProjectRailWidth(width = state.projectRailWidth) {
@@ -880,12 +881,13 @@ function renderProjectRailState() {
 }
 
 function resourcePaneWidthBounds() {
-  const overlayRail = window.innerWidth <= 1100 && state.projectRailExpanded;
-  const railWidth = overlayRail ? 72 : $('.project-rail')?.getBoundingClientRect().width ?? 72;
+  const compactLayout = window.innerWidth <= 1100;
+  const railWidth = compactLayout ? 72 : PROJECT_RAIL_DEFAULT_WIDTH;
   const detailMinimum = state.detailPaneCollapsed ? 58 : 560;
   const available = Math.max(280,window.innerWidth - railWidth - detailMinimum);
   const max = Math.min(RESOURCE_PANE_MAX_WIDTH,available);
-  return { min:Math.min(RESOURCE_PANE_MIN_WIDTH,max), max };
+  const stableMinimum = compactLayout ? RESOURCE_PANE_MIN_WIDTH : RESOURCE_PANE_MIN_WIDTH + state.projectRailWidth - PROJECT_RAIL_DEFAULT_WIDTH;
+  return { min:Math.min(stableMinimum,max), max };
 }
 
 function applyResourcePaneWidth(width = state.resourcePaneWidth) {
@@ -3926,6 +3928,20 @@ async function checkAndCreateNewPlugin({input,secrets,scope}) {
   return call(api.createPlugin({...scope,input:verifiedInput,secrets}));
 }
 
+function confirmUnreadableCredentialReplacement(error,secrets) {
+  if (error?.code !== 'CREDENTIAL_REPLACEMENT_INCOMPLETE' || !Object.keys(secrets ?? {}).length) return false;
+  const labels = {
+    password:'登录密码',privateKeyPassphrase:'私钥口令',proxyPassword:'代理密码',
+    tlsPassphrase:'TLS 私钥口令',caPem:'CA 证书',clientCertPem:'客户端证书',clientKeyPem:'客户端私钥',
+  };
+  const replacementFields = Object.keys(secrets).map((key) => labels[key] ?? key).join('、');
+  return confirm(
+    `现有加密凭据已经无法读取。\n\n继续将永久丢弃此连接旧密文中的全部历史字段，`
+    + `并且只保存本次输入的：${replacementFields}。\n\n`
+    + '请确认已重新输入此连接需要保留的全部凭据。此操作无法撤销，是否强制替换？',
+  );
+}
+
 async function savePlugin(afterCommit = null) {
   const {input,patch,secrets,credentialIntent} = pluginFormPayload();
   const scope = { projectId:state.projectId,environmentId:state.environmentId };
@@ -3943,16 +3959,27 @@ async function savePlugin(afterCommit = null) {
       state.pluginEditSession.phase = 'saving';
       renderPluginFormDiagnostic();
     }
+    const saveExistingPlugin = (forceCredentialReplacement = false) => call(api.savePluginConnectionEdit({
+      editSessionId:state.pluginEditSession.editSessionId,
+      expectedRevision:state.pluginEditSession.baseRecordRevision ?? editingPlugin.revision,
+      patch,
+      credentialIntent,
+      temporarySecrets:secrets,
+      afterCommit:afterCommit ?? (state.pluginEditSession.preEditConnectedSet?.length ? 'restore-pre-edit-set' : 'stay-disconnected'),
+      ...(forceCredentialReplacement ? {forceCredentialReplacement:true} : {}),
+    }));
+
     let saved;
     saved = editingPlugin
-      ? await call(api.savePluginConnectionEdit({
-        editSessionId:state.pluginEditSession.editSessionId,
-        expectedRevision:state.pluginEditSession.baseRecordRevision ?? editingPlugin.revision,
-        patch,
-        credentialIntent,
-        temporarySecrets:secrets,
-        afterCommit:afterCommit ?? (state.pluginEditSession.preEditConnectedSet?.length ? 'restore-pre-edit-set' : 'stay-disconnected'),
-      }))
+      ? await (async () => {
+        try {
+          return await saveExistingPlugin();
+        } catch (error) {
+          if (error?.code !== 'CREDENTIAL_REPLACEMENT_INCOMPLETE'
+            || !confirmUnreadableCredentialReplacement(error,secrets)) throw error;
+          return saveExistingPlugin(true);
+        }
+      })()
       : await checkAndCreateNewPlugin({input,secrets,scope});
     if (!saved) return null;
     const plugin = saved.plugin ?? saved;
@@ -5448,7 +5475,7 @@ $('#toggleProjectRail').addEventListener('click', () => {
   handle.addEventListener('pointerdown',(event) => {
     if (event.button !== 0) return;
     event.preventDefault();
-    resize = { pointerId:event.pointerId,startX:event.clientX,startWidth:pane.getBoundingClientRect().width };
+    resize = { pointerId:event.pointerId,startX:event.clientX,startWidth:state.resourcePaneWidth };
     handle.setPointerCapture(event.pointerId);
     app.classList.add('resource-resizing');
     document.documentElement.classList.add('resource-resizing');
@@ -5463,7 +5490,7 @@ $('#toggleProjectRail').addEventListener('click', () => {
   handle.addEventListener('dblclick',() => { state.resourcePaneWidth = RESOURCE_PANE_DEFAULT_WIDTH; applyResourcePaneWidth(); saveWidth(); });
   handle.addEventListener('keydown',(event) => {
     const { min,max } = resourcePaneWidthBounds();
-    const current = pane.getBoundingClientRect().width;
+    const current = state.resourcePaneWidth;
     let next = null;
     if (event.key === 'ArrowLeft') next = current - (event.shiftKey ? 32 : 8);
     if (event.key === 'ArrowRight') next = current + (event.shiftKey ? 32 : 8);

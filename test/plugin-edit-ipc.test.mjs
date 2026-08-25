@@ -398,3 +398,52 @@ test('edit save failure keeps the session alive, while restore failure after com
   assert.match(saved.data.runtimeWarning.message,/配置和密码已保存，但连接失败/u);
   assert.equal(calls.completed,1);
 });
+
+test('confirmed edit save routes only the explicit retry through unreadable replacement', async () => {
+  const before = committedPlugin();
+  const after = committedPlugin({revision:5});
+  const calls = {merged:0,replaced:0,completed:0};
+  const handlers = ipcHarness({
+    pluginEditSessionManager:{
+      captureCredentialIntent:() => undefined,
+      beginSave:() => ({phase:'saving'}),
+      commitMaterial:() => ({
+        scope:{projectId:'p1',environmentId:'e1',pluginInstanceId:'db1'},
+        baseRecordRevision:4,credentialIntent:'replace',temporarySecrets:{password:'replacement'},
+      }),
+      completeSave:async () => { calls.completed += 1; return null; },
+      saveFailed:() => undefined,
+    },
+    workspaceStore:{
+      preparePluginConnectionUpdate:async (_projectId,_environmentId,_pluginInstanceId,_patch,_revision,credentialMutation) => {
+        assert.equal(credentialMutation,'replace');
+        return {before,after,change:{kind:'session-affecting',credentialMutation}};
+      },
+      commitPluginSnapshot:async () => after,
+      restorePluginSnapshot:async () => before,
+      publicPlugin:(value) => value,
+    },
+    credentialVault:{
+      saveMerged:async () => { calls.merged += 1; },
+      replaceUnreadable:async (previous,next,secrets) => {
+        calls.replaced += 1;
+        assert.equal(previous,before);
+        assert.equal(next,after);
+        assert.deepEqual(secrets,{password:'replacement'});
+      },
+    },
+    connectionManager:{
+      on:() => undefined,
+      beginConfigurationMutation:() => 'mutation-1',
+      endConfigurationMutation:() => true,
+      configurationChanged:async () => ({}),
+    },
+  });
+
+  const result = await handlers.get('v2:plugin-connection-edit-save')(event().value,{
+    editSessionId:'edit-1',expectedRevision:4,patch:{},forceCredentialReplacement:true,
+  });
+  assert.equal(result.ok,true);
+  assert.equal(result.data.committed,true);
+  assert.deepEqual(calls,{merged:0,replaced:1,completed:1});
+});

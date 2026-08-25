@@ -992,6 +992,54 @@ test('a failed plugin save leaves the form draft and credential state untouched'
   assert.equal(state.editingPlugin.pluginInstanceId,'plugin');
 });
 
+test('unreadable credential save requires confirmation and retries once with the force flag', async () => {
+  const requests = [];
+  let confirmation = '';
+  let cleared = null;
+  const state = {
+    projectId:'project',environmentId:'env',pluginId:'plugin',selectionKind:'plugin',
+    editingPlugin:{projectId:'project',environmentId:'env',pluginInstanceId:'plugin',revision:3},
+    pluginFormInitial:'draft-signature',pluginFormDiagnostic:null,inlineConfigPluginId:'plugin',detailTabs:{},
+    pluginEditSession:{editSessionId:'edit-1',baseRecordRevision:3,preEditConnectedSet:[],phase:'editing'},
+  };
+  const context = vm.createContext({
+    state,inFlightOperations:new Map(),
+    confirm:(message) => { confirmation = message; return true; },
+    pluginFormPayload:() => ({input:{displayName:'Saved'},patch:{},secrets:{password:'new-secret'},credentialIntent:'replace'}),
+    pluginProbeIssue:() => null,
+    focusPluginProbeIssue:() => false,
+    api:{savePluginConnectionEdit:async (payload) => {
+      requests.push(payload);
+      if (requests.length === 1) {
+        return {ok:false,error:{code:'CREDENTIAL_REPLACEMENT_INCOMPLETE',message:'old credential unreadable'}};
+      }
+      return {ok:true,data:{
+        committed:true,
+        plugin:{projectId:'project',environmentId:'env',pluginInstanceId:'plugin',revision:4,configState:'ready'},
+        runtimeWarning:{code:'RUNTIME_CLEANUP_FAILED'},
+      }};
+    }},
+    renderPluginFormDiagnostic:() => {},
+    clearTransientRevealedCredentials:(options) => { cleared = options; },
+    refreshEnvironmentMetadata:async () => {},scopeMatches:() => true,loadEnvironment:async () => true,
+    pluginDiagnosticAvailable:() => true,pluginDiagnosticConfigurationIssue:() => null,
+    pluginStateKey:() => 'plugin-key',renderShell:() => {},toast:() => {},
+  });
+  install(context,[
+    'call','scopeKey','beginOperation','finishOperation','pluginRuntimeWarningMessage',
+    'confirmUnreadableCredentialReplacement','savePlugin',
+  ]);
+
+  await vm.runInContext('savePlugin()',context);
+  assert.equal(requests.length,2);
+  assert.equal(Object.hasOwn(requests[0],'forceCredentialReplacement'),false);
+  assert.equal(requests[1].forceCredentialReplacement,true);
+  assert.match(confirmation,/永久丢弃/u);
+  assert.match(confirmation,/登录密码/u);
+  assert.match(confirmation,/无法撤销/u);
+  assert.equal(cleared.discardEdited,true);
+});
+
 test('a committed plugin save with a runtime warning clears the saved credential draft and warns without retrying', async () => {
   let updateCalls = 0;
   let cleared = null;
