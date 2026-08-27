@@ -35,8 +35,9 @@ function requiredText(value, name) {
 
 function snapshotText(content, index) {
   if (typeof content === 'string') return content;
-  if (Buffer.isBuffer(content) || content instanceof Uint8Array) {
-    return Buffer.from(content).toString('utf8');
+  if (Buffer.isBuffer(content)) return content.toString('utf8');
+  if (content instanceof Uint8Array) {
+    return Buffer.from(content.buffer, content.byteOffset, content.byteLength).toString('utf8');
   }
   throw codedError(
     'INVALID_LOG_SEARCH_ARGUMENT',
@@ -100,15 +101,34 @@ function mergeContextRanges(matchIndexes, lineCount, beforeLines, afterLines) {
   return ranges;
 }
 
+function* iterateLogLines(content) {
+  let start = 0;
+  let lineIndex = 0;
+  for (let cursor = 0; cursor < content.length; cursor += 1) {
+    const code = content.charCodeAt(cursor);
+    if (code !== 0x0a && code !== 0x0d) continue;
+    yield { lineIndex, text:content.slice(start, cursor) };
+    lineIndex += 1;
+    if (code === 0x0d && content.charCodeAt(cursor + 1) === 0x0a) cursor += 1;
+    start = cursor + 1;
+  }
+  yield { lineIndex, text:content.slice(start) };
+}
+
 function matchDescriptor(snapshot, lineIndex, text, matchedKeywords) {
   const originalTextBytes = Buffer.byteLength(text, 'utf8');
   const textTruncated = originalTextBytes > MAX_MATCH_TEXT_BYTES;
+  const prefix = textTruncated ? Buffer.from(text.slice(0, MAX_MATCH_TEXT_BYTES), 'utf8') : null;
+  let prefixEnd = prefix ? Math.min(prefix.length, MAX_MATCH_TEXT_BYTES) : 0;
+  while (prefix && prefixEnd > 0 && prefixEnd < prefix.length && (prefix[prefixEnd] & 0xc0) === 0x80) {
+    prefixEnd -= 1;
+  }
   return {
     snapshotIndex: snapshot.snapshotIndex,
     path: snapshot.path,
     lineNumber: lineIndex + 1,
     text: textTruncated
-      ? Buffer.from(text, 'utf8').subarray(0, MAX_MATCH_TEXT_BYTES).toString('utf8')
+      ? prefix.subarray(0, prefixEnd).toString('utf8')
       : text,
     ...(textTruncated ? { textTruncated: true, originalTextBytes } : {}),
     matchedKeywords,
@@ -142,7 +162,15 @@ export function searchLogSnapshots({
   const normalizedAfterLines = finiteInteger(afterLines, 'afterLines', 0);
   const normalizedMaxMatches = finiteInteger(maxMatches, 'maxMatches', DEFAULT_MAX_MATCHES);
 
-  const preparedSnapshots = snapshots.map((snapshot, snapshotIndex) => {
+  let totalMatches = 0;
+  let firstMatch = null;
+  let lastMatch = null;
+  const matches = [];
+  const contexts = [];
+  const snapshotSummaries = [];
+
+  for (let snapshotIndex = 0; snapshotIndex < snapshots.length; snapshotIndex += 1) {
+    const snapshot = snapshots[snapshotIndex];
     if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
       throw codedError(
         'INVALID_LOG_SEARCH_ARGUMENT',
@@ -164,40 +192,27 @@ export function searchLogSnapshots({
     );
     const reportedTruncated = Boolean(snapshot.truncated);
     const sourceTruncated = reportedTruncated || scannedBytes < sizeBytes;
-    return {
+    const prepared = {
       snapshotIndex,
       path: requiredText(snapshot.path, `snapshots[${snapshotIndex}].path`),
-      lines: content.split(/\r\n|\n|\r/),
-      metadata: {
-        snapshotIndex,
-        path: snapshot.path,
-        sizeBytes,
-        scannedBytes,
-        unscannedBytes: Math.max(0, sizeBytes - scannedBytes),
-        reportedTruncated,
-        truncated: sourceTruncated,
-      },
     };
-  });
-
-  let totalMatches = 0;
-  let firstMatch = null;
-  let lastMatch = null;
-  const matches = [];
-  const selectedBySnapshot = new Map();
-  const snapshotSummaries = preparedSnapshots.map((snapshot) => ({
-    ...snapshot.metadata,
-    totalMatches: 0,
-    returnedMatches: 0,
-    firstMatch: null,
-    lastMatch: null,
-  }));
-
-  for (const snapshot of preparedSnapshots) {
+    const summary = {
+      snapshotIndex,
+      path:prepared.path,
+      sizeBytes,
+      scannedBytes,
+      unscannedBytes:Math.max(0, sizeBytes - scannedBytes),
+      reportedTruncated,
+      truncated:sourceTruncated,
+      totalMatches:0,
+      returnedMatches:0,
+      firstMatch:null,
+      lastMatch:null,
+    };
     const selectedIndexes = [];
-    const summary = snapshotSummaries[snapshot.snapshotIndex];
-    for (let lineIndex = 0; lineIndex < snapshot.lines.length; lineIndex += 1) {
-      const text = snapshot.lines[lineIndex];
+    let lineCount = 0;
+    for (const { lineIndex, text } of iterateLogLines(content)) {
+      lineCount = lineIndex + 1;
       const evaluation = lineMatches(
         text,
         normalizedKeywords,
@@ -206,7 +221,7 @@ export function searchLogSnapshots({
       );
       if (!evaluation.matched) continue;
 
-      const descriptor = matchDescriptor(snapshot, lineIndex, text, evaluation.matchedKeywords);
+      const descriptor = matchDescriptor(prepared, lineIndex, text, evaluation.matchedKeywords);
       totalMatches += 1;
       summary.totalMatches += 1;
       firstMatch ??= descriptor;
@@ -220,52 +235,53 @@ export function searchLogSnapshots({
         summary.returnedMatches += 1;
       }
     }
-    selectedBySnapshot.set(snapshot.snapshotIndex, selectedIndexes);
-  }
 
-  const contexts = [];
-  for (const snapshot of preparedSnapshots) {
-    const selectedIndexes = selectedBySnapshot.get(snapshot.snapshotIndex);
-    if (!selectedIndexes?.length) continue;
-    const selectedSet = new Set(selectedIndexes);
-    const ranges = mergeContextRanges(
-      selectedIndexes,
-      snapshot.lines.length,
-      normalizedBeforeLines,
-      normalizedAfterLines,
-    );
-    for (const range of ranges) {
-      const lines = [];
-      const matchLineNumbers = [];
-      const selectedMatchLineNumbers = [];
-      for (let lineIndex = range.start; lineIndex <= range.end; lineIndex += 1) {
-        const text = snapshot.lines[lineIndex];
+    if (selectedIndexes.length) {
+      const selectedSet = new Set(selectedIndexes);
+      const ranges = mergeContextRanges(
+        selectedIndexes,
+        lineCount,
+        normalizedBeforeLines,
+        normalizedAfterLines,
+      );
+      let rangeIndex = 0;
+      let context = null;
+      for (const { lineIndex, text } of iterateLogLines(content)) {
+        const range = ranges[rangeIndex];
+        if (!range) break;
+        if (lineIndex < range.start) continue;
+        context ??= {
+          snapshotIndex,
+          path:prepared.path,
+          startLine:range.start + 1,
+          endLine:range.end + 1,
+          matchLineNumbers:[],
+          selectedMatchLineNumbers:[],
+          lines:[],
+        };
         const evaluation = lineMatches(
           text,
           normalizedKeywords,
           normalizedMode,
           normalizedCaseSensitive,
         );
-        if (evaluation.matched) matchLineNumbers.push(lineIndex + 1);
-        if (selectedSet.has(lineIndex)) selectedMatchLineNumbers.push(lineIndex + 1);
-        lines.push({
+        if (evaluation.matched) context.matchLineNumbers.push(lineIndex + 1);
+        if (selectedSet.has(lineIndex)) context.selectedMatchLineNumbers.push(lineIndex + 1);
+        context.lines.push({
           lineNumber: lineIndex + 1,
           text,
           isMatch: evaluation.matched,
           selectedMatch: selectedSet.has(lineIndex),
           matchedKeywords: evaluation.matched ? evaluation.matchedKeywords : [],
         });
+        if (lineIndex === range.end) {
+          contexts.push(context);
+          context = null;
+          rangeIndex += 1;
+        }
       }
-      contexts.push({
-        snapshotIndex: snapshot.snapshotIndex,
-        path: snapshot.path,
-        startLine: range.start + 1,
-        endLine: range.end + 1,
-        matchLineNumbers,
-        selectedMatchLineNumbers,
-        lines,
-      });
     }
+    snapshotSummaries.push(summary);
   }
 
   const sourceTruncated = snapshotSummaries.some((snapshot) => snapshot.truncated);

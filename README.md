@@ -40,6 +40,8 @@
 
 - 查看系统负载、内存、文件系统、服务、Journal 和容器信息。
 - 对任意绝对路径执行 `stat`、目录列举、文件查找、分页读取和文本搜索。
+- 对日志文件或目录执行多条件搜索；目录会递归发现普通日志和轮转归档，`.gz`、`.zip` 直接在内存中展开搜索。
+- 日志搜索返回命中行、前后文、覆盖范围、跳过原因和截断原因，并短时复用同一远端文件快照，避免 Agent 换关键词时重复读取大文件。
 - 下载普通文件到项目本地下载目录。
 - 不要求预先配置日志或配置文件数据源；旧版 `sourceId/fileId` 工具继续兼容。
 - 不跟随符号链接目录，不读取设备、FIFO、Socket 等特殊文件。
@@ -87,8 +89,9 @@
 | 环境 | `list_projects`、`list_environments`、`open_environment`、`add_plugin` |
 | Server 状态 | `server_system_snapshot`、`server_service_inspect`、`server_journal_query`、`server_container_inspect` |
 | Server 文件 | `server_stat`、`server_list_directory`、`server_find_files`、`server_read_file`、`server_search_files`、`server_download_file` |
+| Server 日志 | `server_search_logs` |
 | Server 变更 | `server_upload_file`、`server_write_file`、`server_move_path`、`server_delete_path`、`server_control_service`、`server_execute_shell` |
-| 兼容工具 | `server_list_actions`、`server_run_action`、`server_list_sources`、`server_list_files`、`server_read_log`、`server_search_logs`、`server_read_config` |
+| 兼容工具 | `server_list_actions`、`server_run_action`、`server_list_sources`、`server_list_files`、`server_read_log`、`server_read_config` |
 | MySQL | `mysql_list_tables`、`mysql_describe_table`、`mysql_query_readonly`、`mysql_explain` |
 | Redis | `redis_scan`、`redis_read`、`redis_ttl` |
 
@@ -97,6 +100,27 @@
 Agent 调用不会建立首次连接。插件未连接时，应在桌面应用中点击“连接环境”或单独连接目标插件。
 
 Agent 的“连接并继续”也必须由用户明确触发；连接成功后会重新获取最新 context 并重新评估请求，不会直接重放旧 tool call 或旧审批。写入、删除、重启等危险操作仍需独立确认。
+
+### Agent 日志检索
+
+Agent 可以直接把已知日志目录或文件交给 `server_search_logs`，也可以使用环境中的日志 `sourceId`。一次调用支持最多 10 个字面量条件、`any/all` 组合、大小写选项和命中行前后文；目录输入会在有界深度和文件数内自主发现 `.log`、`.log.N`、`.txt`、`.out` 及其 `.gz/.zip` 轮转归档。
+
+归档内容在应用内存中有界展开，不落盘，不需要 Shell 确认，也不需要先下载到本地。结果会明确返回扫描字节、展开字节、实际覆盖文件、归档成员、缓存命中以及未完整搜索的原因。快照按远端路径、大小和修改时间短时缓存；Agent 修改查询条件继续排查时，可以复用相同内容。
+
+推荐调用方式：
+
+```text
+server_search_logs(
+  path="/var/log/example",
+  queries=["orderId=123", "ERROR"],
+  matchMode="any",
+  beforeLines=3,
+  afterLines=5,
+  includeArchives=true
+)
+```
+
+环境手册只需记录长期稳定的事实，例如服务职责、日志根目录、命名规律和禁止事项；具体文件、轮转归档及组合查询由 Agent 在这些边界内自主判断。旧版 `fileIds + contains` 调用仍兼容。
 
 ## 安装与升级
 
@@ -156,7 +180,7 @@ codex mcp add --env ELECTRON_RUN_AS_NODE=1 agent-ops -- `
 
 ## 环境 README 模板
 
-环境手册越精确，Agent 定位日志、配置、服务和发布目标越快。推荐使用以下结构：
+环境手册用于提供长期稳定的导航和约束，不需要穷举每个日志文件或预先写出每次排障步骤。推荐使用以下结构：
 
 ```markdown
 # 系统名称 - 环境名称
@@ -178,8 +202,8 @@ codex mcp add --env ELECTRON_RUN_AS_NODE=1 agent-ops -- `
 - JAR：/opt/example/api/example-api.jar
 - 工作目录：/opt/example/api
 - 配置文件：/opt/example/api/application-prod.yml
-- 普通日志：/var/log/example/api.log
-- 启动日志：/opt/example/api/logs/start.log
+- 日志根目录：/var/log/example
+- 日志命名规律：api*.log（含 .gz/.zip 轮转归档）
 - 健康检查：http://127.0.0.1:8080/actuator/health
 
 ## 中间件
@@ -203,10 +227,10 @@ codex mcp add --env ELECTRON_RUN_AS_NODE=1 agent-ops -- `
 ## 禁止事项与注意事项
 - 生产环境发布窗口：
 - 不允许操作的服务或目录：
-- 大日志读取限制：优先尾部抽样，不扫描或下载超大文件
+- 额外的日志扫描限制（如有）：
 ```
 
-README 用于导航和决策，不限制 Server 普通文件读取范围。密码、Token、私钥、DSN 等秘密信息不要写入 README。
+README 用于导航和决策，不限制 Server 普通文件读取范围。Agent 会先利用这些稳定信息，再通过有界目录发现和结构化检索判断具体文件；密码、Token、私钥、DSN 等秘密信息不要写入 README。
 
 ## 常见问题
 

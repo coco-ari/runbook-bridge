@@ -17,6 +17,12 @@ async function startSshServer(t, {
   connectionTracker,
   authenticationState,
   sftpCloseDelayMs = 0,
+  sftpReadDelayMs = 0,
+  maxSftpReadBytes = null,
+  sftpEofAtOffset = null,
+  sftpDirectoryEntries = null,
+  sftpDirectoryBatchSize = 128,
+  onFirstSftpRead = null,
   disconnectAfterSftpReads = null,
   sftpTracker,
 } = {}) {
@@ -74,6 +80,7 @@ async function startSshServer(t, {
             const handles = new Map();
             let nextHandle = 1;
             let readRequests = 0;
+            let firstReadObserved = false;
             const sftp = acceptSftp();
             const resolveRemote = (filename) => {
               const rootPath = path.resolve(sftpRoot);
@@ -106,7 +113,7 @@ async function startSshServer(t, {
               fsSync.open(target, nodeFlags, 0o600, (error, fd) => {
                 if (error) return sftp.status(reqid, STATUS_CODE.FAILURE);
                 const id = nextHandle++;
-                handles.set(id, { fd });
+                handles.set(id, { fd, path:target });
                 const handle = Buffer.alloc(4);
                 handle.writeUInt32BE(id);
                 sftp.handle(reqid, handle);
@@ -120,7 +127,11 @@ async function startSshServer(t, {
             });
             sftp.on('READ', (reqid, handle, offset, length) => {
               readRequests += 1;
-              if (sftpTracker) sftpTracker.readRequests = (sftpTracker.readRequests ?? 0) + 1;
+              if (sftpTracker) {
+                sftpTracker.readRequests = (sftpTracker.readRequests ?? 0) + 1;
+                sftpTracker.readOffsets = [...(sftpTracker.readOffsets ?? []), offset];
+                sftpTracker.requestedReadLengths = [...(sftpTracker.requestedReadLengths ?? []), length];
+              }
               if (
                 Number.isInteger(disconnectAfterSftpReads) &&
                 readRequests > disconnectAfterSftpReads
@@ -138,12 +149,37 @@ async function startSshServer(t, {
               }
               const entry = handleEntry(handle);
               if (!entry) return sftp.status(reqid, STATUS_CODE.FAILURE);
-              const buffer = Buffer.alloc(length);
-              fsSync.read(entry.fd, buffer, 0, length, offset, (error, bytesRead) => {
+              if (!firstReadObserved) {
+                firstReadObserved = true;
+                onFirstSftpRead?.(entry.path);
+              }
+              if (Number.isInteger(sftpEofAtOffset) && offset >= sftpEofAtOffset) {
+                sftp.status(reqid, STATUS_CODE.EOF);
+                return;
+              }
+              const eofBoundedLength = Number.isInteger(sftpEofAtOffset)
+                ? Math.min(length, sftpEofAtOffset - offset)
+                : length;
+              const boundedLength = Number.isInteger(maxSftpReadBytes)
+                ? Math.min(eofBoundedLength, maxSftpReadBytes)
+                : eofBoundedLength;
+              if (boundedLength <= 0) {
+                sftp.status(reqid, STATUS_CODE.EOF);
+                return;
+              }
+              const buffer = Buffer.alloc(boundedLength);
+              if (sftpTracker) {
+                sftpTracker.activeReads = (sftpTracker.activeReads ?? 0) + 1;
+                sftpTracker.maxActiveReads = Math.max(sftpTracker.maxActiveReads ?? 0, sftpTracker.activeReads);
+              }
+              const respond = () => fsSync.read(entry.fd, buffer, 0, boundedLength, offset, (error, bytesRead) => {
+                if (sftpTracker) sftpTracker.activeReads -= 1;
                 if (error) sftp.status(reqid, STATUS_CODE.FAILURE);
                 else if (bytesRead === 0) sftp.status(reqid, STATUS_CODE.EOF);
                 else sftp.data(reqid, buffer.subarray(0, bytesRead));
               });
+              if (sftpReadDelayMs > 0) setTimeout(respond, sftpReadDelayMs);
+              else respond();
             });
             sftp.on('FSTAT', (reqid, handle) => {
               const entry = handleEntry(handle);
@@ -153,12 +189,93 @@ async function startSshServer(t, {
                 else attrs(reqid, stats);
               });
             });
+            sftp.on('OPENDIR', (reqid, filename) => {
+              const target = resolveRemote(filename);
+              const openDirectory = (directoryEntries) => {
+                const id = nextHandle++;
+                handles.set(id, { directoryEntries, directoryOffset:0 });
+                const handle = Buffer.alloc(4);
+                handle.writeUInt32BE(id);
+                if (sftpTracker) sftpTracker.openDirectoryRequests = (sftpTracker.openDirectoryRequests ?? 0) + 1;
+                sftp.handle(reqid, handle);
+              };
+              if (Array.isArray(sftpDirectoryEntries)) {
+                openDirectory(sftpDirectoryEntries.map((value) => {
+                  const filename = typeof value === 'string' ? value : value.filename;
+                  return {
+                    filename,
+                    longname:filename,
+                    attrs:{
+                      mode:value.mode ?? 0o100644,
+                      uid:value.uid ?? 0,
+                      gid:value.gid ?? 0,
+                      size:value.size ?? 0,
+                      atime:value.atime ?? 0,
+                      mtime:value.mtime ?? 0,
+                    },
+                  };
+                }));
+                return;
+              }
+              fsSync.readdir(target, { withFileTypes:true }, (error, dirents) => {
+                if (error) {
+                  sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE);
+                  return;
+                }
+                const directoryEntries = dirents.map((dirent) => {
+                  const stats = fsSync.lstatSync(path.join(target, dirent.name));
+                  return {
+                    filename:dirent.name,
+                    longname:dirent.name,
+                    attrs:{
+                      mode:stats.mode,
+                      uid:stats.uid ?? 0,
+                      gid:stats.gid ?? 0,
+                      size:stats.size,
+                      atime:Math.floor(stats.atimeMs / 1000),
+                      mtime:Math.floor(stats.mtimeMs / 1000),
+                    },
+                  };
+                });
+                openDirectory(directoryEntries);
+              });
+            });
+            sftp.on('READDIR', (reqid, handle) => {
+              const entry = handleEntry(handle);
+              if (!entry?.directoryEntries) {
+                sftp.status(reqid, STATUS_CODE.FAILURE);
+                return;
+              }
+              if (sftpTracker) sftpTracker.readDirectoryRequests = (sftpTracker.readDirectoryRequests ?? 0) + 1;
+              if (entry.directoryOffset >= entry.directoryEntries.length) {
+                sftp.status(reqid, STATUS_CODE.EOF);
+                return;
+              }
+              const names = entry.directoryEntries.slice(
+                entry.directoryOffset,
+                entry.directoryOffset + sftpDirectoryBatchSize,
+              );
+              entry.directoryOffset += names.length;
+              if (sftpTracker) {
+                sftpTracker.directoryEntriesReturned = (sftpTracker.directoryEntriesReturned ?? 0) + names.length;
+              }
+              sftp.name(reqid, names);
+            });
             sftp.on('CLOSE', (reqid, handle) => {
               if (sftpTracker) sftpTracker.closeRequests = (sftpTracker.closeRequests ?? 0) + 1;
               const id = handle.readUInt32BE(0);
               const entry = handles.get(id);
               if (!entry) return sftp.status(reqid, STATUS_CODE.FAILURE);
               handles.delete(id);
+              if (entry.directoryEntries) {
+                const respond = () => {
+                  if (sftpTracker) sftpTracker.closeResponses = (sftpTracker.closeResponses ?? 0) + 1;
+                  sftp.status(reqid, STATUS_CODE.OK);
+                };
+                if (sftpCloseDelayMs > 0) setTimeout(respond, sftpCloseDelayMs);
+                else respond();
+                return;
+              }
               fsSync.close(entry.fd, (error) => {
                 const respond = () => {
                   if (sftpTracker) sftpTracker.closeResponses = (sftpTracker.closeResponses ?? 0) + 1;
@@ -351,6 +468,215 @@ test('SSH broker streams uploads and downloads through SFTP', async (t) => {
   const downloaded = await broker.download(project.id, contextToken, '/logs/start.log');
   assert.equal(await fs.readFile(downloaded.localPath, 'utf8'), 'Started DemoApplication\n');
   assert.equal(downloaded.sizeBytes, 24);
+  await broker.disconnect(project.id);
+});
+
+test('remote read sessions expose bounded Buffer ranges and preserve text reads', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-sftp-buffer-range-'));
+  const remoteRoot = path.join(root, 'remote');
+  await fs.mkdir(path.join(remoteRoot, 'files'), { recursive: true });
+  const payload = Buffer.allocUnsafe(200_000);
+  for (let index = 0; index < payload.length; index += 1) payload[index] = (index * 31 + 7) % 256;
+  await fs.writeFile(path.join(remoteRoot, 'files', 'payload.bin'), payload);
+  await fs.writeFile(path.join(remoteRoot, 'files', 'app.log'), 'alpha\nbeta\ngamma\n');
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const sftpTracker = {};
+  const port = await startSshServer(t, {
+    sftpRoot:remoteRoot,
+    maxSftpReadBytes:4_096,
+    sftpReadDelayMs:5,
+    sftpTracker,
+  });
+  const store = new ProjectStore(root);
+  const project = await store.create({
+    id:'buffer-range-project',
+    name:'二进制范围读取测试',
+    ssh:{host:'127.0.0.1',port,username:'deploy'},
+    auth:{type:'password'},
+    proxy:{type:'direct'},
+  });
+  const broker = new SshBroker(store);
+  let fingerprint;
+  await assert.rejects(
+    () => broker.connect(project.id,{password:'test-password'}),
+    (error) => {
+      fingerprint = error.details?.fingerprint;
+      return error.code === 'SSH_HOST_KEY_CONFIRM_REQUIRED';
+    },
+  );
+  await broker.connect(project.id,{password:'test-password',acceptHostKey:fingerprint});
+
+  const sessionResult = await broker.withRemoteReadSession(project.id, async (reader) => {
+    assert.equal(reader.generation, broker.status(project.id).generation);
+    assert.equal(typeof reader.statPath, 'function');
+    assert.equal(typeof reader.readBuffer, 'function');
+    const snapshot = await reader.statPath('/files/payload.bin');
+    const binary = await reader.readBuffer('/files/payload.bin', 17, 140_000);
+    const text = await reader.readRange('/files/app.log', 0, 1_024);
+    await assert.rejects(
+      () => reader.readBuffer('/files/payload.bin', 0, 64 * 1024 * 1024 + 1),
+      (error) => error.code === 'INVALID_ARGUMENT' && error.details?.maxBytes === 64 * 1024 * 1024,
+    );
+    await assert.rejects(
+      () => reader.readBuffer('/files', 0, 16),
+      (error) => error.code === 'SOURCE_NOT_ALLOWED',
+    );
+    return {snapshot,binary,text};
+  });
+
+  assert.equal(sessionResult.snapshot.type, 'file');
+  assert.equal(sessionResult.snapshot.size, payload.length);
+  assert.equal(Buffer.isBuffer(sessionResult.binary.content), true);
+  assert.deepEqual(sessionResult.binary.content, payload.subarray(17, 140_017));
+  assert.equal(sessionResult.binary.canonicalPath, '/files/payload.bin');
+  assert.equal(sessionResult.binary.startByte, 17);
+  assert.equal(sessionResult.binary.endByte, 140_017);
+  assert.equal(sessionResult.binary.size, payload.length);
+  assert.equal(sessionResult.binary.truncated, true);
+  assert.equal(typeof sessionResult.binary.mtime, 'number');
+  assert.equal(sessionResult.text.content, 'alpha\nbeta\ngamma\n');
+  assert.equal(typeof sessionResult.text.content, 'string');
+  assert.ok(sftpTracker.maxActiveReads > 1);
+  assert.equal(sftpTracker.closeRequests, 2);
+  assert.equal(sftpTracker.closeResponses, 2);
+
+  const tail = await broker.readRemoteBuffer(project.id, '/files/payload.bin', 199_990, 64);
+  assert.deepEqual(tail.content, payload.subarray(199_990));
+  assert.equal(tail.startByte, 199_990);
+  assert.equal(tail.endByte, payload.length);
+  assert.equal(tail.truncated, false);
+  await broker.disconnect(project.id);
+});
+
+test('remote directory listing stops after the 10001st entry and closes its handle', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-sftp-bounded-directory-'));
+  const remoteRoot = path.join(root, 'remote');
+  await fs.mkdir(path.join(remoteRoot, 'logs'), { recursive:true });
+  t.after(() => fs.rm(root, { recursive:true, force:true }));
+  const sftpTracker = {};
+  const directoryEntries = Array.from({length:20_000}, (_, index) => ({
+    filename:`entry-${String(index).padStart(5, '0')}.log`,
+    size:index,
+  }));
+  const port = await startSshServer(t, {
+    sftpRoot:remoteRoot,
+    sftpDirectoryEntries:directoryEntries,
+    sftpDirectoryBatchSize:128,
+    sftpTracker,
+  });
+  const store = new ProjectStore(root);
+  const project = await store.create({
+    id:'bounded-directory-project',
+    name:'目录分页上限测试',
+    ssh:{host:'127.0.0.1',port,username:'deploy'},
+    auth:{type:'password'},
+    proxy:{type:'direct'},
+  });
+  const broker = new SshBroker(store);
+  let fingerprint;
+  await assert.rejects(
+    () => broker.connect(project.id,{password:'test-password'}),
+    (error) => {
+      fingerprint = error.details?.fingerprint;
+      return error.code === 'SSH_HOST_KEY_CONFIRM_REQUIRED';
+    },
+  );
+  await broker.connect(project.id,{password:'test-password',acceptHostKey:fingerprint});
+
+  const result = await broker.listRemoteDirectory(project.id, '/logs', {offset:9_995,limit:10});
+  assert.deepEqual(
+    result.map((entry) => entry.name),
+    ['entry-09995.log', 'entry-09996.log', 'entry-09997.log', 'entry-09998.log', 'entry-09999.log'],
+  );
+  assert.equal(result.totalEntries, 10_001);
+  assert.equal(result.hasMoreWithinCap, false);
+  assert.equal(result.sourceTruncated, true);
+  assert.equal(result.truncated, true);
+  assert.equal(sftpTracker.openDirectoryRequests, 1);
+  assert.ok(sftpTracker.directoryEntriesReturned >= 10_001);
+  assert.ok(sftpTracker.directoryEntriesReturned < directoryEntries.length);
+  assert.equal(sftpTracker.closeRequests, 1);
+  assert.equal(sftpTracker.closeResponses, 1);
+  await broker.disconnect(project.id);
+});
+
+test('binary range reads reject metadata changes that occur after the initial stat', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-sftp-buffer-changed-'));
+  const remoteRoot = path.join(root, 'remote');
+  await fs.mkdir(path.join(remoteRoot, 'files'), { recursive:true });
+  await fs.writeFile(path.join(remoteRoot, 'files', 'changing.bin'), Buffer.alloc(100_000, 0x41));
+  t.after(() => fs.rm(root, { recursive:true, force:true }));
+  const sftpTracker = {};
+  const port = await startSshServer(t, {
+    sftpRoot:remoteRoot,
+    onFirstSftpRead:(target) => fsSync.appendFileSync(target, Buffer.from([0x42])),
+    sftpTracker,
+  });
+  const store = new ProjectStore(root);
+  const project = await store.create({
+    id:'buffer-changed-project',
+    name:'二进制变化测试',
+    ssh:{host:'127.0.0.1',port,username:'deploy'},
+    auth:{type:'password'},
+    proxy:{type:'direct'},
+  });
+  const broker = new SshBroker(store);
+  let fingerprint;
+  await assert.rejects(
+    () => broker.connect(project.id,{password:'test-password'}),
+    (error) => {
+      fingerprint = error.details?.fingerprint;
+      return error.code === 'SSH_HOST_KEY_CONFIRM_REQUIRED';
+    },
+  );
+  await broker.connect(project.id,{password:'test-password',acceptHostKey:fingerprint});
+
+  await assert.rejects(
+    () => broker.readRemoteBuffer(project.id, '/files/changing.bin', 0, 50_000),
+    (error) => error.code === 'SOURCE_CHANGED' && error.details?.path === '/files/changing.bin',
+  );
+  assert.equal(sftpTracker.closeRequests, 1);
+  assert.equal(sftpTracker.closeResponses, 1);
+  await broker.disconnect(project.id);
+});
+
+test('binary range reads reject an early EOF as a concurrent source change', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-sftp-buffer-eof-'));
+  const remoteRoot = path.join(root, 'remote');
+  await fs.mkdir(path.join(remoteRoot, 'files'), { recursive: true });
+  const payload = Buffer.alloc(180_000, 0x5a);
+  await fs.writeFile(path.join(remoteRoot, 'files', 'changing.bin'), payload);
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const sftpTracker = {};
+  const eofAt = 70_123;
+  const port = await startSshServer(t, {sftpRoot:remoteRoot,sftpEofAtOffset:eofAt,sftpTracker});
+  const store = new ProjectStore(root);
+  const project = await store.create({
+    id:'buffer-eof-project',
+    name:'二进制 EOF 测试',
+    ssh:{host:'127.0.0.1',port,username:'deploy'},
+    auth:{type:'password'},
+    proxy:{type:'direct'},
+  });
+  const broker = new SshBroker(store);
+  let fingerprint;
+  await assert.rejects(
+    () => broker.connect(project.id,{password:'test-password'}),
+    (error) => {
+      fingerprint = error.details?.fingerprint;
+      return error.code === 'SSH_HOST_KEY_CONFIRM_REQUIRED';
+    },
+  );
+  await broker.connect(project.id,{password:'test-password',acceptHostKey:fingerprint});
+
+  await assert.rejects(
+    () => broker.readRemoteBuffer(project.id, '/files/changing.bin', 0, 150_000),
+    (error) => error.code === 'SOURCE_CHANGED' && error.details?.path === '/files/changing.bin',
+  );
+  assert.ok(sftpTracker.readOffsets.includes(eofAt));
+  assert.ok(sftpTracker.readOffsets.some((offset) => offset > eofAt));
+  assert.equal(sftpTracker.closeRequests, 1);
+  assert.equal(sftpTracker.closeResponses, 1);
   await broker.disconnect(project.id);
 });
 
@@ -557,8 +883,8 @@ test('mid-read SSH loss returns TRANSFER_INTERRUPTED without hanging and release
     clearTimeout(deadlineTimer);
   }
 
-  assert.equal(sftpTracker.readRequests, 2);
-  assert.equal(sftpTracker.readDisconnects, 1);
+  assert.ok(sftpTracker.readRequests >= 2);
+  assert.ok(sftpTracker.readDisconnects >= 1);
   assert.equal(broker.activeLogSearchProjects.has(project.id), false);
   assert.equal(broker.activeLogSearchCount, 0);
   await new Promise((resolve) => setTimeout(resolve, 100));

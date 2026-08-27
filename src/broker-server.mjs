@@ -118,7 +118,27 @@ export class BrokerServer {
       case 'serverContainerInspect': return this.v2Service.invoke(params, 'container.inspect', { runtime:params.runtime, container:params.container });
       case 'serverListFiles': return this.v2Service.invoke(params, 'logs', { operation: 'list', sourceId: params.sourceId, cursor: params.cursor, limit: params.limit });
       case 'serverReadLog': return this.v2Service.invoke(params, 'logs', { operation: 'read', fileId: params.fileId, cursor: params.cursor, maxBytes: params.maxBytes, tail: params.tail });
-      case 'serverSearchLogs': return this.v2Service.invoke(params, 'logs', { operation: 'search', fileIds: params.fileIds, contains: params.contains, maxLines: params.maxLines, maxScanBytes: params.maxScanBytes });
+      case 'serverSearchLogs': return this.v2Service.invoke(params, 'logs', {
+        operation:'search',
+        fileIds:params.fileIds,
+        sourceId:params.sourceId,
+        path:params.path,
+        contains:params.contains,
+        queries:params.queries,
+        matchMode:params.matchMode,
+        caseSensitive:params.caseSensitive,
+        pattern:params.pattern,
+        maxDepth:params.maxDepth,
+        maxFiles:params.maxFiles,
+        maxMatches:params.maxMatches,
+        maxLines:params.maxLines,
+        beforeLines:params.beforeLines,
+        afterLines:params.afterLines,
+        includeArchives:params.includeArchives,
+        maxScanBytes:params.maxScanBytes,
+        maxExpandedBytes:params.maxExpandedBytes,
+        maxArchiveEntries:params.maxArchiveEntries,
+      });
       case 'serverReadConfig': return this.v2Service.invoke(params, 'config', { fileId: params.fileId, cursor: params.cursor, maxBytes: params.maxBytes });
       case 'serverStat': return this.v2Service.invoke(params, 'fs.stat', { path:params.path });
       case 'serverListDirectory': return this.v2Service.invoke(params, 'fs.list', { path:params.path, cursor:params.cursor, limit:params.limit });

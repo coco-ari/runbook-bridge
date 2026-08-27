@@ -7,7 +7,7 @@ const RULES = Object.freeze({
     'service.inspect': { decision:'auto', risk:'read', label:'读取服务信息' },
     'journal.read': { decision:'auto', risk:'read', label:'查询 systemd journal' },
     'container.inspect': { decision:'auto', risk:'read', label:'读取容器信息' },
-    logs: { decision:'auto', risk:'read', label:'读取已登记日志' },
+    logs: { decision:'auto', risk:'read', label:'有界搜索服务器日志' },
     config: { decision:'auto', risk:'read', label:'读取已登记配置' },
     download: { decision:'auto', risk:'read', label:'下载已登记文件' },
     'fs.stat': { decision:'auto', risk:'read', label:'查看文件属性' },

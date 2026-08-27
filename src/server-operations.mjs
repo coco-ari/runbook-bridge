@@ -3,12 +3,22 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from './errors.mjs';
+import { detectLogArchiveType, expandLogArchive } from './log-archive.mjs';
+import { searchLogSnapshots } from './log-search.mjs';
 import { parseOffsetCursor } from './pagination-cursor.mjs';
 
 const FILE_ID_TTL_MS = 10 * 60 * 1000;
 const MAX_FILE_IDS = 2000;
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const REMOTE_DIRECTORY_CONCURRENCY = 2;
+const LOG_SNAPSHOT_CACHE_TTL_MS = 5 * 60 * 1000;
+const LOG_SNAPSHOT_CACHE_MAX_BYTES = 64 * 1024 * 1024;
+const LOG_SEARCH_MAX_SCAN_BYTES = 64 * 1024 * 1024;
+const LOG_SEARCH_MAX_EXPANDED_BYTES = 128 * 1024 * 1024;
+const LOG_SEARCH_MAX_CONTEXT_BYTES = 2 * 1024 * 1024;
+const LOG_SEARCH_MAX_CONCURRENT = 2;
+const LOG_SEARCH_MAX_RESERVED_BYTES = 384 * 1024 * 1024;
+const LOG_SEARCH_MAX_QUEUED = 32;
 const SECRET_KEY = /^(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|authorization)$/i;
 
 function globMatches(pattern, name) {
@@ -89,11 +99,245 @@ function namePattern(value) {
   return pattern;
 }
 
+function searchInteger(value, fallback, minimum, maximum, label) {
+  const resolved = value === undefined ? fallback : Number(value);
+  if (!Number.isSafeInteger(resolved) || resolved < minimum || resolved > maximum) {
+    throw new AppError('INVALID_ARGUMENT', `${label}必须是 ${minimum} 到 ${maximum} 之间的整数。`);
+  }
+  return resolved;
+}
+
+function normalizeLogQueries({ contains, queries } = {}) {
+  const hasContains = contains !== undefined;
+  const hasQueries = queries !== undefined;
+  if (hasContains === hasQueries) throw new AppError('INVALID_ARGUMENT', '日志搜索必须且只能提供 contains 或 queries。');
+  const values = hasQueries ? queries : [contains];
+  if (!Array.isArray(values) || values.length < 1 || values.length > 10) {
+    throw new AppError('INVALID_ARGUMENT', '日志搜索需要 1 到 10 个查询文本。');
+  }
+  const unique = [];
+  let totalBytes = 0;
+  for (const value of values) {
+    const text = String(value ?? '');
+    const bytes = Buffer.byteLength(text, 'utf8');
+    if (!text || bytes > 1024 || /[\u0000-\u001f\u007f]/u.test(text)) {
+      throw new AppError('INVALID_ARGUMENT', '日志查询文本不能为空、包含控制字符或超过 1024 字节。');
+    }
+    totalBytes += bytes;
+    if (totalBytes > 4096) throw new AppError('INVALID_ARGUMENT', '日志查询文本合计不能超过 4096 字节。');
+    if (!unique.includes(text)) unique.push(text);
+  }
+  return unique;
+}
+
+function archiveSuffix(name) {
+  const lower = String(name ?? '').toLowerCase();
+  if (lower.endsWith('.zip')) return 'zip';
+  if (lower.endsWith('.gz')) return 'gzip';
+  return null;
+}
+
+function assertLogReadIdentity(file, read) {
+  if (Number.isFinite(Number(file.size)) && Number(read.size) !== Number(file.size)) {
+    throw new AppError('SOURCE_CHANGED', '日志文件大小已经变化，请重新搜索。');
+  }
+  if (Number.isFinite(Number(file.mtime)) && Number(read.mtime) !== Number(file.mtime)) {
+    throw new AppError('SOURCE_CHANGED', '日志文件修改时间已经变化，请重新搜索。');
+  }
+  if (path.posix.normalize(read.canonicalPath) !== path.posix.normalize(file.canonicalPath ?? file.path)) {
+    throw new AppError('SOURCE_CHANGED', '日志文件路径在搜索期间已经变化，请重新搜索。');
+  }
+  if (file.allowedRoot && !withinRoot(file.allowedRoot, read.canonicalPath)) {
+    throw new AppError('SOURCE_NOT_ALLOWED', '日志文件已经移出登记的数据源。');
+  }
+}
+
+function withoutArchiveSuffix(name) {
+  return archiveSuffix(name) ? String(name).replace(/\.(?:zip|gz)$/iu, '') : String(name);
+}
+
+function defaultLogName(name, includeArchives) {
+  if (archiveSuffix(name)) return includeArchives;
+  const candidate = String(name);
+  return /(?:\.log(?:\.\d+)?|\.txt|\.out)$/iu.test(candidate);
+}
+
+function sourceNameMatches(source, name, filter, includeArchives) {
+  if (!includeArchives && archiveSuffix(name)) return false;
+  const candidates = includeArchives && archiveSuffix(name) ? [String(name), withoutArchiveSuffix(name)] : [String(name)];
+  const patterns = Array.isArray(source.patterns) ? source.patterns : [];
+  const sourceMatch = candidates.some((candidate) => patterns.some((pattern) => globMatches(pattern, candidate)));
+  return sourceMatch && (!filter || candidates.some((candidate) => globMatches(filter, candidate)));
+}
+
+function cacheEntryBytes(value) {
+  return value.snapshots.reduce((sum, snapshot) => sum + snapshot.content.length, 0);
+}
+
+function clearSnapshotBuffers(value) {
+  const cleared = new Set();
+  for (const snapshot of value?.snapshots ?? []) {
+    if (!Buffer.isBuffer(snapshot.content) || cleared.has(snapshot.content)) continue;
+    cleared.add(snapshot.content);
+    snapshot.content.fill(0);
+  }
+}
+
+class LogSearchGate {
+  constructor({
+    maxConcurrent = LOG_SEARCH_MAX_CONCURRENT,
+    maxReservedBytes = LOG_SEARCH_MAX_RESERVED_BYTES,
+    maxQueued = LOG_SEARCH_MAX_QUEUED,
+  } = {}) {
+    this.maxConcurrent = maxConcurrent;
+    this.maxReservedBytes = maxReservedBytes;
+    this.maxQueued = maxQueued;
+    this.active = 0;
+    this.reservedBytes = 0;
+    this.activeKeys = new Set();
+    this.queue = [];
+  }
+
+  run(key, reservationBytes, operation) {
+    if (typeof operation !== 'function') throw new AppError('INVALID_ARGUMENT', '日志搜索操作无效。');
+    if (!Number.isSafeInteger(reservationBytes) || reservationBytes < 1 || reservationBytes > this.maxReservedBytes) {
+      throw new AppError('RESULT_LIMIT_EXCEEDED', '日志搜索请求超过本地内存预算。');
+    }
+    if (this.queue.length >= this.maxQueued) {
+      throw new AppError('LOG_SEARCH_BUSY', '本地日志搜索队列已满，请稍后重试。');
+    }
+    return new Promise((resolve, reject) => {
+      this.queue.push({ key, reservationBytes, operation, resolve, reject });
+      this.drain();
+    });
+  }
+
+  drain() {
+    while (this.active < this.maxConcurrent) {
+      const index = this.queue.findIndex((task) =>
+        !this.activeKeys.has(task.key)
+        && this.reservedBytes + task.reservationBytes <= this.maxReservedBytes);
+      if (index < 0) break;
+      const [task] = this.queue.splice(index, 1);
+      this.active += 1;
+      this.reservedBytes += task.reservationBytes;
+      this.activeKeys.add(task.key);
+      Promise.resolve()
+        .then(task.operation)
+        .then(task.resolve, task.reject)
+        .finally(() => {
+          this.active -= 1;
+          this.reservedBytes -= task.reservationBytes;
+          this.activeKeys.delete(task.key);
+          this.drain();
+        });
+    }
+  }
+}
+
+class LogSnapshotCache {
+  constructor({ now = Date.now, ttlMs = LOG_SNAPSHOT_CACHE_TTL_MS, maxBytes = LOG_SNAPSHOT_CACHE_MAX_BYTES } = {}) {
+    this.now = now;
+    this.ttlMs = ttlMs;
+    this.maxBytes = maxBytes;
+    this.entries = new Map();
+    this.bytes = 0;
+    this.expiryTimer = null;
+  }
+
+  remove(key) {
+    const entry = this.entries.get(key);
+    if (!entry) return false;
+    this.entries.delete(key);
+    this.bytes -= entry.bytes;
+    clearSnapshotBuffers(entry.value);
+    return true;
+  }
+
+  prune() {
+    const current = this.now();
+    for (const [key, entry] of this.entries) if (entry.expiresAt <= current) this.remove(key);
+    this.scheduleExpiry();
+  }
+
+  scheduleExpiry() {
+    if (this.expiryTimer) clearTimeout(this.expiryTimer);
+    this.expiryTimer = null;
+    if (!this.entries.size) return;
+    const expiresAt = Math.min(...[...this.entries.values()].map((entry) => entry.expiresAt));
+    const delay = Math.max(1, expiresAt - this.now());
+    this.expiryTimer = setTimeout(() => {
+      this.expiryTimer = null;
+      this.prune();
+    }, delay);
+    this.expiryTimer.unref?.();
+  }
+
+  get(key) {
+    this.prune();
+    const entry = this.entries.get(key);
+    if (!entry) return null;
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    return entry.value;
+  }
+
+  set(key, value) {
+    this.prune();
+    const bytes = cacheEntryBytes(value);
+    if (bytes <= 0 || bytes > this.maxBytes) return false;
+    this.remove(key);
+    while (this.entries.size && this.bytes + bytes > this.maxBytes) this.remove(this.entries.keys().next().value);
+    this.entries.set(key, { value, bytes, expiresAt:this.now() + this.ttlMs });
+    this.bytes += bytes;
+    this.scheduleExpiry();
+    return true;
+  }
+
+  stats() {
+    this.prune();
+    return { entries:this.entries.size, bytes:this.bytes, maxBytes:this.maxBytes, ttlMs:this.ttlMs };
+  }
+}
+
+function boundedContexts(contexts, maxBytes = LOG_SEARCH_MAX_CONTEXT_BYTES) {
+  const values = [];
+  let bytes = 0;
+  let truncated = false;
+  for (const context of contexts) {
+    const lines = [];
+    for (const line of context.lines) {
+      const text = capText(line.text, 4096).text;
+      const size = Buffer.byteLength(text, 'utf8') + 128;
+      if (bytes + size > maxBytes) {
+        truncated = true;
+        break;
+      }
+      bytes += size;
+      lines.push({ ...line, text });
+    }
+    if (lines.length) values.push({ ...context, lines });
+    if (truncated) break;
+  }
+  return { contexts:values, bytes, truncated };
+}
+
 export class ServerOperations {
-  constructor(serverRuntime, workspaceStore) {
+  constructor(serverRuntime, workspaceStore, options = {}) {
     this.serverRuntime = serverRuntime;
     this.workspaceStore = workspaceStore;
     this.files = new Map();
+    this.expandLogArchive = options.expandLogArchive ?? expandLogArchive;
+    this.logSnapshotCache = new LogSnapshotCache({
+      now:options.now ?? Date.now,
+      ttlMs:options.logSnapshotCacheTtlMs ?? LOG_SNAPSHOT_CACHE_TTL_MS,
+      maxBytes:options.maxLogSnapshotCacheBytes ?? LOG_SNAPSHOT_CACHE_MAX_BYTES,
+    });
+    this.logSearchGate = new LogSearchGate({
+      maxConcurrent:options.logSearchMaxConcurrent ?? LOG_SEARCH_MAX_CONCURRENT,
+      maxReservedBytes:options.logSearchMaxReservedBytes ?? LOG_SEARCH_MAX_RESERVED_BYTES,
+      maxQueued:options.logSearchMaxQueued ?? LOG_SEARCH_MAX_QUEUED,
+    });
   }
 
   cleanupFiles() {
@@ -262,29 +506,418 @@ export class ServerOperations {
     return { fileId, relativePath: descriptor.relativePath, content: result.content, startByte: result.startByte, endByte: result.endByte, size: result.size, nextCursor: result.truncated ? String(result.endByte) : null, truncated: result.truncated };
   }
 
-  async searchLogs(plugin, { fileIds, contains, maxLines = 200, maxScanBytes = 4 * 1024 * 1024 } = {}) {
-    const needle = String(contains ?? '');
-    if (!needle || Buffer.byteLength(needle) > 1024 || /[\u0000\r\n]/.test(needle)) throw new AppError('INVALID_ARGUMENT', '日志搜索文本无效。');
-    if (!Array.isArray(fileIds) || !fileIds.length || fileIds.length > 10) throw new AppError('INVALID_ARGUMENT', '日志搜索需要 1 到 10 个 fileId。');
-    const limit = Math.min(Math.max(Number(maxLines) || 200, 1), 200);
-    const scanBudget = Math.min(Math.max(Number(maxScanBytes) || 65_536, 65_536), 8 * 1024 * 1024);
-    const matches = [];
-    let scannedBytes = 0;
-    for (const fileId of fileIds) {
-      const descriptor = this.requireFile(plugin, fileId);
-      const source = this.source(plugin, descriptor.sourceId);
-      if (source.kind !== 'log') throw new AppError('SOURCE_NOT_ALLOWED', '该文件不属于日志数据源。');
-      const remaining = scanBudget - scannedBytes;
-      if (remaining <= 0 || matches.length >= limit) break;
-      const start = Math.max(0, descriptor.size - remaining);
-      const result = await this.serverRuntime.readRemoteRange(plugin, descriptor.path, start, remaining);
-      scannedBytes += Buffer.byteLength(result.content);
-      const lines = result.content.split(/\r?\n/);
-      for (let index = 0; index < lines.length && matches.length < limit; index += 1) {
-        if (lines[index].includes(needle)) matches.push({ fileId, relativePath: descriptor.relativePath, lineOffset: index, text: capText(lines[index], 4096).text });
-      }
+  async searchLogs(plugin, args = {}) {
+    const selectors = ['fileIds','sourceId','path'].filter((name) => args[name] !== undefined);
+    if (selectors.length !== 1) throw new AppError('INVALID_ARGUMENT', '日志搜索必须且只能提供 fileIds、sourceId 或 path 之一。');
+    const selector = selectors[0];
+    const queries = normalizeLogQueries(args);
+    const legacy = selector === 'fileIds' && args.contains !== undefined && args.queries === undefined;
+    const modeValue = String(args.matchMode ?? 'any').toLowerCase();
+    if (!['any','all'].includes(modeValue)) throw new AppError('INVALID_ARGUMENT', 'matchMode 必须是 any 或 all。');
+    if (args.maxLines !== undefined && args.maxMatches !== undefined) {
+      throw new AppError('INVALID_ARGUMENT', 'maxLines 与 maxMatches 不能同时提供。');
     }
-    return { matches, matchCount: matches.length, scannedBytes, truncated: matches.length >= limit || scannedBytes >= scanBudget, limitsApplied: { maxLines: limit, maxScanBytes: scanBudget } };
+    const maxMatches = searchInteger(args.maxMatches ?? args.maxLines, 200, 1, 500, '最大匹配数');
+    const maxFiles = searchInteger(args.maxFiles, selector === 'fileIds' ? 10 : 20, 1, 100, '最大文件数');
+    const maxDepth = searchInteger(args.maxDepth, 3, 0, 12, '最大目录深度');
+    const beforeLines = searchInteger(args.beforeLines, 2, 0, 50, '前置上下文行数');
+    const afterLines = searchInteger(args.afterLines, 2, 0, 50, '后置上下文行数');
+    const scanBudget = searchInteger(args.maxScanBytes, legacy ? 4 * 1024 * 1024 : 16 * 1024 * 1024, 65_536, LOG_SEARCH_MAX_SCAN_BYTES, '日志扫描字节数');
+    const expandedBudget = searchInteger(
+      args.maxExpandedBytes,
+      Math.min(LOG_SEARCH_MAX_EXPANDED_BYTES, Math.max(scanBudget, scanBudget * 4)),
+      65_536,
+      LOG_SEARCH_MAX_EXPANDED_BYTES,
+      '日志展开字节数',
+    );
+    const maxArchiveEntries = searchInteger(args.maxArchiveEntries, 128, 1, 128, '归档条目数');
+    const includeArchives = args.includeArchives !== false;
+    const filter = args.pattern === undefined ? null : namePattern(args.pattern);
+    const caseSensitive = args.caseSensitive !== false;
+    const gateKey = [plugin.projectId,plugin.environmentId,plugin.pluginInstanceId].join('\u0000');
+    const reservationBytes = scanBudget + (expandedBudget * 2);
+
+    return this.logSearchGate.run(gateKey, reservationBytes, () => this.withRemoteReadSession(plugin, async (reader) => {
+      const directStat = selector === 'path'
+        ? await (typeof reader.statPath === 'function'
+          ? reader.statPath(normalizeRemotePath(args.path))
+          : this.serverRuntime.statRemotePath(plugin, normalizeRemotePath(args.path)))
+        : null;
+      const truncationReasons = new Set();
+      const skipped = [];
+      let selectionTruncated = false;
+      let files;
+      let selection;
+
+      if (selector === 'fileIds') {
+        if (!Array.isArray(args.fileIds) || args.fileIds.length < 1 || args.fileIds.length > 10) {
+          throw new AppError('INVALID_ARGUMENT', 'fileIds 必须包含 1 到 10 个日志文件。');
+        }
+        files = args.fileIds.map((fileId) => {
+          const descriptor = this.requireFile(plugin, fileId);
+          const source = this.source(plugin, descriptor.sourceId);
+          if (source.kind !== 'log' || !withinRoot(source.root, descriptor.path)) {
+            throw new AppError('SOURCE_NOT_ALLOWED', '该文件不属于有效的日志数据源。');
+          }
+          return { ...descriptor, fileId, source, name:path.posix.basename(descriptor.path), canonicalPath:descriptor.path };
+        });
+        for (const file of files) {
+          const current = await (typeof reader.statPath === 'function'
+            ? reader.statPath(file.path)
+            : this.serverRuntime.statRemotePath(plugin, file.path));
+          if (current.type !== 'file' || !withinRoot(file.source.root, current.canonicalPath ?? current.path)) {
+            throw new AppError('SOURCE_NOT_ALLOWED', '该文件不再属于有效的日志数据源。');
+          }
+          if (Number(current.size) !== Number(file.size) || Number(current.mtime) !== Number(file.mtime)) {
+            throw new AppError('SOURCE_CHANGED', '日志文件已经变化，请重新列出。');
+          }
+          file.canonicalPath = current.canonicalPath ?? current.path;
+          file.allowedRoot = file.source.root;
+        }
+        selection = { type:'fileIds', fileIds:[...args.fileIds] };
+      } else if (selector === 'sourceId') {
+        const source = this.source(plugin, args.sourceId);
+        if (source.kind !== 'log') throw new AppError('SOURCE_NOT_ALLOWED', 'sourceId 不属于日志数据源。');
+        const sourceStat = await (typeof reader.statPath === 'function'
+          ? reader.statPath(source.root)
+          : this.serverRuntime.statRemotePath(plugin, source.root));
+        if (sourceStat.type !== 'directory') throw new AppError('SOURCE_NOT_ALLOWED', '日志数据源根路径不是目录。');
+        const root = sourceStat.canonicalPath ?? sourceStat.path;
+        const acceptsFile = (entry) => Number(entry.size ?? 0) <= Number(source.maxFileBytes)
+          && sourceNameMatches(source, entry.name, filter, includeArchives);
+        const found = await this.findFilesWithReader(reader, { path:root, pattern:'*', maxDepth, maxResults:1000, acceptsFile });
+        const eligible = found.files.filter((file) => file.path);
+        eligible.sort((left, right) => Number(right.mtime ?? 0) - Number(left.mtime ?? 0) || left.path.localeCompare(right.path));
+        files = eligible.slice(0, maxFiles).map((file) => ({
+          ...file,
+          canonicalPath:file.path,
+          relativePath:path.posix.relative(root, file.path),
+          source,
+          allowedRoot:root,
+          fileId:null,
+        }));
+        selectionTruncated = found.truncated || eligible.length > files.length;
+        selection = { type:'sourceId', sourceId:source.sourceId, pattern:filter, root };
+      } else if (directStat.type === 'file') {
+        if (!includeArchives && archiveSuffix(directStat.canonicalPath ?? directStat.path)) {
+          files = [];
+          skipped.push({ path:directStat.canonicalPath ?? directStat.path, code:'ARCHIVES_EXCLUDED' });
+        } else {
+          files = [{
+            path:directStat.canonicalPath ?? directStat.path,
+            canonicalPath:directStat.canonicalPath ?? directStat.path,
+            name:path.posix.basename(directStat.canonicalPath ?? directStat.path),
+            size:Number(directStat.size ?? 0),
+            mtime:Number(directStat.mtime ?? 0),
+            relativePath:path.posix.basename(directStat.canonicalPath ?? directStat.path),
+            source:null,
+            fileId:null,
+          }];
+        }
+        selection = { type:'path', path:normalizeRemotePath(args.path), targetType:'file', pattern:filter };
+      } else if (directStat.type === 'directory') {
+        const root = directStat.canonicalPath ?? normalizeRemotePath(args.path);
+        const acceptsFile = (entry) => (filter
+          ? globMatches(filter, entry.name) || (includeArchives && archiveSuffix(entry.name) && globMatches(filter, withoutArchiveSuffix(entry.name)))
+          : defaultLogName(entry.name, includeArchives));
+        const found = await this.findFilesWithReader(reader, { path:root, pattern:'*', maxDepth, maxResults:1000, acceptsFile });
+        const eligible = found.files.filter((file) => file.path && (filter
+          ? globMatches(filter, file.name) || (includeArchives && archiveSuffix(file.name) && globMatches(filter, withoutArchiveSuffix(file.name)))
+          : defaultLogName(file.name, includeArchives)));
+        eligible.sort((left, right) => Number(right.mtime ?? 0) - Number(left.mtime ?? 0) || left.path.localeCompare(right.path));
+        files = eligible.slice(0, maxFiles).map((file) => ({
+          ...file,
+          canonicalPath:file.path,
+          relativePath:path.posix.relative(root, file.path),
+          allowedRoot:root,
+          source:null,
+          fileId:null,
+        }));
+        selectionTruncated = found.truncated || eligible.length > files.length;
+        selection = { type:'path', path:normalizeRemotePath(args.path), targetType:'directory', pattern:filter };
+      } else {
+        throw new AppError('SOURCE_NOT_ALLOWED', 'path 必须指向普通文件或目录。');
+      }
+
+      if (files.length > maxFiles) {
+        files = files.slice(0, maxFiles);
+        selectionTruncated = true;
+      }
+      if (selectionTruncated) truncationReasons.add('maxFilesOrListing');
+
+      const matches = [];
+      const contexts = [];
+      const coverage = [];
+      let contextBytes = 0;
+      let totalMatches = 0;
+      let scannedBytes = 0;
+      let remoteBytesRead = 0;
+      let expandedBytes = 0;
+      let scannedFiles = 0;
+      let archivesScanned = 0;
+      let archiveEntriesScanned = 0;
+      let cacheHits = 0;
+      let cacheMisses = 0;
+      let cacheSavedRemoteBytes = 0;
+      const deadline = Date.now() + 100_000;
+
+      for (const file of files) {
+        if (matches.length >= maxMatches) {
+          truncationReasons.add('maxMatches');
+          break;
+        }
+        if (Date.now() >= deadline) {
+          truncationReasons.add('timeBudget');
+          break;
+        }
+        let remainingScan = scanBudget - scannedBytes;
+        const remainingExpanded = expandedBudget - expandedBytes;
+        if (remainingScan <= 0) {
+          truncationReasons.add('maxScanBytes');
+          break;
+        }
+        if (remainingExpanded <= 0) {
+          truncationReasons.add('maxExpandedBytes');
+          break;
+        }
+        let effectiveArchive = archiveSuffix(file.name ?? file.path);
+        if (effectiveArchive && !includeArchives) {
+          skipped.push({ path:file.path, code:'ARCHIVES_EXCLUDED' });
+          continue;
+        }
+        const remainingArchiveEntries = maxArchiveEntries - archiveEntriesScanned;
+        if (file.allowedRoot && !withinRoot(file.allowedRoot, file.canonicalPath ?? file.path)) {
+          throw new AppError('SOURCE_NOT_ALLOWED', '发现的日志文件位于搜索根目录之外。');
+        }
+        const fileSize = Math.max(0, Number(file.size) || 0);
+        let probeBytesRead = 0;
+        const plainLength = Math.min(fileSize, remainingScan, remainingExpanded);
+        const needsArchiveProbe = !effectiveArchive && fileSize > 0 && (
+          !includeArchives
+          || remainingArchiveEntries <= 0
+          || fileSize > plainLength
+        );
+        if (needsArchiveProbe) {
+          const probeLength = Math.min(4, fileSize);
+          if (probeLength > remainingScan) {
+            truncationReasons.add('maxScanBytes');
+            break;
+          }
+          let probe;
+          if (typeof reader.readBuffer === 'function') {
+            probe = await reader.readBuffer(file.canonicalPath ?? file.path, 0, probeLength);
+          } else if (typeof this.serverRuntime.readRemoteBuffer === 'function') {
+            probe = await this.serverRuntime.readRemoteBuffer(plugin, file.canonicalPath ?? file.path, 0, probeLength);
+          } else {
+            throw new AppError('CAPABILITY_NOT_IMPLEMENTED', '当前 Server Runtime 不支持二进制日志读取。');
+          }
+          assertLogReadIdentity(file, probe);
+          const probeContent = Buffer.isBuffer(probe.content) ? probe.content : Buffer.from(probe.content ?? []);
+          if (probeContent.length !== probeLength) {
+            throw new AppError('SOURCE_CHANGED', '日志文件在类型探测期间已经变化，请重新搜索。');
+          }
+          probeBytesRead = probeContent.length;
+          scannedBytes += probeBytesRead;
+          remoteBytesRead += probeBytesRead;
+          remainingScan -= probeBytesRead;
+          const detectedType = detectLogArchiveType({
+            filePath:file.canonicalPath ?? file.path,
+            content:probeContent,
+          });
+          effectiveArchive = detectedType === 'plain' ? null : detectedType;
+        }
+        if (effectiveArchive && !includeArchives) {
+          skipped.push({ path:file.path, code:'ARCHIVES_EXCLUDED' });
+          continue;
+        }
+        if (effectiveArchive && remainingArchiveEntries <= 0) {
+          skipped.push({ path:file.path, code:'ARCHIVE_ENTRY_BUDGET_EXHAUSTED' });
+          truncationReasons.add('maxArchiveEntries');
+          continue;
+        }
+        if (!effectiveArchive && fileSize > 0 && remainingScan <= 0) {
+          truncationReasons.add('maxScanBytes');
+          break;
+        }
+        if (effectiveArchive && fileSize > remainingScan) {
+          skipped.push({ path:file.path, code:'ARCHIVE_INPUT_LIMIT', size:Number(file.size), remainingBytes:remainingScan });
+          truncationReasons.add('maxScanBytes');
+          continue;
+        }
+        const length = Math.min(
+          fileSize,
+          effectiveArchive ? remainingScan : Math.min(remainingScan, remainingExpanded),
+        );
+        const start = effectiveArchive ? 0 : Math.max(0, fileSize - length);
+        if (start > 0) truncationReasons.add('fileTailOnly');
+        const cacheKey = JSON.stringify([
+          plugin.projectId, plugin.environmentId, plugin.pluginInstanceId,
+          plugin.revision ?? null, reader.generation ?? null,
+          file.canonicalPath ?? file.path, Number(file.size), Number(file.mtime), start, length,
+          remainingExpanded, remainingArchiveEntries, includeArchives, effectiveArchive,
+        ]);
+        let expanded = this.logSnapshotCache.get(cacheKey);
+        if (expanded) {
+          cacheHits += 1;
+          cacheSavedRemoteBytes += length;
+        } else {
+          cacheMisses += 1;
+          let read;
+          if (length === 0) {
+            read = { canonicalPath:file.canonicalPath ?? file.path, content:Buffer.alloc(0), startByte:0, endByte:0, size:0, mtime:Number(file.mtime), truncated:false };
+          } else if (typeof reader.readBuffer === 'function') {
+            read = await reader.readBuffer(file.canonicalPath ?? file.path, start, length);
+          } else if (typeof this.serverRuntime.readRemoteBuffer === 'function') {
+            read = await this.serverRuntime.readRemoteBuffer(plugin, file.canonicalPath ?? file.path, start, length);
+          } else {
+            throw new AppError('CAPABILITY_NOT_IMPLEMENTED', '当前 Server Runtime 不支持二进制日志读取。');
+          }
+          const content = Buffer.isBuffer(read.content) ? read.content : Buffer.from(read.content ?? []);
+          assertLogReadIdentity(file, read);
+          try {
+            expanded = await this.expandLogArchive({
+              filePath:read.canonicalPath,
+              content,
+              maxExpandedBytes:remainingExpanded,
+              maxEntries:Math.max(1, remainingArchiveEntries),
+              maxEntryBytes:Math.min(32 * 1024 * 1024, remainingExpanded),
+              maxCompressionRatio:100,
+              allowArchives:includeArchives,
+            });
+          } catch (error) {
+            if (!String(error?.code ?? '').startsWith('LOG_ARCHIVE_')) throw error;
+            const failedEntries = Math.min(
+              Math.max(0, remainingArchiveEntries),
+              Math.max(0, Math.floor(Number(error?.details?.entriesScanned) || 0)),
+            );
+            const failedExpandedBytes = Math.min(
+              Math.max(0, remainingExpanded),
+              Math.max(0, Math.floor(Number(error?.details?.expandedBytes) || 0)),
+            );
+            archiveEntriesScanned += failedEntries;
+            expandedBytes += failedExpandedBytes;
+            if (error.code === 'LOG_ARCHIVE_DISABLED') {
+              skipped.push({ path:file.path, code:'ARCHIVES_EXCLUDED' });
+            } else {
+              skipped.push({ path:file.path, code:error.code, details:error.details ?? null });
+              truncationReasons.add('archiveRejected');
+            }
+            if (archiveEntriesScanned >= maxArchiveEntries) truncationReasons.add('maxArchiveEntries');
+            if (expandedBytes >= expandedBudget) truncationReasons.add('maxExpandedBytes');
+            scannedBytes += content.length;
+            remoteBytesRead += content.length;
+            continue;
+          }
+          this.logSnapshotCache.set(cacheKey, expanded);
+          remoteBytesRead += content.length;
+        }
+
+        scannedBytes += expanded.inputBytes;
+        expandedBytes += expanded.expandedBytes;
+        scannedFiles += 1;
+        if (expanded.archiveType !== 'plain') {
+          archivesScanned += 1;
+          archiveEntriesScanned += expanded.entriesScanned;
+        }
+        for (const warning of expanded.warnings) skipped.push({ path:file.path, archiveMember:warning.archiveEntry, code:warning.code });
+        if (expanded.truncated) truncationReasons.add('archiveEntriesSkipped');
+
+        for (const snapshot of expanded.snapshots) {
+          const search = searchLogSnapshots({
+            snapshots:[snapshot],
+            keywords:queries,
+            keywordMode:modeValue === 'all' ? 'AND' : 'OR',
+            caseSensitive,
+            beforeLines,
+            afterLines,
+            maxMatches:Math.max(0, maxMatches - matches.length),
+          });
+          totalMatches += search.totalMatches;
+          const lineNumberScope = snapshot.archiveEntry ? 'archiveMember' : start === 0 ? 'file' : 'scannedTail';
+          for (const match of search.matches) {
+            matches.push({
+              ...(file.fileId ? { fileId:file.fileId } : {}),
+              relativePath:file.relativePath,
+              path:file.canonicalPath ?? file.path,
+              ...(snapshot.archiveEntry ? { archiveMember:snapshot.archiveEntry } : {}),
+              lineNumber:match.lineNumber,
+              lineNumberScope,
+              scanStartByte:start,
+              lineOffset:match.lineNumber - 1,
+              text:capText(match.text, 4096).text,
+              matchedQueries:match.matchedKeywords,
+            });
+          }
+          const mappedContexts = search.contexts.map((context) => ({
+            ...(file.fileId ? { fileId:file.fileId } : {}),
+            relativePath:file.relativePath,
+            path:file.canonicalPath ?? file.path,
+            ...(snapshot.archiveEntry ? { archiveMember:snapshot.archiveEntry } : {}),
+            lineNumberScope,
+            scanStartByte:start,
+            startLine:context.startLine,
+            endLine:context.endLine,
+            matchLineNumbers:context.matchLineNumbers,
+            lines:context.lines.map((line) => ({
+              lineNumber:line.lineNumber,
+              text:line.text,
+              isMatch:line.isMatch,
+              matchedQueries:line.matchedKeywords,
+            })),
+          }));
+          const bounded = boundedContexts(mappedContexts, Math.max(0, LOG_SEARCH_MAX_CONTEXT_BYTES - contextBytes));
+          contexts.push(...bounded.contexts);
+          contextBytes += bounded.bytes;
+          if (bounded.truncated) truncationReasons.add('outputBytes');
+          if (search.truncated) truncationReasons.add('maxMatches');
+        }
+        coverage.push({
+          ...(file.fileId ? { fileId:file.fileId } : {}),
+          path:file.canonicalPath ?? file.path,
+          relativePath:file.relativePath,
+          scanStartByte:start,
+          scannedBytes:expanded.inputBytes,
+          probeBytesRead,
+          expandedBytes:expanded.expandedBytes,
+          complete:start === 0 && !expanded.truncated,
+        });
+      }
+
+      if (scannedBytes >= scanBudget && scannedFiles < files.length) truncationReasons.add('maxScanBytes');
+      if (expandedBytes >= expandedBudget && scannedFiles < files.length) truncationReasons.add('maxExpandedBytes');
+      const cache = this.logSnapshotCache.stats();
+      return {
+        selection:{ ...selection, includeArchives },
+        query:{ count:queries.length, mode:modeValue, caseSensitive, literal:true },
+        matches,
+        contexts,
+        matchCount:matches.length,
+        totalMatches,
+        filesConsidered:files.length,
+        scannedFiles,
+        scannedBytes,
+        remoteBytesRead,
+        expandedBytes,
+        archivesScanned,
+        archiveEntriesScanned,
+        coverage,
+        skipped,
+        cache:{ hits:cacheHits, misses:cacheMisses, savedRemoteBytes:cacheSavedRemoteBytes, entries:cache.entries, bytes:cache.bytes, ttlMs:cache.ttlMs },
+        truncated:selectionTruncated || truncationReasons.size > 0,
+        truncationReasons:[...truncationReasons],
+        limitsApplied:{
+          maxLines:maxMatches,
+          maxMatches,
+          maxFiles,
+          maxDepth,
+          maxScanBytes:scanBudget,
+          maxExpandedBytes:expandedBudget,
+          maxArchiveEntries,
+          beforeLines,
+          afterLines,
+        },
+      };
+    }));
   }
 
   async readConfig(plugin, args) {
@@ -345,12 +978,22 @@ export class ServerOperations {
       return this.serverRuntime.withRemoteReadSession(plugin, operation);
     }
     return operation({
+      statPath: (remotePath) => this.serverRuntime.statRemotePath(plugin, remotePath),
       listDirectory: (remotePath) => this.serverRuntime.listRemoteDirectory(plugin, remotePath),
       readRange: (remotePath, start, maxBytes) => this.serverRuntime.readRemoteRange(plugin, remotePath, start, maxBytes),
+      ...(typeof this.serverRuntime.readRemoteBuffer === 'function'
+        ? { readBuffer:(remotePath, start, maxBytes) => this.serverRuntime.readRemoteBuffer(plugin, remotePath, start, maxBytes) }
+        : {}),
     });
   }
 
-  async findFilesWithReader(reader, { path: remotePath, pattern = '*', maxDepth = 6, maxResults = 500 } = {}) {
+  async findFilesWithReader(reader, {
+    path: remotePath,
+    pattern = '*',
+    maxDepth = 6,
+    maxResults = 500,
+    acceptsFile = null,
+  } = {}) {
     const root = normalizeRemotePath(remotePath);
     const filter = namePattern(pattern);
     const depthLimit = Math.min(Math.max(Number(maxDepth) || 0, 0), 12);
@@ -373,7 +1016,8 @@ export class ServerOperations {
         }
         for (const entry of entries) {
           visitedEntries += 1;
-          if (entry.isFile && !entry.isSymbolicLink && globMatches(filter, entry.name)) {
+          if (entry.isFile && !entry.isSymbolicLink && entry.canonicalPath
+            && globMatches(filter, entry.name) && (!acceptsFile || acceptsFile(entry))) {
             matches.push({ path:entry.canonicalPath, name:entry.name, size:entry.size, mtime:entry.mtime });
             if (matches.length >= resultLimit) break;
           }

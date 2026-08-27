@@ -16,6 +16,8 @@ const SFTP_CLEANUP_GRACE_MS = 1_000;
 const SFTP_READ_INACTIVITY_MS = 30_000;
 const SFTP_READ_SESSION_TIMEOUT_MS = 120_000;
 const SFTP_READ_CHUNK_BYTES = 64 * 1024;
+const SFTP_READ_WINDOW = 8;
+const SFTP_BINARY_READ_MAX_BYTES = 64 * 1024 * 1024;
 const SFTP_METADATA_CONCURRENCY = 16;
 const NON_RETRYABLE_RECONNECT_ERRORS = new Set([
   'SSH_AUTH_FAILED',
@@ -247,9 +249,22 @@ function sftpLstat(sftp, remotePath) {
   });
 }
 
-function sftpReaddir(sftp, remotePath) {
+function sftpOpenDirectory(sftp, remotePath) {
   return new Promise((resolve, reject) => {
-    sftp.readdir(remotePath, (error, entries) => (error ? reject(error) : resolve(entries)));
+    sftp.opendir(remotePath, (error, handle) => (error ? reject(error) : resolve(handle)));
+  });
+}
+
+function sftpReadDirectory(sftp, handle) {
+  return new Promise((resolve, reject) => {
+    sftp.readdir(handle, (error, entries) => {
+      if (String(error?.code ?? '') === String(ssh2.utils.sftp.STATUS_CODE.EOF)) {
+        resolve(null);
+        return;
+      }
+      if (error) reject(error);
+      else resolve(entries);
+    });
   });
 }
 
@@ -265,10 +280,16 @@ function sftpOpen(sftp, remotePath, flags = 'r') {
   });
 }
 
-function sftpRead(sftp, handle, buffer, position) {
+function sftpRead(sftp, handle, buffer, offset, length, position) {
   return new Promise((resolve, reject) => {
-    sftp.read(handle, buffer, 0, buffer.length, position, (error, bytesRead) =>
-      (error ? reject(error) : resolve(bytesRead)));
+    sftp.read(handle, buffer, offset, length, position, (error, bytesRead) => {
+      if (String(error?.code ?? '') === String(ssh2.utils.sftp.STATUS_CODE.EOF)) {
+        resolve(0);
+        return;
+      }
+      if (error) reject(error);
+      else resolve(bytesRead);
+    });
   });
 }
 
@@ -276,6 +297,30 @@ function sftpCloseHandle(sftp, handle) {
   return new Promise((resolve, reject) => {
     sftp.close(handle, (error) => (error ? reject(error) : resolve()));
   });
+}
+
+async function sftpReadDirectoryBounded(sftp, remotePath, maxEntries) {
+  const handle = await sftpOpenDirectory(sftp, remotePath);
+  const entries = [];
+  let primaryError = null;
+  try {
+    while (entries.length < maxEntries) {
+      const page = await sftpReadDirectory(sftp, handle);
+      if (page === null) break;
+      if (page.length === 0) break;
+      const remaining = maxEntries - entries.length;
+      entries.push(...page.slice(0, remaining));
+    }
+  } catch (error) {
+    primaryError = error;
+  }
+  try {
+    await sftpCloseHandle(sftp, handle);
+  } catch (error) {
+    primaryError ??= error;
+  }
+  if (primaryError) throw primaryError;
+  return entries;
 }
 
 function throwIfAborted(signal) {
@@ -288,33 +333,80 @@ function throwIfAborted(signal) {
 async function sftpReadRange(sftp, remotePath, start, maxBytes, { signal, abort } = {}) {
   if (maxBytes <= 0) return Buffer.alloc(0);
   throwIfAborted(signal);
+  const output = Buffer.allocUnsafe(maxBytes);
   const handle = await sftpOpen(sftp, remotePath);
-  const chunks = [];
   let total = 0;
   let primaryError = null;
+
+  const readWithTimeout = async (bufferOffset, length, position) => {
+    throwIfAborted(signal);
+    let inactivityTimer;
+    let abortListener;
+    const read = sftpRead(sftp, handle, output, bufferOffset, length, position);
+    const inactivity = new Promise((_, reject) => {
+      inactivityTimer = setTimeout(() => {
+        const error = new AppError('LOG_SCAN_TIMEOUT', '读取服务器日志超时。');
+        abort?.(error);
+        reject(error);
+      }, SFTP_READ_INACTIVITY_MS);
+      inactivityTimer.unref?.();
+    });
+    const interrupted = new Promise((_, reject) => {
+      if (!signal) return;
+      abortListener = () => reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new AppError('TRANSFER_INTERRUPTED', 'SSH/SFTP 文件操作已中止。'),
+      );
+      signal.addEventListener('abort', abortListener, { once:true });
+      if (signal.aborted) abortListener();
+    });
+    try {
+      return await Promise.race([read, inactivity, interrupted]);
+    } finally {
+      clearTimeout(inactivityTimer);
+      if (abortListener) signal?.removeEventListener('abort', abortListener);
+    }
+  };
+
+  const readChunk = async (relativeStart, length) => {
+    let filled = 0;
+    while (filled < length) {
+      const bytesRead = await readWithTimeout(
+        relativeStart + filled,
+        length - filled,
+        start + relativeStart + filled,
+      );
+      if (!Number.isSafeInteger(bytesRead) || bytesRead < 0 || bytesRead > length - filled) {
+        throw new AppError('TRANSFER_FAILED', '服务器返回了无效的文件读取长度。');
+      }
+      if (bytesRead === 0) break;
+      filled += bytesRead;
+    }
+    return filled;
+  };
+
   try {
     while (total < maxBytes) {
       throwIfAborted(signal);
-      const buffer = Buffer.allocUnsafe(Math.min(SFTP_READ_CHUNK_BYTES, maxBytes - total));
-      let inactivityTimer;
-      const read = sftpRead(sftp, handle, buffer, start + total);
-      const inactivity = new Promise((_, reject) => {
-        inactivityTimer = setTimeout(() => {
-          const error = new AppError('LOG_SCAN_TIMEOUT', '读取服务器日志超时。');
-          abort?.(error);
-          reject(error);
-        }, SFTP_READ_INACTIVITY_MS);
-        inactivityTimer.unref?.();
-      });
-      let bytesRead;
-      try {
-        bytesRead = await Promise.race([read, inactivity]);
-      } finally {
-        clearTimeout(inactivityTimer);
+      const batch = [];
+      let scheduled = total;
+      while (batch.length < SFTP_READ_WINDOW && scheduled < maxBytes) {
+        const length = Math.min(SFTP_READ_CHUNK_BYTES, maxBytes - scheduled);
+        batch.push({ length, promise:readChunk(scheduled, length) });
+        scheduled += length;
       }
-      if (bytesRead === 0) break;
-      chunks.push(buffer.subarray(0, bytesRead));
-      total += bytesRead;
+      const settled = await Promise.allSettled(batch.map((item) => item.promise));
+      const rejected = settled.find((result) => result.status === 'rejected');
+      if (rejected) throw rejected.reason;
+      let reachedEof = false;
+      for (let index = 0; index < batch.length; index += 1) {
+        if (reachedEof) break;
+        const bytesRead = settled[index].value;
+        total += bytesRead;
+        if (bytesRead < batch[index].length) reachedEof = true;
+      }
+      if (reachedEof) break;
     }
   } catch (error) {
     primaryError = error;
@@ -328,7 +420,7 @@ async function sftpReadRange(sftp, remotePath, start, maxBytes, { signal, abort 
   }
   if (primaryError) throw primaryError;
   throwIfAborted(signal);
-  return Buffer.concat(chunks, total);
+  return total === output.length ? output : Buffer.from(output.subarray(0, total));
 }
 
 function sftpRename(sftp, from, to) {
@@ -445,10 +537,17 @@ async function readRemoteSnapshot(sftp, remotePath) {
   }
 }
 
+async function statRemotePathOnSftp(sftp, remotePath) {
+  const normalized = normalizeAbsoluteRemotePath(remotePath);
+  const snapshot = await readRemoteSnapshot(sftp, normalized);
+  if (!snapshot.exists) throw new AppError('SOURCE_NOT_FOUND', '服务器路径不存在。');
+  return snapshot;
+}
+
 async function listRemoteDirectoryOnSftp(sftp, remotePath, { offset = 0, limit = 10_000, sortByName = false } = {}) {
   const normalized = normalizeAbsoluteRemotePath(remotePath);
   const canonicalRoot = await sftpRealpath(sftp, normalized);
-  const entries = await sftpReaddir(sftp, canonicalRoot);
+  const entries = await sftpReadDirectoryBounded(sftp, canonicalRoot, 10_001);
   const safeOffset = Math.max(Number(offset) || 0, 0);
   const safeLimit = Math.min(Math.max(Number(limit) || 1, 1), 10_000);
   const ordered = sortByName ? [...entries].sort((left, right) => left.filename.localeCompare(right.filename)) : entries;
@@ -480,29 +579,63 @@ async function listRemoteDirectoryOnSftp(sftp, remotePath, { offset = 0, limit =
   return result;
 }
 
-async function readRemoteRangeOnSftp(sftp, remotePath, start = 0, maxBytes = 262_144, lifecycle = {}) {
+async function readRemoteBufferOnSftp(sftp, remotePath, start = 0, maxBytes = 262_144, lifecycle = {}) {
+  const requestedLimit = Number(maxBytes);
+  if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > SFTP_BINARY_READ_MAX_BYTES) {
+    throw new AppError('INVALID_ARGUMENT', '二进制读取范围必须在 1 字节到 64 MiB 之间。', {
+      maxBytes: SFTP_BINARY_READ_MAX_BYTES,
+    });
+  }
   const normalized = normalizeAbsoluteRemotePath(remotePath);
   const canonical = await sftpRealpath(sftp, normalized);
   const stats = await sftpStat(sftp, canonical);
   if (!stats.isFile()) throw new AppError('SOURCE_NOT_ALLOWED', '目标不是普通文件。');
-  const offset = Math.min(Math.max(Number(start) || 0, 0), Number(stats.size));
-  const limit = Math.min(Math.max(Number(maxBytes) || 1, 1), 1024 * 1024);
+  const initialSize = Number(stats.size);
+  const offset = Math.min(Math.max(Number(start) || 0, 0), initialSize);
+  const expectedBytes = Math.min(requestedLimit, initialSize - offset);
   const buffer = await sftpReadRange(
     sftp,
     canonical,
     offset,
-    Math.min(limit, Number(stats.size) - offset),
+    expectedBytes,
     lifecycle,
   );
+  if (buffer.length !== expectedBytes) {
+    throw new AppError('SOURCE_CHANGED', '服务器文件在读取期间发生变化，请重新搜索。', { path:canonical });
+  }
+  let currentStats;
+  try {
+    currentStats = await sftpStat(sftp, canonical);
+  } catch (error) {
+    const mapped = transferError(error);
+    if (mapped.code === 'SOURCE_NOT_FOUND') {
+      throw new AppError('SOURCE_CHANGED', '服务器文件在读取期间发生变化，请重新搜索。', { path:canonical });
+    }
+    throw mapped;
+  }
+  if (
+    !currentStats.isFile()
+    || Number(currentStats.size) !== initialSize
+    || Number(currentStats.mtime ?? 0) !== Number(stats.mtime ?? 0)
+    || Number(currentStats.mode ?? 0) !== Number(stats.mode ?? 0)
+  ) {
+    throw new AppError('SOURCE_CHANGED', '服务器文件在读取期间发生变化，请重新搜索。', { path:canonical });
+  }
   return {
     canonicalPath: canonical,
-    content: buffer.toString('utf8'),
+    content: buffer,
     startByte: offset,
     endByte: offset + buffer.length,
-    size: Number(stats.size),
-    truncated: offset + buffer.length < Number(stats.size),
+    size: initialSize,
+    truncated: offset + buffer.length < initialSize,
     mtime: Number(stats.mtime ?? 0),
   };
+}
+
+async function readRemoteRangeOnSftp(sftp, remotePath, start = 0, maxBytes = 262_144, lifecycle = {}) {
+  const limit = Math.trunc(Math.min(Math.max(Number(maxBytes) || 1, 1), 1024 * 1024));
+  const result = await readRemoteBufferOnSftp(sftp, remotePath, start, limit, lifecycle);
+  return { ...result, content:result.content.toString('utf8') };
 }
 
 async function requireRemoteSnapshot(sftp, remotePath, expected) {
@@ -1145,21 +1278,19 @@ export class SshBroker {
 
   async withRemoteReadSession(projectId, operation) {
     if (typeof operation !== 'function') throw new AppError('INVALID_ARGUMENT', '服务器只读会话操作无效。');
-    return this.withInternalSftp(projectId, async (sftp, _session, lifecycle) => operation({
+    return this.withInternalSftp(projectId, async (sftp, session, lifecycle) => operation({
+      generation: session.generation,
+      statPath: (remotePath) => statRemotePathOnSftp(sftp, remotePath),
       listDirectory: (remotePath) => listRemoteDirectoryOnSftp(sftp, remotePath),
       readRange: (remotePath, start, maxBytes) => readRemoteRangeOnSftp(sftp, remotePath, start, maxBytes, lifecycle),
+      readBuffer: (remotePath, start, maxBytes) => readRemoteBufferOnSftp(sftp, remotePath, start, maxBytes, lifecycle),
     }), {
       timeoutMs: SFTP_READ_SESSION_TIMEOUT_MS,
     });
   }
 
   async statRemotePath(projectId, remotePath) {
-    const normalized = normalizeAbsoluteRemotePath(remotePath);
-    return this.withInternalSftp(projectId, async (sftp) => {
-      const snapshot = await readRemoteSnapshot(sftp, normalized);
-      if (!snapshot.exists) throw new AppError('SOURCE_NOT_FOUND', '服务器路径不存在。');
-      return snapshot;
-    });
+    return this.withInternalSftp(projectId, (sftp) => statRemotePathOnSftp(sftp, remotePath));
   }
 
   async listRemoteDirectory(projectId, remotePath, options = {}) {
@@ -1169,6 +1300,13 @@ export class SshBroker {
   async readRemoteRange(projectId, remotePath, start = 0, maxBytes = 262_144) {
     return this.withInternalSftp(projectId, (sftp, _session, lifecycle) =>
       readRemoteRangeOnSftp(sftp, remotePath, start, maxBytes, lifecycle));
+  }
+
+  async readRemoteBuffer(projectId, remotePath, start = 0, maxBytes = 262_144) {
+    return this.withInternalSftp(projectId, (sftp, _session, lifecycle) =>
+      readRemoteBufferOnSftp(sftp, remotePath, start, maxBytes, lifecycle), {
+      timeoutMs: SFTP_READ_SESSION_TIMEOUT_MS,
+    });
   }
 
   async downloadRemoteFile(projectId, remotePath, localPath, maxBytes = 100 * 1024 * 1024) {

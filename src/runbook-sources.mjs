@@ -42,7 +42,9 @@ export function sourcesFromRunbook(content, plugin) {
       displayName: `${plugin.displayName}${kind === 'log' ? '日志' : '配置'}`,
       kind,
       root,
-      patterns: kind === 'log' ? ['*.log', '*.txt'] : ['*.yml', '*.yaml', '*.properties', '*.conf', '*.json', '.env'],
+      patterns: kind === 'log'
+        ? ['*.log', '*.txt', '*.log.*', '*.txt.gz', '*.out', '*.out.gz', '*.zip', '*.gz']
+        : ['*.yml', '*.yaml', '*.properties', '*.conf', '*.json', '.env'],
       maxFileBytes: 100 * 1024 * 1024,
       redactSecrets: kind === 'config',
     });

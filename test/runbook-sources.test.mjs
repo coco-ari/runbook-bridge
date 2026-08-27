@@ -26,7 +26,9 @@ test('README registers human-readable log and config locations for one Server pl
     { kind: 'log', root: '/var/log/my-app' },
     { kind: 'config', root: '/etc/my-app' },
   ]);
-  assert.deepEqual(sources[0].patterns, ['*.log', '*.txt']);
+  assert.deepEqual(sources[0].patterns, [
+    '*.log', '*.txt', '*.log.*', '*.txt.gz', '*.out', '*.out.gz', '*.zip', '*.gz',
+  ]);
   assert.equal(sources[1].redactSecrets, true);
 });
 

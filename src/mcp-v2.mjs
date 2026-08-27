@@ -12,7 +12,7 @@ import { OFFSET_CURSOR_INPUT_SCHEMA, REDIS_CURSOR_INPUT_SCHEMA } from './paginat
 const dataRoot = defaultDataRoot();
 const clientInstanceId = crypto.randomBytes(16).toString('hex');
 let brokerHandshake = null;
-const instructions = `这是一个插件化 Agent 运维入口。项目下的环境彼此隔离；每次开始工作必须先调用 open_environment，读取精准的环境运维说明、插件目录和 contextToken。桌面应用不会因为 Agent 调用而连接环境；插件未连接时，请用户在桌面应用点击“连接环境”。环境部分连接时，仅调用明确显示 connected 的插件。Server 的普通文件和目录读取不受数据源目录限制，也不因内容敏感而拦截；读取前应结合服务器负载合理收窄路径、深度、文件数和扫描字节，禁止读取设备、FIFO、Socket 等特殊文件。上传、写入、移动、删除、服务控制和任意 Shell 都必须由用户在桌面端逐次确认，确认后参数或目标状态变化会要求重新确认。MySQL 插件固定一个数据库且只允许结构、SELECT、EXPLAIN；Redis 只允许已登记 patternId 下的 SCAN、读取和 TTL。`;
+const instructions = `这是一个插件化 Agent 运维入口。项目下的环境彼此隔离；每次开始工作必须先调用 open_environment，读取精准的环境运维说明、插件目录和 contextToken。桌面应用不会因为 Agent 调用而连接环境；插件未连接时，请用户在桌面应用点击“连接环境”。环境部分连接时，仅调用明确显示 connected 的插件。Server 的普通文件和目录读取不受数据源目录限制，也不因内容敏感而拦截；读取前应结合服务器负载合理收窄路径、深度、文件数和扫描字节，禁止读取设备、FIFO、Socket 等特殊文件。日志排查优先调用 server_search_logs，让工具在一次请求中完成目录发现、多条件匹配和 .zip/.gz 归档内搜索；不要为这些只读工作改用 Shell、下载或本地解压。上传、写入、移动、删除、服务控制和任意 Shell 都必须由用户在桌面端逐次确认，确认后参数或目标状态变化会要求重新确认。MySQL 插件固定一个数据库且只允许结构、SELECT、EXPLAIN；Redis 只允许已登记 patternId 下的 SCAN、读取和 TTL。`;
 
 const scope = {
   projectId: { type: 'string', minLength: 2, maxLength: 63 },
@@ -23,12 +23,12 @@ const scope = {
   approvalToken: { type: 'string', minLength: 16, maxLength: 256 },
 };
 
-function tool(name, description, required, properties = {}) {
-  return { name, description, inputSchema: { type: 'object', additionalProperties: false, required, properties } };
+function tool(name, description, required, properties = {}, constraints = {}) {
+  return { name, description, inputSchema: { type: 'object', additionalProperties: false, required, properties, ...constraints } };
 }
 
-function scoped(name, description, extraRequired = [], extra = {}) {
-  return tool(name, description, ['projectId', 'environmentId', 'pluginInstanceId', 'contextToken', ...extraRequired], { ...scope, ...extra });
+function scoped(name, description, extraRequired = [], extra = {}, constraints = {}) {
+  return tool(name, description, ['projectId', 'environmentId', 'pluginInstanceId', 'contextToken', ...extraRequired], { ...scope, ...extra }, constraints);
 }
 
 const tools = [
@@ -58,7 +58,38 @@ const tools = [
   scoped('server_list_sources', '列出 Server 插件登记的日志、配置和下载数据源。不会联网。'),
   scoped('server_list_files', '列出已登记 sourceId 根目录内的受限文件。', ['sourceId'], { sourceId: { type: 'string' }, cursor: OFFSET_CURSOR_INPUT_SCHEMA, limit: { type: 'integer', minimum: 1, maximum: 200 } }),
   scoped('server_read_log', '通过短期 fileId 分页或读取日志尾部。', ['fileId'], { fileId: { type: 'string' }, cursor: OFFSET_CURSOR_INPUT_SCHEMA, maxBytes: { type: 'integer', minimum: 1, maximum: 1048576 }, tail: { type: 'boolean' } }),
-  scoped('server_search_logs', '在最多 10 个已列出的 fileId 中执行有界字面量搜索。', ['fileIds', 'contains'], { fileIds: { type: 'array', minItems: 1, maxItems: 10, items: { type: 'string' } }, contains: { type: 'string', minLength: 1, maxLength: 1024 }, maxLines: { type: 'integer', minimum: 1, maximum: 200 }, maxScanBytes: { type: 'integer', minimum: 65536, maximum: 8388608 } }),
+  scoped(
+    'server_search_logs',
+    '一次调用即可在 fileIds、已登记 sourceId 或任意绝对 path 中按一个或多个字面量条件执行有界日志搜索；原生读取 .zip/.gz，无需 Shell、无需先下载。fileIds/sourceId/path 三选一，contains/queries 二选一。',
+    [],
+    {
+      fileIds: { type:'array', minItems:1, maxItems:10, items:{ type:'string' }, description:'兼容旧版：搜索已经列出的日志 fileId。' },
+      sourceId: { type:'string', minLength:1, maxLength:256, description:'搜索一个已登记日志数据源。' },
+      path: { type:'string', minLength:1, maxLength:4096, description:'搜索任意绝对日志文件或目录。' },
+      contains: { type:'string', minLength:1, maxLength:1024, description:'兼容旧版：单个字面量查询，UTF-8 最多 1024 字节。' },
+      queries: { type:'array', minItems:1, maxItems:10, items:{ type:'string', minLength:1, maxLength:1024 }, description:'一次搜索的多个字面量查询；每项 UTF-8 最多 1024 字节，合计最多 4096 字节。' },
+      matchMode: { type:'string', enum:['any','all'], default:'any', description:'any 匹配任一查询；all 要求同一行匹配全部查询。' },
+      caseSensitive: { type:'boolean', default:true },
+      pattern: { type:'string', minLength:1, maxLength:256, description:'仅匹配单个文件名的 glob。' },
+      maxDepth: { type:'integer', minimum:0, maximum:12 },
+      maxFiles: { type:'integer', minimum:1, maximum:100 },
+      maxMatches: { type:'integer', minimum:1, maximum:500 },
+      maxLines: { type:'integer', minimum:1, maximum:500, description:'maxMatches 的旧版别名；不要与 maxMatches 同时传入。' },
+      beforeLines: { type:'integer', minimum:0, maximum:50, default:2 },
+      afterLines: { type:'integer', minimum:0, maximum:50, default:2 },
+      includeArchives: { type:'boolean', default:true, description:'是否原生读取匹配的 ZIP/Gzip 日志归档。' },
+      maxScanBytes: { type:'integer', minimum:65536, maximum:67108864 },
+      maxExpandedBytes: { type:'integer', minimum:65536, maximum:134217728 },
+      maxArchiveEntries: { type:'integer', minimum:1, maximum:128, description:'单次请求内所有归档合计最多处理的条目数。' },
+    },
+    {
+      allOf: [
+        { oneOf: [{ required:['fileIds'] }, { required:['sourceId'] }, { required:['path'] }] },
+        { oneOf: [{ required:['contains'] }, { required:['queries'] }] },
+      ],
+      not: { required:['maxMatches','maxLines'] },
+    },
+  ),
   scoped('server_read_config', '读取已登记的配置 fileId，原样返回内容，不隐藏敏感字段。', ['fileId'], { fileId: { type: 'string' }, cursor: OFFSET_CURSOR_INPUT_SCHEMA, maxBytes: { type: 'integer', minimum: 1, maximum: 262144 } }),
   scoped('server_stat', '查看任意服务器绝对路径的类型、大小、权限和修改时间。', ['path'], { path:{ type:'string', minLength:1, maxLength:4096 } }),
   scoped('server_list_directory', '分页列出任意服务器目录；不读取目录中的文件内容。', ['path'], { path:{ type:'string', minLength:1, maxLength:4096 }, cursor:OFFSET_CURSOR_INPUT_SCHEMA, limit:{ type:'integer', minimum:1, maximum:500 } }),

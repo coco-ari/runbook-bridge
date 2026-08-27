@@ -7,6 +7,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ServerOperations } from '../src/server-operations.mjs';
 import { MysqlPluginRuntime } from '../src/mysql-plugin-runtime.mjs';
 import { RedisPluginRuntime } from '../src/redis-plugin-runtime.mjs';
+import { capabilityRule } from '../src/operation-gate.mjs';
 
 function assertCursorMatchesSchema(tool, cursor) {
   const schema = tool.inputSchema.properties.cursor;
@@ -48,6 +49,43 @@ test('V2 MCP exposes unrestricted bounded reads and confirmation-gated server ch
   assert.equal('host' in mysql.inputSchema.properties, false);
   assert.equal('database' in mysql.inputSchema.properties, false);
   assert.equal(mysql.inputSchema.properties.sql.maxLength, 65_536);
+  const searchLogs = listed.tools.find((tool) => tool.name === 'server_search_logs');
+  assert.match(client.getInstructions(), /日志排查优先调用 server_search_logs/u);
+  assert.match(client.getInstructions(), /不要为这些只读工作改用 Shell、下载或本地解压/u);
+  assert.match(searchLogs.description, /一次调用/u);
+  assert.match(searchLogs.description, /多个字面量条件/u);
+  assert.match(searchLogs.description, /\.zip\/\.gz/u);
+  assert.match(searchLogs.description, /无需 Shell/u);
+  assert.match(searchLogs.description, /无需先下载/u);
+  assert.deepEqual(searchLogs.inputSchema.required, ['projectId','environmentId','pluginInstanceId','contextToken']);
+  assert.deepEqual(
+    searchLogs.inputSchema.allOf.map((group) => group.oneOf.map((branch) => branch.required)),
+    [[['fileIds'],['sourceId'],['path']],[['contains'],['queries']]],
+  );
+  const exactlyOneBranch = (group, args) => group.oneOf
+    .filter((branch) => branch.required.every((name) => Object.hasOwn(args, name)))
+    .length === 1;
+  const legacySearch = {fileIds:['legacy-file-id'],contains:'ERROR'};
+  assert.ok(searchLogs.inputSchema.allOf.every((group) => exactlyOneBranch(group, legacySearch)));
+  assert.equal(exactlyOneBranch(searchLogs.inputSchema.allOf[0], {fileIds:['one'],path:'/logs'}), false);
+  assert.equal(exactlyOneBranch(searchLogs.inputSchema.allOf[1], {contains:'one',queries:['two']}), false);
+  assert.deepEqual(searchLogs.inputSchema.not, {required:['maxMatches','maxLines']});
+  const searchProperties = searchLogs.inputSchema.properties;
+  assert.deepEqual(searchProperties.matchMode.enum, ['any','all']);
+  assert.equal(searchProperties.matchMode.default, 'any');
+  assert.equal(searchProperties.caseSensitive.type, 'boolean');
+  assert.equal(searchProperties.caseSensitive.default, true);
+  assert.equal(searchProperties.includeArchives.default, true);
+  assert.deepEqual([searchProperties.maxDepth.minimum,searchProperties.maxDepth.maximum], [0,12]);
+  assert.deepEqual([searchProperties.maxFiles.minimum,searchProperties.maxFiles.maximum], [1,100]);
+  assert.deepEqual([searchProperties.maxMatches.minimum,searchProperties.maxMatches.maximum], [1,500]);
+  assert.deepEqual([searchProperties.maxLines.minimum,searchProperties.maxLines.maximum], [1,500]);
+  assert.deepEqual([searchProperties.beforeLines.minimum,searchProperties.beforeLines.maximum], [0,50]);
+  assert.deepEqual([searchProperties.afterLines.minimum,searchProperties.afterLines.maximum], [0,50]);
+  assert.deepEqual([searchProperties.maxScanBytes.minimum,searchProperties.maxScanBytes.maximum], [65_536,64 * 1024 * 1024]);
+  assert.deepEqual([searchProperties.maxExpandedBytes.minimum,searchProperties.maxExpandedBytes.maximum], [65_536,128 * 1024 * 1024]);
+  assert.deepEqual([searchProperties.maxArchiveEntries.minimum,searchProperties.maxArchiveEntries.maximum], [1,128]);
+  assert.equal(capabilityRule('server','logs').label, '有界搜索服务器日志');
 
   const offsetCursorToolNames = [
     'server_list_files',
