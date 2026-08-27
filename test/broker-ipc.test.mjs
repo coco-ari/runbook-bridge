@@ -135,3 +135,24 @@ test('broker preserves legacy log search and forwards every bounded search field
   }, 2_000);
   assert.equal(invocations[2].args.path, '/var/log/app');
 });
+
+test('broker routes MySQL schema search through the existing describe capability', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-broker-schema-search-'));
+  t.after(() => fs.rm(root, {recursive:true,force:true}));
+  const token = await ensureBrokerToken(root);
+  const invocations = [];
+  const server = new BrokerServer({
+    dataRoot:root,
+    token,
+    v2Service:{invoke:(params,capability,args) => { invocations.push({params,capability,args}); return {accepted:true}; }},
+  });
+  await server.start();
+  t.after(() => server.stop());
+  const params = {
+    projectId:'project-one',environmentId:'production',pluginInstanceId:'mysql-main',contextToken:'context-token-1234',
+    keywords:['coupon','uid'],limit:25,
+  };
+  assert.deepEqual(await callBroker(root,'v2.mysqlSearchSchema',params,2000),{accepted:true});
+  assert.equal(invocations[0].capability,'describe');
+  assert.deepEqual(invocations[0].args,{operation:'search',keywords:['coupon','uid'],limit:25});
+});

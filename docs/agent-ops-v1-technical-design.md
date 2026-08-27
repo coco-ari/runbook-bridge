@@ -642,6 +642,7 @@ MySQL：
 
 ```text
 mysql_list_tables(cursor?, limit?)
+mysql_search_schema(keywords, limit?)
 mysql_describe_table
 mysql_query_readonly
 mysql_explain
@@ -1156,6 +1157,14 @@ SOURCE_NOT_ALLOWED
 PATH_OUTSIDE_SOURCE
 SENSITIVE_FILE_BLOCKED
 FILE_TOO_LARGE
+DATABASE_FUNCTION_NOT_ALLOWED
+DATABASE_QUERY_UNSUPPORTED
+DATABASE_UNKNOWN_COLUMN
+DATABASE_UNKNOWN_TABLE
+DATABASE_TABLE_UNAVAILABLE
+DATABASE_SYNTAX_ERROR
+DATABASE_QUERY_TIMEOUT
+DATABASE_OPERATION_FAILED
 QUERY_TIMEOUT
 RESULT_LIMIT_EXCEEDED
 AUDIT_UNAVAILABLE
@@ -1176,6 +1185,8 @@ AUDIT_COMMIT_FAILED
 | `error`（认证/身份/其他终止错误） | `PLUGIN_UNAVAILABLE`，并在 `causeCode` 给稳定根因 |
 
 `ENVIRONMENT_NOT_CONNECTED/ENVIRONMENT_CONNECTING` 仅用于桌面环境级连接 API 与汇总，不用于拒绝 partial 中的成功插件。`connected/partial/failed` 是环境汇总状态，不是工具错误码。错误对象只包含可展示摘要、恢复动作、operationId 和非秘密诊断层级。底层异常、完整地址、SQL 片段和凭据不得原样透传 Agent。
+
+MySQL 本地安全解析器无法识别的查询返回 `DATABASE_QUERY_UNSUPPORTED`；数据库驱动明确报告的语法错误返回 `DATABASE_SYNTAX_ERROR`。元数据预检无法区分表不存在与账号不可见时返回 `DATABASE_TABLE_UNAVAILABLE`。以上错误均不得包含原始 SQL、参数或驱动消息。
 
 ## 17. 对现有 v0.3.2 的迁移
 

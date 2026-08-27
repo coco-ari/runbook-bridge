@@ -6,13 +6,18 @@ const { Parser } = parserPackage;
 const parser = new Parser();
 const PURE_FUNCTIONS = new Set([
   'abs', 'avg', 'ceil', 'ceiling', 'coalesce', 'concat', 'concat_ws', 'convert', 'count',
-  'curdate', 'current_date', 'current_timestamp', 'date', 'date_add', 'date_format', 'date_sub',
+  'convert_tz', 'curdate', 'current_date', 'current_timestamp', 'date', 'date_add', 'date_format', 'date_sub',
   'day', 'extract', 'floor', 'greatest', 'group_concat', 'if', 'ifnull', 'json_extract',
-  'json_length', 'least', 'left', 'length', 'lower', 'lpad', 'max', 'min', 'month', 'now',
+  'json_length', 'json_unquote', 'json_valid', 'least', 'left', 'length', 'lower', 'lpad', 'max', 'min', 'month', 'now',
   'nullif', 'replace', 'right', 'round', 'rpad', 'substring', 'substring_index', 'sum',
   'timestampdiff', 'trim', 'upper', 'year',
 ]);
-const FORBIDDEN_TEXT = /\b(?:into\s+(?:out|dump)file|load_file\s*\(|sleep\s*\(|benchmark\s*\(|get_lock\s*\(|release_lock\s*\(|is_free_lock\s*\(|master_pos_wait\s*\(|name_const\s*\(|procedure\s+analyse|for\s+update|lock\s+in\s+share\s+mode)\b/i;
+const FORBIDDEN_FUNCTIONS = new Set([
+  'benchmark', 'get_lock', 'is_free_lock', 'load_file', 'master_pos_wait', 'name_const',
+  'release_all_locks', 'release_lock', 'sleep', 'source_pos_wait',
+  'wait_for_executed_gtid_set', 'wait_until_sql_thread_after_gtids',
+]);
+const FORBIDDEN_TEXT = /\b(?:into\s+(?:out|dump)file|procedure\s+analyse|for\s+(?:update|share)|lock\s+in\s+share\s+mode)\b/i;
 
 function functionName(node) {
   const parts = node?.name?.name;
@@ -44,7 +49,9 @@ function collectTables(ast) {
       tables.add(table);
     }
     if (node.type === 'aggr_func' && !PURE_FUNCTIONS.has(String(node.name ?? '').toLowerCase())) {
-      throw new AppError('HARD_POLICY_DENIED', `不允许使用聚合函数 ${String(node.name ?? 'unknown')}。`);
+      const name = String(node.name ?? 'unknown').toLowerCase();
+      if (FORBIDDEN_FUNCTIONS.has(name)) throw new AppError('HARD_POLICY_DENIED', `禁止使用高风险函数 ${name}。`);
+      throw new AppError('DATABASE_FUNCTION_NOT_ALLOWED', `不允许使用函数 ${name}。`, {function:name});
     }
   });
   return [...tables];
@@ -60,15 +67,20 @@ export function validateMysqlSelect(sql, { maxSqlBytes = 65_536 } = {}) {
   try {
     ast = parser.astify(statement, { database: 'MySQL' });
   } catch {
-    throw new AppError('HARD_POLICY_DENIED', 'SQL 无法按受支持的 MySQL 只读语法解析。');
+    throw new AppError('DATABASE_QUERY_UNSUPPORTED', 'SQL 无法按安全解析器识别，请检查语法或简化查询。');
   }
   if (Array.isArray(ast)) throw new AppError('HARD_POLICY_DENIED', '禁止多语句 SQL。');
   if (ast?.type !== 'select') throw new AppError('HARD_POLICY_DENIED', '只允许 SELECT 查询。');
   if (ast.locking_read || ast.into?.position) throw new AppError('HARD_POLICY_DENIED', '禁止锁定读或文件输出。');
   walk(ast, (node) => {
     if (node.type === 'function') {
+      if (node.name?.schema) throw new AppError('HARD_POLICY_DENIED', '禁止调用数据库限定的存储函数。');
       const name = functionName(node);
-      if (!PURE_FUNCTIONS.has(name)) throw new AppError('HARD_POLICY_DENIED', `不允许使用函数 ${name || 'unknown'}。`);
+      if (FORBIDDEN_FUNCTIONS.has(name)) throw new AppError('HARD_POLICY_DENIED', `禁止使用高风险函数 ${name}。`);
+      if (!PURE_FUNCTIONS.has(name)) {
+        const denied = name || 'unknown';
+        throw new AppError('DATABASE_FUNCTION_NOT_ALLOWED', `不允许使用函数 ${denied}。`, {function:denied});
+      }
     }
     if (['var', 'variable', 'assign'].includes(node.type)) throw new AppError('HARD_POLICY_DENIED', '禁止变量读取或写入。');
   });
@@ -97,4 +109,4 @@ export function applyMysqlRowLimit(validated, maxRows) {
   return parser.sqlify(ast, { database: 'MySQL' });
 }
 
-export const mysqlPolicyInternals = { walk, collectTables, functionName, PURE_FUNCTIONS, parser };
+export const mysqlPolicyInternals = { walk, collectTables, functionName, PURE_FUNCTIONS, FORBIDDEN_FUNCTIONS, parser };

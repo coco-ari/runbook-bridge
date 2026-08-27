@@ -18,8 +18,9 @@ const client = new Client({ name: 'packaged-mcp-smoke', version: '1.0.0' });
 try {
   await client.connect(transport);
   const result = await client.listTools();
-  assert.equal(result.tools.length, 34);
+  assert.equal(result.tools.length, 35);
   assert.ok(result.tools.some((tool) => tool.name === 'open_environment'));
+  assert.ok(result.tools.some((tool) => tool.name === 'mysql_search_schema'));
   assert.ok(!result.tools.some((tool) => tool.name === 'execute'));
   const logSearch = result.tools.find((tool) => tool.name === 'server_search_logs');
   assert.equal(logSearch.inputSchema.properties.queries.maxItems, 10);
@@ -61,4 +62,4 @@ const archiveResult = await execFileAsync(executable, ['--input-type=module', '-
   windowsHide: true,
 });
 assert.match(archiveResult.stdout, /archive-ok/u);
-console.log('Packaged MCP smoke passed (34 structured tools; archive runtime available)');
+console.log('Packaged MCP smoke passed (35 structured tools; archive runtime available)');

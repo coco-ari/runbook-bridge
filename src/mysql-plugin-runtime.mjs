@@ -17,12 +17,22 @@ const MYSQL_DATABASE_LIST_DENIED_CODES = new Set([
   'ER_SPECIFIC_ACCESS_DENIED_ERROR',
   'ER_ACCESS_DENIED_ERROR',
 ]);
+const MYSQL_SYNTAX_CODES = new Set(['ER_PARSE_ERROR', 'ER_SYNTAX_ERROR']);
 
 function mysqlError(error, fallbackMessage = 'MySQL 操作失败。') {
   if (error instanceof AppError) return error;
   const code = String(error?.code ?? '');
   const message = String(error?.message ?? '');
   if (code === 'ER_ACCESS_DENIED_ERROR') return new AppError('AUTHENTICATION_FAILED', 'MySQL 用户名或密码认证失败。');
+  if (code === 'ER_BAD_FIELD_ERROR') {
+    return new AppError('DATABASE_UNKNOWN_COLUMN', '查询引用了不存在的字段，请先使用 mysql_search_schema 或 mysql_describe_table 核对结构。');
+  }
+  if (code === 'ER_NO_SUCH_TABLE') {
+    return new AppError('DATABASE_UNKNOWN_TABLE', '查询引用了不存在的表，请先使用 mysql_search_schema 核对表名。');
+  }
+  if (MYSQL_SYNTAX_CODES.has(code)) {
+    return new AppError('DATABASE_SYNTAX_ERROR', 'MySQL 查询语法无效，请检查或简化 SQL。');
+  }
   if (MYSQL_TLS_CODES.has(code)) return new AppError('TLS_CERTIFICATE_INVALID', 'MySQL TLS 证书校验失败。');
   if (MYSQL_TIMEOUT_CODES.has(code) || /(?:query|operation|socket).*tim(?:e|ed) ?out/i.test(message)) {
     return new AppError('DATABASE_QUERY_TIMEOUT', 'MySQL 操作超时，当前连接已关闭并将按环境策略重新建立。');
@@ -129,6 +139,27 @@ function normalizeParams(params) {
     }
     throw new AppError('INVALID_ARGUMENT', 'SQL 参数只允许字符串、数字、布尔值或 null。');
   });
+}
+
+function normalizeSchemaKeywords(input) {
+  if (!Array.isArray(input) || input.length < 1 || input.length > 10) {
+    throw new AppError('INVALID_ARGUMENT', 'Schema 搜索需要 1 到 10 个关键词。');
+  }
+  const keywords = [];
+  const seen = new Set();
+  for (const value of input) {
+    if (typeof value !== 'string') throw new AppError('INVALID_ARGUMENT', 'Schema 搜索关键词必须是字符串。');
+    const keyword = value.trim().normalize('NFKC');
+    if (!keyword || [...keyword].length > 64 || /[\u0000-\u001f\u007f]/u.test(keyword)) {
+      throw new AppError('INVALID_ARGUMENT', 'Schema 搜索关键词不能为空、包含控制字符或超过 64 个字符。');
+    }
+    const signature = keyword.toLocaleLowerCase('zh-CN');
+    if (!seen.has(signature)) {
+      seen.add(signature);
+      keywords.push(keyword);
+    }
+  }
+  return keywords;
 }
 
 function capRows(rows, maxRows, maxBytes) {
@@ -385,7 +416,7 @@ export class MysqlPluginRuntime extends EventEmitter {
     const types = new Map(rows.map((row) => [String(row.TABLE_NAME), String(row.TABLE_TYPE)]));
     for (const table of tables) {
       const type = types.get(table);
-      if (!type) throw new AppError('HARD_POLICY_DENIED', `表 ${table} 不存在或不可访问。`);
+      if (!type) throw new AppError('DATABASE_TABLE_UNAVAILABLE', `表 ${table} 不存在或当前账号不可访问，请先使用 mysql_search_schema 核对。`, {table});
       if (type !== 'BASE TABLE') throw new AppError('HARD_POLICY_DENIED', `V1 禁止查询 View：${table}。`);
     }
   }
@@ -403,6 +434,62 @@ export class MysqlPluginRuntime extends EventEmitter {
       tables: rows.slice(0, safeLimit).map((row) => ({ name: row.TABLE_NAME, type: row.TABLE_TYPE, queryable: row.TABLE_TYPE === 'BASE TABLE' })),
       nextCursor: truncated ? String(offset + safeLimit) : null,
       truncated,
+    };
+  }
+
+  async searchSchema(plugin, { keywords: inputKeywords, limit = 50 } = {}) {
+    const keywords = normalizeSchemaKeywords(inputKeywords);
+    const safeLimit = limit;
+    if (!Number.isSafeInteger(safeLimit) || safeLimit < 1 || safeLimit > 100) {
+      throw new AppError('INVALID_ARGUMENT', 'Schema 搜索结果上限必须是 1 到 100 之间的整数。');
+    }
+    const tablePredicate = keywords
+      .map(() => "(INSTR(LOWER(t.TABLE_NAME), LOWER(?)) > 0 OR INSTR(LOWER(COALESCE(t.TABLE_COMMENT, '')), LOWER(?)) > 0)")
+      .join(' OR ');
+    const columnPredicate = keywords
+      .map(() => "(INSTR(LOWER(c.COLUMN_NAME), LOWER(?)) > 0 OR INSTR(LOWER(COALESCE(c.COLUMN_COMMENT, '')), LOWER(?)) > 0)")
+      .join(' OR ');
+    const [rows] = await this.querySession(plugin, {
+      sql: `SELECT 'table' AS match_kind, t.TABLE_NAME AS table_name, t.TABLE_COMMENT AS table_comment,
+        NULL AS column_name, NULL AS column_type, NULL AS column_comment, NULL AS column_key
+        FROM information_schema.TABLES t
+        WHERE t.TABLE_SCHEMA = ? AND t.TABLE_TYPE = 'BASE TABLE' AND (${tablePredicate})
+        UNION ALL
+        SELECT 'column' AS match_kind, c.TABLE_NAME AS table_name, t.TABLE_COMMENT AS table_comment,
+        c.COLUMN_NAME AS column_name, c.COLUMN_TYPE AS column_type, c.COLUMN_COMMENT AS column_comment, c.COLUMN_KEY AS column_key
+        FROM information_schema.COLUMNS c
+        INNER JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME
+        WHERE c.TABLE_SCHEMA = ? AND t.TABLE_TYPE = 'BASE TABLE' AND (${columnPredicate})
+        ORDER BY table_name, match_kind DESC, column_name
+        LIMIT ?`,
+      timeout: plugin.limits.timeoutMs,
+      values: [
+        plugin.target.database,
+        ...keywords.flatMap((keyword) => [keyword, keyword]),
+        plugin.target.database,
+        ...keywords.flatMap((keyword) => [keyword, keyword]),
+        safeLimit + 1,
+      ],
+    }, { fallbackMessage:'MySQL Schema 搜索失败。' });
+    const matches = rows.slice(0, safeLimit).map((row) => ({
+      kind:row.match_kind,
+      table:row.table_name,
+      tableComment:row.table_comment || null,
+      ...(row.match_kind === 'column' ? {column:{
+        name:row.column_name,
+        type:row.column_type,
+        key:row.column_key || null,
+        comment:row.column_comment || null,
+      }} : {}),
+    }));
+    const capped = capRows(matches, safeLimit, plugin.limits.maxBytes);
+    return {
+      keywords,
+      matches:capped.rows,
+      matchCount:capped.rowCount,
+      bytes:capped.bytes,
+      truncated:rows.length > safeLimit || capped.truncated,
+      limitsApplied:{maxMatches:safeLimit,maxBytes:plugin.limits.maxBytes,timeoutMs:plugin.limits.timeoutMs},
     };
   }
 
@@ -457,5 +544,5 @@ export class MysqlPluginRuntime extends EventEmitter {
 }
 
 export const mysqlRuntimeInternals = {
-  key, normalizeParams, capRows, sslOptions, createMysqlRoute, mysqlConnectionOptions, SYSTEM_DATABASES, mysqlError, mysqlConnectError, invalidatesSession,
+  key, normalizeParams, normalizeSchemaKeywords, capRows, sslOptions, createMysqlRoute, mysqlConnectionOptions, SYSTEM_DATABASES, mysqlError, mysqlConnectError, invalidatesSession,
 };

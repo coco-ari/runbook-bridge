@@ -196,6 +196,32 @@ test('an oversized runbook is rejected before a context token is issued', async 
   assert.equal(opened, false);
 });
 
+test('open_environment returns callable Server resource hints from the signed snapshot', async () => {
+  const preflightRunbook = {content:'### 应用服务器\n- 日志目录：`/preflight/logs`',hash:'runbook-preflight',empty:false};
+  const runbook = {content:'### 应用服务器\n- 日志目录：`/srv/app/logs`\n- 配置目录：`/srv/app/config`',hash:'runbook-1',empty:false};
+  const plugins = [
+    {
+      projectId:'p1',environmentId:'e1',pluginInstanceId:'server-app',pluginType:'server',displayName:'应用服务器',
+      sources:[{sourceId:'app-logs',displayName:'应用日志',kind:'log',root:'/srv/app/logs',patterns:['*.log'],maxFileBytes:1024}],
+    },
+    {projectId:'p1',environmentId:'e1',pluginInstanceId:'mysql-app',pluginType:'mysql',displayName:'应用数据库',sources:[]},
+  ];
+  const service = new V2Service({
+    workspaceStore:{readRunbook:async () => preflightRunbook,publicPlugin:(plugin) => ({pluginInstanceId:plugin.pluginInstanceId,pluginType:plugin.pluginType})},
+    contextManager:{open:async () => ({environment:{environmentId:'e1',name:'Production'},runbook,plugins,contextToken:'context-token',expiresAt:'later'})},
+    connectionManager:{status:async () => ({phase:'disconnected',plugins:{}})},
+  });
+  const opened = await service.openEnvironment({projectId:'p1',environmentId:'e1',clientInstanceId:'agent-a'});
+  assert.deepEqual(opened.resourceHints.map(({sourceId,kind,root,origin}) => ({sourceId,kind,root,origin})),[
+    {sourceId:'app-logs',kind:'log',root:'/srv/app/logs',origin:'configured'},
+    {sourceId:opened.resourceHints[1].sourceId,kind:'config',root:'/srv/app/config',origin:'runbook'},
+  ]);
+  assert.match(opened.resourceHints[1].sourceId,/^readme-config-/u);
+  assert.equal(opened.resourceHintsTruncated,false);
+  assert.equal(opened.resourceHints.some((hint) => hint.root === '/preflight/logs'),false);
+  assert.equal(opened.contextToken,'context-token');
+});
+
 test('an edit fence blocks new Agent context, operations, and plugin creation before they can touch runtime or storage', async () => {
   const mutationCoordinator = new WorkspaceMutationCoordinator();
   mutationCoordinator.installEnvironmentEditFence('p1','e1','edit-1',['db1']);

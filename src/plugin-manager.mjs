@@ -38,6 +38,7 @@ export class PluginManager {
   async invoke(plugin, capability, args = {}) {
     const runtime = this.runtime(plugin);
     if (plugin.pluginType === 'mysql') {
+      if (capability === 'describe' && args.operation === 'search') return runtime.searchSchema(plugin, args);
       if (capability === 'describe') return args.table ? runtime.describeTable(plugin, args.table) : runtime.listTables(plugin, args);
       if (capability === 'select') return runtime.queryReadonly(plugin, args.sql, args.params);
       if (capability === 'explain') return runtime.explain(plugin, args.sql, args.params);

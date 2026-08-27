@@ -3,6 +3,8 @@ import path from 'node:path';
 
 const SOURCE_LINE = /^\s*-\s*(日志目录|配置目录)\s*[:：]\s*`([^`]+)`\s*$/u;
 const HEADING = /^###\s+(.+?)\s*$/u;
+const MAX_RESOURCE_HINTS = 200;
+const MAX_RESOURCE_HINT_BYTES = 64 * 1024;
 
 function key(value) {
   return String(value ?? '').trim().normalize('NFKC').toLocaleLowerCase('zh-CN');
@@ -64,6 +66,34 @@ export function pluginWithRunbookSources(plugin, runbookContent) {
     unique.push(source);
   }
   return { ...plugin, sources: unique };
+}
+
+export function resourceHintsFromRunbook(plugins, runbookContent) {
+  const hints = [];
+  let bytes = 2;
+  let truncated = false;
+  plugins: for (const plugin of plugins ?? []) {
+    if (plugin?.pluginType !== 'server') continue;
+    const configured = new Set((plugin.sources ?? []).map((source) => `${source.kind}:${source.root}`));
+    for (const source of pluginWithRunbookSources(plugin, runbookContent).sources) {
+      const hint = {
+        pluginInstanceId:plugin.pluginInstanceId,
+        sourceId:source.sourceId,
+        kind:source.kind,
+        root:source.root,
+        patterns:[...source.patterns],
+        origin:configured.has(`${source.kind}:${source.root}`) ? 'configured' : 'runbook',
+      };
+      const hintBytes = Buffer.byteLength(JSON.stringify(hint),'utf8') + (hints.length ? 1 : 0);
+      if (hints.length >= MAX_RESOURCE_HINTS || bytes + hintBytes > MAX_RESOURCE_HINT_BYTES) {
+        truncated = true;
+        break plugins;
+      }
+      hints.push(hint);
+      bytes += hintBytes;
+    }
+  }
+  return {hints,truncated};
 }
 
 export const runbookSourceInternals = { safeRoot, SOURCE_LINE, HEADING };

@@ -24,9 +24,11 @@ try {
   const tools = await client.listTools();
   assert.deepEqual(
     tools.tools.map((tool) => tool.name),
-    ['list_projects', 'list_environments', 'open_environment', 'add_plugin', 'server_list_actions', 'server_run_action', 'server_system_snapshot', 'server_service_inspect', 'server_journal_query', 'server_container_inspect', 'server_list_sources', 'server_list_files', 'server_read_log', 'server_search_logs', 'server_read_config', 'server_stat', 'server_list_directory', 'server_find_files', 'server_read_file', 'server_search_files', 'server_download_file', 'server_upload_file', 'server_write_file', 'server_move_path', 'server_delete_path', 'server_control_service', 'server_execute_shell', 'mysql_list_tables', 'mysql_describe_table', 'mysql_query_readonly', 'mysql_explain', 'redis_scan', 'redis_read', 'redis_ttl'],
+    ['list_projects', 'list_environments', 'open_environment', 'add_plugin', 'server_list_actions', 'server_run_action', 'server_system_snapshot', 'server_service_inspect', 'server_journal_query', 'server_container_inspect', 'server_list_sources', 'server_list_files', 'server_read_log', 'server_search_logs', 'server_read_config', 'server_stat', 'server_list_directory', 'server_find_files', 'server_read_file', 'server_search_files', 'server_download_file', 'server_upload_file', 'server_write_file', 'server_move_path', 'server_delete_path', 'server_control_service', 'server_execute_shell', 'mysql_list_tables', 'mysql_search_schema', 'mysql_describe_table', 'mysql_query_readonly', 'mysql_explain', 'redis_scan', 'redis_read', 'redis_ttl'],
   );
   const logSearch = tools.tools.find((tool) => tool.name === 'server_search_logs');
+  const schemaSearch = tools.tools.find((tool) => tool.name === 'mysql_search_schema');
+  assert.equal(schemaSearch.inputSchema.properties.keywords.maxItems, 10);
   assert.equal(logSearch.inputSchema.properties.path.type, 'string');
   assert.equal(logSearch.inputSchema.properties.sourceId.type, 'string');
   assert.equal(logSearch.inputSchema.properties.queries.maxItems, 10);

@@ -625,6 +625,7 @@ stateDiagram-v2
 ```text
 mysql_list_databases
 mysql_list_tables
+mysql_search_schema
 mysql_describe_table
 mysql_query_readonly
 mysql_explain

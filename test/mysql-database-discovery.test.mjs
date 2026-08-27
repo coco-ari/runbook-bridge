@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { MysqlPluginRuntime, mysqlRuntimeInternals } from '../src/mysql-plugin-runtime.mjs';
+import { PluginManager } from '../src/plugin-manager.mjs';
 
 test('MySQL connection failures identify the field or network layer that needs correction', () => {
   const plugin = {target:{host:'db.example.test',port:3306,database:'orders'}};
@@ -19,6 +20,105 @@ test('MySQL connection failures identify the field or network layer that needs c
   assert.match(unsupportedTls.message,/TLS.*关闭/);
   const invalidCertificate = mysqlRuntimeInternals.mysqlConnectError(Object.assign(new Error('certificate expired'),{code:'CERT_HAS_EXPIRED'}),plugin);
   assert.equal(invalidCertificate.code,'TLS_CERTIFICATE_INVALID');
+});
+
+test('MySQL query failures expose stable actionable categories without raw driver text', () => {
+  for (const [driverCode, publicCode] of [
+    ['ER_BAD_FIELD_ERROR','DATABASE_UNKNOWN_COLUMN'],
+    ['ER_NO_SUCH_TABLE','DATABASE_UNKNOWN_TABLE'],
+    ['ER_PARSE_ERROR','DATABASE_SYNTAX_ERROR'],
+    ['ER_SYNTAX_ERROR','DATABASE_SYNTAX_ERROR'],
+  ]) {
+    const mapped = mysqlRuntimeInternals.mysqlError(Object.assign(new Error('private SQL and value must-not-leak'),{code:driverCode}));
+    assert.equal(mapped.code,publicCode);
+    assert.doesNotMatch(mapped.message,/must-not-leak|private SQL/u);
+  }
+});
+
+test('MySQL table preflight distinguishes unavailable tables from forbidden views', async () => {
+  const runtime = new MysqlPluginRuntime({}, {}, {});
+  const plugin = {target:{database:'orders'},limits:{timeoutMs:5000}};
+  runtime.querySession = async () => [[]];
+  await assert.rejects(
+    () => runtime.assertBaseTables(plugin,['missing_orders']),
+    (error) => error.code === 'DATABASE_TABLE_UNAVAILABLE' && error.details?.table === 'missing_orders',
+  );
+  runtime.querySession = async () => [[{TABLE_NAME:'orders_view',TABLE_TYPE:'VIEW'}]];
+  await assert.rejects(
+    () => runtime.assertBaseTables(plugin,['orders_view']),
+    (error) => error.code === 'HARD_POLICY_DENIED',
+  );
+});
+
+test('MySQL schema search stays in the fixed database and treats keywords as literal parameters', async () => {
+  const requests = [];
+  const runtime = new MysqlPluginRuntime({}, {}, {});
+  runtime.querySession = async (_plugin, request) => {
+    requests.push(request);
+    return [[
+      {match_kind:'table',table_name:'coupon_order',table_comment:'优惠券订单',column_name:null,column_type:null,column_comment:null,column_key:null},
+      {match_kind:'column',table_name:'member_coupon',table_comment:'会员优惠券',column_name:'coupon_uid',column_type:'bigint',column_comment:'优惠券标识',column_key:'MUL'},
+      {match_kind:'column',table_name:'third_match',table_comment:'',column_name:'uid',column_type:'varchar(64)',column_comment:'',column_key:''},
+    ]];
+  };
+  const plugin = {target:{database:'orders'},limits:{timeoutMs:5000,maxBytes:64 * 1024}};
+  const keyword = "coupon%_' OR 1=1 --";
+  const result = await runtime.searchSchema(plugin,{keywords:[keyword,' UID ','uid'],limit:2});
+
+  assert.deepEqual(result.keywords,[keyword,'UID']);
+  assert.equal(result.matchCount,2);
+  assert.equal(result.truncated,true);
+  assert.deepEqual(result.matches[1],{
+    kind:'column',table:'member_coupon',tableComment:'会员优惠券',
+    column:{name:'coupon_uid',type:'bigint',key:'MUL',comment:'优惠券标识'},
+  });
+  assert.match(requests[0].sql,/information_schema\.TABLES/u);
+  assert.match(requests[0].sql,/information_schema\.COLUMNS/u);
+  assert.match(requests[0].sql,/TABLE_TYPE = 'BASE TABLE'/u);
+  assert.doesNotMatch(requests[0].sql,/coupon%_|OR 1=1/u);
+  assert.deepEqual(requests[0].values,[
+    'orders',keyword,keyword,'UID','UID',
+    'orders',keyword,keyword,'UID','UID',
+    3,
+  ]);
+});
+
+test('MySQL schema search rejects invalid input before querying', async () => {
+  const runtime = new MysqlPluginRuntime({}, {}, {});
+  let queries = 0;
+  runtime.querySession = async () => { queries += 1; return [[]]; };
+  const plugin = {target:{database:'orders'},limits:{timeoutMs:5000,maxBytes:64 * 1024}};
+  for (const args of [
+    {keywords:['   ']},
+    {keywords:['x'.repeat(65)]},
+    {keywords:Array.from({length:11},(_,index) => `key-${index}`)},
+    {keywords:['valid'],limit:0},
+    {keywords:['valid'],limit:'10'},
+  ]) await assert.rejects(() => runtime.searchSchema(plugin,args),(error) => error.code === 'INVALID_ARGUMENT');
+  assert.equal(queries,0);
+});
+
+test('MySQL schema search reports byte truncation without exceeding the plugin result budget', async () => {
+  const runtime = new MysqlPluginRuntime({}, {}, {});
+  runtime.querySession = async () => [[
+    {match_kind:'table',table_name:'a',table_comment:'',column_name:null,column_type:null,column_comment:null,column_key:null},
+    {match_kind:'table',table_name:'b',table_comment:'',column_name:null,column_type:null,column_comment:null,column_key:null},
+  ]];
+  const plugin = {target:{database:'orders'},limits:{timeoutMs:5000,maxBytes:80}};
+  const result = await runtime.searchSchema(plugin,{keywords:['order'],limit:10});
+  assert.equal(result.matchCount,1);
+  assert.equal(result.truncated,true);
+  assert.ok(result.bytes <= plugin.limits.maxBytes);
+});
+
+test('Plugin manager keeps schema search inside the read-only describe capability', async () => {
+  const calls = [];
+  const manager = new PluginManager({
+    mysqlRuntime:{searchSchema:async (plugin,args) => { calls.push({plugin,args}); return {matches:[]}; }},
+  });
+  const plugin = {pluginType:'mysql',pluginInstanceId:'mysql-main'};
+  assert.deepEqual(await manager.invoke(plugin,'describe',{operation:'search',keywords:['coupon'],limit:10}),{matches:[]});
+  assert.deepEqual(calls,[{plugin,args:{operation:'search',keywords:['coupon'],limit:10}}]);
 });
 
 test('MySQL TLS probe does not require a database and never retries in plaintext', async () => {

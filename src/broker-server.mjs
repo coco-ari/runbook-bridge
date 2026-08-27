@@ -155,6 +155,7 @@ export class BrokerServer {
       case 'serverControlService': return this.v2Service.invoke(params, 'service.control', { action:params.action, unit:params.unit });
       case 'serverExecuteShell': return this.v2Service.invoke(params, 'shell.execute', { command:params.command, workingDirectory:params.workingDirectory });
       case 'mysqlListTables': return this.v2Service.invoke(params, 'describe', { cursor: params.cursor, limit: params.limit });
+      case 'mysqlSearchSchema': return this.v2Service.invoke(params, 'describe', { operation:'search', keywords:params.keywords, limit:params.limit });
       case 'mysqlDescribeTable': return this.v2Service.invoke(params, 'describe', { table: params.table });
       case 'mysqlQueryReadonly': return this.v2Service.invoke(params, 'select', { sql: params.sql, params: params.params });
       case 'mysqlExplain': return this.v2Service.invoke(params, 'explain', { sql: params.sql, params: params.params });

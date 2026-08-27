@@ -3,7 +3,7 @@ import { AppError, toPublicError } from './errors.mjs';
 import { OperationGate, capabilityRule } from './operation-gate.mjs';
 import { assertPluginConfigurationReady } from './plugin-connection-adapters.mjs';
 import { assessEnvironmentSnapshot, publicPluginAssessment } from './plugin-readiness-service.mjs';
-import { pluginWithRunbookSources } from './runbook-sources.mjs';
+import { pluginWithRunbookSources, resourceHintsFromRunbook } from './runbook-sources.mjs';
 import { workspaceInternals } from './workspace-store.mjs';
 
 const MAX_RUNBOOK_BYTES = 64 * 1024;
@@ -138,11 +138,14 @@ export class V2Service {
       params.environmentId,
       opened.plugins,
     );
+    const resourceHintSnapshot = resourceHintsFromRunbook(opened.plugins,openedRunbook.content);
     return {
       projectId: params.projectId,
       environment: { environmentId: opened.environment.environmentId, name: opened.environment.name },
       runbook: { content: openedRunbook.content, hash: opened.runbook.hash, empty: opened.runbook.empty, truncated: false },
       plugins:this.publicPluginsWithAssessments(opened.plugins,connection),
+      resourceHints:resourceHintSnapshot.hints,
+      resourceHintsTruncated:resourceHintSnapshot.truncated,
       contextToken: opened.contextToken,
       expiresAt: opened.expiresAt,
       connection,

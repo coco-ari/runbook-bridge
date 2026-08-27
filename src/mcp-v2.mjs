@@ -12,7 +12,7 @@ import { OFFSET_CURSOR_INPUT_SCHEMA, REDIS_CURSOR_INPUT_SCHEMA } from './paginat
 const dataRoot = defaultDataRoot();
 const clientInstanceId = crypto.randomBytes(16).toString('hex');
 let brokerHandshake = null;
-const instructions = `这是一个插件化 Agent 运维入口。项目下的环境彼此隔离；每次开始工作必须先调用 open_environment，读取精准的环境运维说明、插件目录和 contextToken。桌面应用不会因为 Agent 调用而连接环境；插件未连接时，请用户在桌面应用点击“连接环境”。环境部分连接时，仅调用明确显示 connected 的插件。Server 的普通文件和目录读取不受数据源目录限制，也不因内容敏感而拦截；读取前应结合服务器负载合理收窄路径、深度、文件数和扫描字节，禁止读取设备、FIFO、Socket 等特殊文件。日志排查优先调用 server_search_logs，让工具在一次请求中完成目录发现、多条件匹配和 .zip/.gz 归档内搜索；不要为这些只读工作改用 Shell、下载或本地解压。上传、写入、移动、删除、服务控制和任意 Shell 都必须由用户在桌面端逐次确认，确认后参数或目标状态变化会要求重新确认。MySQL 插件固定一个数据库且只允许结构、SELECT、EXPLAIN；Redis 只允许已登记 patternId 下的 SCAN、读取和 TTL。`;
+const instructions = `这是一个插件化 Agent 运维入口。项目下的环境彼此隔离；每次开始工作必须先调用 open_environment，读取精准的环境运维说明、插件目录、resourceHints 和 contextToken。桌面应用不会因为 Agent 调用而连接环境；插件未连接时，请用户在桌面应用点击“连接环境”。环境部分连接时，仅调用明确显示 connected 的插件。优先使用 resourceHints 中已解析的 Server 资源；resourceHintsTruncated 为 true 时按目标插件调用 server_list_sources 补充。日志直接调用 server_search_logs，未知文件位置优先调用 server_find_files，仅在需要浏览目录时调用 server_list_directory。Server 的普通文件和目录读取不受数据源目录限制，也不因内容敏感而拦截；读取前应结合服务器负载合理收窄路径、深度、文件数和扫描字节，禁止读取设备、FIFO、Socket 等特殊文件。日志排查优先调用 server_search_logs，让工具在一次请求中完成目录发现、多条件匹配和 .zip/.gz 归档内搜索；不要为这些只读工作改用 Shell、下载或本地解压。上传、写入、移动、删除、服务控制和任意 Shell 都必须由用户在桌面端逐次确认，确认后参数或目标状态变化会要求重新确认。MySQL 插件固定一个数据库且只允许结构、SELECT、EXPLAIN；不清楚表或字段时优先调用 mysql_search_schema，不要先分页枚举全库。Redis 只允许已登记 patternId 下的 SCAN、读取和 TTL。`;
 
 const scope = {
   projectId: { type: 'string', minLength: 2, maxLength: 63 },
@@ -34,7 +34,7 @@ function scoped(name, description, extraRequired = [], extra = {}, constraints =
 const tools = [
   tool('list_projects', '列出本机项目摘要，不连接任何环境。', [], {}),
   tool('list_environments', '列出项目的用户自定义环境，不连接插件。', ['projectId'], { projectId: scope.projectId }),
-  tool('open_environment', '读取一个环境的运维说明、插件目录、连接状态并取得短期上下文令牌。', ['projectId', 'environmentId'], { projectId: scope.projectId, environmentId: scope.environmentId }),
+  tool('open_environment', '读取一个环境的运维说明、插件目录、可直接导航的 resourceHints、连接状态并取得短期上下文令牌。', ['projectId', 'environmentId'], { projectId: scope.projectId, environmentId: scope.environmentId }),
   tool('add_plugin', '在已打开环境中添加一个配置完整且保持断开的 Server、MySQL 或 Redis 插件。只接收结构化非敏感配置。', ['projectId','environmentId','contextToken','pluginType','displayName','configuration'], {
     projectId:scope.projectId, environmentId:scope.environmentId, contextToken:scope.contextToken,
     pluginType:{ type:'string', enum:['server','mysql','redis'] }, displayName:{ type:'string', minLength:1, maxLength:120 },
@@ -104,6 +104,10 @@ const tools = [
   scoped('server_control_service', '启动、停止、重启或 reload 一个 systemd 服务。此操作必须逐次确认。', ['action','unit'], { action:{ type:'string', enum:['start','stop','restart','reload'] }, unit:{ type:'string', minLength:1, maxLength:255 } }),
   scoped('server_execute_shell', '执行任意 Shell 命令。风险最高，桌面端会显示完整命令并要求强确认。', ['command'], { command:{ type:'string', minLength:1, maxLength:16384 }, workingDirectory:{ type:'string', minLength:1, maxLength:4096 } }),
   scoped('mysql_list_tables', '分页列出此单库 MySQL 插件中的表；不会枚举其他数据库。', [], { cursor: OFFSET_CURSOR_INPUT_SCHEMA, limit: { type: 'integer', minimum: 1, maximum: 200 } }),
+  scoped('mysql_search_schema', '按任一不区分大小写的字面量关键词搜索此单库 MySQL 插件中的基础表、字段和注释；不会枚举其他数据库。', ['keywords'], {
+    keywords: { type:'array', minItems:1, maxItems:10, items:{ type:'string', minLength:1, maxLength:64 } },
+    limit: { type:'integer', minimum:1, maximum:100, default:50 },
+  }),
   scoped('mysql_describe_table', '查看一个基础表的字段结构；V1 不开放 View。', ['table'], { table: { type: 'string', minLength: 1, maxLength: 128 } }),
   scoped('mysql_query_readonly', '执行单条只读 SELECT。固定数据库，禁止 USE、跨库、写入和多语句。', ['sql'], { sql: { type: 'string', minLength: 1, maxLength: 65536 }, params: { type: 'array', maxItems: 100, items: { type: ['string', 'number', 'boolean', 'null'] } } }),
   scoped('mysql_explain', '执行 EXPLAIN SELECT；禁止 EXPLAIN ANALYZE。', ['sql'], { sql: { type: 'string', minLength: 1, maxLength: 65536 }, params: { type: 'array', maxItems: 100 } }),
@@ -121,7 +125,7 @@ const methodByTool = {
   server_find_files:'serverFindFiles', server_read_file:'serverReadFile', server_search_files:'serverSearchFiles', server_download_file: 'serverDownloadFile',
   server_upload_file:'serverUploadFile', server_write_file:'serverWriteFile', server_move_path:'serverMovePath', server_delete_path:'serverDeletePath',
   server_control_service:'serverControlService', server_execute_shell:'serverExecuteShell',
-  mysql_list_tables: 'mysqlListTables', mysql_describe_table: 'mysqlDescribeTable', mysql_query_readonly: 'mysqlQueryReadonly', mysql_explain: 'mysqlExplain',
+  mysql_list_tables: 'mysqlListTables', mysql_search_schema:'mysqlSearchSchema', mysql_describe_table: 'mysqlDescribeTable', mysql_query_readonly: 'mysqlQueryReadonly', mysql_explain: 'mysqlExplain',
   redis_scan: 'redisScan', redis_read: 'redisRead', redis_ttl: 'redisTtl',
 };
 

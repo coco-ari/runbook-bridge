@@ -32,6 +32,7 @@ test('V2 MCP exposes unrestricted bounded reads and confirmation-gated server ch
   const names = listed.tools.map((tool) => tool.name);
   assert.ok(names.includes('open_environment'));
   assert.ok(names.includes('server_run_action'));
+  assert.ok(names.includes('mysql_search_schema'));
   assert.ok(names.includes('mysql_query_readonly'));
   assert.ok(names.includes('redis_scan'));
   for (const name of ['server_stat','server_list_directory','server_find_files','server_read_file','server_search_files','server_system_snapshot','server_service_inspect','server_journal_query','server_container_inspect','server_upload_file','server_control_service','server_execute_shell']) assert.ok(names.includes(name));
@@ -49,6 +50,13 @@ test('V2 MCP exposes unrestricted bounded reads and confirmation-gated server ch
   assert.equal('host' in mysql.inputSchema.properties, false);
   assert.equal('database' in mysql.inputSchema.properties, false);
   assert.equal(mysql.inputSchema.properties.sql.maxLength, 65_536);
+  const schemaSearch = listed.tools.find((tool) => tool.name === 'mysql_search_schema');
+  assert.deepEqual(schemaSearch.inputSchema.required, ['projectId','environmentId','pluginInstanceId','contextToken','keywords']);
+  assert.deepEqual([schemaSearch.inputSchema.properties.keywords.minItems,schemaSearch.inputSchema.properties.keywords.maxItems], [1,10]);
+  assert.deepEqual([schemaSearch.inputSchema.properties.keywords.items.minLength,schemaSearch.inputSchema.properties.keywords.items.maxLength], [1,64]);
+  assert.deepEqual([schemaSearch.inputSchema.properties.limit.minimum,schemaSearch.inputSchema.properties.limit.maximum], [1,100]);
+  assert.equal('host' in schemaSearch.inputSchema.properties,false);
+  assert.equal('database' in schemaSearch.inputSchema.properties,false);
   const searchLogs = listed.tools.find((tool) => tool.name === 'server_search_logs');
   assert.match(client.getInstructions(), /日志排查优先调用 server_search_logs/u);
   assert.match(client.getInstructions(), /不要为这些只读工作改用 Shell、下载或本地解压/u);

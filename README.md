@@ -50,8 +50,10 @@
 ### MySQL
 
 - 列出当前插件数据库中的基础表。
+- 按最多 10 个不区分大小写的字面量关键词（任一命中）搜索当前固定数据库中的基础表名、字段名和注释；未知结构时优先使用 `mysql_search_schema`，无需先枚举全库。
 - 查看表结构。
 - 执行单条 `SELECT` 和 `EXPLAIN SELECT`。
+- 对未知表、未知字段、不支持函数和语法问题返回稳定的可行动错误，不返回原始驱动错误或 SQL；允许 `CONVERT_TZ`、`JSON_VALID`、`JSON_UNQUOTE` 等已验证且解析器支持的纯读取函数。
 - 固定目标数据库，禁止 `USE`、跨库、多语句、View、锁定读、文件输出、危险函数、DDL 和数据写入。
 - SQL 由后端 AST 解析器进行 fail-closed 校验，无法确认安全的语句直接拒绝。
 
@@ -82,7 +84,7 @@
 
 ## MCP 工具
 
-正式版提供 34 个结构化工具。
+正式版提供 35 个结构化工具。
 
 | 分类 | 工具 |
 | --- | --- |
@@ -92,10 +94,10 @@
 | Server 日志 | `server_search_logs` |
 | Server 变更 | `server_upload_file`、`server_write_file`、`server_move_path`、`server_delete_path`、`server_control_service`、`server_execute_shell` |
 | 兼容工具 | `server_list_actions`、`server_run_action`、`server_list_sources`、`server_list_files`、`server_read_log`、`server_read_config` |
-| MySQL | `mysql_list_tables`、`mysql_describe_table`、`mysql_query_readonly`、`mysql_explain` |
+| MySQL | `mysql_list_tables`、`mysql_search_schema`、`mysql_describe_table`、`mysql_query_readonly`、`mysql_explain` |
 | Redis | `redis_scan`、`redis_read`、`redis_ttl` |
 
-每次开始操作环境时，Agent 必须先调用 `open_environment`，读取最新运维手册、插件目录、连接状态和短期 `contextToken`。环境手册、插件配置或安全相关状态变化后，旧令牌自动失效。
+每次开始操作环境时，Agent 必须先调用 `open_environment`，读取最新运维手册、插件目录、`resourceHints`、连接状态和短期 `contextToken`。`resourceHints` 把已配置或从运维手册严格解析出的 Server 日志/配置资源集中返回，供 Agent 直接选择 `sourceId` 或绝对路径；它只是有界导航提示，不扩大文件访问权限。`resourceHintsTruncated` 为 `true` 时，Agent 可对目标插件调用 `server_list_sources` 补充。环境手册、插件配置或安全相关状态变化后，旧令牌自动失效。
 
 Agent 调用不会建立首次连接。插件未连接时，应在桌面应用中点击“连接环境”或单独连接目标插件。
 
