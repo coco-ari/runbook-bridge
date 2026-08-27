@@ -21,6 +21,11 @@ jobs:
         with:
           node-version: 22
 
+      - name: Verify release tag matches package version
+        env:
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: node scripts/verify-release-version.mjs "$env:RELEASE_REF_NAME"
+
       - name: Enable Corepack
         run: corepack enable
 

@@ -2,6 +2,7 @@ import mysql from 'mysql2/promise';
 import { EventEmitter } from 'node:events';
 import { AppError } from './errors.mjs';
 import { validateMysqlSelect, validateMysqlExplain, applyMysqlRowLimit } from './mysql-policy.mjs';
+import { parseOffsetCursor } from './pagination-cursor.mjs';
 
 const SYSTEM_DATABASES = new Set(['information_schema', 'mysql', 'performance_schema', 'sys']);
 const MYSQL_TIMEOUT_CODES = new Set(['PROTOCOL_SEQUENCE_TIMEOUT', 'ETIMEDOUT', 'ESOCKETTIMEDOUT']);
@@ -389,9 +390,9 @@ export class MysqlPluginRuntime extends EventEmitter {
     }
   }
 
-  async listTables(plugin, { cursor = 0, limit = 100 } = {}) {
+  async listTables(plugin, { cursor, limit = 100 } = {}) {
     const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 200);
-    const offset = Math.max(Number(cursor) || 0, 0);
+    const offset = parseOffsetCursor(cursor);
     const [rows] = await this.querySession(plugin, {
       sql: 'SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME LIMIT ? OFFSET ?',
       timeout: plugin.limits.timeoutMs,

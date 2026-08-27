@@ -3,12 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { WorkspaceStore } from '../src/workspace-store.mjs';
+import { WorkspaceStore,workspaceInternals } from '../src/workspace-store.mjs';
 import { PluginCredentialVault } from '../src/plugin-credential-vault.mjs';
 import { PluginDraftStore } from '../src/plugin-draft-store.mjs';
 import { PluginDraftCredentialVault } from '../src/plugin-draft-credential-vault.mjs';
 import { PluginDraftPromotionJournal } from '../src/plugin-draft-promotion-journal.mjs';
-import { PluginDraftService } from '../src/plugin-draft-service.mjs';
 import { registerV2Ipc } from '../src/ipc-v2.mjs';
 
 function encryption(control = {}) {
@@ -149,7 +148,7 @@ test('unreadable draft credentials remain byte-for-byte intact across ordinary s
   assert.deepEqual(await fs.readFile(vault.backupFile),beforeBackup);
 });
 
-async function promotionFixture(t,{failurePoint = null} = {}) {
+async function promotionFixture(t) {
   const values = await fixture(t);
   const activeVault = new PluginCredentialVault(values.root,encryption());
   const unrelated = await values.workspaceStore.createPlugin(
@@ -175,32 +174,27 @@ async function promotionFixture(t,{failurePoint = null} = {}) {
   const journal = new PluginDraftPromotionJournal(
     values.root,values.workspaceStore,draftStore,draftVault,activeVault,
   );
-  const service = new PluginDraftService({
-    workspaceStore:values.workspaceStore,
-    draftStore,
-    draftCredentialVault:draftVault,
-    credentialVault:activeVault,
-    promotionJournal:journal,
-    failureInjector:failurePoint ? async (point) => {
-      if (point === failurePoint) throw Object.assign(new Error(`crash at ${point}`),{code:'SIMULATED_CRASH'});
-    } : null,
-  });
-  return {...values,activeVault,unrelated,unrelatedBefore,draftVault,draftStore,draft,journal,service};
+  return {...values,activeVault,unrelated,unrelatedBefore,draftVault,draftStore,draft,journal};
+}
+
+async function persistPromotionPhase({
+  journal,draft,before = null,after = draft.sanitizedDraft,
+  credentialMode = 'copy-draft',beforeHadCredential = false,phase,
+}) {
+  const transaction = await journal.prepare(
+    draft,before,after,{credentialMode,beforeHadCredential},
+  );
+  await journal.commitConfig(transaction,before);
+  if (phase !== 'after-config-write') await journal.commitCredential(transaction,draft);
+  if (phase === 'after-draft-cleanup') await journal.deleteDraftIfPresent(transaction);
+  journal.markUnresolved(transaction);
+  return transaction;
 }
 
 for (const failurePoint of ['after-config-write','after-vault-commit','after-draft-cleanup']) {
   test(`draft promotion recovers a complete formal plugin after ${failurePoint}`, async (t) => {
-    const values = await promotionFixture(t,{failurePoint});
-    await assert.rejects(
-      () => values.service.promote({
-        projectId:values.draft.projectId,
-        environmentId:values.draft.environmentId,
-        draftId:values.draft.draftId,
-        expectedDraftRevision:values.draft.revision,
-        afterCommit:'stay-disconnected',
-      }),
-      (error) => error.code === 'SIMULATED_CRASH',
-    );
+    const values = await promotionFixture(t);
+    await persistPromotionPhase({...values,phase:failurePoint});
     assert.equal(values.journal.hasUnresolved(),true);
     assert.throws(
       () => values.journal.assertEnvironmentAvailable(values.draft.projectId,values.draft.environmentId),
@@ -247,20 +241,8 @@ for (const failurePoint of ['after-config-write','after-vault-commit']) {
     const journal = new PluginDraftPromotionJournal(
       values.root,values.workspaceStore,draftStore,draftVault,activeVault,
     );
-    const service = new PluginDraftService({
-      workspaceStore:values.workspaceStore,draftStore,draftCredentialVault:draftVault,
-      credentialVault:activeVault,promotionJournal:journal,
-      failureInjector:async (point) => {
-        if (point === failurePoint) throw Object.assign(new Error(`crash at ${point}`),{code:'SIMULATED_CRASH'});
-      },
-    });
-    await assert.rejects(
-      () => service.promote({
-        projectId:draft.projectId,environmentId:draft.environmentId,draftId:draft.draftId,
-        expectedDraftRevision:draft.revision,expectedBaseRevision:base.revision,
-      }),
-      (error) => error.code === 'SIMULATED_CRASH',
-    );
+    const after = workspaceInternals.materializePluginCandidate(draft.sanitizedDraft,base);
+    await persistPromotionPhase({journal,draft,before:base,after,phase:failurePoint});
     const recovered = new PluginDraftPromotionJournal(
       values.root,values.workspaceStore,draftStore,draftVault,activeVault,
     );
@@ -270,98 +252,6 @@ for (const failurePoint of ['after-config-write','after-vault-commit']) {
     assert.deepEqual(await activeVault.load(plugin),{
       password:'new-password',tlsPassphrase:'preserved-tls-passphrase',
     });
-  });
-}
-
-test('draft promotion detects a base revision conflict without changing config or active credentials', async (t) => {
-  const values = await fixture(t);
-  const activeVault = new PluginCredentialVault(values.root,encryption());
-  const base = await values.workspaceStore.createPlugin(
-    values.project.projectId,values.environment.environmentId,
-    mysqlDraft({displayName:'Existing orders',pluginInstanceId:'orders-db'}),
-  );
-  await activeVault.save(base,{password:'existing-password'});
-  const activeBefore = await fs.readFile(activeVault.file);
-  const draftVault = new PluginDraftCredentialVault(values.root,encryption());
-  const draftStore = new PluginDraftStore(values.workspaceStore,draftVault);
-  const draft = await draftStore.save({
-    projectId:base.projectId,environmentId:base.environmentId,
-    basePluginInstanceId:base.pluginInstanceId,baseRevision:base.revision,
-    pluginType:'mysql',sanitizedDraft:{...base,description:'draft description'},
-    credentialIntent:'unchanged',temporarySecrets:{},
-  });
-  const concurrent = await values.workspaceStore.updatePlugin(
-    base.projectId,base.environmentId,base.pluginInstanceId,
-    {displayName:'Concurrent rename'},base.revision,
-  );
-  const journal = new PluginDraftPromotionJournal(
-    values.root,values.workspaceStore,draftStore,draftVault,activeVault,
-  );
-  const service = new PluginDraftService({
-    workspaceStore:values.workspaceStore,draftStore,draftCredentialVault:draftVault,
-    credentialVault:activeVault,promotionJournal:journal,
-  });
-  await assert.rejects(
-    () => service.promote({
-      projectId:draft.projectId,environmentId:draft.environmentId,draftId:draft.draftId,
-      expectedDraftRevision:draft.revision,expectedBaseRevision:base.revision,
-    }),
-    (error) => error.code === 'CONFIG_REVISION_CONFLICT',
-  );
-  assert.equal((await values.workspaceStore.getPlugin(base.projectId,base.environmentId,base.pluginInstanceId)).displayName,concurrent.displayName);
-  assert.deepEqual(await activeVault.load(concurrent),{password:'existing-password'});
-  assert.deepEqual(await fs.readFile(activeVault.file),activeBefore);
-  assert.equal((await draftStore.resume(draft)).draftId,draft.draftId);
-  assert.deepEqual(await fs.readdir(journal.directory).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)),[]);
-});
-
-for (const scenario of [
-  {
-    label:'MySQL database',
-    plugin:mysqlDraft({displayName:'Orders database',pluginInstanceId:'orders-db'}),
-    patch:(plugin) => ({...plugin,target:{...plugin.target,database:'orders_archive'}}),
-    expected:(plugin) => plugin.target.database === 'orders_archive',
-  },
-  {
-    label:'Redis logical DB',
-    plugin:{
-      pluginType:'redis',pluginInstanceId:'sessions-cache',displayName:'Sessions cache',
-      target:{host:'cache.internal',port:6379,db:0,addressFamily:'ipv4Only'},
-      auth:{username:''},transport:{kind:'direct'},tls:{mode:'disabled'},
-    },
-    patch:(plugin) => ({...plugin,target:{...plugin.target,db:5}}),
-    expected:(plugin) => plugin.target.db === 5,
-  },
-]) {
-  test(`promoting a draft that only changes ${scenario.label} reuses the saved active credential`, async (t) => {
-    const values = await fixture(t);
-    const activeVault = new PluginCredentialVault(values.root,encryption());
-    const base = await values.workspaceStore.createPlugin(
-      values.project.projectId,values.environment.environmentId,scenario.plugin,
-    );
-    await activeVault.save(base,{password:'saved-password'});
-    const draftVault = new PluginDraftCredentialVault(values.root,encryption());
-    const draftStore = new PluginDraftStore(values.workspaceStore,draftVault);
-    const draft = await draftStore.save({
-      projectId:base.projectId,environmentId:base.environmentId,
-      basePluginInstanceId:base.pluginInstanceId,baseRevision:base.revision,
-      pluginType:base.pluginType,sanitizedDraft:scenario.patch(base),
-      credentialIntent:'unchanged',temporarySecrets:{password:''},
-    });
-    const journal = new PluginDraftPromotionJournal(
-      values.root,values.workspaceStore,draftStore,draftVault,activeVault,
-    );
-    const service = new PluginDraftService({
-      workspaceStore:values.workspaceStore,draftStore,draftCredentialVault:draftVault,
-      credentialVault:activeVault,promotionJournal:journal,
-    });
-    const promoted = await service.promote({
-      projectId:draft.projectId,environmentId:draft.environmentId,draftId:draft.draftId,
-      expectedDraftRevision:draft.revision,expectedBaseRevision:base.revision,
-    });
-    assert.equal(scenario.expected(promoted),true);
-    assert.deepEqual(await activeVault.load(promoted),{password:'saved-password'});
-    await assert.rejects(() => draftStore.resume(draft),(error) => error.code === 'PLUGIN_DRAFT_NOT_FOUND');
   });
 }
 
@@ -376,121 +266,6 @@ test('sidecar drafts count as needs-action but never enter the committed plugin 
   });
   assert.equal(await draftStore.count(values.project.projectId,values.environment.environmentId),1);
   assert.deepEqual(await values.workspaceStore.listPlugins(values.project.projectId,values.environment.environmentId),[]);
-});
-
-test('persistent draft validation enforces ownership, sequence, cancel, and late-result fences', async (t) => {
-  const values = await fixture(t);
-  const draftVault = new PluginDraftCredentialVault(values.root,encryption());
-  const draftStore = new PluginDraftStore(values.workspaceStore,draftVault);
-  const saved = await draftStore.save({
-    projectId:values.project.projectId,environmentId:values.environment.environmentId,
-    pluginType:'mysql',sanitizedDraft:mysqlDraft(),credentialIntent:'replace',
-    temporarySecrets:{password:'draft-only-password'},
-  });
-  let release;
-  let receivedSecrets = null;
-  const validationRuntime = {
-    validate:async ({resolvedSecrets}) => {
-      receivedSecrets = resolvedSecrets;
-      await new Promise((resolve) => { release = resolve; });
-      return {connected:true};
-    },
-    cleanup:async () => undefined,
-  };
-  const service = new PluginDraftService({
-    workspaceStore:values.workspaceStore,draftStore,draftCredentialVault:draftVault,
-    credentialVault:new PluginCredentialVault(values.root,encryption()),
-    promotionJournal:{},validationRuntime,
-  });
-  const session = await service.resumeForOwner(saved,'renderer-a');
-  assert.throws(
-    () => service.requireSession(session.draftSessionId,'renderer-b',session),
-    (error) => error.code === 'PLUGIN_DRAFT_SESSION_STALE',
-  );
-  let running;
-  const validation = service.validate({
-    ...session,purpose:'resource-access',requestId:'request-1',draftGeneration:0,sequence:1,
-    draft:session.sanitizedDraft,temporarySecrets:{},credentialIntent:'unchanged',
-  },{ownerId:'renderer-a',onProgress:(progress) => { if (progress.state === 'running') running = progress; }});
-  while (!running) await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(receivedSecrets,{password:'draft-only-password'});
-  const cancelled = service.cancelValidation({
-    ...session,operationId:running.operationId,
-  },{ownerId:'renderer-a'});
-  assert.equal(cancelled.state,'cancelled');
-  release();
-  await assert.rejects(validation,(error) => error.code === 'PLUGIN_VALIDATION_STALE');
-  await assert.rejects(
-    () => service.validate({
-      ...session,purpose:'resource-access',requestId:'request-old',draftGeneration:0,sequence:1,
-      draft:session.sanitizedDraft,temporarySecrets:{},
-    },{ownerId:'renderer-a'}),
-    (error) => error.code === 'PLUGIN_VALIDATION_STALE',
-  );
-});
-
-test('expired persistent draft sessions reject late validation results and release validation records', async (t) => {
-  const values = await fixture(t);
-  const draftVault = new PluginDraftCredentialVault(values.root,encryption());
-  const draftStore = new PluginDraftStore(values.workspaceStore,draftVault);
-  const saved = await draftStore.save({
-    projectId:values.project.projectId,environmentId:values.environment.environmentId,
-    pluginType:'mysql',sanitizedDraft:mysqlDraft(),credentialIntent:'replace',
-    temporarySecrets:{password:'draft-timeout-password'},
-  });
-  let currentTime = 1_000;
-  let release;
-  const service = new PluginDraftService({
-    workspaceStore:values.workspaceStore,draftStore,draftCredentialVault:draftVault,
-    credentialVault:new PluginCredentialVault(values.root,encryption()),promotionJournal:{},
-    now:() => currentTime,sessionTtlMs:10_000,
-    validationRuntime:{
-      validate:async () => new Promise((resolve) => { release = resolve; }),
-      cleanup:async () => undefined,
-    },
-  });
-  const session = await service.resumeForOwner(saved,'renderer-timeout');
-  const validation = service.validate({
-    ...session,purpose:'resource-access',requestId:'timeout-result',draftGeneration:0,sequence:1,
-    draft:session.sanitizedDraft,temporarySecrets:{},credentialIntent:'unchanged',
-  },{ownerId:'renderer-timeout'});
-  while (!release) await new Promise((resolve) => setImmediate(resolve));
-  currentTime += 10_001;
-  release({connected:true});
-  await assert.rejects(validation,(error) => error.code === 'PLUGIN_VALIDATION_STALE');
-  assert.equal(service.sessions.has(session.draftSessionId),false);
-  assert.equal(service.validations.size,0);
-});
-
-test('persistent draft validation never sends an inactive old-identity credential to a changed target', async (t) => {
-  const values = await fixture(t);
-  const draftVault = new PluginDraftCredentialVault(values.root,encryption());
-  const draftStore = new PluginDraftStore(values.workspaceStore,draftVault);
-  const first = await draftStore.save({
-    projectId:values.project.projectId,environmentId:values.environment.environmentId,
-    pluginType:'mysql',sanitizedDraft:mysqlDraft(),credentialIntent:'replace',
-    temporarySecrets:{password:'old-target-password'},
-  });
-  const changed = await draftStore.save({
-    ...first,expectedDraftRevision:first.revision,
-    sanitizedDraft:mysqlDraft({target:{...mysqlDraft().target,host:'new.internal'}}),
-    credentialIntent:'unchanged',temporarySecrets:{},
-  });
-  let runtimeCalls = 0;
-  const service = new PluginDraftService({
-    workspaceStore:values.workspaceStore,draftStore,draftCredentialVault:draftVault,
-    credentialVault:new PluginCredentialVault(values.root,encryption()),promotionJournal:{},
-    validationRuntime:{validate:async () => { runtimeCalls += 1; },cleanup:async () => undefined},
-  });
-  const session = await service.resumeForOwner(changed,'renderer-a');
-  await assert.rejects(
-    () => service.validate({
-      ...session,purpose:'resource-access',requestId:'identity-change',draftGeneration:0,sequence:1,
-      draft:session.sanitizedDraft,temporarySecrets:{},credentialIntent:'unchanged',
-    },{ownerId:'renderer-a'}),
-    (error) => error.code === 'DRAFT_CREDENTIAL_INACTIVE',
-  );
-  assert.equal(runtimeCalls,0);
 });
 
 test('legacy sidecar drafts are not exposed through IPC or environment summaries', async (t) => {
@@ -598,13 +373,14 @@ test('promotion recovery repairs a new plugin orphaned between YAML write and en
     if (failIndex && file === environmentFile) throw Object.assign(new Error('index write crash'),{code:'SIMULATED_CRASH'});
     return writeYaml(file,value);
   };
+  const transaction = await values.journal.prepare(
+    values.draft,null,values.draft.sanitizedDraft,{credentialMode:'copy-draft'},
+  );
   await assert.rejects(
-    () => values.service.promote({
-      projectId:values.draft.projectId,environmentId:values.draft.environmentId,draftId:values.draft.draftId,
-      expectedDraftRevision:values.draft.revision,
-    }),
+    () => values.journal.commitConfig(transaction,null),
     (error) => error.code === 'SIMULATED_CRASH',
   );
+  values.journal.markUnresolved(transaction);
   failIndex = false;
   const recovered = new PluginDraftPromotionJournal(
     values.root,values.workspaceStore,values.draftStore,values.draftVault,values.activeVault,
@@ -616,11 +392,8 @@ test('promotion recovery repairs a new plugin orphaned between YAML write and en
 });
 
 test('a secret-bearing promotion journal is retained byte-for-byte and globally fenced', async (t) => {
-  const values = await promotionFixture(t,{failurePoint:'after-config-write'});
-  await assert.rejects(() => values.service.promote({
-    projectId:values.draft.projectId,environmentId:values.draft.environmentId,draftId:values.draft.draftId,
-    expectedDraftRevision:values.draft.revision,
-  }));
+  const values = await promotionFixture(t);
+  await persistPromotionPhase({...values,phase:'after-config-write'});
   const [name] = await fs.readdir(values.journal.directory);
   const file = path.join(values.journal.directory,name);
   const tampered = JSON.parse(await fs.readFile(file,'utf8'));
@@ -641,80 +414,9 @@ test('a secret-bearing promotion journal is retained byte-for-byte and globally 
   );
 });
 
-test('unreadable active credentials block database-only promotion before config or journal writes', async (t) => {
-  const values = await fixture(t);
-  const control = {unreadable:false};
-  const activeVault = new PluginCredentialVault(values.root,encryption(control));
-  const base = await values.workspaceStore.createPlugin(
-    values.project.projectId,values.environment.environmentId,
-    mysqlDraft({displayName:'Unreadable active',pluginInstanceId:'unreadable-db'}),
-  );
-  await activeVault.save(base,{password:'must-remain'});
-  const activeBefore = {
-    primary:await fs.readFile(activeVault.file),backup:await fs.readFile(activeVault.backupFile),
-  };
-  const draftVault = new PluginDraftCredentialVault(values.root,encryption());
-  const draftStore = new PluginDraftStore(values.workspaceStore,draftVault);
-  const draft = await draftStore.save({
-    projectId:base.projectId,environmentId:base.environmentId,
-    basePluginInstanceId:base.pluginInstanceId,baseRevision:base.revision,pluginType:'mysql',
-    sanitizedDraft:{...base,target:{...base.target,database:'other_database'}},
-    credentialIntent:'unchanged',temporarySecrets:{},
-  });
-  const journal = new PluginDraftPromotionJournal(
-    values.root,values.workspaceStore,draftStore,draftVault,activeVault,
-  );
-  const service = new PluginDraftService({
-    workspaceStore:values.workspaceStore,draftStore,draftCredentialVault:draftVault,
-    credentialVault:activeVault,promotionJournal:journal,
-  });
-  control.unreadable = true;
+test('the obsolete persistent draft service remains absent', async () => {
   await assert.rejects(
-    () => service.promote({
-      projectId:draft.projectId,environmentId:draft.environmentId,draftId:draft.draftId,
-      expectedDraftRevision:draft.revision,expectedBaseRevision:base.revision,
-    }),
-    (error) => error.code === 'CREDENTIAL_DECRYPT_FAILED',
+    fs.access(new URL('../src/plugin-draft-service.mjs',import.meta.url)),
+    {code:'ENOENT'},
   );
-  assert.equal((await values.workspaceStore.getPlugin(base.projectId,base.environmentId,base.pluginInstanceId)).target.database,'orders');
-  assert.deepEqual(await fs.readFile(activeVault.file),activeBefore.primary);
-  assert.deepEqual(await fs.readFile(activeVault.backupFile),activeBefore.backup);
-  assert.equal((await draftStore.resume(draft)).draftId,draft.draftId);
-  assert.deepEqual(await fs.readdir(journal.directory).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)),[]);
-});
-
-test('promotion never overwrites retained active-vault bytes for a deleted plugin id', async (t) => {
-  const values = await fixture(t);
-  const activeVault = new PluginCredentialVault(values.root,encryption());
-  const deleted = await values.workspaceStore.createPlugin(
-    values.project.projectId,values.environment.environmentId,
-    mysqlDraft({displayName:'Reused name',pluginInstanceId:'reused-name'}),
-  );
-  await activeVault.save(deleted,{password:'historical-password'});
-  await values.workspaceStore.deletePlugin(deleted.projectId,deleted.environmentId,deleted.pluginInstanceId,{expectedRevision:deleted.revision});
-  const activeBefore = await fs.readFile(activeVault.file);
-  const draftVault = new PluginDraftCredentialVault(values.root,encryption());
-  const draftStore = new PluginDraftStore(values.workspaceStore,draftVault);
-  const draft = await draftStore.save({
-    projectId:deleted.projectId,environmentId:deleted.environmentId,pluginType:'mysql',
-    sanitizedDraft:mysqlDraft({displayName:'Reused name',pluginInstanceId:'reused-name',target:{...mysqlDraft().target,host:'new.internal'}}),
-    credentialIntent:'replace',temporarySecrets:{password:'new-password'},
-  });
-  const journal = new PluginDraftPromotionJournal(
-    values.root,values.workspaceStore,draftStore,draftVault,activeVault,
-  );
-  const service = new PluginDraftService({
-    workspaceStore:values.workspaceStore,draftStore,draftCredentialVault:draftVault,
-    credentialVault:activeVault,promotionJournal:journal,
-  });
-  await assert.rejects(
-    () => service.promote({
-      projectId:draft.projectId,environmentId:draft.environmentId,draftId:draft.draftId,
-      expectedDraftRevision:draft.revision,
-    }),
-    (error) => error.code === 'PLUGIN_CREDENTIAL_RESOURCE_CONFLICT',
-  );
-  assert.deepEqual(await fs.readFile(activeVault.file),activeBefore);
-  assert.deepEqual(await values.workspaceStore.listPlugins(deleted.projectId,deleted.environmentId),[]);
-  assert.equal((await draftStore.resume(draft)).draftId,draft.draftId);
 });

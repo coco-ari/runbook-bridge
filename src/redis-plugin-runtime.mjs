@@ -1,6 +1,7 @@
 import redisPackage from 'redis';
 import { EventEmitter } from 'node:events';
 import { AppError } from './errors.mjs';
+import { normalizeRedisCursor } from './pagination-cursor.mjs';
 
 const { createClient } = redisPackage;
 
@@ -202,16 +203,18 @@ export class RedisPluginRuntime extends EventEmitter {
   }
 
   async scan(plugin, { patternId, cursor = '0', limit } = {}) {
+    const scanCursor = normalizeRedisCursor(cursor);
     const session = this.require(plugin);
     const pattern = findPattern(plugin, patternId);
     const count = Math.min(Math.max(Number(limit) || plugin.limits.maxKeys, 1), plugin.limits.maxKeys);
-    const result = await withTimeout(plugin, session.client.scan(String(cursor), { MATCH: pattern.pattern, COUNT: count }));
+    const result = await withTimeout(plugin, session.client.scan(scanCursor, { MATCH: pattern.pattern, COUNT: count }));
+    const returnedCursor = normalizeRedisCursor(result.cursor);
     const keys = result.keys.slice(0, count);
     return {
       patternId,
       keys,
-      nextCursor: String(result.cursor) === '0' ? null : String(result.cursor),
-      truncated: result.keys.length > count || String(result.cursor) !== '0',
+      nextCursor: returnedCursor === '0' ? null : returnedCursor,
+      truncated: result.keys.length > count || returnedCursor !== '0',
       limitsApplied: { maxKeys: count, timeoutMs: plugin.limits.timeoutMs },
     };
   }

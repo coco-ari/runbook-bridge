@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import test from 'node:test';
 
-test('the legacy free-form shell MCP is excluded from production packaging', async () => {
+test('the legacy free-form shell MCP is absent and excluded from production packaging', async () => {
   const manifest = JSON.parse(await fs.readFile('package.json', 'utf8'));
   assert.equal(manifest.bin['ai-ops-mcp'], 'src/mcp-v2.mjs');
   assert.ok(manifest.build.files.includes('!src/mcp.mjs'));
+  await assert.rejects(fs.access('src/mcp.mjs'), { code: 'ENOENT' });
   assert.equal(manifest.build.nsis.deleteAppDataOnUninstall, false);
 });
 

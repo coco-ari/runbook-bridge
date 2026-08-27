@@ -6,6 +6,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const executable = path.resolve(process.argv[2] ?? 'dist/win-unpacked/Agent运维工作台.exe');
+const manifest = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
 await fs.access(executable);
 const mcpEntrypoint = path.join(path.dirname(executable), 'resources', 'app.asar', 'src', 'mcp-v2.mjs');
 const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-package-'));
@@ -19,6 +20,7 @@ try {
   transport.stderr?.on('data', (chunk) => process.stderr.write(chunk));
   const client = new Client({ name: 'package-verifier', version: '1.0.0' });
   await client.connect(transport);
+  assert.equal(client.getServerVersion()?.version, manifest.version);
   const tools = await client.listTools();
   assert.deepEqual(
     tools.tools.map((tool) => tool.name),

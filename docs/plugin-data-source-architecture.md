@@ -1,9 +1,11 @@
 # AI 运维工具：插件化数据库与统一连接详细方案
 
-> 状态：Proposed  
+> 状态：历史提案（已由 `agent-ops-v1-technical-design.md` 取代）
 > 目标版本：RunbookBridge 0.4.x  
 > 编写日期：2026-08-14  
 > 适用范围：Windows Electron 桌面端、现有 SSH Broker、Codex MCP、MySQL 与 Redis 第一版
+
+> 本文保留 0.4.x 方案形成时的模块名和迁移思路，仅供设计追溯。文中的 `src/mcp.mjs`、`renderer/app.js` 和 `ai-ops` 别名不是当前安装或开发入口；现行入口见 `src/mcp-v2.mjs`、`renderer/v2`，Codex MCP 别名为 `agent-ops`。
 
 ## 1. 结论
 

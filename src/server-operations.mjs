@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from './errors.mjs';
+import { parseOffsetCursor } from './pagination-cursor.mjs';
 
 const FILE_ID_TTL_MS = 10 * 60 * 1000;
 const MAX_FILE_IDS = 2000;
@@ -232,13 +233,13 @@ export class ServerOperations {
     return { relativePath:descriptor.relativePath, size:descriptor.size, sourceName:source.displayName, kind:source.kind };
   }
 
-  async listFiles(plugin, { sourceId, cursor = 0, limit = 200 } = {}) {
+  async listFiles(plugin, { sourceId, cursor, limit = 200 } = {}) {
+    const offset = parseOffsetCursor(cursor);
     const source = this.source(plugin, sourceId);
     const entries = await this.serverRuntime.listRemoteDirectory(plugin, source.root);
     const filtered = entries.filter((entry) =>
       entry.isFile && !entry.isSymbolicLink && entry.canonicalPath && withinRoot(source.root, entry.canonicalPath) && entry.size <= source.maxFileBytes && source.patterns.some((pattern) => globMatches(pattern, entry.name)),
     ).sort((left, right) => right.mtime - left.mtime || left.name.localeCompare(right.name));
-    const offset = Math.max(Number(cursor) || 0, 0);
     const pageSize = Math.min(Math.max(Number(limit) || 200, 1), 200);
     const page = filtered.slice(offset, offset + pageSize);
     return {
@@ -250,11 +251,12 @@ export class ServerOperations {
   }
 
   async readLog(plugin, { fileId, cursor = null, maxBytes = 262_144, tail = true } = {}) {
+    const offset = cursor === null ? null : parseOffsetCursor(cursor);
     const descriptor = this.requireFile(plugin, fileId);
     const source = this.source(plugin, descriptor.sourceId);
     if (source.kind !== 'log') throw new AppError('SOURCE_NOT_ALLOWED', '该文件不属于日志数据源。');
     const limit = Math.min(Math.max(Number(maxBytes) || 262_144, 1), plugin.limits.maxBytes);
-    const start = cursor !== null ? Math.max(Number(cursor) || 0, 0) : tail ? Math.max(0, descriptor.size - limit) : 0;
+    const start = offset !== null ? offset : tail ? Math.max(0, descriptor.size - limit) : 0;
     const result = await this.serverRuntime.readRemoteRange(plugin, descriptor.path, start, limit);
     if (result.mtime !== descriptor.mtime) throw new AppError('SOURCE_CHANGED', '文件已经变化，请重新列出。');
     return { fileId, relativePath: descriptor.relativePath, content: result.content, startByte: result.startByte, endByte: result.endByte, size: result.size, nextCursor: result.truncated ? String(result.endByte) : null, truncated: result.truncated };
@@ -286,6 +288,7 @@ export class ServerOperations {
   }
 
   async readConfig(plugin, args) {
+    const offset = parseOffsetCursor(args.cursor);
     const descriptor = this.requireFile(plugin, args.fileId);
     const source = this.source(plugin, descriptor.sourceId);
     if (source.kind !== 'config') throw new AppError('SOURCE_NOT_ALLOWED', '该文件不属于配置数据源。');
@@ -293,7 +296,7 @@ export class ServerOperations {
     const result = await this.serverRuntime.readRemoteRange(plugin, descriptor.path, 0, MAX_CONFIG_BYTES);
     if (result.mtime !== descriptor.mtime) throw new AppError('SOURCE_CHANGED', '配置文件已经变化，请重新列出。');
     if (result.truncated) throw new AppError('FILE_TOO_LARGE', '配置文件超过安全读取上限。');
-    const page = sliceUtf8(result.content, args.cursor, Math.min(Math.max(Number(args.maxBytes) || 262_144, 1), 262_144));
+    const page = sliceUtf8(result.content, offset, Math.min(Math.max(Number(args.maxBytes) || 262_144, 1), 262_144));
     return { fileId: args.fileId, relativePath: descriptor.relativePath, content: page.content, nextCursor: page.truncated ? String(page.endByte) : null, truncated: page.truncated, redacted: false };
   }
 
@@ -310,9 +313,9 @@ export class ServerOperations {
     return this.serverRuntime.statRemotePath(plugin, normalizeRemotePath(remotePath));
   }
 
-  async listDirectory(plugin, { path: remotePath, cursor = 0, limit = 200 } = {}) {
+  async listDirectory(plugin, { path: remotePath, cursor, limit = 200 } = {}) {
+    const offset = parseOffsetCursor(cursor);
     const requestedPath = normalizeRemotePath(remotePath);
-    const offset = Math.max(Number(cursor) || 0, 0);
     const pageSize = Math.min(Math.max(Number(limit) || 200, 1), 500);
     const entries = await this.serverRuntime.listRemoteDirectory(plugin, requestedPath, { offset, limit:pageSize + 1, sortByName:true });
     // Older/custom runtimes return the whole directory; keep that contract as
@@ -389,10 +392,11 @@ export class ServerOperations {
     return this.withRemoteReadSession(plugin, (reader) => this.findFilesWithReader(reader, options));
   }
 
-  async readFile(plugin, { path: remotePath, cursor = 0, maxBytes = 262_144 } = {}) {
+  async readFile(plugin, { path: remotePath, cursor, maxBytes = 262_144 } = {}) {
+    const offset = parseOffsetCursor(cursor);
     const requestedPath = normalizeRemotePath(remotePath);
     const limit = Math.min(Math.max(Number(maxBytes) || 262_144, 1), 1024 * 1024);
-    const result = await this.serverRuntime.readRemoteRange(plugin, requestedPath, Math.max(Number(cursor) || 0, 0), limit);
+    const result = await this.serverRuntime.readRemoteRange(plugin, requestedPath, offset, limit);
     return { path:result.canonicalPath, content:result.content, startByte:result.startByte, endByte:result.endByte, size:result.size, mtime:result.mtime, nextCursor:result.truncated ? String(result.endByte) : null, truncated:result.truncated };
   }
 

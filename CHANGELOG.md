@@ -2,6 +2,25 @@
 
 本项目使用语义化版本号。正式发布版本以 Git Tag 和 GitHub Release 为准。
 
+## 未发布
+
+### 版本一致性
+
+- MCP 初始化握手的版本改为直接读取 `package.json`，避免运行时版本与安装包版本漂移。
+- README 当前代码包版本和安装升级回归脚本由自动化测试约束，历史发布条目保持原样。
+- 发布工作流在安装依赖和构建前校验 Git tag 与 `package.json` 版本完全一致，阻止错版本产物发布。
+
+### Agent 分页契约
+
+- Server 与 MySQL 分页游标在兼容旧版非负整数输入的同时，统一以十进制字符串返回 `nextCursor`；Agent 应原样透传该字符串。
+- Redis SCAN 游标保持十进制字符串契约。所有分页运行时现在拒绝非法格式、负数、小数和不安全整数，不再静默回退到第一页。
+
+### 旧入口清理
+
+- 删除当前主进程、MCP 与 V2 UI 不再引用的旧 MCP、旧 renderer、SSH `ConnectionManager` 和持久草稿服务，避免继续进入安装包或误导 Agent。
+- 删除只服务旧 UI 的孤立 smoke 与 screenshot 脚本；保留现行 V2 UI、package 验证和 packaged MCP smoke。
+- 保留升级仍需要的旧项目/凭据读取和 promotion journal，并将旧 `ProjectStore` 默认 README 更新为 `agent-ops` / `mcp-v2`。
+
 ## 1.0.28 - 2026-08-17
 
 ### Agent 文件查询性能

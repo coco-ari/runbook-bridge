@@ -44,8 +44,12 @@ test('project creation persists only non-secret connection metadata', async (t) 
   const defaultReadme = await store.readDoc(project.id, 'README.md');
   assert.match(defaultReadme, /产物清单/);
   assert.match(defaultReadme, /Codex MCP 安装/);
-  assert.match(defaultReadme, /codex mcp add --env ELECTRON_RUN_AS_NODE=1 ai-ops/);
-  assert.match(defaultReadme, /codex mcp get ai-ops/);
+  assert.match(defaultReadme, /安装“Agent运维工作台”/);
+  assert.match(defaultReadme, /codex mcp add --env ELECTRON_RUN_AS_NODE=1 agent-ops/);
+  assert.match(defaultReadme, /Programs\\Agent运维工作台\\Agent运维工作台\.exe/);
+  assert.match(defaultReadme, /resources\\app\.asar\\src\\mcp-v2\.mjs/);
+  assert.match(defaultReadme, /codex mcp get agent-ops/);
+  assert.doesNotMatch(defaultReadme, /src\\mcp\.mjs|Programs\\AI运维工具/);
 });
 
 test('command policy is enabled by default and validates per-project custom deny phrases', async (t) => {

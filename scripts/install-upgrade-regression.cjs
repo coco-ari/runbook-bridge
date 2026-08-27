@@ -391,7 +391,8 @@ async function uninstall(installDir, env) {
 
 async function orchestrate() {
   const root = path.resolve(__dirname, '..');
-  const installer = path.resolve(process.argv[2] ?? path.join(root, 'dist', 'Agent\u8fd0\u7ef4\u5de5\u4f5c\u53f0 Setup 1.0.43.exe'));
+  const manifest = JSON.parse(await fsp.readFile(path.join(root, 'package.json'), 'utf8'));
+  const installer = path.resolve(process.argv[2] ?? path.join(root, 'dist', `Agent\u8fd0\u7ef4\u5de5\u4f5c\u53f0 Setup ${manifest.version}.exe`));
   await fsp.access(installer);
   const temporaryRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'ai-ops-install-regression-'));
   const isolation = isolatedEnvironment(temporaryRoot);

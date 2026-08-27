@@ -1,11 +1,11 @@
 # Agent 运维工作台 V1 详细设计
 
-> 状态：V1 实现基线 v1.0（已落地，保留旧版兼容层）
+> 状态：V1 实现基线 v1.0（已落地；现行 MCP/UI 已统一到 V2 入口，数据迁移兼容层仍保留）
 > 更新日期：2026-08-16
 > 产品依据：`ai-ops-plugin-environment-prototype.html`、`ai-ops-environment-connect-initial-1280.png`、`ai-ops-environment-connect-partial-1280.png` 与 `ai-ops-environment-connect-connected-1280.png`
 > 目标：记录 V1 的产品决策、实现契约、安全边界、迁移方法与验收基线。
 
-实现入口为 `renderer/v2`、`src/mcp-v2.mjs`、`src/workspace-store.mjs` 与插件运行模块；旧 SSH-only 文件保留用于数据迁移和回归兼容。
+现行入口为 `renderer/v2`、`src/mcp-v2.mjs`、`src/workspace-store.mjs` 与插件运行模块。旧 `src/mcp.mjs` 和 renderer 根目录 UI 已移除；`ProjectStore`、`CredentialStore` 等仍参与启动或数据迁移的兼容层继续保留，不能按死代码处理。
 
 当本文与旧文档 `plugin-data-source-architecture.md` 冲突时，以本文为准。旧文档中的“SSH 是项目主线”“项目授权会话”“enabled / aiAccess / Agent 暂停”等模型不再沿用。
 
@@ -1178,6 +1178,8 @@ AUDIT_COMMIT_FAILED
 `ENVIRONMENT_NOT_CONNECTED/ENVIRONMENT_CONNECTING` 仅用于桌面环境级连接 API 与汇总，不用于拒绝 partial 中的成功插件。`connected/partial/failed` 是环境汇总状态，不是工具错误码。错误对象只包含可展示摘要、恢复动作、operationId 和非秘密诊断层级。底层异常、完整地址、SQL 片段和凭据不得原样透传 Agent。
 
 ## 17. 对现有 v0.3.2 的迁移
+
+> 历史实施记录：本节描述从 v0.3.2 迁移到 V1 时的过渡方案；其中 `src/mcp.mjs`、`renderer/app.js` 等路径是当时的改造对象，不是当前运行入口。
 
 ### 17.1 原则
 
