@@ -1177,28 +1177,82 @@ test('formal host-key confirmation consumes the operation-bound challenge withou
   assert.doesNotMatch(source,/requestConnectionIntent|updatePlugin/u);
 });
 
-test('runtime status rendering is coalesced to one animation frame', () => {
+test('runtime status rendering coalesces to one frame and patches only affected navigation nodes', () => {
   let frame = null;
   let frames = 0;
-  let projectRenders = 0;
+  let projectPatches = 0;
+  let resourcePatches = 0;
   let runtimeRenders = 0;
+  const live = {textContent:''};
   const context = vm.createContext({
-    state:{projectId:'project',environmentId:'env',dragSort:null,sortSaving:false,railRefreshPending:false,projectOverviewActive:false},
+    state:{
+      projectId:'project',environmentId:'env',dragSort:null,sortSaving:false,
+      railRefreshPending:false,projectOverviewActive:false,projectTitleEditing:false,
+      overviewEditingEnvironmentId:null,overviewEnvironmentDeletePrompt:null,
+    },
     dirtyRuntimeScopes:new Set(),
+    dirtyRuntimeCoordinates:new Map(),
     runtimeRenderFrame:null,
     requestAnimationFrame:(callback) => { frames += 1; frame = callback; return frames; },
     withUiContinuity:(render) => render(),
-    renderProjects:() => { projectRenders += 1; },
+    patchProjectRuntimeSummary:() => { projectPatches += 1; },
+    patchResourceEnvironmentRuntime:() => { resourcePatches += 1; },
     renderProjectOverview:() => {},
-    renderRuntime:() => { runtimeRenders += 1; },
+    renderRuntime:(options) => {
+      runtimeRenders += 1;
+      assert.equal(options.renderResource,false);
+    },
+    activeEnvironment:() => ({name:'生产环境'}),
+    environmentStatusText:() => '已连接',
+    $:() => live,
   });
   install(context,['scopeKey','scheduleRuntimeRender']);
   context.first = {projectId:'project',environmentId:'env'};
   vm.runInContext('scheduleRuntimeRender(first); scheduleRuntimeRender(first);',context);
   assert.equal(frames,1);
   frame();
-  assert.equal(projectRenders,1);
+  assert.equal(projectPatches,1);
+  assert.equal(resourcePatches,1);
   assert.equal(runtimeRenders,1);
+  assert.equal(live.textContent,'生产环境：已连接');
+});
+
+test('audit search rendering is trailing-debounced and ignores a stale scope', () => {
+  let nextTimer = 0;
+  let currentScope = {projectId:'project',environmentId:'env',pluginInstanceId:null};
+  let renders = 0;
+  const callbacks = new Map();
+  const context = vm.createContext({
+    auditRenderTimer:null,
+    setTimeout:(callback,delay) => {
+      assert.equal(delay,120);
+      const id = ++nextTimer;
+      callbacks.set(id,callback);
+      return id;
+    },
+    clearTimeout:(id) => callbacks.delete(id),
+    currentAuditScope:() => ({...currentScope}),
+    auditScopeIsCurrent:(scope) => (
+      scope.projectId === currentScope.projectId
+      && scope.environmentId === currentScope.environmentId
+      && scope.pluginInstanceId === currentScope.pluginInstanceId
+    ),
+    renderAudit:() => { renders += 1; },
+  });
+  install(context,['cancelScheduledAuditRender','scheduleAuditRender']);
+
+  vm.runInContext('scheduleAuditRender(); scheduleAuditRender(); scheduleAuditRender();',context);
+  assert.equal(callbacks.size,1);
+  const latest = [...callbacks.values()][0];
+  latest();
+  assert.equal(renders,1);
+  assert.equal(context.auditRenderTimer,null);
+
+  vm.runInContext('scheduleAuditRender()',context);
+  const stale = [...callbacks.values()].at(-1);
+  currentScope = {...currentScope,environmentId:'other'};
+  stale();
+  assert.equal(renders,1);
 });
 
 test('workspace change bursts share one overview refresh', async () => {

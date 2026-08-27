@@ -56,7 +56,11 @@ export function formatQuickQuestionDiscoveredDate(value) {
   const day = Number(match[3]);
   const date = new Date(Date.UTC(year,month - 1,day));
   if (year < 1000 || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return '';
-  return `${Number(month)}月${Number(day)}日`;
+  return new Intl.DateTimeFormat('zh-CN',{
+    month:'long',
+    day:'numeric',
+    timeZone:'UTC',
+  }).format(date);
 }
 
 export function buildQuickQuestionPreview({ opening, projectName, environmentName, question, discoveredDate }) {
