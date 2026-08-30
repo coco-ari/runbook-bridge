@@ -182,13 +182,36 @@ test('SSH host-key challenge preserves the safe fingerprint and complete correla
   );
 });
 
-test('probe rejects credential-reuse controls and secret-bearing draft fields', () => {
+test('probe rejects every credential-reuse control before resolving credentials or starting the runtime', () => {
+  let runtimeCalls = 0;
+  const values = fakeResolver(async () => {
+    runtimeCalls += 1;
+    return {databases:[],truncated:false};
+  });
+  const probe = manager({resolver:values.value,runtime:values.runtime});
+  const controls = [
+    ...['unchanged','none','replace','rebind-existing','clear-explicit',undefined]
+      .map((credentialIntent) => ({credentialIntent})),
+    ...['grant-1',null,undefined].map((oneTimeGrant) => ({oneTimeGrant})),
+  ];
+
+  for (const control of controls) {
+    assert.throws(
+      () => probe.probePluginDraft(payload(control),{ownerId:'renderer:7'}),
+      (error) => error.code === 'INVALID_ARGUMENT'
+        && error.message === '临时探针不能复用已保存凭据。',
+    );
+  }
+
+  assert.equal(values.calls.length,0,'rejected controls cannot resolve any credentials');
+  assert.equal(runtimeCalls,0,'rejected controls cannot start a probe');
+  assert.equal(probe.requests.size,0);
+  assert.equal(probe.groups.size,0);
+});
+
+test('probe rejects secret-bearing draft fields', () => {
   const values = fakeResolver();
   const probe = manager({resolver:values.value,runtime:values.runtime});
-  assert.throws(
-    () => probe.probePluginDraft(payload({credentialIntent:'rebind-existing'}),{ownerId:'renderer:7'}),
-    (error) => error.code === 'INVALID_ARGUMENT',
-  );
   assert.throws(
     () => probe.probePluginDraft(payload({draft:mysqlDraft({password:'embedded'})}),{ownerId:'renderer:7'}),
     (error) => error.code === 'INVALID_ARGUMENT' && error.details.field === 'password',

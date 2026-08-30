@@ -9,7 +9,7 @@ These instructions apply to the entire canonical repository. Keep changes focuse
 - `src/workspace-store.mjs` owns the `Project -> Environment -> Plugin` persisted model. Credential material is handled by the credential vault/store modules, not workspace YAML.
 - `src/broker-server.mjs` and `src/broker-client.mjs` bridge MCP to the running desktop process. Server, MySQL, and Redis behavior belongs in their operation/runtime modules.
 - `src/context-manager.mjs`, `src/operation-gate.mjs`, `src/confirmation-manager.mjs`, `src/command-policy.mjs`, and `src/mysql-policy.mjs` enforce security boundaries.
-- `renderer/v2/` is the active UI loaded and packaged by Electron. The legacy files directly under `renderer/`, `src/mcp.mjs`, `src/connection-manager.mjs`, and `src/plugin-draft-service.mjs` have been removed. Keep the explicit `!src/mcp.mjs` package exclusion and the absence tests as tombstones; do not recreate these paths unless a task explicitly requires a compatibility restoration with matching tests.
+- `renderer/v2/index.html` and `renderer/v2/src/` are the active React Renderer source. Vite generates `renderer-build/v2/`; Electron loads and packages that generated directory, which must never be hand-edited or committed. The legacy Renderer files, the files directly under `renderer/`, `src/mcp.mjs`, `src/connection-manager.mjs`, and `src/plugin-draft-service.mjs` have been removed. Keep the explicit source-Renderer and `!src/mcp.mjs` package exclusions plus the absence tests as tombstones; do not recreate these paths unless a task explicitly requires a compatibility restoration with matching tests.
 - Tests live in `test/*.test.mjs`; Electron smoke and package verification entry points live in `scripts/`.
 
 ## Stable identities and compatibility names
@@ -36,7 +36,7 @@ These instructions apply to the entire canonical repository. Keep changes focuse
 - Use Node.js 22+ and pnpm through Corepack. Keep ESM code in `.mjs`; retain CommonJS only where the existing Electron/preload or smoke-test boundary requires `.cjs`.
 - Edit source files, not generated output. Do not hand-edit or commit `node_modules/`, `dist/`, `artifacts/`, `coverage/`, logs, temporary files, or local `projects/`/`data/` state.
 - `pnpm-lock.yaml` is tracked: change it only when the dependency graph changes. Do not add a production dependency without explaining why existing code or platform APIs are insufficient.
-- Keep UI changes in `renderer/v2/`. Keep MCP tool schema, service dispatch, runtime behavior, stable errors, README/tool documentation, and package smoke expectations synchronized when a public tool contract changes.
+- Keep UI source changes in `renderer/v2/src/` and the unique `renderer/v2/index.html` entry. Keep MCP tool schema, service dispatch, runtime behavior, stable errors, README/tool documentation, and package smoke expectations synchronized when a public tool contract changes.
 - Do not bump versions as an incidental edit. A requested release/version change must synchronize package metadata, displayed/documented versions, changelog, and packaged MCP identity.
 
 ## Verification
@@ -55,6 +55,7 @@ corepack pnpm test
 ```powershell
 node scripts/verify-package.mjs "dist/win-unpacked/Agent运维工作台.exe"
 node scripts/packaged-mcp-smoke.mjs "dist/win-unpacked/Agent运维工作台.exe"
+node scripts/packaged-ui-smoke.cjs "dist/win-unpacked/Agent运维工作台.exe"
 ```
 
 - Run `corepack pnpm start` only for manual desktop validation. Do not connect to real infrastructure during tests; use temporary data roots and mocks/fixtures.

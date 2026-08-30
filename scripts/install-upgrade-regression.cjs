@@ -216,7 +216,9 @@ async function startInstalledApp(executable, isolation) {
         const cdp = await CdpClient.connect(page.webSocketDebuggerUrl);
         const readyStarted = Date.now();
         while (Date.now() - readyStarted < 15_000) {
-          const ready = await cdp.evaluate("Boolean(window.aiOps?.v2 && document.querySelector('#app'))");
+          const ready = await cdp.evaluate(
+            "Boolean(window.aiOps?.v2 && document.querySelector('[data-shell-ready=\"true\"]'))",
+          );
           if (ready) return { child, cdp };
           await delay(100);
         }
@@ -358,11 +360,19 @@ async function exerciseInstalledMcp(executable, isolation) {
         environmentId: ENVIRONMENT_ID,
         contextToken: opened.contextToken,
         pluginType: 'redis',
-        displayName: 'Agent added disconnected draft',
+        displayName: 'Agent added disconnected plugin',
+        configuration: {
+          host: '127.0.0.1',
+          port: 65531,
+          logicalDb: 0,
+          addressFamily: 'ipv4Only',
+          connectionMode: 'direct',
+          tlsMode: 'disabled',
+        },
       },
     }));
     assert.equal(added.connection, 'disconnected');
-    assert.equal(added.plugin.configState, 'draft');
+    assert.equal(added.plugin.configState, 'ready');
     return { listed: true, opened: true, addedPluginInstanceId: added.plugin.pluginInstanceId };
   } finally {
     await client.close().catch(() => undefined);
@@ -461,7 +471,12 @@ async function orchestrate() {
     const resolvedTemporaryRoot = path.resolve(temporaryRoot);
     if (!keep && resolvedTemporaryRoot.startsWith(temporaryBase)
       && path.basename(resolvedTemporaryRoot).startsWith('ai-ops-install-regression-')) {
-      await fsp.rm(resolvedTemporaryRoot, { recursive: true, force: true });
+      await fsp.rm(resolvedTemporaryRoot, {
+        recursive: true,
+        force: true,
+        maxRetries: 8,
+        retryDelay: 250,
+      });
     } else if (keep) {
       process.stderr.write(`Preserved regression directory: ${resolvedTemporaryRoot}\n`);
     }

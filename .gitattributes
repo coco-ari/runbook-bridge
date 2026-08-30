@@ -6,3 +6,4 @@
 *.md text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+/patches/*.patch text eol=lf

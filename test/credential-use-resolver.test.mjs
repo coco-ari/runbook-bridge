@@ -141,6 +141,45 @@ test('explicit rebind loads the committed binding and unreadable credentials rem
   assert.deepEqual(unreadable.calls,{load:1,save:0,saveMerged:0,clear:0});
 });
 
+test('partial temporary replacement merges saved fields only for an unchanged credential identity',async () => {
+  const {vault,calls} = vaultHarness();
+  const resolver = new CredentialUseResolver(vault);
+  const result = await resolver.resolve({
+    committedPlugin:mysql(),draft:mysql({target:{database:'archive'}}),
+    temporarySecrets:{password:'replacement'},credentialIntent:'replace',
+    purpose:'resource-access',caller:'main',
+  });
+  assert.deepEqual(result.secrets,{password:'replacement',tlsPassphrase:'saved-tls'});
+  assert.equal(calls.load,1);
+  const probe = await resolver.resolve({
+    committedPlugin:null,draft:mysql(),temporarySecrets:{password:'replacement'},
+    purpose:'resource-access',caller:'main',
+  });
+  assert.deepEqual(probe.secrets,{password:'replacement'});
+  const changedIdentity = await resolver.resolve({
+    committedPlugin:mysql(),draft:mysql({target:{host:'other.invalid'}}),
+    temporarySecrets:{password:'replacement'},purpose:'resource-access',caller:'main',
+  });
+  assert.deepEqual(changedIdentity.secrets,{password:'replacement'});
+  assert.equal(calls.load,1);
+});
+
+test('explicit temporary values still validate when same-identity saved credentials are unavailable',async () => {
+  for (const loadError of [
+    ...['CREDENTIAL_BINDING_MISMATCH','CREDENTIAL_DECRYPT_FAILED','CREDENTIAL_ENCRYPTION_UNAVAILABLE','CREDENTIAL_STORE_INVALID']
+      .map((code) => new AppError(code,'Test vault unavailable.')),
+    Object.assign(new Error('Test credential file unavailable.'),{code:'EACCES'}),
+  ]) {
+    const {vault,calls} = vaultHarness({loadError});
+    const result = await new CredentialUseResolver(vault).resolve({
+      committedPlugin:mysql(),draft:mysql(),temporarySecrets:{password:'replacement'},
+      credentialIntent:'replace',purpose:'resource-access',caller:'main',
+    });
+    assert.deepEqual(result.secrets,{password:'replacement'});
+    assert.deepEqual(calls,{load:1,save:0,saveMerged:0,clear:0});
+  }
+});
+
 test('one-time grants bind session, generation, purpose, digest, and single consumption', async () => {
   const {vault,calls} = vaultHarness();
   const resolver = new CredentialUseResolver(vault,{now:() => 1000});

@@ -3,3 +3,5 @@ allowBuilds:
   electron: true
   electron-winstaller: true
   ssh2: true
+patchedDependencies:
+  react-resizable-panels@4.12.3: patches/react-resizable-panels@4.12.3.patch

@@ -13,8 +13,10 @@ import { WorkspaceMutationCoordinator } from './workspace-mutation-coordinator.m
 import {
   assertPluginConfigurationReady,
   getPluginConnectionAdapter,
+  isCredentialFreeServerAgent,
 } from './plugin-connection-adapters.mjs';
 import { buildQuickQuestionCopyText } from './quick-questions.mjs';
+import { isolateNewPluginIdentity } from './plugin-creation-identity.mjs';
 
 function resultHandler(handler) {
   return async (_event, ...args) => {
@@ -477,7 +479,8 @@ export function registerV2Ipc(ipcMain, services) {
         const adapter = getPluginConnectionAdapter(prepared.before.pluginType);
         const identityChanged = JSON.stringify(adapter.credentialIdentity(prepared.before))
           !== JSON.stringify(adapter.credentialIdentity(prepared.after ?? prepared.before));
-        if (identityChanged && prepared.credentialMutation === 'none') {
+        if (identityChanged && prepared.credentialMutation === 'none'
+          && !isCredentialFreeServerAgent(prepared.after ?? prepared.before)) {
           throw new AppError(
             'PLUGIN_CREDENTIAL_REBIND_REQUIRED',
             '认证目标或安全路径已经变化，请输入新凭据或明确沿用已保存凭据。',
@@ -575,9 +578,7 @@ export function registerV2Ipc(ipcMain, services) {
   });
   handle('project-delete', async ({ projectId }) => {
     mutationCoordinator.beginProjectDelete(projectId);
-    const mutationTokens = [];
     try {
-      pluginEditSessionManager?.invalidateProject?.(projectId);
       let environments = await store.listEnvironments(projectId);
       const findActive = (values) => values.filter((environment) => {
         const runtime = connectionManager.snapshot(projectId, environment.environmentId);
@@ -587,8 +588,14 @@ export function registerV2Ipc(ipcMain, services) {
       if (active.length) {
         throw new AppError('PROJECT_CONNECTED', `请先断开项目中的环境：${active.map((item) => item.name).join('、')}。`);
       }
+      const assertRecoveryAvailable = (values) => {
+        for (const environment of values) {
+          (configTransactionJournal ?? connectionManager.configurationJournal)
+            ?.assertEnvironmentAvailable?.(projectId, environment.environmentId);
+        }
+      };
+      assertRecoveryAvailable(environments);
       await mutationCoordinator.waitProjectActivity(projectId);
-      pluginEditSessionManager?.invalidateProject?.(projectId);
       // A mutation/operation that was already active when deletion began may
       // have changed environment/runtime state. Re-read before the commit.
       environments = await store.listEnvironments(projectId);
@@ -596,10 +603,11 @@ export function registerV2Ipc(ipcMain, services) {
       if (active.length) {
         throw new AppError('PROJECT_CONNECTED', `请先断开项目中的环境：${active.map((item) => item.name).join('、')}。`);
       }
-      for (const environment of environments) {
-        const token = connectionManager.beginConfigurationMutation?.(projectId, environment.environmentId, null);
-        if (token !== undefined) mutationTokens.push([environment.environmentId,token]);
-      }
+      // The project deletion fence already excludes all new operations and
+      // has drained earlier work. A normal configuration mutation would
+      // reject its own project fence; retain only the recovery preflight.
+      assertRecoveryAvailable(environments);
+      pluginEditSessionManager?.invalidateProject?.(projectId);
       if (typeof connectionManager.disconnect === 'function') {
         await Promise.all(environments.map((environment) => connectionManager.disconnect(projectId, environment.environmentId, 'project-delete-cleanup')));
       }
@@ -611,7 +619,6 @@ export function registerV2Ipc(ipcMain, services) {
       services.broadcast?.('v2:workspace-changed', { type:'project-deleted', projectId });
       return { ...value, credentialsPreserved:true };
     } finally {
-      for (const [environmentId,token] of mutationTokens) connectionManager.endConfigurationMutation?.(projectId, environmentId, token);
       mutationCoordinator.endProjectDelete(projectId);
     }
   });
@@ -683,13 +690,14 @@ export function registerV2Ipc(ipcMain, services) {
     contextManager.invalidateEnvironment(projectId, environmentId);
     return value;
   }));
-  handle('environment-delete', ({ projectId, environmentId }) => {
+  handle('environment-delete', async ({ projectId, environmentId }) => {
     assertProjectAvailable(projectId);
-    pluginEditSessionManager?.invalidateEnvironment?.(projectId,environmentId);
     const immediate = connectionManager.snapshot(projectId,environmentId);
     if (immediate.desiredConnected || immediate.phase !== 'disconnected') {
       throw new AppError('ENVIRONMENT_CONNECTED', '请先断开环境后再删除。');
     }
+    await store.preflightDeleteEnvironment?.(projectId,environmentId);
+    pluginEditSessionManager?.invalidateEnvironment?.(projectId,environmentId);
     return enqueuePluginMutation(projectId, environmentId, () => withConfigurationMutation(projectId, environmentId, null, async () => {
     const state = connectionManager.snapshot(projectId, environmentId);
     const runtimeActive = state.desiredConnected || state.phase !== 'disconnected';
@@ -852,9 +860,12 @@ export function registerV2Ipc(ipcMain, services) {
     });
   });
   handle('plugin-create', ({ projectId, environmentId, input, secrets }) => enqueuePluginMutation(projectId, environmentId, () => withConfigurationMutation(projectId, environmentId, null, async () => {
-    const candidate = workspaceInternals.normalizePlugin(input,{projectId,environmentId});
+    let candidate = workspaceInternals.normalizePlugin(input,{projectId,environmentId});
     assertPluginConfigurationReady(candidate);
-    const plugin = await store.createPlugin(projectId, environmentId, input);
+    candidate = await isolateNewPluginIdentity(candidate,{
+      workspaceStore:store,credentialVault,explicitIdentity:input.pluginInstanceId !== undefined,
+    });
+    const plugin = await store.createPlugin(projectId, environmentId, candidate);
     try {
       if (secrets && Object.values(secrets).some(Boolean)) await credentialVault.save(plugin, secrets);
     } catch (error) {
@@ -914,7 +925,11 @@ export function registerV2Ipc(ipcMain, services) {
       return commitConnectionPluginUpdate(prepared,payload);
     },
   ));
-  handle('plugin-delete', ({ projectId, environmentId, pluginInstanceId }) => {
+  handle('plugin-delete', async ({ projectId, environmentId, pluginInstanceId }) => {
+    // Reject impossible deletes before discarding the user's edit session.
+    // Recheck inside the mutation below because dependencies may change while
+    // this initial read is in flight.
+    await store.preflightDeletePlugin(projectId, environmentId, pluginInstanceId);
     pluginEditSessionManager?.invalidatePlugin?.(projectId,environmentId,pluginInstanceId);
     return enqueuePluginMutation(projectId, environmentId, () => withConfigurationMutation(projectId, environmentId, pluginInstanceId, async ({restoreOnFailure}) => {
     let plugin;

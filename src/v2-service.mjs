@@ -5,6 +5,7 @@ import { assertPluginConfigurationReady } from './plugin-connection-adapters.mjs
 import { assessEnvironmentSnapshot, publicPluginAssessment } from './plugin-readiness-service.mjs';
 import { pluginWithRunbookSources, resourceHintsFromRunbook } from './runbook-sources.mjs';
 import { workspaceInternals } from './workspace-store.mjs';
+import { isolateNewPluginIdentity } from './plugin-creation-identity.mjs';
 
 const MAX_RUNBOOK_BYTES = 64 * 1024;
 const AGENT_PLUGIN_FIELDS = {
@@ -168,15 +169,18 @@ export class V2Service {
   async addPluginUnlocked(params) {
     const verified = await this.contextManager.verifyEnvironment(params.projectId, params.environmentId, params.contextToken, params.clientInstanceId);
     const input = agentPluginInput(params);
-    const candidate = workspaceInternals.normalizePlugin(input,{
+    let candidate = workspaceInternals.normalizePlugin(input,{
       projectId:params.projectId,
       environmentId:params.environmentId,
     });
     assertPluginConfigurationReady(candidate);
+    candidate = await isolateNewPluginIdentity(candidate,{
+      workspaceStore:this.workspaceStore,credentialVault:this.credentialVault,
+    });
     const mutationToken = this.connectionManager.beginConfigurationMutation?.(params.projectId,params.environmentId,null) ?? null;
     let plugin;
     try {
-      plugin = await this.workspaceStore.createPlugin(params.projectId, params.environmentId, input, { expectedEnvironmentRevision:verified.environment.revision });
+      plugin = await this.workspaceStore.createPlugin(params.projectId, params.environmentId, candidate, { expectedEnvironmentRevision:verified.environment.revision });
     } catch (error) {
       if (mutationToken !== null) this.connectionManager.endConfigurationMutation?.(params.projectId,params.environmentId,mutationToken,{restore:true});
       throw error;

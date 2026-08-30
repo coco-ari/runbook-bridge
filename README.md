@@ -27,14 +27,16 @@
 
 ### 配置、验证与连接
 
-- 插件详情默认只读。基本信息和 Agent 策略使用独立轻量编辑，不会断开现有网络连接。
-- 点击“修改连接配置”后，应用会先显示影响范围，等待正在进行的操作结束，再断开受影响连接并进入受保护的编辑会话。
+- 环境详情集中显示状态摘要、环境连接操作与插件列表；可连接、断开、重试或取消当前环境的连接，并点击插件名称进入插件详情。运维说明、快捷提问、环境记录与操作确认保留独立页签。
+- 插件详情集中显示连接状态与配置摘要，可直接连接、断开或修改配置；打开详情不会自动联网。Agent 权限、插件记录与操作确认保留独立页签。
+- 基本信息和 Agent 策略使用独立轻量编辑，不会断开现有网络连接。点击插件详情中的“修改配置”后，应用会先显示影响范围，等待正在进行的操作结束，再断开受影响连接并进入受保护的编辑会话。
 - Server 使用 SSH 专属验证，MySQL 使用数据库发现与固定库验证，Redis 使用 Logical DB 验证；TLS 另有显式探测。所有验证只使用当前表单，不改变正式连接或 Agent context。
-- 新增插件只有“取消”和“检查并添加”：离开或取消会丢弃本次填写的配置与临时凭据，检查通过并正式添加后才会保存。
-- 修改连接配置只提供正式保存动作；“取消更改”会丢弃未保存修改。“保存并恢复连接”在提交成功后按进入编辑前的连接集合恢复。配置保存成功但连接失败时，无需再次保存。
+- 新增插件可以先用“检查连接”验证当前表单；最终选择“添加但不连接”或“添加并连接”时仍会先执行插件专属验证，验证和正式添加成功后才保存。离开或取消会丢弃本次填写的配置与临时凭据。
+- 修改连接配置只提供正式提交，不保存草稿；可以选择“保存但不连接”“保存并连接”或“保存并恢复连接”。“取消更改”会丢弃未保存修改；恢复连接会在提交成功后按进入编辑前的连接集合执行。配置保存成功但连接失败时，无需再次保存。
 - 正式连接只读取已提交配置和 active 凭据。MySQL 只修改数据库、Redis 只修改 Logical DB 时会沿用同一账号的已保存凭据。
 - 密码控件显示“已保存 · 未修改”“未设置 · 未修改”或“将替换”。空密码、未填写密码和未点击“更换密码”都表示保持原凭据，不会清空旧密码。
 - 应用不提供插件草稿保存、恢复或删除入口，未保存的新增和修改内容不会跨页面或重启保留。
+- 删除插件、环境或项目会保留加密凭据记录，但新建实例不会继承已删除实例的密码。同名重新添加会在需要时分配新的插件标识；显式指定已被历史凭据占用的标识会返回 `PLUGIN_ALREADY_EXISTS`，应使用新标识。
 
 ### Server
 
@@ -172,8 +174,8 @@ codex mcp add --env ELECTRON_RUN_AS_NODE=1 agent-ops -- `
 ## 使用流程
 
 1. 在桌面应用中新建项目和环境。
-2. 为环境添加 Server、MySQL 或 Redis 插件，填写完整连接信息并点击“检查并添加”；取消或离开页面会丢弃本次填写。
-3. 在连接编辑器中执行插件专属验证，然后正式保存；取消或离开页面会丢弃未保存修改。
+2. 为环境添加 Server、MySQL 或 Redis 插件，填写完整连接信息，可先“检查连接”，再选择“添加但不连接”或“添加并连接”；取消或离开页面会丢弃本次填写。
+3. 在连接编辑器中执行插件专属验证，再选择“保存但不连接”“保存并连接”或“保存并恢复连接”；取消或离开页面会丢弃未保存修改。
 4. 在环境 `README.md` 中维护真实、准确的服务器手册。
 5. 点击“连接环境”或单独连接插件，确认目标插件显示为已连接；待处理插件不会阻止其它独立分支连接。
 6. 在 Codex 中描述运维目标，Agent 会先打开环境，再调用对应结构化工具。
@@ -238,7 +240,7 @@ README 用于导航和决策，不限制 Server 普通文件读取范围。Agent
 
 ### MCP 返回 `Transport closed`
 
-安装或升级会终止旧 MCP 子进程。完全退出并重新打开 Codex，不需要重新录入项目密码。若工具数量仍不是 34 个，再检查 MCP 注册路径是否指向当前安装目录。
+安装或升级会终止旧 MCP 子进程。完全退出并重新打开 Codex，不需要重新录入项目密码。若工具数量仍不是 35 个，再检查 MCP 注册路径是否指向当前安装目录。
 
 ### MCP 提示插件未连接
 
@@ -265,11 +267,17 @@ Agent 不会替用户建立首次连接。打开桌面应用，在目标环境�
 ```powershell
 corepack enable
 pnpm install --frozen-lockfile
+pnpm run check:renderer
+pnpm run build:renderer
 pnpm run check
 pnpm test
-pnpm run test:ui
+pnpm run test:ui:all
 pnpm start
 ```
+
+`test:ui:all` 串行运行 Electron UI smoke：`test:ui` 验证正式 React 壳层、只读数据、布局、键盘和可访问性，`test:ui:business` 验证项目、环境、Runbook 与快捷提问变更，`test:ui:plugins` 验证插件新增、编辑、连接、Host Key 与确认流程，`test:ui:plugin-matrix` 使用真实探针、编辑会话和凭据解析器验证各类插件表单、取消、重试及删除重建。
+
+`start`、各组 UI smoke 和 `dist` 都会自动重新构建 React Renderer；单独运行 `build:renderer` 适合在前端迭代时提前检查生产构建。
 
 构建 Windows NSIS 安装包：
 
@@ -282,18 +290,31 @@ pnpm run dist
 ```powershell
 node scripts/verify-package.mjs "dist/win-unpacked/Agent运维工作台.exe"
 node scripts/packaged-mcp-smoke.mjs "dist/win-unpacked/Agent运维工作台.exe"
+node scripts/packaged-ui-smoke.cjs "dist/win-unpacked/Agent运维工作台.exe"
 ```
 
-推送 `v*` Tag 后，[Release 工作流](.github/workflows/release.yml) 会在 Windows Runner 上安装依赖、执行测试、构建安装包、验证 MCP，并创建 GitHub Release。
+打包 UI 检查还会在临时数据目录中启动本机 SSH、MySQL 与 Redis 协议测试服务，穿过真实 preload、IPC、凭据加密与网络驱动验证新增、检查、连接、编辑、取消及删除重建，不连接真实基础设施。
+
+以下安装、覆盖升级及卸载回归会修改当前 Windows 用户的安装注册信息和快捷方式，只应在没有该软件既有安装的隔离账户或一次性 Windows Runner 中运行：
+
+```powershell
+$installer = Get-ChildItem -LiteralPath dist -Filter "Agent运维工作台 Setup *.exe" | Select-Object -First 1
+node scripts/install-upgrade-regression.cjs $installer.FullName
+```
+
+推送 `v*` Tag 后，[Release 工作流](.github/workflows/release.yml) 会在 Windows Runner 上安装依赖、执行测试、构建安装包，验证打包后的 React UI、MCP、全新安装与覆盖升级，并创建 GitHub Release。
 
 ## 架构与测试
 
 - [技术设计](docs/agent-ops-v1-technical-design.md)
 - [插件数据源架构](docs/plugin-data-source-architecture.md)
 - [交互原型](docs/ai-ops-plugin-environment-prototype.html)
+- [shadcn/ui + Radix UI 完整重构流程](docs/shadcn-ui-full-rewrite-plan.md)
+- [shadcn/ui + Radix UI 最终迁移报告](docs/shadcn-ui-full-migration-report.md)
+- [全功能检查与交付验证](docs/full-function-verification.md)
 - [版本变更记录](CHANGELOG.md)
 
-自动化测试覆盖凭据保留、旧版迁移、环境连接依赖、网络重连、上下文失效、Server 任意路径读取、危险操作确认、MySQL AST 策略、SFTP 异常、下载上传以及 Electron UI 工作流。
+自动化测试覆盖凭据保留、旧版迁移、环境连接依赖、网络重连、上下文失效、Server 任意路径读取、危险操作确认、MySQL AST 策略、SFTP 异常、下载上传以及 foundation、业务变更和插件操作三层 React/Electron UI 工作流。正式桌面入口由 `renderer/v2/index.html` 构建到 `renderer-build/v2/index.html`，安装包只包含构建产物。
 
 ## License
 

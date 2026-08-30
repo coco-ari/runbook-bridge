@@ -1099,14 +1099,19 @@ export class WorkspaceStore {
     });
   }
 
+  async preflightDeleteEnvironment(projectId, environmentId, { runtimeActive = false } = {}) {
+    const project = await this.getProject(projectId);
+    const environment = await this.getEnvironment(projectId, environmentId);
+    if (project.environmentOrder.length <= 1) throw new AppError('POLICY_DENIED', '项目至少需要保留一个环境。');
+    const plugins = await this.listPlugins(projectId, environmentId);
+    if (plugins.length) throw new AppError('ENVIRONMENT_NOT_EMPTY', `该环境仍有 ${plugins.length} 个插件，不能删除。`);
+    if (runtimeActive) throw new AppError('ENVIRONMENT_CONNECTED', '请先断开环境再删除。');
+    return {project,environment};
+  }
+
   async deleteEnvironment(projectId, environmentId, { runtimeActive = false } = {}) {
     return this.enqueue(`project:${projectId}`, async () => {
-      const project = await this.getProject(projectId);
-      const environment = await this.getEnvironment(projectId, environmentId);
-      if (project.environmentOrder.length <= 1) throw new AppError('POLICY_DENIED', '项目至少需要保留一个环境。');
-      const plugins = await this.listPlugins(projectId, environmentId);
-      if (plugins.length) throw new AppError('ENVIRONMENT_NOT_EMPTY', `该环境仍有 ${plugins.length} 个插件，不能删除。`);
-      if (runtimeActive) throw new AppError('ENVIRONMENT_CONNECTED', '请先断开环境再删除。');
+      const {project,environment} = await this.preflightDeleteEnvironment(projectId,environmentId,{runtimeActive});
       const next = { ...project, environmentOrder: project.environmentOrder.filter((id) => id !== environmentId), revision: project.revision + 1, updatedAt: now() };
       const source = this.environmentDir(projectId, environmentId);
       const tombstone = `${source}.deleting-${crypto.randomBytes(4).toString('hex')}`;
@@ -1399,9 +1404,25 @@ export class WorkspaceStore {
       if (environment.pluginOrder.includes(plugin.pluginInstanceId)) throw new AppError('PLUGIN_ALREADY_EXISTS', '插件标识已经存在。');
       assertPluginConfigurationReady(plugin);
       await this.assertPluginReferences(plugin);
-      await this.writeYaml(this.pluginPath(projectId, environmentId, plugin.pluginInstanceId), plugin);
+      const file = this.pluginPath(projectId, environmentId, plugin.pluginInstanceId);
+      // An unindexed file may belong to an interrupted older transaction;
+      // never overwrite it while preparing a different creation.
+      try {
+        await fs.access(file);
+        throw new AppError('PLUGIN_ALREADY_EXISTS', '插件配置文件已经存在，请刷新配置后重试。');
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+      await this.writeYaml(file, plugin);
       const nextEnvironment = { ...environment, pluginOrder: [...environment.pluginOrder, plugin.pluginInstanceId], revision: environment.revision + 1, updatedAt: now() };
-      await this.writeYaml(this.environmentPath(projectId, environmentId), nextEnvironment);
+      try {
+        await this.writeYaml(this.environmentPath(projectId, environmentId), nextEnvironment);
+      } catch (error) {
+        // The index is the commit point. A rejected add must not leave a
+        // directly addressable plugin behind or poison the next add attempt.
+        await fs.rm(file,{force:true});
+        throw error;
+      }
       return plugin;
     });
   }

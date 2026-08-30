@@ -1,339 +1,152 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import test from 'node:test';
 
-test('production renderer exposes only the structured V2 operations surface', async () => {
-  const [html, renderer, catalog, styles, preload, main, ipc, manifest] = await Promise.all([
-    fs.readFile('renderer/v2/index.html', 'utf8'),
-    fs.readFile('renderer/v2/app.js', 'utf8'),
-    fs.readFile('renderer/v2/plugin-catalog.js', 'utf8'),
-    fs.readFile('renderer/v2/styles.css', 'utf8'),
-    fs.readFile('src/preload.cjs', 'utf8'),
-    fs.readFile('src/main.mjs', 'utf8'),
-    fs.readFile('src/ipc-v2.mjs', 'utf8'),
-    fs.readFile('package.json', 'utf8'),
-  ]);
+const LEGACY_RENDERER_PATHS = [
+  'renderer/v2/app.js',
+  'renderer/v2/styles.css',
+  'renderer/v2/connection-view-model.js',
+  'renderer/v2/plugin-catalog.js',
+  'renderer/v2/quick-questions.js',
+  'renderer/v2/react.html',
+  'scripts/ui-three-pane-smoke.cjs',
+];
 
-  assert.match(html, /id="moreEnvironments"/);
-  assert.match(html, /id="confirmationButton"/);
-  assert.match(html, /id="confirmationView"/);
-  assert.doesNotMatch(html, /id="confirmationDialog"/);
-  assert.match(html, /id="deletePluginDialog"/);
-  assert.match(html, /id="queryDatabases"/);
-  assert.match(html, /id="toggleProjectRail"/);
-  assert.match(html, /id="projectRailResizeHandle"/);
-  assert.match(html, /id="projectOverviewStats"/);
-  assert.match(html, /id="projectOverviewAttention"/);
-  assert.match(html, /id="projectOverviewActivity"/);
-  assert.match(html, /id="showInlineEnvironmentCreate"/);
-  assert.match(html, /id="resourceEnvironmentCreateForm"/);
-  assert.doesNotMatch(html, /id="environmentManagerDialog"/);
-  assert.doesNotMatch(html, /id="overviewAddEnvironment"|class="action-menu"/);
-  assert.match(html, /id="scopeInfoView"/);
-  assert.match(html, /id="scopeInfoContent"/);
-  assert.match(html, /id="quickQuestionsView"/);
-  assert.match(html, /<textarea\b[^>]*\bid="quickQuestionInput"/);
-  assert.match(html, /class="skip-link" href="#detailWorkspace"/);
-  assert.match(html, /<main id="detailWorkspace" class="detail-workspace" tabindex="-1">/);
-  assert.equal((html.match(/<main\b/g) ?? []).length,1,'the renderer must expose one main landmark');
-  assert.match(html, /id="quickQuestionInput"[^>]*aria-labelledby="quickQuestionComposerTitle"[^>]*aria-describedby="quickQuestionSensitiveWarning"/);
-  assert.match(html, /id="pluginPassword"[^>]*aria-labelledby="primaryCredentialLabel"/);
-  assert.match(html, /id="pluginProxyPassword"[^>]*aria-labelledby="proxyCredentialLabel"/);
-  assert.match(html, /id="projectName"[^>]*aria-describedby="projectNameError"/);
-  assert.match(html, /id="projectSettingsName"[^>]*aria-describedby="projectSettingsNameError"/);
-  assert.match(html, /id="environmentStatusLive"[^>]*aria-live="polite"[^>]*aria-atomic="true"/);
-  assert.match(html, /id="projectSortHelp"/);
-  assert.match(html, /<input\b[^>]*\bid="quickQuestionDiscoveredDate"[^>]*\btype="date"/);
-  assert.match(html, /id="quickQuestionOpeningText"/);
-  assert.match(html, /id="editQuickQuestionOpening"/);
-  assert.match(html, /id="quickQuestionOpeningDialog"/);
-  assert.match(html, /id="quickQuestionOpeningInput"/);
-  assert.match(html, /id="resetQuickQuestionOpening"/);
-  assert.match(html, /id="saveQuickQuestionOpening"/);
-  assert.match(html, /id="addQuickQuestionCommon"/);
-  assert.match(html, /id="quickQuestionCommonEmpty"/);
-  assert.match(html, /id="quickQuestionCommonDialog"/);
-  assert.match(html, /id="deleteQuickQuestionDialog"[^>]*aria-labelledby="deleteQuickQuestionDialogTitle"[^>]*aria-describedby="deleteQuickQuestionMessage"/);
-  assert.match(html, /id="quickQuestionCommonInput"/);
-  assert.match(html, /id="quickQuestionFinalPreview"/);
-  assert.match(html, /id="saveQuickQuestion"/);
-  assert.match(html, /id="copyQuickQuestion"/);
-  assert.doesNotMatch(html, /quickQuestion(?:File|Attachment|Image)|addQuickQuestionImage|removeQuickQuestionImage|data-quick-question-preset|id="i-camera"|quick-question-readonly/);
-  assert.doesNotMatch(html, /id="projectTitleEditor"|id="projectSettingsShortcut"|id="projectDeleteShortcut"/);
-  assert.match(html, /id="pluginConfigView"/);
-  assert.match(html, /id="pluginTypePicker"/);
-  assert.match(html, /id="pluginTypeChoices"/);
-  assert.match(html, /id="pluginFormDepot"/);
-  assert.match(html, /<select id="pluginType"[^>]*><\/select>/);
-  assert.match(html, /<input id="pluginDisplayName"(?=[^>]*maxlength="120")(?![^>]*\brequired\b)[^>]*>/);
-  assert.match(html, /id="pluginDisplayNameHint"/);
-  assert.match(html, /id="pluginTypeIdentity"[^>]*class="plugin-type-identity"/);
-  assert.match(html, /id="pluginAdvancedSummary"/);
-  assert.match(html, /id="pluginFormSafetyNote"|class="plugin-form-safety-note"/);
-  assert.match(html, /id="pluginValidationSection"/);
-  assert.match(html, /id="validateServerDraft"/);
-  assert.match(html, /id="validateMysqlDatabase"/);
-  assert.match(html, /id="validateRedisDraft"/);
-  assert.match(html, /id="validateTlsDraft"/);
-  assert.match(html, /<input id="pluginDatabase"[^>]*list="pluginDatabaseOptions"/);
-  assert.match(html, /<datalist id="pluginDatabaseOptions"/);
-  assert.doesNotMatch(html, /<select id="pluginDatabase"/);
-  assert.match(html, /id="pluginAdvancedSettings"/);
-  assert.match(html, /id="primaryCredentialStatus"/);
-  assert.match(html, /id="pluginFormDiagnostic"/);
-  assert.match(html, /id="credentialMigrationNotice"/);
-  assert.doesNotMatch(html, /id="savePluginDraft"|id="savePluginDraftOverflow"|id="deleteCurrentDraft"|保存草稿|保存为草稿/);
-  assert.match(html, /id="auditBody" class="audit-list"/);
-  assert.match(html, /id="clearAudit"/);
-  assert.match(html, /id="clearAuditDialog"/);
-  assert.match(html, /value="pending">等待确认/);
-  assert.match(html, /href="#i-app"/);
-  assert.match(html, /id="i-panel-left-open"/);
-  assert.match(html, /id="i-panel-left-close"/);
-  assert.match(html, /id="i-panel-right-open"/);
-  assert.match(html, /id="i-panel-right-close"/);
-  assert.doesNotMatch(html, /id="i-panel"/);
-  assert.doesNotMatch(html, /id="overviewManageEnvironments"/);
-  assert.match(html, /id="projectSettingsDialog"/);
-  assert.match(html, /id="deleteProjectDialog"/);
-  assert.match(html, /data-password-target="pluginPassword"/);
-  assert.doesNotMatch(`${html}\n${renderer}`,/\*{5}/);
-  assert.doesNotMatch(html, /id="pluginDialog"|id="diagnosticDialog"|<th>发起者<\/th>/);
-  assert.doesNotMatch(html, /id="pluginSearch"|id="pluginTypeFilter"|id="pluginStatusFilter"|plugin-filters/);
-  const dialogs = [...html.matchAll(/<dialog\b([^>]*)>([\s\S]*?)<\/dialog>/g)];
-  assert.ok(dialogs.length >= 6, 'expected the remaining destructive and selection dialogs in the V2 surface');
-  for (const [, attributes, contents] of dialogs) {
-    const dialogId = attributes.match(/\bid="([^"]+)"/)?.[1];
-    const labelledBy = attributes.match(/\baria-labelledby="([^"]+)"/)?.[1];
-    assert.ok(dialogId, 'each dialog must keep a stable id');
-    assert.ok(labelledBy, `${dialogId} must expose an accessible name`);
-    assert.ok(contents.includes(`<h2 id="${labelledBy}"`), `${dialogId} must reference its visible title`);
+async function collectSourceFiles(root) {
+  const entries = await fs.readdir(root,{withFileTypes:true});
+  const files = [];
+  for (const entry of entries) {
+    const entryPath = path.join(root,entry.name);
+    if (entry.isDirectory()) files.push(...await collectSourceFiles(entryPath));
+    else if (/\.(?:ts|tsx|css)$/u.test(entry.name)) files.push(entryPath);
   }
-  assert.match(html, /id="toast"[^>]*aria-atomic="true"[^>]*aria-relevant="additions text"/);
-  assert.doesNotMatch(renderer, /pluginFilter|clear-plugin-filter/);
-  assert.doesNotMatch(renderer, /manager-current|当前查看/);
-  assert.match(renderer, /prepare-delete-plugin/);
-  assert.doesNotMatch(renderer, /api\.listPluginDatabases/);
-  assert.match(renderer, /api\.probePluginDraft/);
-  assert.match(renderer, /api\.cancelPluginProbe/);
-  assert.match(renderer, /function checkAndCreateNewPlugin/);
-  assert.match(renderer, /pluginFormInstanceId/);
-  assert.match(renderer, /newPluginInstanceId/);
-  assert.match(renderer, /'检查并添加'/);
-  assert.match(renderer, /revealCredential/);
-  assert.match(renderer, /navigationGeneration/);
-  assert.match(renderer, /projectRailExpanded/);
-  assert.match(renderer, /aria-keyshortcuts="Alt\+ArrowUp Alt\+ArrowDown"/);
-  assert.match(renderer, /function commitProjectOrder/);
-  assert.match(renderer, /requestQuickQuestionDelete/);
-  assert.match(renderer, /confirmDeleteQuickQuestion/);
-  assert.match(renderer, /aria-current="page"/);
-  assert.match(renderer, /aria-pressed="\$\{active\}"/);
-  assert.match(renderer, /function scheduleAuditRender/);
-  assert.match(renderer, /function patchProjectRuntimeSummary/);
-  assert.match(renderer, /function patchResourceEnvironmentRuntime/);
-  assert.doesNotMatch(renderer, /offsetWidth/);
-  assert.doesNotMatch(renderer, /<main class="environment-overview-primary"/);
-  assert.match(renderer, /PROJECT_RAIL_WIDTH_KEY/);
-  assert.match(renderer, /#i-panel-left-close/);
-  assert.match(renderer, /setPointerCapture/);
-  assert.match(renderer, /resourcePreview/);
-  assert.match(renderer, /data-overview-rename-environment/);
-  assert.match(renderer, /data-overview-delete-environment/);
-  assert.doesNotMatch(renderer, /data-overview-manage-environment/);
-  assert.match(renderer, /data-overview-add-resource/);
-  assert.match(renderer, /handleOverviewPluginRuntimeAction/);
-  assert.match(renderer, /api\.requestConnectionIntent/);
-  assert.doesNotMatch(renderer, /api\.(?:connectEnvironment|retryEnvironment|disconnectEnvironment|cancelEnvironment|connectPlugin|disconnectPlugin)/);
-  assert.match(renderer, /function runtimeFacts/);
-  assert.match(renderer, /USER_DISCONNECTED/);
-  assert.match(renderer, /连接未连接项/);
-  assert.match(renderer, /connected > 0 \|\| runtime\.phase === 'reconnecting'/);
-  assert.match(renderer, /environment-overview-issue empty/);
-  assert.doesNotMatch(renderer, /environment-type-chips/);
-  assert.match(renderer, /loadProjectOverviewActivity/);
-  assert.match(renderer, /filter\(overviewActivityVisible\)\.slice\(0,5\)/);
-  assert.match(renderer, /本机保存的凭据会继续保留/);
-  assert.match(renderer, /本机加密凭据不会随项目删除/);
-  assert.match(renderer, /function confirmCredentialMigration/);
-  assert.match(renderer, /不需要重新输入密码/);
-  assert.doesNotMatch(renderer, /rail-project-manage|data-project-settings/);
-  assert.match(renderer, /startAddPlugin/);
-  assert.match(renderer, /pluginInlineFormHost/);
-  assert.doesNotMatch(renderer, /data-action="test-plugin"/);
-  assert.match(renderer, /function confirmRuntimeHostKeyChallenge/);
-  assert.match(renderer, /api\.confirmConnectionChallenge/);
-  assert.doesNotMatch(renderer, /function confirmAndSaveObservedHostKey/);
-  assert.match(renderer, /确认信任并保存此指纹吗/);
-  assert.match(renderer, /function diagnosticStepDefinitions/);
-  assert.match(renderer, /totalElapsedMs/);
-  assert.match(renderer, /api\.preparePluginConnectionEdit/);
-  assert.match(renderer, /修改名称/);
-  assert.doesNotMatch(renderer, /pluginMetadataDescription/);
-  assert.doesNotMatch(renderer, /pluginMetadataTags/);
-  assert.doesNotMatch(renderer, /pluginMetadataOrder/);
-  assert.match(renderer, /api\.beginPluginConnectionEdit/);
-  assert.match(renderer, /api\.validatePluginDraft/);
-  assert.match(renderer, /validatePluginDraftAction\(['"]tls['"]\)/);
-  assert.match(renderer, /api\.cancelPluginValidation/);
-  assert.match(renderer, /api\.savePluginConnectionEdit/);
-  assert.match(renderer, /api\.cancelPluginConnectionEdit/);
-  assert.doesNotMatch(renderer, /api\.(?:savePluginDraft|resumePluginDraft|cancelPluginDraftSession|deletePluginDraft|promotePluginDraft)|resourcePaneDrafts|selectionKind === ['"]plugin-draft['"]/);
-  assert.doesNotMatch(renderer, /api\.testPlugin/);
-  assert.doesNotMatch(renderer, /renderDiagnosticPanel|pluginDiagnostics|connectionCheckPanel/);
-  assert.doesNotMatch(preload, /testPlugin|onPluginTestProgress|v2:plugin-test/);
-  assert.doesNotMatch(ipc, /v2:plugin-test|plugin-test-progress/);
-  assert.match(preload, /probePluginDraft:[^\n]*v2:plugin-probe/);
-  assert.match(preload, /cancelPluginProbe:[^\n]*v2:plugin-probe-cancel/);
-  assert.match(ipc, /handleWithEvent\('plugin-probe'/);
-  assert.match(ipc, /handleWithEvent\('plugin-probe-cancel'/);
-  assert.match(renderer, /api\.updatePluginMetadata/);
-  assert.match(renderer, /api\.updatePluginAgentConfiguration/);
-  assert.match(renderer, /\$\('#pluginType'\)\.setAttribute\('tabindex','-1'\)/);
-  assert.match(renderer, /function pluginRuntimeWarningMessage/);
-  assert.match(renderer, /clearTransientRevealedCredentials\(\{discardEdited:true\}\)/);
-  assert.match(renderer, /pluginRuntimeWarningMessage\(result,'delete',scope\.displayName\)/);
-  assert.doesNotMatch(renderer, /diagnostic-facts|结果依据/);
-  assert.doesNotMatch(renderer, /diagnosticDialog.*showModal/);
-  assert.match(renderer, /saveProjectTitleEdit/);
-  assert.match(renderer, /function renderProjectInformation/);
-  assert.match(renderer, /function renderEnvironmentInformation/);
-  assert.match(renderer, /state\.selectionKind === 'project'/);
-  assert.match(renderer, /\['information','概览'\]/);
-  assert.doesNotMatch(renderer, /data-environment-overview-details/);
-  assert.match(renderer, /environment-overview-content/);
-  assert.doesNotMatch(renderer, /resource-environment-head[^`]*data-resource-rename-environment/s);
-  assert.doesNotMatch(renderer, /resource-environment-head[^`]*data-resource-delete-environment/s);
-  assert.match(renderer, /saveInlineEnvironmentCreate/);
-  assert.match(renderer, /data-resource-environment-editor/);
-  assert.match(renderer, /data-resource-environment-delete-prompt/);
-  assert.doesNotMatch(renderer, /openEnvironmentManager|renderEnvironmentManager/);
-  assert.doesNotMatch(renderer, /resource-environment-menu|环境更多操作/);
-  assert.doesNotMatch(renderer, /resource-chevron|resourceToggleEnvironment/);
-  assert.match(renderer, /permission-summary-item/);
-  assert.match(renderer, /permissions-page/);
-  assert.match(renderer, /api\.deleteProject/);
-  assert.match(renderer, /slice\(0,2\)/);
-  assert.match(renderer, /配置和密码已保存，但连接失败/);
-  assert.match(renderer, /function pluginDiagnosticConfigurationIssue/);
-  assert.match(html, /验证所选数据库/);
-  assert.match(renderer, /Agent 已添加插件/);
-  assert.match(renderer, /任意绝对路径；敏感内容也原样返回/);
-  assert.match(renderer, /所有服务器变更逐次确认/);
-  assert.match(renderer, /data-approval-level/);
-  assert.match(renderer, /function renderConfirmationCenter/);
-  assert.match(renderer, /confirmation-execution/);
-  assert.match(renderer, /api\.clearAudit/);
-  assert.match(renderer, /api\.listQuickQuestions/);
-  assert.match(renderer, /api\.saveQuickQuestion/);
-  assert.match(renderer, /api\.deleteQuickQuestion/);
-  assert.match(renderer, /api\.copyQuickQuestion/);
-  assert.match(renderer, /api\.getQuickQuestionOpening/);
-  assert.match(renderer, /api\.saveQuickQuestionOpening/);
-  assert.match(renderer, /expectedOpeningRevision/);
-  assert.match(renderer, /function quickQuestionMutationOperationKey/);
-  assert.match(renderer, /if \(\$\('#quickQuestionCommonDialog'\)\?\.open\) syncQuickQuestionCommonDialog\(\);/);
-  assert.doesNotMatch(renderer, /quickQuestionOperationKey\(['"](?:save|delete)['"]/);
-  assert.doesNotMatch(renderer, /quickQuestionAttachment|readQuickQuestionImage|validateQuickQuestionImage|QUICK_QUESTION_PRESETS|attachmentDataUrl|data-quick-question-preset/);
-  assert.doesNotMatch(`${html}\n${renderer}`, /发送给 Agent/);
-  assert.match(renderer, /pending:'等待确认'/);
-  assert.match(renderer, /我已核对上面的完整命令/);
-  assert.doesNotMatch(renderer, /这是任意 Shell 命令，可能修改或删除数据、停止服务。确认已经逐字核对/);
-  assert.doesNotMatch(renderer, /data-policy-key|save-policy|discard-policy/);
-  assert.doesNotMatch(preload, /savePolicy|v2:plugin-policy/);
-  assert.match(styles, /\.rail-confirmation-button/);
-  assert.match(styles, /\.confirmation-page-shell/);
-  assert.match(styles, /\.scope-confirmation-badge/);
-  assert.match(styles, /\.policy-state\.strong/);
-  assert.match(styles, /\.delete-blockers/);
-  assert.match(styles, /\.project-rail-resize-handle/);
-  assert.match(styles, /\.project-overview-stats/);
-  assert.match(styles, /\.environment-resource-row/);
-  assert.match(styles, /\.environment-resource-action/);
-  assert.match(styles, /\.overview-attention-row:only-child/);
-  assert.match(styles, /\.environment-overview-issue\.empty/);
-  assert.match(styles, /\.plugin-inline-form-host/);
-  assert.match(styles, /\.audit-record/);
-  assert.match(styles, /\.audit-record\{[^}]*content-visibility:auto;[^}]*contain-intrinsic-size:auto 88px/s);
-  assert.match(styles, /dialog\{[^}]*overscroll-behavior:contain;[^}]*scroll-padding-block:72px/s);
-  assert.match(styles, /\.button\.danger:hover:not\(:disabled\)/);
-  assert.match(styles, /\.quick-question-common-card:focus-within/);
-  assert.match(styles, /font-variant-numeric:tabular-nums/);
-  assert.doesNotMatch(styles, /transition:[^;}]*\b(?:grid-template-columns|width|height|max-width)\b/);
-  assert.doesNotMatch(styles, /\.connection-check-section|\.connection-section-head(?!ing)|\.connection-diagnostic/);
-  assert.match(styles, /\.diagnostic-steps/);
-  assert.match(styles, /\.connection-facts/);
-  assert.doesNotMatch(styles, /\.connection-fact-card|\.connection-route-card/);
-  assert.doesNotMatch(styles, /\.plugin-danger-zone/);
-  assert.match(styles, /\.plugin-form-diagnostic/);
-  assert.match(styles, /\.credential-migration-notice/);
-  assert.match(styles, /\.resource-environment-create/);
-  assert.match(styles, /\.resource-environment-rename-form/);
-  assert.match(styles, /\.scope-delete-decision/);
-  assert.match(styles, /\.scope-information-page/);
-  assert.match(styles, /\.scope-information-actions/);
-  assert.match(styles, /\.quick-question-opening/);
-  assert.match(styles, /\.quick-question-common-card/);
-  assert.match(styles, /\.quick-question-preview/);
-  assert.doesNotMatch(styles, /\.quick-question-(?:attachment|preset)|\.quick-question-input-tools/);
-  assert.match(styles, /\.scope-overview-stats/);
-  assert.doesNotMatch(styles, /\.environment-overview-details/);
-  assert.match(styles, /\.environment-overview-content/);
-  assert.match(styles, /\.environment-overview-attention/);
-  assert.doesNotMatch(styles, /\.environment-danger-zone/);
-  assert.match(styles, /@container scope-detail \(max-width:719px\)/);
-  assert.doesNotMatch(styles, /\.resource-draft-row|\.resource-draft-group|\.plugin-draft-overflow|#savePluginDraft/);
-  assert.match(styles, /\.permission-hero/);
-  assert.match(styles, /\.permissions-page \.policy-row/);
-  assert.match(styles, /@container \(max-width:650px\)/);
-  assert.match(styles, /button:disabled:is\(\[data-busy="true"\],\[aria-busy="true"\]\)/);
-  assert.match(styles, /\.plugin-inline-form-host \.dialog-actions\{[^}]*bottom:0/s);
-  assert.doesNotMatch(styles, /bottom:-\d/);
-  assert.match(styles, /\[data-environment-runtime-action="disconnect"\]\.danger-subtle/);
-  assert.match(styles, /\[data-overview-plugin-action="disconnect"\]\.resource-plugin-action/);
-  assert.match(styles, /--faint:#82848e/);
-  assert.match(styles, /\.rail-expanded \.project-tree-item\.active>\.project-tree-head/);
-  assert.match(styles, /\.rail-expanded \.project-tree-item:not\(\.active\)\[data-project-state="connected"\]>\.project-tree-head\{[^}]*box-shadow:inset 3px 0 #55d6a1/s);
-  assert.match(styles, /\.rail-expanded \.project-tree-item\[data-project-state="connected"\] \.rail-project-copy small\{[^}]*color:#72dcb0/s);
-  assert.match(styles, /\.rail-expanded \.project-tree-item\.active\[data-project-state="connected"\]>\.project-tree-head\{[^}]*box-shadow:inset 3px 0 #55d6a1,[^}]*rgba\(131,124,246,/s);
-  assert.ok(
-    styles.lastIndexOf('@container (max-width:360px)')
-      > styles.lastIndexOf('.resource-environment-head:has(>.scope-confirmation-badge){grid-template-columns'),
-    'the extra-narrow resource header contract must override the late single-row rule',
+  return files;
+}
+
+test('production UI is the React shadcn/Radix renderer and preserves the V2 security boundary',async () => {
+  const sourceFiles = await collectSourceFiles('renderer/v2/src');
+  const sourceEntries = await Promise.all(
+    sourceFiles.map(async (sourcePath) => [sourcePath,await fs.readFile(sourcePath,'utf8')]),
   );
-
-  assert.match(preload, /contextBridge\.exposeInMainWorld\('aiOps', \{\s*v2:/s);
-  assert.match(preload, /v2:plugin-delete/);
-  assert.match(preload, /v2:plugin-credential-migration-confirm/);
-  assert.match(preload, /v2:project-delete/);
-  assert.match(preload, /v2:plugin-connection-edit-prepare/);
-  assert.match(preload, /v2:plugin-connection-edit-begin/);
-  assert.match(preload, /v2:plugin-draft-validate/);
-  assert.match(preload, /v2:plugin-validation-cancel/);
-  assert.match(preload, /v2:plugin-connection-edit-save/);
-  assert.match(preload, /v2:plugin-connection-edit-cancel/);
-  assert.doesNotMatch(preload, /v2:plugin-draft-(?:list|save|resume|edit-cancel|delete|promote)/);
-  assert.doesNotMatch(ipc, /handle(?:WithEvent)?\('plugin-draft-(?:list|save|resume|edit-cancel|delete|promote)'/);
-  assert.doesNotMatch(main, /PluginDraftService/);
-  assert.match(catalog, /defaultPort/);
-  assert.match(catalog, /capabilities:\{resourceDiscovery:/);
-  assert.match(catalog, /validationPurpose:/);
-  assert.match(catalog, /pluginCatalogByType/);
-  assert.match(preload, /requestConnectionIntent/);
-  assert.match(preload, /v2:connection-intent/);
-  assert.match(preload, /v2:confirmation-list/);
-  assert.match(preload, /v2:audit-clear/);
-  assert.doesNotMatch(preload, /project:delete/);
-  assert.doesNotMatch(preload, /project:execute/);
-  assert.doesNotMatch(preload, /project:upload/);
-  assert.doesNotMatch(preload, /project:download/);
-  assert.doesNotMatch(main, /registerIpc\(/);
-  assert.doesNotMatch(main, /new SshBroker/);
-  assert.match(ipc, /handle\('connection-intent'/);
-
+  const rendererSource = sourceEntries.map(([,source]) => source).join('\n');
+  const featureSource = sourceEntries
+    .filter(([sourcePath]) => !sourcePath.endsWith(path.join('bridge','ai-ops-v2.ts')))
+    .map(([,source]) => source)
+    .join('\n');
+  const [
+    html,
+    appShell,
+    workspaceDetail,
+    projectRail,
+    resourcePane,
+    preload,
+    main,
+    ipc,
+    manifest,
+    shadcnConfig,
+  ] = await Promise.all([
+    fs.readFile('renderer/v2/index.html','utf8'),
+    fs.readFile('renderer/v2/src/components/app-shell/AppShell.tsx','utf8'),
+    fs.readFile('renderer/v2/src/components/detail-workspace/WorkspaceDetail.tsx','utf8'),
+    fs.readFile('renderer/v2/src/components/project-rail/ProjectRail.tsx','utf8'),
+    fs.readFile('renderer/v2/src/components/resource-pane/ResourcePane.tsx','utf8'),
+    fs.readFile('src/preload.cjs','utf8'),
+    fs.readFile('src/main.mjs','utf8'),
+    fs.readFile('src/ipc-v2.mjs','utf8'),
+    fs.readFile('package.json','utf8'),
+    fs.readFile('renderer/v2/components.json','utf8'),
+  ]);
   const packageJson = JSON.parse(manifest);
-  assert.match(packageJson.scripts.check,/renderer\/v2\/plugin-catalog\.js/);
-  assert.ok(packageJson.build.files.includes('renderer/v2/**/*'));
-  assert.ok(!packageJson.build.files.includes('renderer/**/*'));
+  const shadcn = JSON.parse(shadcnConfig);
+
+  assert.match(html,/<div id="root"><\/div>/u);
+  assert.equal((html.match(/<script\b/gu) ?? []).length,1);
+  assert.match(html,/src="\/src\/main\.tsx"/u);
+  assert.match(html,/default-src 'self'/u);
+  assert.match(html,/script-src 'self'/u);
+  assert.match(html,/style-src 'self' 'unsafe-inline'/u);
+  assert.match(html,/connect-src 'none'/u);
+  assert.doesNotMatch(html,/script-src[^;]*(?:unsafe-inline|unsafe-eval)/u);
+  assert.doesNotMatch(html,/unsafe-eval|https?:\/\//u);
+
+  assert.match(appShell,/ProjectRail/u);
+  assert.match(appShell,/ResourcePane/u);
+  assert.match(appShell,/WorkspaceDetail/u);
+  assert.match(appShell,/GlobalCommand/u);
+  assert.match(appShell,/ProjectMutationSurfaces/u);
+  assert.match(appShell,/EnvironmentMutationSurfaces/u);
+  assert.match(appShell,/PluginEditorWorkspace/u);
+  assert.match(appShell,/PluginDeleteDialog/u);
+  assert.match(appShell,/useWorkspaceRuntimeCache/u);
+  assert.match(appShell,/data-shell-ready="true"/u);
+  assert.match(appShell,/href="#detail-main"/u);
+  assert.equal((appShell.match(/<ResizableHandle/gu) ?? []).length,2);
+  assert.doesNotMatch(appShell,/APP_SHELL_FIXTURES|MockActionSurfaces/u);
+
+  for (const feature of [
+    'ProjectOverview',
+    'EnvironmentOverview',
+    'PluginOverview',
+    'EnvironmentConnectionPanel',
+    'PluginConnectionPanel',
+    'PluginAgentAccess',
+    'RunbookFeature',
+    'QuickQuestionsFeature',
+    'AuditFeature',
+    'ConfirmationsFeature',
+  ]) assert.match(workspaceDetail,new RegExp(feature,'u'));
+  assert.match(workspaceDetail,/TabsList/u);
+  assert.match(workspaceDetail,/variant="navigation"/u);
+  assert.match(workspaceDetail,/activationMode="manual"/u);
+  assert.match(projectRail,/SidebarProvider/u);
+  assert.match(projectRail,/DropdownMenu/u);
+  assert.match(projectRail,/ContextMenu/u);
+  assert.match(resourcePane,/Accordion/u);
+  assert.match(resourcePane,/ScrollArea/u);
+  assert.match(resourcePane,/ContextMenu/u);
+
+  assert.equal(shadcn.style,'radix-nova');
+  assert.equal(shadcn.iconLibrary,'phosphor');
+  assert.equal(shadcn.rsc,false);
+  assert.ok(packageJson.dependencies['radix-ui']);
+  assert.equal(packageJson.dependencies['@base-ui/react'],undefined);
+  assert.doesNotMatch(featureSource,/ipcRenderer|contextBridge|node:[a-z]/u);
+  assert.doesNotMatch(featureSource,/window\.aiOps/u);
+  assert.doesNotMatch(featureSource,/dangerouslySetInnerHTML/u);
+  assert.doesNotMatch(featureSource,/window\.(?:confirm|prompt|alert)/u);
+  assert.doesNotMatch(featureSource,/https?:\/\//u);
+  assert.doesNotMatch(rendererSource,/@base-ui|lucide-react|next-themes/u);
+
+  assert.match(preload,/contextBridge\.exposeInMainWorld\('aiOps', \{\s*v2:/su);
+  assert.match(preload,/requestConnectionIntent/u);
+  assert.match(preload,/v2:plugin-connection-edit-save/u);
+  assert.match(preload,/v2:plugin-delete/u);
+  assert.match(preload,/v2:confirmation-list/u);
+  assert.match(preload,/v2:audit-clear/u);
+  assert.doesNotMatch(preload,/v2:plugin-test|v2:plugin-draft-(?:list|save|resume|edit-cancel|delete|promote)/u);
+  assert.doesNotMatch(preload,/project:(?:delete|execute|upload|download)/u);
+  assert.match(ipc,/handle\('connection-intent'/u);
+  assert.match(ipc,/handleWithEvent\('plugin-connection-edit-save'/u);
+  assert.doesNotMatch(ipc,/v2:plugin-test|plugin-test-progress/u);
+  assert.doesNotMatch(ipc,/handle(?:WithEvent)?\('plugin-draft-(?:list|save|resume|edit-cancel|delete|promote)'/u);
+
+  assert.match(main,/contextIsolation: true/u);
+  assert.match(main,/nodeIntegration: false/u);
+  assert.match(main,/sandbox: true/u);
+  assert.match(main,/'renderer-build', 'v2', 'index\.html'/u);
+  assert.doesNotMatch(main,/'renderer', 'v2', 'index\.html'|react\.html/u);
+  assert.doesNotMatch(main,/PluginDraftService|registerIpc\(|new SshBroker/u);
+
+  assert.match(packageJson.scripts.start,/build:renderer.*electron \./u);
+  assert.match(packageJson.scripts['test:ui'],/build:renderer.*ui-react-foundation-smoke\.cjs/u);
+  assert.match(packageJson.scripts.dist,/build:renderer.*electron-builder/u);
+  assert.ok(packageJson.build.files.includes('renderer-build/v2/**/*'));
+  assert.ok(packageJson.build.files.includes('!renderer/v2/**/*'));
   assert.ok(packageJson.build.files.includes('!src/mcp.mjs'));
+  assert.ok(!packageJson.build.files.includes('renderer/v2/**/*'));
+
+  for (const legacyPath of LEGACY_RENDERER_PATHS) {
+    await assert.rejects(fs.access(legacyPath),/ENOENT/u,legacyPath + ' must stay deleted');
+  }
 });

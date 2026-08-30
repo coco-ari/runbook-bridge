@@ -302,6 +302,34 @@ test('scope deletion invalidates editing sessions and secrets but cannot interru
   assert.equal(values.mutationCoordinator.environmentFence('p1','e1'),null);
 });
 
+test('a stale SSH challenge cannot repopulate the host key after a newer draft validation',async () => {
+  let rejectOld;
+  const values = fixture({
+    plugins:[plugin('server','server')],
+    validationRuntime:{
+      validate:async ({draftGeneration}) => {
+        if (draftGeneration === 0) return new Promise((_resolve,reject) => { rejectOld = reject; });
+        return {connected:true};
+      },
+      cleanup:async () => undefined,
+    },
+  });
+  const preview = await values.manager.preparePluginConnectionEdit({projectId:'p1',environmentId:'e1',pluginInstanceId:'server',expectedRevision:1});
+  const session = await values.manager.beginPluginConnectionEdit({prepareToken:preview.prepareToken});
+  const older = values.manager.validatePluginDraft({
+    editSessionId:session.editSessionId,purpose:'server-auth',draftGeneration:0,draft:session.plugin,
+  });
+  const rejected = assert.rejects(older,(error) => ['PLUGIN_VALIDATION_CANCELLED','PLUGIN_VALIDATION_STALE'].includes(error.code));
+  await waitFor(() => rejectOld);
+  await values.manager.validatePluginDraft({
+    editSessionId:session.editSessionId,purpose:'server-auth',draftGeneration:1,
+    draft:{...session.plugin,target:{...session.plugin.target,host:'new.invalid'}},
+  });
+  rejectOld(new AppError('SSH_HOST_KEY_CONFIRM_REQUIRED','Old host challenge.',{fingerprint:'SHA256:stale-key'}));
+  await rejected;
+  assert.equal(values.manager.sessionSummary(session.editSessionId).temporaryHostKey,null);
+});
+
 test('credential resolution failure completes the correlated validation operation without starting a runtime', async () => {
   let runtimeCalls = 0;
   const values = fixture({

@@ -437,7 +437,9 @@ export class PluginEditSessionManager {
     } catch (error) {
       const current = this.sessions.get(session.editSessionId)?.validationsByPurpose?.[payload.purpose];
       const publicError = toPublicError(error);
-      if (publicError.details?.fingerprint) {
+      if (publicError.details?.fingerprint
+        && current?.operationId === operationId && current.state === 'running'
+        && !controller.signal.aborted && session.draftGeneration === payload.draftGeneration) {
         session.temporaryHostKey = {
           fingerprint:publicError.details.fingerprint,
           host:candidate.target?.host ?? null,

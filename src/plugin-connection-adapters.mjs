@@ -30,6 +30,13 @@ function hasText(value) {
   return Boolean(String(value ?? '').trim());
 }
 
+export function isCredentialFreeServerAgent(plugin) {
+  if (plugin?.pluginType !== 'server' || plugin.auth?.type !== 'agent') return false;
+  const uplink = plugin.uplink ?? {type:'direct'};
+  return ['direct','windowsVpn'].includes(uplink.type)
+    || (['http','socks5'].includes(uplink.type) && !hasText(uplink.username));
+}
+
 function portIssue(value, field, label) {
   if (value === undefined || value === null || value === '') return null;
   const port = Number(value);

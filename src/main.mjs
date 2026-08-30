@@ -64,22 +64,22 @@ function createWindow() {
   mainWindow.setMenuBarVisibility(false);
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-  mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'v2', 'index.html'));
+  mainWindow.loadFile(path.join(__dirname, '..', 'renderer-build', 'v2', 'index.html'));
   if (screenshotPath) {
     mainWindow.webContents.once('did-finish-load', async () => {
       const screenshotDialog = process.env.AI_OPS_SCREENSHOT_DIALOG ?? '0';
       await mainWindow.webContents.executeJavaScript(`new Promise((resolve) => {
         let attempts = 0;
         const check = () => {
-          if (document.querySelector('#app') && window.aiOps?.v2) resolve(true);
+          if (document.querySelector('[data-shell-ready="true"]') && window.aiOps?.v2) resolve(true);
           else if (attempts++ > 120) resolve(false);
           else setTimeout(check, 50);
         };
         check();
       })`);
-      if (screenshotDialog === 'project') await mainWindow.webContents.executeJavaScript("document.querySelector('#createProjectButton').click()");
-      if (screenshotDialog === 'environment') await mainWindow.webContents.executeJavaScript("document.querySelector('#manageEnvironments')?.click()");
-      if (screenshotDialog === 'plugin') await mainWindow.webContents.executeJavaScript("document.querySelector('#addPlugin')?.click()");
+      if (screenshotDialog === 'project') await mainWindow.webContents.executeJavaScript("document.querySelector('[data-testid=\"add-project-footer\"]')?.click()");
+      if (screenshotDialog === 'environment') await mainWindow.webContents.executeJavaScript("document.querySelector('[data-testid=\"add-environment-footer\"]')?.click()");
+      if (screenshotDialog === 'plugin') await mainWindow.webContents.executeJavaScript("document.querySelector('[data-testid^=\"add-plugin-\"]')?.click()");
       await new Promise((resolve) => setTimeout(resolve, 350));
       const image = await mainWindow.webContents.capturePage();
       await fs.writeFile(screenshotPath, image.toPNG());

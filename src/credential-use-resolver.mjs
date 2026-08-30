@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { AppError } from './errors.mjs';
-import { getPluginConnectionAdapter } from './plugin-connection-adapters.mjs';
+import { getPluginConnectionAdapter, isCredentialFreeServerAgent } from './plugin-connection-adapters.mjs';
 
 const GRANT_PURPOSES = new Set([
   'tls-probe',
@@ -146,9 +146,25 @@ export class CredentialUseResolver {
     const mode = credentialIntentMode(credentialIntent);
     const replacements = nonEmptySecrets(this.credentialVault,draft,temporarySecrets);
     if (Object.keys(replacements).length > 0) {
+      // A form replaces individual fields; unchanged fields still participate
+      // in the saved connection. Match that merge for the same identity only.
+      // New probes and changed targets must never borrow stored credentials.
+      if (committedPlugin && sameIdentity(adapter,committedPlugin,draft) && mode !== 'clear-explicit') {
+        try {
+          const saved = await this.loadCommitted(committedPlugin,'saved');
+          return {source:'temporary',secrets:{...saved.secrets,...replacements}};
+        } catch {
+          // Explicit new values remain usable for validation when the old
+          // vault is unreadable. Save retains its separate, lossless merge /
+          // explicitly confirmed replacement transaction.
+        }
+      }
       return {source:'temporary',secrets:{...replacements}};
     }
     if (mode === 'clear-explicit') return {source:'cleared',secrets:{}};
+    // SSH Agent authenticates through the user's agent socket. Without an
+    // authenticated proxy there is no application-managed value to rebind.
+    if (isCredentialFreeServerAgent(draft)) return {source:'none',secrets:{}};
     if (!committedPlugin) return {source:'none',secrets:{}};
     if (sameIdentity(adapter,committedPlugin,draft)) {
       return this.loadCommitted(committedPlugin,'saved');

@@ -917,6 +917,14 @@ export class EnvironmentConnectionManager extends EventEmitter {
       catch (error) { return {...structuredClone(state),runtimeWarning:toPublicError(error)}; }
       const ids = new Set(plugins.map((plugin) => plugin.pluginInstanceId));
       for (const id of Object.keys(state.plugins)) if (!ids.has(id)) delete state.plugins[id];
+      if (!plugins.length) {
+        // Deleting the final resource also ends the environment's connection
+        // intent. Otherwise an empty, disconnected environment still retries
+        // and is treated as active by project/environment deletion gates.
+        state.desiredConnected = false;
+        state.manualDisconnected = {};
+        this.clearRetry(projectId, environmentId);
+      }
       const affected = new Set(changedPluginInstanceId ? [changedPluginInstanceId] : []);
       for (const plugin of plugins) if (plugin.transport?.serverPluginInstanceId === changedPluginInstanceId) affected.add(plugin.pluginInstanceId);
       const disconnecting = [];

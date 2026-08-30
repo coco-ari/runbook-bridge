@@ -5,6 +5,7 @@ node_modules/
 dist/
 artifacts/
 coverage/
+renderer-build/
 *.log
 *.tmp
 *.part
@@ -15,8 +16,8 @@ coverage/
 !.env.example
 credentials.enc.json
 broker.token
-projects/
-data/
+/projects/
+/data/
 
 # Editors and operating systems
 .idea/
