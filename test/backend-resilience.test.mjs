@@ -21,6 +21,7 @@ import { MysqlPluginRuntime } from '../src/mysql-plugin-runtime.mjs';
 import { SshBroker } from '../src/ssh-broker.mjs';
 import { WorkspaceMutationCoordinator } from '../src/workspace-mutation-coordinator.mjs';
 import { ProjectStore } from '../src/project-store.mjs';
+import { withReferencedDeadline } from './helpers/referenced-deadline.mjs';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -291,7 +292,7 @@ test('disconnect has a hard deadline and published snapshots have monotonic sequ
   manager.on('changed', (state) => sequences.push(state.sequence));
   await manager.connect('p1', 'e1');
   const started = Date.now();
-  const result = await manager.disconnect('p1', 'e1');
+  const result = await withReferencedDeadline(() => manager.disconnect('p1', 'e1'));
   assert.ok(Date.now() - started < 500, 'disconnect must not wait forever for a driver');
   assert.equal(result.phase, 'disconnected');
   assert.equal(forced, 1);
@@ -1282,7 +1283,7 @@ test('a timed-out MySQL attempt cannot overwrite or close the retry session and 
     getEnvironment:async () => ({revision:1}),listPlugins:async () => [plugin],getPlugin:async () => plugin,appendAudit:async () => undefined,
   };
   const manager = new EnvironmentConnectionManager(store,mysqlRuntime,{retryDelays:[],connectDeadlineMs:25});
-  const timedOut = await manager.connect('p1','e1');
+  const timedOut = await withReferencedDeadline(() => manager.connect('p1','e1'));
   assert.equal(timedOut.phase,'failed');
   assert.equal(timedOut.plugins['mysql-1'].reason,'CONNECT_TIMEOUT');
   const retry = await manager.connect('p1','e1');
@@ -1341,7 +1342,7 @@ test('a permanently pending MySQL graceful disconnect is force-owned and a later
   };
   const manager = new EnvironmentConnectionManager(store,mysqlRuntime,{retryDelays:[],disconnectDeadlineMs:100});
   await manager.connect('p1','e1');
-  const disconnected = await manager.disconnect('p1','e1');
+  const disconnected = await withReferencedDeadline(() => manager.disconnect('p1','e1'));
   assert.equal(disconnected.phase,'disconnected');
   for (let index = 0; index < 100 && !connections[0].destroyed; index += 1) await delay(2);
   assert.equal(connections[0].destroyed,true);

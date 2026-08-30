@@ -10,6 +10,7 @@ import { registerV2Ipc } from '../src/ipc-v2.mjs';
 import { PluginConfigTransactionJournal } from '../src/plugin-config-transaction.mjs';
 import { PluginCredentialVault } from '../src/plugin-credential-vault.mjs';
 import { WorkspaceStore } from '../src/workspace-store.mjs';
+import { withReferencedDeadline } from './helpers/referenced-deadline.mjs';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -243,7 +244,7 @@ test('a late timed-out connection attempt cannot disconnect the newer owner', as
   }, {connectDeadlineMs:20,retryDelays:[]});
 
   await assert.rejects(
-    () => manager.connectRuntime(plugin),
+    () => withReferencedDeadline(() => manager.connectRuntime(plugin)),
     (error) => error.code === 'CONNECT_TIMEOUT',
   );
   const second = await manager.connectRuntime(plugin);

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { AppError } from '../src/errors.mjs';
 import { PluginEditSessionManager } from '../src/plugin-edit-session-manager.mjs';
 import { WorkspaceMutationCoordinator } from '../src/workspace-mutation-coordinator.mjs';
+import { withReferencedDeadline } from './helpers/referenced-deadline.mjs';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve,milliseconds));
 
@@ -121,7 +122,7 @@ test('drain timeout releases the fence and leaves every formal connection untouc
   const prepared = await values.manager.preparePluginConnectionEdit({projectId:'p1',environmentId:'e1',pluginInstanceId:'orders',expectedRevision:1});
 
   await assert.rejects(
-    () => values.manager.beginPluginConnectionEdit({prepareToken:prepared.prepareToken}),
+    () => withReferencedDeadline(() => values.manager.beginPluginConnectionEdit({prepareToken:prepared.prepareToken})),
     (error) => error.code === 'PLUGIN_EDIT_DRAIN_TIMEOUT',
   );
   assert.equal(values.mutationCoordinator.environmentFence('p1','e1'),null);

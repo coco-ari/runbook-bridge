@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EnvironmentConnectionManager } from '../src/environment-connection-manager.mjs';
+import { withReferencedDeadline } from './helpers/referenced-deadline.mjs';
 
 function plugin(id, type, transport = { kind: 'direct' }) { return { projectId:'p1',environmentId:'e1',pluginInstanceId:id,pluginType:type,displayName:id,revision:1,configState:'ready',transport }; }
 
@@ -114,7 +115,7 @@ test('a stalled single-plugin connection times out and releases the environment 
     closeAll:async()=>{},
   };
   const manager=new EnvironmentConnectionManager(store,runtime,{retryDelays:[],connectDeadlineMs:20});
-  const failed=await manager.connectPlugin('p1','e1','mysql');
+  const failed=await withReferencedDeadline(()=>manager.connectPlugin('p1','e1','mysql'));
   assert.equal(failed.phase,'failed');
   assert.equal(failed.plugins.mysql.phase,'error');
   assert.equal(failed.plugins.mysql.reason,'CONNECT_TIMEOUT');

@@ -192,8 +192,16 @@ test('inline editor conflicts preserve drafts and require an explicit revision a
   assert.match(source,/collection\.revision !== questionEditorRevision/u);
   assert.match(source,/采用最新修订，保留草稿/u);
   assert.match(source,/原问题已被移除。草稿仍保留/u);
-  const loaders = source.slice(source.indexOf('const loadOpening ='),source.indexOf('useEffect(() => {\n    scopeEpochRef'));
-  assert.doesNotMatch(loaders,/setOpeningDraft|setQuestionDraft|setEditingQuestionId/u);
+  // Windows checkouts may use CRLF; a missing boundary must never silently
+  // turn this assertion into a slice containing unrelated editor callbacks.
+  for (const newline of ['\n','\r\n']) {
+    const checkout = source.replace(/\r?\n/gu,newline);
+    const start = checkout.indexOf('const loadOpening =');
+    const end = checkout.search(/useEffect\(\(\) => \{\r?\n    scopeEpochRef/u);
+    assert.ok(start >= 0 && end > start,'both loader boundaries must exist in order');
+    const loaders = checkout.slice(start,end);
+    assert.doesNotMatch(loaders,/setOpeningDraft|setQuestionDraft|setEditingQuestionId/u);
+  }
   for (const name of ['openingReadError','questionsReadError','copyError','openingError','questionError','deleteError']) {
     assert.match(source,new RegExp(`const \\[${name},`,'u'));
   }
