@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import type { PluginEditorConfirmation } from "@/features/plugins/plugin-editor-model"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { useBusyDialogFocus } from "@/hooks/use-busy-dialog-focus"
 
 interface PluginEditorConfirmationsProps {
@@ -69,25 +70,30 @@ export function PluginEditorConfirmations({
       <AlertDialogContent
         ref={busyDialogRef}
         aria-busy={busy || undefined}
+        className="max-h-[calc(100dvh-2rem)] grid-cols-1 grid-rows-[minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 data-[size=default]:max-w-[calc(100vw-2rem)] data-[size=default]:sm:max-w-lg"
         data-testid="plugin-editor-confirmation"
         onCloseAutoFocus={onCloseAutoFocus}
         onEscapeKeyDown={(event) => { if (busy) event.preventDefault() }}
       >
-        <AlertDialogHeader>
-          <AlertDialogMedia className={destructive ? "text-danger" : "text-warning"}>
-            <Icon aria-hidden="true" />
-          </AlertDialogMedia>
-          <AlertDialogTitle>{confirmation?.title ?? "确认操作"}</AlertDialogTitle>
-          <AlertDialogDescription>{confirmation?.description}</AlertDialogDescription>
-        </AlertDialogHeader>
-        {error ? (
-          <Alert variant="destructive" role="alert">
-            <Warning aria-hidden="true" />
-            <AlertTitle>操作尚未完成</AlertTitle>
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        ) : null}
-        <AlertDialogFooter>
+        <ScrollArea className="min-h-0 min-w-0" viewportClassName="h-auto max-h-[calc(100dvh-7rem)]">
+          <div className="min-w-0 space-y-4 p-5 [overflow-wrap:anywhere]">
+            <AlertDialogHeader className="min-w-0">
+              <AlertDialogMedia className={destructive ? "text-danger" : "text-warning"}>
+                <Icon aria-hidden="true" />
+              </AlertDialogMedia>
+              <AlertDialogTitle>{confirmation?.title ?? "确认操作"}</AlertDialogTitle>
+              <AlertDialogDescription className="min-w-0">{confirmation?.description}</AlertDialogDescription>
+            </AlertDialogHeader>
+            {error ? (
+              <Alert variant="destructive" role="alert">
+                <Warning aria-hidden="true" />
+                <AlertTitle>操作尚未完成</AlertTitle>
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            ) : null}
+          </div>
+        </ScrollArea>
+        <AlertDialogFooter className="mx-0 mb-0">
           <AlertDialogCancel disabled={busy} onClick={(event) => { event.preventDefault(); reject() }}>取消</AlertDialogCancel>
           <AlertDialogAction
             disabled={busy}

@@ -2529,7 +2529,7 @@ module.exports = {
   runScenario:async (scenario) => { isolatedScenario = scenario; return run(); },
   state,PROJECT_ID,ENVIRONMENT_ID,SERVER_ID,EDITOR_SELECTOR,DISCARD_SELECTOR,
   wait,waitFor,waitUntil,click,clickText,fill,openPopup,chooseSelectOption,activateTab,
-  assertNoSensitivePayload,
+  assertNoSensitivePayload,setExactViewport,captureSurfaceEvidence,
 };
 
 // Electron wraps its CommonJS entry, so require.main can differ from this module.

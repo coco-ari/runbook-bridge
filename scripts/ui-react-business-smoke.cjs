@@ -18,6 +18,8 @@ const quickQuestionsOnly = process.argv.includes('--quick-questions-only')
   || app.commandLine.hasSwitch('quick-questions-only');
 const recoveryOnly = process.argv.includes('--recovery-only')
   || app.commandLine.hasSwitch('recovery-only');
+const dialogOverflowOnly = process.argv.includes('--dialog-overflow-only')
+  || app.commandLine.hasSwitch('dialog-overflow-only');
 const screenshotDirectoryArgument = process.argv.find((value) => value.startsWith('--screenshot-dir='))
   ?.slice('--screenshot-dir='.length);
 const commandLineScreenshotDirectory = app.commandLine.getSwitchValue('screenshot-dir') || null;
@@ -1380,6 +1382,156 @@ async function assertOneScopeSuccessToast(win,message) {
   assert.equal(count,1,`${message} must be announced once, not by both controller and App Shell`);
 }
 
+async function assertDialogLongContent(win,testId,expectedText) {
+  const selector = `[data-testid="${testId}"]`;
+  await settleAnimations(win);
+  const geometry = await win.webContents.executeJavaScript(`(() => {
+    const surface = document.querySelector(${JSON.stringify(selector)});
+    if (!(surface instanceof HTMLElement)) return null;
+    surface.scrollTop = 0;
+    const rect = surface.getBoundingClientRect();
+    const content = [...surface.querySelectorAll('[data-slot="dialog-title"],[data-slot="dialog-description"],[data-slot="alert-dialog-title"],[data-slot="alert-dialog-description"],[data-slot="field-error"],[data-slot="item-title"]')];
+    return {
+      text:surface.textContent,
+      inside:rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth+1 && rect.bottom <= innerHeight+1,
+      horizontalOverflow:surface.scrollWidth-surface.clientWidth,
+      content:content.map((element) => {
+        const bounds = element.getBoundingClientRect();
+        return {
+          slot:element.getAttribute('data-slot'),
+          overflow:element.scrollWidth-element.clientWidth,
+          inside:bounds.left >= rect.left-1 && bounds.right <= rect.right+1,
+        };
+      }),
+    };
+  })()`,true);
+  assert.ok(geometry,`${testId} is visible`);
+  assert.ok(geometry.text.includes(expectedText),`${testId} retains the complete long content`);
+  assert.equal(geometry.inside,true,`${testId} must fit the viewport`);
+  assert.ok(geometry.horizontalOverflow <= 1,`${testId} must not overflow horizontally: ${JSON.stringify(geometry)}`);
+  for (const content of geometry.content) {
+    assert.ok(content.overflow <= 1 && content.inside,
+      `${testId} ${content.slot} must wrap inside the dialog: ${JSON.stringify(content)}`);
+  }
+  const buttons = await win.webContents.executeJavaScript(`(() => {
+    const surface = document.querySelector(${JSON.stringify(selector)});
+    const footer = surface.querySelector('[data-slot="dialog-footer"],[data-slot="alert-dialog-footer"]');
+    footer.scrollIntoView({block:'end',inline:'nearest'});
+    const rect = surface.getBoundingClientRect();
+    return [...footer.querySelectorAll('button')].map((button) => {
+      const bounds = button.getBoundingClientRect();
+      const target = document.elementFromPoint(bounds.left+bounds.width/2,bounds.top+bounds.height/2);
+      return {
+        text:button.textContent.trim(),
+        disabled:button.disabled,
+        fits:button.scrollWidth <= button.clientWidth+1,
+        inside:bounds.left >= rect.left-1 && bounds.right <= rect.right+1
+          && bounds.top >= Math.max(0,rect.top)-1 && bounds.bottom <= Math.min(innerHeight,rect.bottom)+1,
+        reachable:button === target || button.contains(target),
+      };
+    });
+  })()`,true);
+  assert.ok(buttons.length >= 2,`${testId} retains both footer actions`);
+  for (const button of buttons) {
+    assert.ok(button.fits && button.inside && (button.disabled || button.reachable),
+      `${testId} footer action remains readable and reachable: ${JSON.stringify(button)}`);
+  }
+}
+
+async function assertScopedDialogOverflow(win) {
+  const projectId = 'project-dialog-overflow';
+  const environmentId = 'env-dialog-overflow';
+  const projectName = 'W'.repeat(120);
+  const environmentName = 'M'.repeat(120);
+  const longError = `模拟配置冲突：${'LayoutOnlyConflict'.repeat(80)}。请核对模拟配置后重试。`;
+  const project = {projectId,name:projectName,revision:1,environments:[
+    {projectId,environmentId,name:environmentName,revision:1},
+    {projectId,environmentId:'env-dialog-reserve',name:'保留环境',revision:1},
+  ]};
+  const channels = ['v2:project-update','v2:environment-update','v2:project-delete','v2:environment-delete'];
+  const originals = new Map(channels.map((channel) => [channel,mutationHandlers.get(channel)]));
+  const start = mutationCalls.length;
+  state.projects.push(project);
+  for (const channel of channels) {
+    ipcMain.removeHandler(channel);
+    registerMutation(channel,(payload) => {
+      assert.equal(payload.projectId,projectId,'layout failures stay in their isolated mock project');
+      if (channel.startsWith('v2:environment-')) assert.equal(payload.environmentId,environmentId);
+      return conflict(longError);
+    });
+  }
+  try {
+    win.setContentSize(960,640);
+    win.webContents.send('v2:workspace-changed',{type:'project-created',projectId});
+    await waitFor(win,`document.querySelector('[data-project-id="${projectId}"]') !== null`,'long-name fixture project');
+    await click(win,`[data-project-id="${projectId}"]`,'select long-name fixture project');
+    await click(win,`[data-testid="environment-trigger-${environmentId}"]`,'select long-name fixture environment');
+
+    await click(win,'[data-testid="add-environment-footer"]','create under long project name');
+    await waitFor(win,`document.querySelector('[data-testid="create-environment-dialog"]') !== null`,'create environment in long-name project');
+    await assertDialogLongContent(win,'create-environment-dialog',projectName);
+    await clickText(win,'取消','[data-testid="create-environment-dialog"]');
+    await settleAnimations(win);
+
+    await openProjectSettings(win,projectName);
+    await assertDialogLongContent(win,'project-settings-dialog',projectName);
+    await fill(win,'#project-settings-name','布局验证项目');
+    await clickText(win,'保存名称','[data-testid="project-settings-dialog"]');
+    await waitFor(win,`document.querySelector('[data-testid="project-mutation-error"]')?.textContent === ${JSON.stringify(longError)}`,'long project rename error');
+    await assertDialogLongContent(win,'project-settings-dialog',longError);
+    await clickText(win,'取消','[data-testid="project-settings-dialog"]');
+    await settleAnimations(win);
+
+    await openEnvironmentSettings(win,environmentName);
+    await assertDialogLongContent(win,'environment-settings-dialog',environmentName);
+    await fill(win,'#environment-settings-name','布局验证环境');
+    await clickText(win,'保存名称','[data-testid="environment-settings-dialog"]');
+    await waitFor(win,`document.querySelector('[data-testid="environment-mutation-error"]')?.textContent === ${JSON.stringify(longError)}`,'long environment rename error');
+    await assertDialogLongContent(win,'environment-settings-dialog',longError);
+    await clickText(win,'取消','[data-testid="environment-settings-dialog"]');
+    await settleAnimations(win);
+
+    await openScopedDelete(win,{actionText:'删除项目',resourceSelector:`[data-project-id="${projectId}"]`,testId:'delete-project-dialog'});
+    await assertDialogLongContent(win,'delete-project-dialog',projectName);
+    await fill(win,'#delete-project-confirmation',projectName);
+    await clickText(win,'永久删除','[data-testid="delete-project-dialog"]');
+    await waitFor(win,`document.querySelector('[data-testid="project-mutation-error"]')?.textContent === ${JSON.stringify(longError)}`,'long project deletion error');
+    await assertDialogLongContent(win,'delete-project-dialog',longError);
+    await clickText(win,'取消','[data-testid="delete-project-dialog"]');
+    await settleAnimations(win);
+
+    await openScopedDelete(win,{actionText:'删除环境',resourceSelector:`[data-testid="environment-trigger-${environmentId}"]`,testId:'delete-environment-dialog'});
+    await assertDialogLongContent(win,'delete-environment-dialog',environmentName);
+    await clickText(win,'确认删除','[data-testid="delete-environment-dialog"]');
+    await waitFor(win,`document.querySelector('[data-testid="environment-mutation-error"]')?.textContent === ${JSON.stringify(longError)}`,'long environment deletion error');
+    await assertDialogLongContent(win,'delete-environment-dialog',longError);
+    await clickText(win,'取消','[data-testid="delete-environment-dialog"]');
+    await settleAnimations(win);
+
+    assert.deepEqual(mutationCalls.slice(start).map(({channel,payload}) => ({channel,payload})),[
+      {channel:'v2:project-update',payload:{projectId,expectedRevision:1,patch:{name:'布局验证项目'}}},
+      {channel:'v2:environment-update',payload:{projectId,environmentId,expectedRevision:1,patch:{name:'布局验证环境'}}},
+      {channel:'v2:project-delete',payload:{projectId}},
+      {channel:'v2:environment-delete',payload:{projectId,environmentId}},
+    ],'long-content cases preserve the original mutation baseline and add only four exact failed mock attempts');
+    assert.equal(project.name,projectName);
+    assert.equal(project.environments[0].name,environmentName);
+    assert.equal(project.environments.length,2,'failed dialog actions never delete mock scope data');
+    process.stdout.write('Scoped dialog overflow smoke passed (120-character names, long errors, reachable footer actions)\n');
+  } finally {
+    for (const channel of channels) {
+      ipcMain.removeHandler(channel);
+      const original = originals.get(channel);
+      if (original) registerMutation(channel,original);
+      else {
+        mutationHandlers.delete(channel);
+        registerForbidden(channel);
+      }
+    }
+    state.projects = state.projects.filter((entry) => entry.projectId !== projectId);
+  }
+}
+
 async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId}) {
   const scope = {projectId,environmentId};
   const start = mutationCalls.length;
@@ -1621,6 +1773,14 @@ async function run() {
       'initial project',
     );
     await assertRendererKeyboardFocus(win);
+
+    if (dialogOverflowOnly) {
+      await assertScopedDialogOverflow(win);
+      assert.deepEqual(forbiddenCalls,[]);
+      assert.deepEqual(externalRequests,[]);
+      assert.deepEqual(rendererErrors,[]);
+      return;
+    }
 
     if (recoveryOnly) {
       await click(win,'[data-project-id="project-alpha"]','select recovery project');
@@ -2211,6 +2371,7 @@ async function run() {
     assert.ok(readCalls.some((entry) => entry.channel === 'v2:runbook-read'));
     assert.ok(readCalls.some((entry) => entry.channel === 'v2:quick-question-list'));
     await assertBusinessRecoveryAndLifecycle(win,{projectId:'project-created',environmentId:'env-created'});
+    await assertScopedDialogOverflow(win);
     assert.deepEqual(forbiddenCalls,[]);
     assert.deepEqual(externalRequests,[]);
     assert.deepEqual(rendererErrors,[]);

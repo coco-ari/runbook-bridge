@@ -14,6 +14,7 @@ interface PluginValidationProgressProps {
 
 const COPY = {
   running: { label: "检查中", description: "使用一次性临时连接，不改变正式运行状态。" },
+  "awaiting-confirmation": { label: "等待确认", description: "请核对确认弹窗中的信息。只有明确确认后，才会继续检查当前草稿。" },
   valid: { label: "检查通过", description: "当前草稿通过连接与协议检查。" },
   failed: { label: "检查失败", description: "请根据错误修正当前草稿后重试。" },
   cancelled: { label: "已取消", description: "临时检查已停止，正式配置没有改变。" },

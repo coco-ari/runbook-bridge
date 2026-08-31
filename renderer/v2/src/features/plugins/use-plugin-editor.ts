@@ -427,6 +427,10 @@ export function usePluginEditor({
   const rejectConfirmation = useCallback(() => {
     pendingForceSaveRef.current = false
     pendingValidationRetryRef.current = null
+    const validation = stateRef.current.validation
+    if (validation?.state === "awaiting-confirmation") {
+      dispatch({ type: "validation-finished", validation: { ...validation, state: "cancelled" } })
+    }
     dispatch({ type: "confirmation", confirmation: null })
   }, [])
 
@@ -557,13 +561,19 @@ export function usePluginEditor({
       const challenge = snapshot.draft.pluginType === "server"
         ? hostKeyChallengeFromError(apiError, normalizedDraft)
         : null
-      const failed: PluginValidationState = {
+      const canConfirmTlsFallback = apiError.code === "TLS_UNSUPPORTED"
+        && normalizedDraft.pluginType !== "server"
+        && normalizedDraft.tls?.mode !== "disabled"
+      const needsConfirmation = challenge !== null || canConfirmTlsFallback
+      const finished: PluginValidationState = {
         ...active,
-        state: apiError.code === "PLUGIN_VALIDATION_CANCELLED" ? "cancelled" : "failed",
-        error: apiError,
+        state: needsConfirmation
+          ? "awaiting-confirmation"
+          : apiError.code === "PLUGIN_VALIDATION_CANCELLED" ? "cancelled" : "failed",
+        ...(needsConfirmation ? {} : { error: apiError }),
       }
       activeValidationRef.current = null
-      dispatch({ type: "validation-finished", validation: failed })
+      dispatch({ type: "validation-finished", validation: finished })
       if (challenge) {
         pendingValidationRetryRef.current = { purpose,saveAfterValidation,saveStrategy }
         dispatch({
@@ -575,11 +585,7 @@ export function usePluginEditor({
             hostKey: challenge,
           },
         })
-      } else if (
-        apiError.code === "TLS_UNSUPPORTED"
-        && normalizedDraft.pluginType !== "server"
-        && normalizedDraft.tls?.mode !== "disabled"
-      ) {
+      } else if (canConfirmTlsFallback) {
         pendingValidationRetryRef.current = { purpose,saveAfterValidation,saveStrategy }
         dispatch({
           type: "confirmation",

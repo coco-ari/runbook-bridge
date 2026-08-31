@@ -114,7 +114,7 @@ export function PluginDeleteDialog({
               {blocked ? (
                 <>
                   <p>{dependents.length} 个插件仍复用此 Server 隧道。请先修改它们的连接路径。</p>
-                  <ScrollArea className="max-h-32 rounded-lg border border-border/70 bg-surface-inset">
+                  <ScrollArea className="max-h-32 rounded-lg border border-border/70 bg-surface-inset" viewportClassName="h-auto max-h-32">
                     <ItemGroup className="gap-0">
                       {dependents.map((item) => (
                         <Item
@@ -135,14 +135,14 @@ export function PluginDeleteDialog({
               )}
             </div>
           </AlertDialogDescription>
-          {error ? (
-            <Alert variant="destructive">
-              <Warning aria-hidden="true" />
-              <AlertTitle>删除插件失败</AlertTitle>
-              <AlertDescription>{error.message}</AlertDescription>
-            </Alert>
-          ) : null}
         </AlertDialogHeader>
+        {error ? (
+          <Alert variant="destructive">
+            <Warning aria-hidden="true" />
+            <AlertTitle>删除插件失败</AlertTitle>
+            <AlertDescription>{error.message}</AlertDescription>
+          </Alert>
+        ) : null}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={busy}>取消</AlertDialogCancel>
           <AlertDialogAction

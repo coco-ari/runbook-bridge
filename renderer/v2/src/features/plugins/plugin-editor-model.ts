@@ -31,7 +31,7 @@ export interface PluginValidationState {
   readonly editSessionId?: string
   readonly operationId?: string
   readonly configDigest?: string
-  readonly state: "running" | "valid" | "failed" | "cancelled" | "stale"
+  readonly state: "running" | "awaiting-confirmation" | "valid" | "failed" | "cancelled" | "stale"
   readonly result?: OpaqueData
   readonly error?: PublicError
 }
