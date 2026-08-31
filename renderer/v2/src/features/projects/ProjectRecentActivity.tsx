@@ -28,6 +28,7 @@ import {
   ItemTitle,
 } from "@/components/ui/item"
 import { Skeleton } from "@/components/ui/skeleton"
+import { auditOperationLabel, auditResult, auditResultLabel, auditResultVariant } from "@/lib/operation-copy"
 
 type UnknownRecord = Record<string, unknown>
 
@@ -69,41 +70,6 @@ function normalizeProjectAudit(value: unknown): readonly ProjectAuditEntry[] {
     if (typeof entry.type !== "string" || !entry.type) return []
     return [{ ...entry, type: entry.type } satisfies ProjectAuditEntry]
   }).slice(0, 6)
-}
-
-function operationLabel(type: string): string {
-  const labels: Readonly<Record<string, string>> = {
-    "confirmation-approved": "批准操作",
-    "confirmation-rejected": "拒绝操作",
-    "connection-plan-completed": "完成连接计划",
-    "connection-plan-resumed": "恢复连接计划",
-    "environment-connect-cancelled": "取消环境连接",
-    "mysql-query": "查询数据库",
-    "plugin-added": "添加插件",
-    "plugin-connected": "连接插件",
-    "plugin-disconnected": "断开插件",
-    "plugin-operation": "执行插件操作",
-    "policy-denied": "策略拦截",
-    "runbook-updated": "更新运维说明",
-  }
-  return labels[type] ?? "项目操作"
-}
-
-function resultPresentation(result: unknown): Readonly<{
-  label: string
-  variant: "danger" | "info" | "success" | "warning"
-}> {
-  const normalized = String(result ?? "success").toLowerCase()
-  if (["success", "connected", "disconnected", "complete", "completed"].includes(normalized)) {
-    return { label: "成功", variant: "success" }
-  }
-  if (["pending", "pending-confirmation"].includes(normalized)) {
-    return { label: "等待确认", variant: "info" }
-  }
-  if (["partial", "warning", "cancelled", "needs-action"].includes(normalized)) {
-    return { label: normalized === "cancelled" ? "已取消" : "需注意", variant: "warning" }
-  }
-  return { label: ["blocked", "denied"].includes(normalized) ? "已拦截" : "失败", variant: "danger" }
 }
 
 function timeLabel(value: unknown): string {
@@ -201,20 +167,20 @@ export function ProjectRecentActivity({
         ) : (
           <ItemGroup aria-label={`${projectName}的近期操作`} className="gap-1">
             {entries.map((entry, index) => {
-              const result = resultPresentation(entry.result)
+              const result = auditResult(entry)
               return (
                 <Item className="min-w-0 items-start @sm/project-activity:items-center" key={entry.auditId ?? `${entry.type}-${String(entry.time)}-${index}`} role="listitem" size="xs" variant="default">
-                  <ItemMedia className={result.variant === "success" ? "text-success" : "text-muted-foreground"} variant="icon">
-                    {result.variant === "success"
+                  <ItemMedia className={result === "success" ? "text-success" : "text-muted-foreground"} variant="icon">
+                    {result === "success"
                       ? <CheckCircle aria-hidden="true" weight="fill" />
                       : <WarningCircle aria-hidden="true" weight="fill" />}
                   </ItemMedia>
                   <ItemContent>
-                    <ItemTitle>{operationLabel(entry.type)}</ItemTitle>
+                    <ItemTitle>{auditOperationLabel(entry.type)}</ItemTitle>
                     <ItemDescription>{timeLabel(entry.time)}</ItemDescription>
                   </ItemContent>
                   <ItemActions className="ml-auto self-start @sm/project-activity:self-center">
-                    <Badge variant={result.variant}>{result.label}</Badge>
+                    <Badge variant={auditResultVariant(result)}>{auditResultLabel(result)}</Badge>
                   </ItemActions>
                 </Item>
               )

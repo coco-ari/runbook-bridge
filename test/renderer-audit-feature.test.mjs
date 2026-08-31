@@ -99,6 +99,32 @@ test('operation presentation copy localizes known values and never exposes unkno
   );
 });
 
+test('audit results distinguish execution events from confirmation requests',async () => {
+  const {auditResult,auditResultLabel,auditResultVariant} = await importCopy();
+  for (const [raw,result,label,variant] of [
+    ['started','started','已开始','info'],
+    ['running','running','进行中','info'],
+    ['connecting','running','进行中','info'],
+    ['pending-confirmation','pending','等待确认','info'],
+    ['success','success','成功','success'],
+    ['error','error','失败','danger'],
+    ['denied','blocked','已拦截','danger'],
+    ['cancelled','cancelled','已取消','warning'],
+    ['unknown','error','失败','danger'],
+  ]) {
+    assert.equal(auditResult({result:raw}),result);
+    assert.equal(auditResultLabel(result),label);
+    assert.equal(auditResultVariant(result),variant);
+  }
+  assert.equal(auditResult({errorCode:'POLICY_DENIED'}),'error');
+  const history = [
+    {type:'plugin-operation-started',requestId:'read-log',result:'started'},
+    {type:'plugin-operation',requestId:'read-log',result:'success'},
+    {type:'plugin-operation-decision',requestId:'write-file',result:'pending-confirmation',errorCode:'CONFIRMATION_REQUIRED'},
+  ];
+  assert.deepEqual(history.filter(entry => auditResult(entry) === 'pending').map(entry => entry.requestId),['write-file']);
+});
+
 test('React audit feature keeps scope, search, filter, clear and request contracts',async () => {
   const [source,model] = await Promise.all([
     fs.readFile(path.join(

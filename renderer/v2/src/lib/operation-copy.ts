@@ -1,3 +1,39 @@
+export type AuditResult = "success" | "started" | "running" | "pending" | "warning" | "cancelled" | "blocked" | "error"
+
+export function auditResult(entry: { readonly result?: unknown; readonly errorCode?: unknown }): AuditResult {
+  const value = String(entry.result ?? (entry.errorCode ? "error" : "success")).toLowerCase()
+  if (["success", "connected", "disconnected", "complete", "completed", "already-satisfied"].includes(value)) return "success"
+  // Audit rows describe historical events; a start event is not a pending approval.
+  if (value === "started") return "started"
+  if (["running", "connecting"].includes(value)) return "running"
+  if (value === "pending-confirmation") return "pending"
+  if (["cancelled", "canceled"].includes(value)) return "cancelled"
+  if (["partial", "warning", "needs-action", "stopped"].includes(value)) return "warning"
+  if (["blocked", "denied"].includes(value)) return "blocked"
+  return "error"
+}
+
+export function auditResultLabel(result: AuditResult): string {
+  return {
+    success: "成功",
+    started: "已开始",
+    running: "进行中",
+    pending: "等待确认",
+    warning: "部分成功",
+    cancelled: "已取消",
+    blocked: "已拦截",
+    error: "失败",
+  }[result]
+}
+
+export function auditResultVariant(result: AuditResult): "success" | "warning" | "danger" | "info" | "outline" {
+  if (result === "success") return "success"
+  if (["started", "running", "pending"].includes(result)) return "info"
+  if (result === "warning" || result === "cancelled") return "warning"
+  if (result === "blocked" || result === "error") return "danger"
+  return "outline"
+}
+
 const AUDIT_OPERATION_LABELS: Readonly<Record<string, string>> = {
   "auto-reconnect": "自动重新连接",
   connect: "建立服务器连接",

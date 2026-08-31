@@ -77,12 +77,15 @@ import {
 import { AuditRequestCoordinator } from "@/features/audit/audit-request-model"
 import {
   auditOperationLabel,
+  auditResult,
+  auditResultLabel,
+  auditResultVariant,
+  type AuditResult,
   localizeOperationalSummary,
   publicErrorLabel,
 } from "@/lib/operation-copy"
 
 type UnknownRecord = Record<string, unknown>
-type AuditResult = "success" | "pending" | "warning" | "cancelled" | "blocked" | "error"
 type AuditResultFilter = "all" | AuditResult
 
 interface AuditEntry extends UnknownRecord {
@@ -155,16 +158,6 @@ function redactOperationalText(value: unknown): string {
     .slice(0, 2_000)
 }
 
-function auditResult(entry: AuditEntry): AuditResult {
-  const value = String(entry.result ?? (entry.errorCode ? "error" : "success")).toLowerCase()
-  if (["success", "connected", "disconnected", "complete", "completed", "already-satisfied"].includes(value)) return "success"
-  if (["pending-confirmation", "started", "running", "connecting"].includes(value)) return "pending"
-  if (["cancelled", "canceled"].includes(value)) return "cancelled"
-  if (["partial", "warning", "needs-action", "stopped"].includes(value)) return "warning"
-  if (["blocked", "denied"].includes(value)) return "blocked"
-  return "error"
-}
-
 function operationName(entry: AuditEntry): string {
   return auditOperationLabel(entry.type)
 }
@@ -194,25 +187,6 @@ function description(entry: AuditEntry): string {
   }
   if (entry.errorCode) return publicErrorLabel(entry.errorCode, "操作未完成。")
   return "操作状态已记录。"
-}
-
-function resultLabel(result: AuditResult): string {
-  return {
-    success: "成功",
-    pending: "等待确认",
-    warning: "部分成功",
-    cancelled: "已取消",
-    blocked: "已拦截",
-    error: "失败",
-  }[result]
-}
-
-function resultVariant(result: AuditResult): "success" | "warning" | "danger" | "info" | "outline" {
-  if (result === "success") return "success"
-  if (result === "pending") return "info"
-  if (result === "warning" || result === "cancelled") return "warning"
-  if (result === "blocked" || result === "error") return "danger"
-  return "outline"
 }
 
 function validInstant(value: unknown): Date | null {
@@ -429,6 +403,8 @@ export function AuditFeature({
           <SelectContent>
             <SelectItem value="all">全部结果</SelectItem>
             <SelectItem value="success">成功</SelectItem>
+            <SelectItem value="started">已开始</SelectItem>
+            <SelectItem value="running">进行中</SelectItem>
             <SelectItem value="pending">等待确认</SelectItem>
             <SelectItem value="warning">部分成功</SelectItem>
             <SelectItem value="cancelled">已取消</SelectItem>
@@ -482,7 +458,7 @@ export function AuditFeature({
                     </ItemDescription>
                   </ItemContent>
                   <ItemActions className="ml-auto self-start">
-                    <Badge variant={resultVariant(row.result)}>{resultLabel(row.result)}</Badge>
+                    <Badge variant={auditResultVariant(row.result)}>{auditResultLabel(row.result)}</Badge>
                   </ItemActions>
                 </Item>
               ))}
@@ -521,7 +497,7 @@ export function AuditFeature({
                         </p>
                       </TableCell>
                       <TableCell className="text-right">
-                        <Badge variant={resultVariant(row.result)}>{resultLabel(row.result)}</Badge>
+                        <Badge variant={auditResultVariant(row.result)}>{auditResultLabel(row.result)}</Badge>
                       </TableCell>
                     </TableRow>,
                   ])}

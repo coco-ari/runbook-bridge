@@ -1589,12 +1589,28 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
   const auditEntries = [
     {auditId:'recover-success',type:'runbook-updated',result:'success',actor:'user',time:'2026-08-30T05:00:00.000Z',environmentId,description:'业务成功记录'},
     {auditId:'recover-error',type:'runbook-updated',result:'error',actor:'user',time:'2026-08-30T05:01:00.000Z',environmentId,description:'业务失败记录'},
+    {auditId:'recover-started',type:'plugin-operation-started',result:'started',actor:'agent',time:'2026-08-30T05:02:00.000Z',environmentId,description:'只读操作开始记录'},
+    {auditId:'recover-pending',type:'plugin-operation-decision',result:'pending-confirmation',actor:'agent',time:'2026-08-30T05:03:00.000Z',environmentId,description:'写入操作确认记录'},
   ];
   ipcMain.removeHandler('v2:audit-list');
   registerRead('v2:audit-list',() => ({entries:auditEntries,nextCursor:null}));
   await activateTab(win,'audit');
   await click(win,'[data-testid="audit-refresh-trigger"]','refresh recovery audit rows');
   await waitFor(win,`document.querySelector('[data-feature="audit"]')?.textContent.includes('业务成功记录') === true`,'audit rows available');
+  for (const [label,description] of [['已开始','只读操作开始记录'],['等待确认','写入操作确认记录']]) {
+    await click(win,'[aria-label="筛选操作结果"]','filter audit lifecycle');
+    await clickText(win,label,'[role="listbox"]');
+    await waitFor(win,`(() => {
+      const layouts = [...document.querySelectorAll('[data-audit-layout]')];
+      return layouts.length === 2 && layouts.every(layout => {
+        const badges = [...layout.querySelectorAll('[data-slot="badge"]')];
+        return badges.length === 1 && badges[0].textContent === ${JSON.stringify(label)}
+          && layout.textContent.includes(${JSON.stringify(description)});
+      });
+    })()`,'start and confirmation events have distinct labels and filters in both layouts');
+  }
+  await click(win,'[aria-label="筛选操作结果"]','restore all audit results');
+  await clickText(win,'全部结果','[role="listbox"]');
   await fill(win,'input[aria-label="搜索操作记录"]','业务失败记录');
   await waitFor(win,`document.querySelector('[data-feature="audit"]')?.textContent.includes('业务失败记录') === true && !document.querySelector('[data-feature="audit"]')?.textContent.includes('业务成功记录')`,'audit query filters visible rows');
   await fill(win,'input[aria-label="搜索操作记录"]','');
