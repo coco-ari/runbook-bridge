@@ -4,15 +4,11 @@
 >
 > 状态：已采用
 >
-> 范围：独立 React Renderer `renderer/v2/react.html`
+> 范围：正式 React Renderer 源入口 `renderer/v2/index.html`，构建产物 `renderer-build/v2/index.html`
 
 ## 决策
 
-新 React Renderer 的样式策略从：
-
-    style-src 'self'
-
-调整为：
+React Renderer 采用以下样式策略：
 
     style-src 'self' 'unsafe-inline'
 
@@ -34,7 +30,7 @@
 - `sandbox: true`。
 - `nodeIntegration: false`。
 - preload、IPC、Service、operation gate 和确认绑定不变。
-- 正式旧 UI `renderer/v2/index.html` 暂不修改。
+- 唯一正式源码入口是 `renderer/v2/index.html`，Electron 加载 Vite 生成的 `renderer-build/v2/index.html`。
 
 ## 风险接受
 
@@ -52,4 +48,4 @@ Renderer 仍必须把远程日志、配置、文件内容和命令输出当作�
 4. 外部请求为 0。
 5. sandbox、context isolation 和 node integration 基线保持。
 
-正式切换到 React Renderer 时，应以 `react.html` 的策略替代旧入口策略，并同步打包 smoke 和安装升级回归。
+入口切换已完成。`test/renderer-foundation-contract.test.mjs` 和 `test/renderer-app-shell-contract.test.mjs` 校验源码策略；`scripts/packaged-ui-smoke.cjs` 校验正式构建产物。重新验证步骤见 [验证指南](full-function-verification.md)。变更 CSP 必须同时复核这些测试，不能只调整样式策略而遗漏脚本与网络边界。

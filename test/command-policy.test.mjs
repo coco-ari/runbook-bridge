@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { ensureBrokerToken } from '../src/broker-auth.mjs';
+import { rotateBrokerToken } from '../src/broker-auth.mjs';
 import { BrokerServer } from '../src/broker-server.mjs';
 import { evaluateCommandPolicy } from '../src/command-policy.mjs';
 import { SshBroker } from '../src/ssh-broker.mjs';
@@ -248,7 +248,7 @@ test('an allowed command still executes and keeps the existing success audit con
 
 test('legacy MCP shell execution is rejected by the desktop broker', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-policy-mcp-'));
-  const token = await ensureBrokerToken(root);
+  const token = await rotateBrokerToken(root);
   const brokerServer = new BrokerServer({ dataRoot: root, token, appVersion: '1.0.0' });
   await brokerServer.start();
   t.after(async () => {

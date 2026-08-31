@@ -72,7 +72,6 @@ import {
   overlayWorkspaceRuntimeStatuses,
   type WorkspaceEnvironmentReadModel,
   type WorkspacePluginReadModel,
-  type WorkspaceProjectReadModel,
 } from "@/features/workspace/workspace-read-model"
 import {
   APP_SHELL_PANEL_IDS,

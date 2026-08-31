@@ -10,7 +10,7 @@ test('business mutation smoke stays isolated, scoped and wired into package chec
   const manifest = JSON.parse(manifestSource);
 
   assert.match(manifest.scripts['test:ui:business'],/build:renderer.*ui-react-business-smoke\.cjs/u);
-  assert.match(manifest.scripts.check,/node --check scripts\/ui-react-business-smoke\.cjs/u);
+  assert.match(manifest.scripts.check,/node scripts\/check-syntax\.mjs/u);
 
   assert.match(source,/fs\.mkdtempSync\(path\.join\(os\.tmpdir\(\),'runbook-bridge-business-smoke-'\)\)/u);
   assert.match(source,/new BrowserWindow\(\{[\s\S]*?width:960,[\s\S]*?height:640,/u);

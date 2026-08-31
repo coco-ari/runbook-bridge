@@ -168,10 +168,3 @@ export function classifyPluginChange({
       ].filter(Boolean))];
   return {kind,changedPaths,affectedPluginInstanceIds,credentialMutation};
 }
-
-export const pluginChangeClassifierInternals = {
-  canonicalize,
-  collectChangedPaths,
-  connectionProjection,
-  agentProjection,
-};

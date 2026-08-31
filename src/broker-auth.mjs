@@ -2,18 +2,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-export async function ensureBrokerToken(dataRoot) {
-  await fs.mkdir(dataRoot, { recursive: true });
-  const tokenPath = path.join(dataRoot, 'broker.token');
-  try {
-    const existing = (await fs.readFile(tokenPath, 'utf8')).trim();
-    if (existing.length >= 32) return existing;
-  } catch {
-    // Create below.
-  }
-  return writeNewBrokerToken(tokenPath);
-}
-
 export async function rotateBrokerToken(dataRoot) {
   await fs.mkdir(dataRoot, { recursive: true });
   return writeNewBrokerToken(path.join(dataRoot, 'broker.token'));

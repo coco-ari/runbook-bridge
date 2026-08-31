@@ -4,10 +4,10 @@ import path from 'node:path';
 import test from 'node:test';
 
 const REQUIRED_SHADCN_COMPONENTS = [
-  'accordion','alert','alert-dialog','avatar','badge','button','card','checkbox','collapsible',
+  'accordion','alert','alert-dialog','badge','button','card','checkbox','collapsible',
   'command','context-menu','dialog','dropdown-menu','empty','field','input-group',
   'input','label','resizable','scroll-area','select','separator','sheet','sidebar',
-  'skeleton','sonner','switch','table','tabs','textarea','tooltip',
+  'skeleton','sonner','table','tabs','textarea','tooltip',
 ];
 
 async function collectSourceFiles(root) {
@@ -122,11 +122,6 @@ test('production React shell composes shadcn/Radix with the typed desktop bridge
   assert.doesNotMatch(projectRail,/data-project-rail-toggle|data-testid="project-(?:collapse|expand)"/u,
     'the project rail header has no separate collapse arrow');
   assert.match(appShell,/aria-describedby="project-rail-resize-help"/u);
-  const avatarSource = sourceByPath.get(path.join('renderer','v2','src','components','ui','avatar.tsx')) ?? '';
-  assert.match(avatarSource,/import \{ Avatar as AvatarPrimitive \} from "radix-ui"/u);
-  assert.match(avatarSource,/<AvatarPrimitive.Root/u);
-  assert.match(avatarSource,/<AvatarPrimitive.Fallback/u);
-  assert.doesNotMatch(projectRail,/<AvatarImage/u,'local project initials do not request external images');
   assert.match(projectRail,/Tooltip/u);
   assert.match(projectRail,/DropdownMenu/u);
   assert.match(projectRail,/ContextMenu/u);

@@ -355,16 +355,6 @@ export class PluginCredentialVault {
     }
   }
 
-  async hasBinding(plugin) {
-    const slots = await this.readEnvelopeSlots();
-    const expected = bindingHash(plugin);
-    const targetKey = resourceKey(plugin);
-    return [slots.primary.envelope,slots.backup.envelope].some((envelope) => {
-      const entry = envelope?.entries?.[targetKey];
-      return entry?.pluginType === plugin.pluginType && entry.bindingHash === expected;
-    });
-  }
-
   async hasStoredEntry(plugin) {
     const slots = await this.readEnvelopeSlots();
     const targetKey = resourceKey(plugin);
@@ -381,31 +371,6 @@ export class PluginCredentialVault {
     const preserved = Boolean(slots.primary.envelope?.entries?.[resourceKey(plugin)] || slots.backup.envelope?.entries?.[resourceKey(plugin)]);
     return { cleared:false, preserved };
   }
-}
-
-export async function importLegacySecretsIfAbsent(vault, plugin, loadLegacySecrets) {
-  let existing;
-  try {
-    existing = await vault.load(plugin) ?? {};
-  } catch {
-    // Any unreadable/binding-mismatched entry is still an existing credential
-    // envelope. Startup migration must never overwrite it opportunistically.
-    return {imported:false,preserved:true,unreadable:true};
-  }
-  const secrets = await loadLegacySecrets();
-  if (!secrets || !Object.values(secrets).some((value) => String(value ?? ''))) return {imported:false,preserved:false};
-  const missing = Object.fromEntries(
-    Object.entries(secrets).filter(([key,value]) => String(value ?? '') && !String(existing[key] ?? '')),
-  );
-  if (!Object.keys(missing).length) return {imported:false,preserved:true};
-  await vault.save(plugin, missing);
-  const verified = await vault.load(plugin) ?? {};
-  const existingPreserved = Object.entries(existing).every(([key,value]) => verified[key] === value);
-  const importedPresent = Object.entries(missing).every(([key,value]) => verified[key] === value);
-  if (!existingPreserved || !importedPresent) {
-    throw new AppError('CREDENTIAL_STORAGE_FAILED', '旧凭据导入后校验失败；原凭据仍已保留。');
-  }
-  return {imported:true,preserved:Object.keys(existing).length > 0};
 }
 
 export const pluginCredentialInternals = { resourceKey, bindingHash, bindingProjection };

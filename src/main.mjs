@@ -45,7 +45,6 @@ app.setName('AI 运维工具');
 app.disableHardwareAcceleration();
 
 function createWindow() {
-  const screenshotPath = process.env.AI_OPS_SCREENSHOT_PATH;
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -53,7 +52,6 @@ function createWindow() {
     minHeight: 640,
     title: 'AI 运维工具',
     backgroundColor: '#101115',
-    show: !screenshotPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -65,27 +63,6 @@ function createWindow() {
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer-build', 'v2', 'index.html'));
-  if (screenshotPath) {
-    mainWindow.webContents.once('did-finish-load', async () => {
-      const screenshotDialog = process.env.AI_OPS_SCREENSHOT_DIALOG ?? '0';
-      await mainWindow.webContents.executeJavaScript(`new Promise((resolve) => {
-        let attempts = 0;
-        const check = () => {
-          if (document.querySelector('[data-shell-ready="true"]') && window.aiOps?.v2) resolve(true);
-          else if (attempts++ > 120) resolve(false);
-          else setTimeout(check, 50);
-        };
-        check();
-      })`);
-      if (screenshotDialog === 'project') await mainWindow.webContents.executeJavaScript("document.querySelector('[data-testid=\"add-project-footer\"]')?.click()");
-      if (screenshotDialog === 'environment') await mainWindow.webContents.executeJavaScript("document.querySelector('[data-testid=\"add-environment-footer\"]')?.click()");
-      if (screenshotDialog === 'plugin') await mainWindow.webContents.executeJavaScript("document.querySelector('[data-testid^=\"add-plugin-\"]')?.click()");
-      await new Promise((resolve) => setTimeout(resolve, 350));
-      const image = await mainWindow.webContents.capturePage();
-      await fs.writeFile(screenshotPath, image.toPNG());
-      app.quit();
-    });
-  }
 }
 
 async function clearRendererCacheAfterUpgrade() {

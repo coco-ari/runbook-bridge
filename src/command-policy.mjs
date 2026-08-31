@@ -13,11 +13,6 @@ const INLINE_INTERPRETERS = new Map([
   ['node', ['-e', '--eval']],
   ['php', ['-r']],
 ]);
-const PROTECTED_DELETE_TARGETS = new Set([
-  '/', '/bin', '/boot', '/dev', '/etc', '/home', '/lib', '/lib64', '/opt', '/proc',
-  '/root', '/run', '/sbin', '/srv', '/sys', '/usr', '/var', '.', '..', '*', './*',
-  '~', '~/*', '$home', '${home}', '$home/*', '${home}/*',
-]);
 const DISK_COMMANDS = new Set([
   'badblocks', 'cfdisk', 'cryptsetup', 'fdisk', 'lvremove', 'mkfs', 'mkswap', 'parted',
   'pvremove', 'sfdisk', 'vgremove', 'wipefs', 'zpool',
@@ -186,10 +181,6 @@ function resolveCommand(segment) {
   return { name: 'wrapper-depth-exceeded', args: [], precedingOperator: segment.precedingOperator };
 }
 
-function hasFlag(args, shortName, longName) {
-  return args.some((arg) => arg === longName || (arg.startsWith('-') && !arg.startsWith('--') && arg.slice(1).toLowerCase().includes(shortName.toLowerCase())));
-}
-
 function commandTargets(args) {
   let optionsEnded = false;
   return args.filter((arg) => {
@@ -200,15 +191,6 @@ function commandTargets(args) {
     if (!optionsEnded && arg.startsWith('-')) return false;
     return true;
   });
-}
-
-function isProtectedDeleteTarget(value) {
-  const normalized = normalizeText(value).replace(/\/{2,}/g, '/').replace(/\/$/, '') || '/';
-  return (
-    PROTECTED_DELETE_TARGETS.has(normalized) ||
-    /^\/(?:\*|\{[^}]+\})$/.test(normalized) ||
-    /^\$(?:\{|)[a-z_][a-z0-9_]*(?:\}|)(?:\/\*)?$/.test(normalized)
-  );
 }
 
 function matchesBuiltin(context) {

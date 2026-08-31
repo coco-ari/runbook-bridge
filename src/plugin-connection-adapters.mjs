@@ -287,10 +287,3 @@ export function assertPluginConfigurationReady(plugin) {
     {configState:plugin?.configState ?? null,issues:assessment.issues},
   );
 }
-
-export const pluginConnectionAdapterInternals = {
-  canonicalize,
-  configurationResult,
-  dependencyRefs,
-  redisCluster,
-};

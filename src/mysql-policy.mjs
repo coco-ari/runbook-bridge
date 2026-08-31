@@ -108,5 +108,3 @@ export function applyMysqlRowLimit(validated, maxRows) {
   }
   return parser.sqlify(ast, { database: 'MySQL' });
 }
-
-export const mysqlPolicyInternals = { walk, collectTables, functionName, PURE_FUNCTIONS, FORBIDDEN_FUNCTIONS, parser };

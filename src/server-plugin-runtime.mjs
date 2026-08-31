@@ -311,5 +311,3 @@ export class ServerPluginRuntime extends EventEmitter {
     return this.broker.closeAll();
   }
 }
-
-export const serverRuntimeInternals = { scopeKey, parseScopeKey, ScopedServerStoreAdapter };

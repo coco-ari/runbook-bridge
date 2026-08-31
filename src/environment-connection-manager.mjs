@@ -86,7 +86,6 @@ export class EnvironmentConnectionManager extends EventEmitter {
     this.networkDebounceMs = Math.max(0, Number(networkDebounceMs) || 0);
     this.activeConnects = 0;
     this.connectWaiters = [];
-    this.connectControllers = new Map();
     this.networkChangePromise = null;
     this.pendingNetworkReason = null;
     this.networkBatchPhase = null;
@@ -137,26 +136,6 @@ export class EnvironmentConnectionManager extends EventEmitter {
       return;
     }
     this.activeConnects = Math.max(0, this.activeConnects - 1);
-  }
-
-  beginConnectAttempt(projectId, environmentId) {
-    const key = this.key(projectId, environmentId);
-    this.connectControllers.get(key)?.abort();
-    const controller = new AbortController();
-    this.connectControllers.set(key, controller);
-    return controller;
-  }
-
-  finishConnectAttempt(projectId, environmentId, controller) {
-    const key = this.key(projectId, environmentId);
-    if (this.connectControllers.get(key) === controller) this.connectControllers.delete(key);
-  }
-
-  abortConnectAttempt(projectId, environmentId) {
-    const key = this.key(projectId, environmentId);
-    const controller = this.connectControllers.get(key);
-    if (controller) controller.abort();
-    this.connectControllers.delete(key);
   }
 
   async connectRuntime(plugin, secrets = {}, { signal = null } = {}) {
@@ -422,20 +401,12 @@ export class EnvironmentConnectionManager extends EventEmitter {
   async forgetProject(projectId) {
     this.connectionIntentCoordinator.forgetProject(projectId);
     const prefix = `${projectId}/`;
-    for (const [key, controller] of this.connectControllers) {
-      if (key.startsWith(prefix)) controller.abort();
-    }
     await Promise.allSettled([...this.queues.entries()].filter(([key]) => key.startsWith(prefix)).map(([,pending]) => pending));
     for (const key of this.states.keys()) if (key.startsWith(prefix)) this.states.delete(key);
     for (const key of this.retryTimers.keys()) {
       if (!key.startsWith(prefix)) continue;
       clearTimeout(this.retryTimers.get(key));
       this.retryTimers.delete(key);
-    }
-    for (const [key, controller] of this.connectControllers) {
-      if (!key.startsWith(prefix)) continue;
-      controller.abort();
-      this.connectControllers.delete(key);
     }
     for (const key of this.cancelCleanups.keys()) if (key.startsWith(prefix)) this.cancelCleanups.delete(key);
     for (const key of this.runtimeConnectAttempts.keys()) if (key.startsWith(prefix)) this.runtimeConnectAttempts.delete(key);
@@ -447,7 +418,6 @@ export class EnvironmentConnectionManager extends EventEmitter {
   async forgetEnvironment(projectId, environmentId) {
     this.connectionIntentCoordinator.forgetEnvironment(projectId,environmentId);
     const key = this.key(projectId, environmentId);
-    this.abortConnectAttempt(projectId, environmentId);
     this.clearRetry(projectId, environmentId);
     const pending = this.queues.get(key);
     if (pending) await Promise.resolve(pending).catch(() => undefined);
@@ -526,104 +496,6 @@ export class EnvironmentConnectionManager extends EventEmitter {
     })).then((result) => result.snapshot);
   }
 
-  async connectPrepared(projectId, environmentId, { expectedRevision = null, secretsByPlugin = {}, retryOnly = false, retryableOnly = false, preserveIntent = false, actor = 'user' } = {}) {
-    this.assertConfigurationStable(projectId, environmentId);
-    const prepared = await this.prepare(projectId, environmentId, expectedRevision);
-    this.assertConfigurationStable(projectId, environmentId);
-    let state = this.state(projectId, environmentId);
-    if (!preserveIntent) {
-      state = emptyState(projectId, environmentId);
-      state.desiredConnected = true;
-      state.intentGeneration += (this.state(projectId, environmentId).intentGeneration + 1);
-    } else {
-      state = structuredClone(state);
-      state.desiredConnected = true;
-    }
-    state.networkEpoch = this.networkEpoch;
-    state.connectAttemptId = crypto.randomUUID();
-    state.phase = retryOnly ? 'reconnecting' : 'connecting';
-    state.eligibleCount = prepared.plugins.filter((plugin) => plugin.configState === 'ready').length;
-    state.draftCount = prepared.plugins.length - state.eligibleCount;
-    state.connectedCount = prepared.plugins.filter((plugin) => state.plugins[plugin.pluginInstanceId]?.phase === 'connected').length;
-    const attemptId = state.connectAttemptId;
-    const connectController = this.beginConnectAttempt(projectId, environmentId);
-    for (const plugin of prepared.plugins) {
-      const current = state.plugins[plugin.pluginInstanceId];
-      if (plugin.configState !== 'ready') state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'disconnected', { reason: 'PLUGIN_CONFIG_INCOMPLETE' });
-      else if (preserveIntent && state.manualDisconnected?.[plugin.pluginInstanceId]) state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'disconnected', { reason: 'USER_DISCONNECTED' });
-      else if (retryOnly && retryableOnly && current?.phase === 'error' && !current.retryable) state.plugins[plugin.pluginInstanceId] = current;
-      else if (!retryOnly || current?.phase !== 'connected') state.plugins[plugin.pluginInstanceId] = pluginState(plugin, plugin.transport?.kind === 'serverTunnel' ? 'waitingDependency' : 'connecting', { attempt: (current?.attempt ?? 0) + 1 });
-    }
-    this.publish(state);
-
-    const promises = new Map();
-    const connectOne = (plugin) => {
-      if (state.manualDisconnected?.[plugin.pluginInstanceId]) return Promise.resolve(false);
-      if (state.plugins[plugin.pluginInstanceId]?.phase === 'connected') return Promise.resolve(true);
-      if (retryOnly && retryableOnly && state.plugins[plugin.pluginInstanceId]?.phase === 'error' && !state.plugins[plugin.pluginInstanceId]?.retryable) return Promise.resolve(false);
-      if (promises.has(plugin.pluginInstanceId)) return promises.get(plugin.pluginInstanceId);
-      const promise = (async () => {
-        if (plugin.transport?.kind === 'serverTunnel') {
-          const provider = prepared.byId.get(plugin.transport.serverPluginInstanceId);
-          const providerOk = await connectOne(provider);
-          if (!providerOk) {
-            if (state.connectAttemptId !== attemptId || !state.desiredConnected) return false;
-            state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'blocked', { reason: 'TUNNEL_PROVIDER_UNAVAILABLE', retryable: true });
-            this.publish(state);
-            return false;
-          }
-        }
-        if (state.connectAttemptId !== attemptId || !state.desiredConnected) return false;
-        state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'connecting', { attempt: (state.plugins[plugin.pluginInstanceId]?.attempt ?? 0) + 1 });
-        this.publish(state);
-        try {
-          const result = await this.withConnectPermit(
-            () => this.connectRuntime(plugin, secretsByPlugin[plugin.pluginInstanceId] ?? {}, { signal:connectController.signal }),
-            { signal:connectController.signal },
-          );
-          if (state.connectAttemptId !== attemptId || !state.desiredConnected) {
-            await this.disconnectRuntime(plugin, 'stale-connect-result');
-            return false;
-          }
-          const latest = await this.workspaceStore.getPlugin(projectId, environmentId, plugin.pluginInstanceId);
-          if (latest.revision !== plugin.revision) {
-            await this.disconnectRuntime(plugin, 'plugin-revision-changed');
-            state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'error', { reason: 'MANUAL_RECONNECT_REQUIRED', retryable: false });
-            this.publish(state);
-            return false;
-          }
-          state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'connected', { connectedAt: result.connectedAt, routeGeneration: result.routeGeneration ?? result.generation ?? 0 });
-          this.publish(state);
-          return true;
-        } catch (error) {
-          if (state.connectAttemptId !== attemptId || !state.desiredConnected) return false;
-          const publicError = toPublicError(error);
-          state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'error', { reason: publicError.code, retryable: isRetryable(error), error: publicError });
-          this.publish(state);
-          return false;
-        }
-      })();
-      promises.set(plugin.pluginInstanceId, promise);
-      return promise;
-    };
-
-    await Promise.all(prepared.plugins.filter((plugin) => plugin.configState === 'ready').map(connectOne));
-    this.finishConnectAttempt(projectId, environmentId, connectController);
-    if (state.connectAttemptId !== attemptId || !state.desiredConnected) return this.snapshot(projectId, environmentId);
-    this.aggregate(state, prepared.plugins);
-    this.publish(state);
-    await this.workspaceStore.appendAudit(projectId, {
-      type: `environment-${state.phase}`,
-      projectId,
-      environmentId,
-      result: state.phase,
-      actor,
-      connectedCount: state.connectedCount,
-      eligibleCount: state.eligibleCount,
-    }).catch(() => undefined);
-    return structuredClone(state);
-  }
-
   connectPlugin(projectId, environmentId, pluginInstanceId, options = {}) {
     return Promise.resolve(this.requestConnectionIntent({
       ...options,
@@ -634,70 +506,6 @@ export class EnvironmentConnectionManager extends EventEmitter {
       intent:options.intent === 'retry' ? 'retry' : 'connect',
       source:options.source ?? 'legacy-plugin',
     })).then((result) => result.snapshot);
-  }
-
-  connectPluginLegacy(projectId, environmentId, pluginInstanceId) {
-    return this.enqueue(projectId, environmentId, async () => {
-      this.assertConfigurationStable(projectId, environmentId);
-      const prepared = await this.prepare(projectId, environmentId);
-      this.assertConfigurationStable(projectId, environmentId);
-      const target = prepared.byId.get(pluginInstanceId);
-      if (!target || target.configState !== 'ready') throw new AppError('PLUGIN_CONFIG_INCOMPLETE', '请先完成该插件配置。');
-      const previous = this.state(projectId, environmentId);
-      const state = previous.desiredConnected ? structuredClone(previous) : emptyState(projectId, environmentId);
-      if (!previous.desiredConnected) {
-        for (const plugin of prepared.plugins.filter((item) => item.configState === 'ready' && item.pluginInstanceId !== pluginInstanceId)) {
-          state.manualDisconnected[plugin.pluginInstanceId] = true;
-          state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'disconnected', { reason:'USER_DISCONNECTED' });
-        }
-      }
-      state.desiredConnected = true;
-      state.intentGeneration = previous.intentGeneration + 1;
-      state.connectAttemptId = crypto.randomUUID();
-      const attemptId = state.connectAttemptId;
-      const connectController = this.beginConnectAttempt(projectId, environmentId);
-      state.phase = 'connecting';
-      const connectIds = [];
-      if (target.transport?.kind === 'serverTunnel') connectIds.push(target.transport.serverPluginInstanceId);
-      connectIds.push(target.pluginInstanceId);
-      for (const id of connectIds) delete state.manualDisconnected[id];
-      this.publish(state);
-      for (const id of connectIds) {
-        const plugin = prepared.byId.get(id);
-        if (state.plugins[id]?.phase === 'connected') continue;
-        state.plugins[id] = pluginState(plugin, 'connecting', { attempt:(state.plugins[id]?.attempt ?? 0) + 1 });
-        this.publish(state);
-        try {
-          const result = await this.withConnectPermit(
-            () => this.connectRuntime(plugin, {}, { signal:connectController.signal }),
-            { signal:connectController.signal },
-          );
-          if (connectController.signal.aborted || state.connectAttemptId !== attemptId || !state.desiredConnected) {
-            await this.disconnectRuntime(plugin, 'stale-connect-result');
-            break;
-          }
-          const latest = await this.workspaceStore.getPlugin(projectId, environmentId, plugin.pluginInstanceId);
-          if (latest.revision !== plugin.revision) {
-            await this.disconnectRuntime(plugin, 'plugin-revision-changed');
-            state.plugins[id] = pluginState(plugin, 'error', { reason:'MANUAL_RECONNECT_REQUIRED', retryable:false });
-            break;
-          }
-          state.plugins[id] = pluginState(plugin, 'connected', { connectedAt:result.connectedAt, routeGeneration:result.routeGeneration ?? result.generation ?? 0 });
-        } catch (error) {
-          if (connectController.signal.aborted || state.connectAttemptId !== attemptId || !state.desiredConnected) break;
-          const value = toPublicError(error);
-          state.plugins[id] = pluginState(plugin, 'error', { reason:value.code, retryable:isRetryable(error), error:value });
-          if (id !== target.pluginInstanceId) state.plugins[target.pluginInstanceId] = pluginState(target, 'blocked', { reason:'TUNNEL_PROVIDER_UNAVAILABLE', retryable:true });
-          break;
-        }
-        this.publish(state);
-      }
-      this.aggregate(state, prepared.plugins);
-      this.publish(state);
-      this.finishConnectAttempt(projectId, environmentId, connectController);
-      await this.workspaceStore.appendAudit(projectId, { type:'plugin-connected', projectId, environmentId, pluginInstanceId, pluginNameSnapshot:target.displayName, actor:'user', result:state.plugins[pluginInstanceId]?.phase === 'connected' ? 'success' : 'error' }).catch(() => undefined);
-      return structuredClone(state);
-    });
   }
 
   disconnectPlugin(projectId, environmentId, pluginInstanceId, options = {}) {
@@ -713,7 +521,6 @@ export class EnvironmentConnectionManager extends EventEmitter {
   }
 
   disconnectPluginLegacy(projectId, environmentId, pluginInstanceId) {
-    this.abortConnectAttempt(projectId, environmentId);
     return this.enqueue(projectId, environmentId, async () => {
       const plugins = await this.workspaceStore.listPlugins(projectId, environmentId);
       const target = plugins.find((plugin) => plugin.pluginInstanceId === pluginInstanceId);
@@ -875,7 +682,6 @@ export class EnvironmentConnectionManager extends EventEmitter {
       pluginInstanceId:changedPluginInstanceId,
       force:true,
     });
-    this.abortConnectAttempt(projectId, environmentId);
     const key = this.key(projectId, environmentId);
     if (changedPluginInstanceId && this.states.has(key)) {
       // Fence the known resource synchronously before any storage I/O or
@@ -955,7 +761,6 @@ export class EnvironmentConnectionManager extends EventEmitter {
   }
 
   disconnectLegacy(projectId, environmentId, reason = 'user') {
-    this.abortConnectAttempt(projectId, environmentId);
     return this.enqueue(projectId, environmentId, async () => {
       const state = structuredClone(this.state(projectId, environmentId));
       state.desiredConnected = false;
@@ -1045,7 +850,6 @@ export class EnvironmentConnectionManager extends EventEmitter {
 
   async disconnectForReconnect(projectId, environmentId, reason) {
     this.connectionIntentCoordinator.abortScope(projectId,environmentId,{force:true});
-    this.abortConnectAttempt(projectId, environmentId);
     return this.enqueue(projectId, environmentId, async () => {
       const state = structuredClone(this.state(projectId, environmentId));
       if (!state.desiredConnected) return state;
@@ -1069,8 +873,6 @@ export class EnvironmentConnectionManager extends EventEmitter {
     for (const operation of this.connectionOperations.values()) {
       this.connectionIntentCoordinator.forceCancelOperation(operation);
     }
-    for (const controller of this.connectControllers.values()) controller.abort();
-    this.connectControllers.clear();
     const active = [...this.states.values()].filter((state) => state.desiredConnected || state.phase !== 'disconnected');
     let timer;
     const closeEnvironments = Promise.allSettled(active.map((state) => this.disconnect(state.projectId, state.environmentId, 'app-exit')));
@@ -1097,5 +899,3 @@ export class EnvironmentConnectionManager extends EventEmitter {
     if (runtimeTimer) clearTimeout(runtimeTimer);
   }
 }
-
-export const environmentConnectionInternals = { scopeKey, emptyState, pluginState, isRetryable };

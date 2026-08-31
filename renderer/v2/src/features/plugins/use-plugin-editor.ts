@@ -6,9 +6,7 @@ import type {
   IpcResult,
   OpaqueData,
   PluginEditPreparation,
-  PluginRecord,
   PublicError,
-  SecretMap,
 } from "@/bridge/ai-ops-v2"
 import {
   editPreparationDescription,

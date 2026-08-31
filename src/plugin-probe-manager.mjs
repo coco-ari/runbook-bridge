@@ -405,11 +405,3 @@ export class PluginProbeManager {
     return invalidated;
   }
 }
-
-export const pluginProbeInternals = {
-  PROBE_PURPOSES,
-  PURPOSES_BY_PLUGIN_TYPE,
-  assertSecretFreeDraft,
-  contextFor,
-  payloadCorrelation,
-};

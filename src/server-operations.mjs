@@ -19,7 +19,6 @@ const LOG_SEARCH_MAX_CONTEXT_BYTES = 2 * 1024 * 1024;
 const LOG_SEARCH_MAX_CONCURRENT = 2;
 const LOG_SEARCH_MAX_RESERVED_BYTES = 384 * 1024 * 1024;
 const LOG_SEARCH_MAX_QUEUED = 32;
-const SECRET_KEY = /^(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|authorization)$/i;
 
 function globMatches(pattern, name) {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
@@ -30,29 +29,6 @@ function withinRoot(root, candidate) {
   const normalizedRoot = path.posix.normalize(root).replace(/\/$/, '');
   const normalized = path.posix.normalize(candidate);
   return normalized === normalizedRoot || normalized.startsWith(`${normalizedRoot}/`);
-}
-
-function redactConfig(content) {
-  const raw = String(content);
-  let normalized = raw;
-  try {
-    const parsed = JSON.parse(raw);
-    const redactObject = (value) => {
-      if (Array.isArray(value)) return value.map(redactObject);
-      if (!value || typeof value !== 'object') return value;
-      return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, SECRET_KEY.test(key) ? '[REDACTED]' : redactObject(item)]));
-    };
-    normalized = JSON.stringify(redactObject(parsed), null, 2);
-  } catch {
-    // Non-JSON configuration is handled by the bounded text redactors below.
-  }
-  return normalized
-    .replace(/(^|\n)(\s*(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|authorization)\s*:\s*[>|][+-]?\s*\r?\n)(?:[ \t]+[^\r\n]*(?:\r?\n|$))+/gi, '$1$2  [REDACTED]\n')
-    .replace(/(^|\n)(\s*(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|authorization)\s*[:=]\s*)([^\r\n]+)/gi, '$1$2[REDACTED]')
-    .replace(/(<(?:password|passwd|secret|token|api[-_]?key|private[-_]?key|authorization)>)[\s\S]*?(<\/(?:password|passwd|secret|token|api[-_]?key|private[-_]?key|authorization)>)/gi, '$1[REDACTED]$2')
-    .replace(/(-----BEGIN [A-Z ]*PRIVATE KEY-----)[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----)/g, '$1\n[REDACTED]\n$2')
-    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+\/-]+=*/gi, '[REDACTED_AUTH]')
-    .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:)[^\s/@]+@/gi, '$1[REDACTED]@');
 }
 
 function sliceUtf8(value, start, maxBytes) {
@@ -1169,5 +1145,3 @@ export class ServerOperations {
     throw new AppError('CAPABILITY_NOT_IMPLEMENTED', 'Server 变更操作尚未实现。');
   }
 }
-
-export const serverOperationInternals = { globMatches, withinRoot, redactConfig, capText, sliceUtf8, normalizeRemotePath, quotePosix };

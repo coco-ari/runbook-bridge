@@ -73,5 +73,3 @@ export class OperationGate {
     });
   }
 }
-
-export const operationGateRules = RULES;

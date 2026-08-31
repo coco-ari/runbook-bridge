@@ -53,7 +53,6 @@ import {
   boundedConfirmationItems,
   confirmationExecutionMatchesItem,
   confirmationFilterModes,
-  confirmationMatchesEnvironment,
   confirmationMatchesScope,
   normalizeConfirmationExecution,
   pruneConfirmationExecutions,

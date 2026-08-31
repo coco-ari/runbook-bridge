@@ -1035,10 +1035,3 @@ export class ConnectionIntentCoordinator {
     }
   }
 }
-
-export const connectionIntentInternals = {
-  operationKey,
-  publicAction,
-  publicConnectionChallenge,
-  runtimePluginState,
-};

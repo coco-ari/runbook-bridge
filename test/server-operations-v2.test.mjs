@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateRawSync, gzipSync } from 'node:zlib';
-import { ServerOperations, serverOperationInternals } from '../src/server-operations.mjs';
+import { ServerOperations } from '../src/server-operations.mjs';
 
 const plugin={projectId:'p1',environmentId:'e1',pluginInstanceId:'s1',pluginType:'server',limits:{maxBytes:65536},actions:[{actionId:'service.status',serviceId:'orders',displayName:'Orders',unit:'orders.service'},{actionId:'filesystem.usage',mountId:'data',displayName:'Data',mountPath:'/srv/data'}],sources:[]};
 
@@ -138,16 +138,6 @@ test('Server operations map actionId to fixed commands and reject arbitrary para
   assert.equal(operations.commandFor(plugin,'filesystem.usage',{mountId:'data'}),'LC_ALL=C df -P -B1 -- /srv/data');
   assert.throws(()=>operations.commandFor(plugin,'service.status',{serviceId:'orders',command:'rm -rf /'}),(error)=>error.code==='INVALID_ARGUMENT');
   assert.throws(()=>operations.commandFor(plugin,'bash',{}),(error)=>error.code==='POLICY_DENIED');
-});
-
-test('configuration reader redacts common secret formats', () => {
-  const value=serverOperationInternals.redactConfig('username=app\npassword=hunter2\nAuthorization: Bearer abc.def\nnormal=value');
-  const json=serverOperationInternals.redactConfig('{"username":"app","password":"json-secret","nested":{"token":"nested-secret"}}');
-  const structured=serverOperationInternals.redactConfig('secret: |\n  line-one\n  line-two\nname: safe\n<password>xml-secret</password>');
-  assert.doesNotMatch(value,/hunter2|abc\.def/);
-  assert.doesNotMatch(json,/json-secret|nested-secret/);
-  assert.doesNotMatch(structured,/line-one|line-two|xml-secret/);
-  assert.match(value,/normal=value/);
 });
 
 test('log tools reject configuration handles while config reads return sensitive content unchanged', async () => {

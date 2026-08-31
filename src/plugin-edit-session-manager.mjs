@@ -657,11 +657,3 @@ export class PluginEditSessionManager {
     }
   }
 }
-
-export const pluginEditSessionInternals = {
-  credentialIntentMode,
-  dependencyClosure,
-  nonEmptySecrets,
-  previewFingerprint,
-  publicValidation,
-};

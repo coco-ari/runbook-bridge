@@ -95,5 +95,3 @@ export function resourceHintsFromRunbook(plugins, runbookContent) {
   }
   return {hints,truncated};
 }
-
-export const runbookSourceInternals = { safeRoot, SOURCE_LINE, HEADING };

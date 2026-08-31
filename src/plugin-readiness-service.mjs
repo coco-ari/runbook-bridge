@@ -341,13 +341,3 @@ export function publicPluginAssessment(value) {
       .map((field) => [field,structuredClone(source[field])]),
   );
 }
-
-export const pluginReadinessInternals = {
-  ASSESSMENT_FIELDS,
-  VALIDATION_PURPOSES,
-  assessDependency,
-  fallbackRuntimeEntry,
-  normalizedRuntime,
-  primaryStatus,
-  providerRuntimeBlock,
-};

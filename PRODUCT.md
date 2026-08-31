@@ -1,10 +1,8 @@
 # Product
 
-<!-- impeccable:product-schema 1 -->
-
 ## Platform
 
-web
+Windows Electron 桌面应用
 
 ## Users
 
@@ -55,9 +53,9 @@ Agent运维工作台是一个面向个人运维的 Windows 本地工作台。它
 - 环境允许部分连接成功；某个资源失败不应阻断其他仍安全可用的独立资源。
 - 用户必须主动建立首次连接。应用重启、从未连接或用户主动断开的环境不会被 Agent 自动连接。
 - 凭据通过 Electron `safeStorage` 和 Windows DPAPI 本地加密，不写入工作区 YAML、运维说明、错误信息或审计日志，也不返回给 Agent。
-- 确认绑定项目、环境、插件、能力、完整参数和相关目标状态，只能使用一次；确认后内容或状态变化必须重新确认。
+- 确认绑定项目、环境、插件、能力和完整规范化参数，只能使用一次；文件变更额外绑定已实现的 stat/hash/状态前置条件，相关变化必须重新确认。服务控制和 Shell 不快照实时远端状态。
 - 远端读取有深度、数量、字节、并发和超时边界；不跟随符号链接目录，不读取设备、FIFO、Socket 等特殊文件。
-- 当前产品是 Windows Electron 桌面应用；Impeccable 的平台分类使用 `web`，因为活动界面由 HTML、CSS 和原生 JavaScript 实现。
+- 活动界面由 React、TypeScript、Tailwind CSS、shadcn/ui 和 Radix UI 实现，经 Vite 构建。
 - Renderer 保持 Electron sandbox、context isolation、禁用 Node integration 和严格 CSP 等既有安全边界。
 - 当前没有必须遵守的特定无障碍标准或已确认的特殊用户需求；这不取消已有键盘操作、焦点可见性和 reduced-motion 等基础质量要求。
 - 项目部署是未来能力；在正式交付前不得把它描述为当前可用功能。
@@ -75,7 +73,7 @@ Agent运维工作台是一个面向个人运维的 Windows 本地工作台。它
 - 产品能力、安全模型、使用流程和本地数据说明：`README.md`。
 - 产品身份、技术元数据、依赖和打包约束：`package.json` 与 `AGENTS.md`。
 - 当前真实桌面界面、中文文案和交互状态：`renderer/v2/src/`；`renderer/v2/index.html` 是唯一源码入口，`renderer-build/v2/` 是自动生成并打包的生产产物。
-- 已落地的系统边界与工作流设计：`docs/agent-ops-v1-technical-design.md` 和 `docs/plugin-data-source-architecture.md`。
+- 当前系统边界、兼容层与依赖补丁依据：`docs/architecture.md`；Renderer 样式策略例外：`docs/shadcn-ui-radix-csp-decision.md`。
 - 行为、安全策略、凭据保护、MCP 合同和 Electron UI 回归证据：`test/*.test.mjs`、`scripts/ui-react-foundation-smoke.cjs` 与 `scripts/packaged-ui-smoke.cjs`。
 - 当前没有已确认的客户案例、用户评价、使用指标、竞品比较、价格声明或正式品牌素材；未来设计和文案不得虚构这些证据。
 

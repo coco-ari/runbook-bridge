@@ -266,5 +266,3 @@ export class RedisPluginRuntime extends EventEmitter {
     await Promise.all(sessions.map(async (session) => { session.closing = true; await session.client.disconnect?.().catch(() => undefined); }));
   }
 }
-
-export const redisRuntimeInternals = { key, findPattern, keyAllowed, withTimeout };

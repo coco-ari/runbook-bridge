@@ -76,11 +76,6 @@ export class CredentialUseResolver {
     return {...record};
   }
 
-  revokeGrant(grantOrId) {
-    const grantId = typeof grantOrId === 'string' ? grantOrId : grantOrId?.grantId;
-    return grantId ? this.grants.delete(grantId) : false;
-  }
-
   revokeSession(editSessionId) {
     let revoked = 0;
     for (const [grantId,grant] of this.grants) {
@@ -183,9 +178,3 @@ export class CredentialUseResolver {
     );
   }
 }
-
-export const credentialUseResolverInternals = {
-  credentialIntentMode,
-  nonEmptySecrets,
-  sameIdentity,
-};

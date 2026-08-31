@@ -74,5 +74,3 @@ export class NetworkChangeWatcher {
     this.active = false;
   }
 }
-
-export const networkWatcherInternals = { snapshot };

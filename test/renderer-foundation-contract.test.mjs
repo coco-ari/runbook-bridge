@@ -24,9 +24,6 @@ test('production React Renderer is the unique packaged entry and preserves Elect
   assert.match(packageJson.scripts['test:ui'],/build:renderer.*ui-react-foundation-smoke\.cjs/u);
   assert.match(packageJson.scripts.dist,/build:renderer.*electron-builder/u);
   assert.equal(packageJson.scripts['check:renderer'],'tsc --project renderer/v2/tsconfig.json --noEmit');
-  assert.match(packageJson.scripts['check:renderer:next'],/check:renderer/u);
-  assert.match(packageJson.scripts['build:renderer:next'],/build:renderer/u);
-  assert.match(packageJson.scripts['test:ui:renderer-next'],/test:ui/u);
   assert.ok(packageJson.build.files.includes('renderer-build/v2/**/*'));
   assert.ok(packageJson.build.files.includes('!renderer/v2/**/*'));
   assert.ok(packageJson.build.files.includes('!src/mcp.mjs'));

@@ -210,5 +210,3 @@ export class WorkspaceMutationCoordinator {
     }
   }
 }
-
-export const workspaceMutationInternals = {environmentKey};

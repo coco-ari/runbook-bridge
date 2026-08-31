@@ -357,16 +357,6 @@ export class RouteManager {
     return { closed:Boolean(current), stale:false };
   }
 
-  async closeEnvironment(projectId, environmentId) {
-    const prefix = `${projectId}/${environmentId}/`;
-    const matches = [...this.relays.entries()].filter(([key]) => key.startsWith(prefix));
-    await Promise.all(matches.map(async ([key, entry]) => {
-      this.relays.delete(key);
-      await entry.relay.close();
-    }));
-    for (const key of this.generations.keys()) if (key.startsWith(prefix)) this.generations.delete(key);
-  }
-
   async closeAll() {
     const entries = [...this.relays.values()];
     this.relays.clear();
@@ -374,5 +364,3 @@ export class RouteManager {
     await Promise.all(entries.map((entry) => entry.relay.close()));
   }
 }
-
-export const routeInternals = { candidateFamilies, isNetworkFailure, connectSocket };

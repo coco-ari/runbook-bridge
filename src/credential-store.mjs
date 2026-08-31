@@ -185,10 +185,6 @@ export function legacyCredentialConfigForPlugin(plugin) {
   };
 }
 
-export function sameCredentialBinding(left, right) {
-  return JSON.stringify(credentialBinding(left)) === JSON.stringify(credentialBinding(right));
-}
-
 export async function migrateLegacyCredentialForPlugin({ legacyCredentialStore, credentialVault, plugin, pluginBindingHash }) {
   let existing;
   try { existing = await credentialVault.load(plugin) ?? {}; }

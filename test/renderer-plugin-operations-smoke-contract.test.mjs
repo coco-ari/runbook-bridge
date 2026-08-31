@@ -61,7 +61,7 @@ test('plugin operations smoke stays isolated, scoped and credential-free',async 
   const manifest = JSON.parse(manifestSource);
 
   assert.match(manifest.scripts['test:ui:plugins'],/build:renderer.*ui-react-plugin-operations-smoke\.cjs/u);
-  assert.match(manifest.scripts.check,/node --check scripts\/ui-react-plugin-operations-smoke\.cjs/u);
+  assert.match(manifest.scripts.check,/node scripts\/check-syntax\.mjs/u);
 
   assert.match(source,/new BrowserWindow\(\{[\s\S]*?width:960,[\s\S]*?height:640,/u);
   assert.match(source,/preload:path\.join\(root,'src','preload\.cjs'\)/u);

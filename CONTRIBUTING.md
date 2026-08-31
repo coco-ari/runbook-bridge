@@ -15,13 +15,20 @@ pnpm test
 pnpm start
 ```
 
-提交代码前请运行：
+行为变更先运行对应的 `test/*.test.mjs`，再运行：
 
 ```powershell
 pnpm run check
 pnpm test
-pnpm run test:ui
 ```
+
+修改 Renderer、preload/IPC、连接编辑、确认或快捷提问时还需运行 `corepack pnpm run test:ui`；跨功能或发布验证运行 `corepack pnpm run test:ui:all`。仅修改文档时运行 `git diff --check` 并核实文档路径和命令，无需完整应用测试。打包与安装回归的适用范围、隔离环境要求见 [测试与交付验证指南](docs/full-function-verification.md)。
+
+## 仓库维护
+
+先阅读 [AGENTS.md](AGENTS.md)、[当前架构](docs/architecture.md) 和 [仓库专项整治条例](docs/repository-cleanup.md)。清理必须基于实际调用关系，不能根据文件名含旧版本、draft 或 legacy 就删除迁移和恢复代码。
+
+编辑 Renderer 源码，不提交 `renderer-build/`、`dist/`、日志、测试截图或本地数据。只在依赖图变化时更新锁文件；保留依赖补丁及其回归依据。不顺带更改版本或兼容身份；历史发布说明统一保留在 [CHANGELOG.md](CHANGELOG.md)，不再维护重复的阶段报告、原型和版本说明副本。
 
 ## Pull Request 要求
 

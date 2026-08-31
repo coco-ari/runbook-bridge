@@ -5,7 +5,6 @@ import path from 'node:path';
 import ssh2 from 'ssh2';
 import { AppError } from './errors.mjs';
 import { evaluateCommandPolicy } from './command-policy.mjs';
-import { LogSearchCursorStore, searchLogSnapshots } from './log-search.mjs';
 import { createProxySocket } from './proxy.mjs';
 
 const MAX_COMMAND_OUTPUT = 512 * 1024;
@@ -19,17 +18,6 @@ const SFTP_READ_CHUNK_BYTES = 64 * 1024;
 const SFTP_READ_WINDOW = 8;
 const SFTP_BINARY_READ_MAX_BYTES = 64 * 1024 * 1024;
 const SFTP_METADATA_CONCURRENCY = 16;
-const NON_RETRYABLE_RECONNECT_ERRORS = new Set([
-  'SSH_AUTH_FAILED',
-  'SSH_IDENTITY_UNAVAILABLE',
-  'SSH_HOST_KEY_CONFIRM_REQUIRED',
-  'SSH_HOST_KEY_CHANGED',
-  'CREDENTIAL_STORAGE_FAILED',
-  'CREDENTIAL_STORAGE_UNAVAILABLE',
-  'PROXY_CONFIG_INVALID',
-  'PROJECT_NOT_FOUND',
-]);
-const DEFAULT_RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000];
 const { Client } = ssh2;
 
 function fingerprint(key) {
@@ -468,28 +456,12 @@ async function hashFile(filePath) {
   return hash.digest('hex');
 }
 
-function sameFileSnapshot(left, right) {
-  return (
-    left.size === right.size &&
-    left.mtimeMs === right.mtimeMs &&
-    (left.ino === 0 || right.ino === 0 || left.ino === right.ino)
-  );
-}
-
 function redactCommand(command) {
   const value = String(command);
   if (/(password|passwd|token|secret|authorization|api[_-]?key)/i.test(value)) {
     return '<sensitive command redacted>';
   }
   return value.slice(0, 4096);
-}
-
-function normalizeRemoteLogPath(value) {
-  const text = String(value ?? '').trim().replace(/\\/g, '/');
-  if (!text || text.length > 4096 || text.includes('\0') || !text.startsWith('/')) {
-    throw new AppError('PATH_INVALID', '日志文件必须是服务器上的绝对路径。');
-  }
-  return path.posix.normalize(text);
 }
 
 function normalizeAbsoluteRemotePath(value) {
@@ -644,95 +616,8 @@ async function requireRemoteSnapshot(sftp, remotePath, expected) {
   return actual;
 }
 
-function clampInteger(value, fallback, minimum, maximum, name) {
-  const resolved = value === undefined ? fallback : Number(value);
-  if (!Number.isSafeInteger(resolved) || resolved < minimum || resolved > maximum) {
-    throw new AppError('INVALID_ARGUMENT', `${name} 超出允许范围。`);
-  }
-  return resolved;
-}
-
-function truncateUtf8(value, maxBytes = 8 * 1024) {
-  const text = String(value ?? '');
-  const bytes = Buffer.byteLength(text, 'utf8');
-  if (bytes <= maxBytes) return { text, bytes, truncated: false };
-  return {
-    text: Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8'),
-    bytes,
-    truncated: true,
-  };
-}
-
-function boundLogContexts(contexts) {
-  const items = [];
-  let outputTruncated = false;
-  for (const context of contexts) {
-    let lines = [];
-    let estimatedBytes = 0;
-    const flush = () => {
-      if (!lines.length) return;
-      const matchLineNumbers = lines.filter((line) => line.isMatch).map((line) => line.lineNumber);
-      const selectedMatchLineNumbers = lines
-        .filter((line) => line.selectedMatch)
-        .map((line) => line.lineNumber);
-      items.push({
-        snapshotIndex: context.snapshotIndex,
-        path: context.path,
-        originalStartLine: context.startLine,
-        originalEndLine: context.endLine,
-        startLine: lines[0].lineNumber,
-        endLine: lines.at(-1).lineNumber,
-        matchLineNumbers,
-        selectedMatchLineNumbers,
-        continued: lines[0].lineNumber !== context.startLine || lines.at(-1).lineNumber !== context.endLine,
-        lines,
-      });
-      lines = [];
-      estimatedBytes = 0;
-    };
-    for (const sourceLine of context.lines) {
-      const boundedText = truncateUtf8(sourceLine.text);
-      outputTruncated ||= boundedText.truncated;
-      const line = {
-        ...sourceLine,
-        text: boundedText.text,
-        ...(boundedText.truncated
-          ? { textTruncated: true, originalTextBytes: boundedText.bytes }
-          : {}),
-      };
-      const lineBytes = Buffer.byteLength(JSON.stringify(line), 'utf8');
-      if (lines.length && (lines.length >= 200 || estimatedBytes + lineBytes > 256 * 1024)) flush();
-      lines.push(line);
-      estimatedBytes += lineBytes;
-    }
-    flush();
-  }
-  return { contexts: items, outputTruncated };
-}
-
-function summarizeMatchDescriptor(descriptor) {
-  if (!descriptor) return null;
-  const { text: _text, ...summary } = descriptor;
-  return summary;
-}
-
-function boundLogSearchSummary(summary) {
-  return {
-    ...summary,
-    firstMatch: summarizeMatchDescriptor(summary.firstMatch),
-    lastMatch: summarizeMatchDescriptor(summary.lastMatch),
-    snapshots: summary.snapshots.map((snapshot) => ({
-      ...snapshot,
-      firstMatch: summarizeMatchDescriptor(snapshot.firstMatch),
-      lastMatch: summarizeMatchDescriptor(snapshot.lastMatch),
-    })),
-    matchTextIncludedInSummary: false,
-  };
-}
-
 export class SshBroker {
   constructor(projectStore, {
-    reconnectDelaysMs = DEFAULT_RECONNECT_DELAYS_MS,
     clientFactory = () => new Client(),
   } = {}) {
     this.store = projectStore;
@@ -740,146 +625,24 @@ export class SshBroker {
     this.generations = new Map();
     this.generationSequence = 0;
     this.contexts = new Map();
-    this.logSearchCursors = new LogSearchCursorStore();
-    this.activeLogSearchProjects = new Set();
-    this.activeLogSearchCount = 0;
     this.pendingConnections = new Map();
     this.connectionOperations = new Map();
-    this.autoReconnectProjects = new Set();
-    this.reconnectStates = new Map();
-    this.reconnectHandler = null;
     this.lifecycleHandler = null;
-    this.reconnectDelaysMs = reconnectDelaysMs.length ? [...reconnectDelaysMs] : [1_000];
     this.clientFactory = clientFactory;
-    this.shuttingDown = false;
   }
 
   status(projectId) {
     const session = this.sessions.get(projectId);
-    const reconnect = this.reconnectStates.get(projectId);
     return {
       connected: Boolean(session),
       connecting: this.pendingConnections.has(projectId),
-      reconnecting: Boolean(reconnect && !reconnect.stopped),
-      reconnectStopped: Boolean(reconnect?.stopped),
-      reconnectAttempt: reconnect?.attempt ?? 0,
-      nextReconnectAt: reconnect?.nextRetryAt ?? null,
-      reconnectErrorCode: reconnect?.lastErrorCode ?? null,
-      autoReconnectEnabled: this.autoReconnectProjects.has(projectId),
       generation: session?.generation ?? this.generations.get(projectId) ?? 0,
       connectedAt: session?.connectedAt ?? null,
     };
   }
 
-  listStatuses() {
-    const projectIds = new Set([
-      ...this.sessions.keys(),
-      ...this.pendingConnections.keys(),
-      ...this.reconnectStates.keys(),
-    ]);
-    return Object.fromEntries([...projectIds].map((id) => [id, this.status(id)]));
-  }
-
-  setReconnectHandler(handler) {
-    this.reconnectHandler = handler;
-  }
-
   setLifecycleHandler(handler) {
     this.lifecycleHandler = typeof handler === 'function' ? handler : null;
-  }
-
-  enableAutoReconnect(projectId) {
-    if (this.shuttingDown) return;
-    this.autoReconnectProjects.add(projectId);
-    if (!this.sessions.has(projectId) && !this.pendingConnections.has(projectId)) {
-      this.scheduleAutoReconnect(projectId, 'enabled-after-connection-loss');
-    }
-  }
-
-  stopAutoReconnect(projectId) {
-    this.autoReconnectProjects.delete(projectId);
-    const state = this.reconnectStates.get(projectId);
-    if (state?.timer) clearTimeout(state.timer);
-    this.reconnectStates.delete(projectId);
-  }
-
-  clearReconnectState(projectId) {
-    const state = this.reconnectStates.get(projectId);
-    if (state?.timer) clearTimeout(state.timer);
-    this.reconnectStates.delete(projectId);
-  }
-
-  scheduleAutoReconnect(projectId, reason) {
-    if (
-      this.shuttingDown ||
-      !this.autoReconnectProjects.has(projectId) ||
-      !this.reconnectHandler ||
-      this.sessions.has(projectId)
-    ) return;
-    const current = this.reconnectStates.get(projectId);
-    if (current?.timer || current?.inProgress) return;
-    const attempt = (current?.attempt ?? 0) + 1;
-    const delayMs = this.reconnectDelaysMs[Math.min(attempt - 1, this.reconnectDelaysMs.length - 1)];
-      const state = {
-        attempt,
-        reason,
-        inProgress: false,
-        stopped: false,
-        lastErrorCode: current?.lastErrorCode ?? null,
-      nextRetryAt: new Date(Date.now() + delayMs).toISOString(),
-      timer: null,
-    };
-    state.timer = setTimeout(() => this.runAutoReconnect(projectId, state), delayMs);
-    state.timer.unref?.();
-    this.reconnectStates.set(projectId, state);
-  }
-
-  async runAutoReconnect(projectId, state) {
-    if (this.reconnectStates.get(projectId) !== state) return;
-    state.timer = null;
-    state.inProgress = true;
-    state.nextRetryAt = null;
-    try {
-      await this.reconnectHandler(projectId);
-      if (!this.autoReconnectProjects.has(projectId)) return;
-      this.clearReconnectState(projectId);
-      await this.store.appendAudit(projectId, {
-        type: 'auto-reconnect',
-        result: 'success',
-        attempt: state.attempt,
-      }).catch(() => undefined);
-    } catch (error) {
-      if (!this.autoReconnectProjects.has(projectId) || this.shuttingDown) {
-        this.clearReconnectState(projectId);
-        return;
-      }
-      state.inProgress = false;
-      state.lastErrorCode = error?.code ?? 'SSH_CONNECTION_FAILED';
-      const retryable = !NON_RETRYABLE_RECONNECT_ERRORS.has(state.lastErrorCode);
-      await this.store.appendAudit(projectId, {
-        type: 'auto-reconnect',
-        result: retryable ? 'failed' : 'stopped',
-        attempt: state.attempt,
-        errorCode: state.lastErrorCode,
-        retryable,
-      }).catch(() => undefined);
-      if (!retryable) {
-        this.autoReconnectProjects.delete(projectId);
-        state.stopped = true;
-        state.nextRetryAt = null;
-        return;
-      }
-      this.scheduleAutoReconnect(projectId, 'retry');
-    }
-  }
-
-  connectAutomatically(projectId, secrets = {}) {
-    return this.runConnectionOperation(projectId, async () => {
-      if (!this.autoReconnectProjects.has(projectId) || this.shuttingDown) {
-        throw new AppError('SSH_CONNECTION_CANCELLED', 'SSH 自动重连已取消。');
-      }
-      return this.connectUnlocked(projectId, secrets);
-    });
   }
 
   runConnectionOperation(projectId, operation, { signal = null } = {}) {
@@ -1055,7 +818,6 @@ export class SshBroker {
       publishedRecord = record;
       this.sessions.set(projectId, record);
       this.lifecycleHandler?.({ projectId, type: 'connected', generation });
-      this.clearReconnectState(projectId);
       const clearInterruptedSession = (reason) => {
         if (this.sessions.get(projectId) === record) {
           this.sessions.delete(projectId);
@@ -1065,7 +827,6 @@ export class SshBroker {
           this.store
             .appendAudit(projectId, { type: 'disconnect', reason, result: 'connection-lost' })
             .catch(() => undefined);
-          this.scheduleAutoReconnect(projectId, reason);
         }
       };
       session.client.on('error', () => clearInterruptedSession('connection-error'));
@@ -1120,7 +881,6 @@ export class SshBroker {
   }
 
   disconnect(projectId, reason = 'user') {
-    if (reason !== 'reconnect') this.stopAutoReconnect(projectId);
     this.cancelPendingConnection(projectId);
     return this.runConnectionOperation(projectId, () => this.disconnectUnlocked(projectId, reason));
   }
@@ -1151,13 +911,10 @@ export class SshBroker {
   }
 
   async closeAll() {
-    this.shuttingDown = true;
     const projectIds = new Set([
       ...this.sessions.keys(),
       ...this.pendingConnections.keys(),
       ...this.connectionOperations.keys(),
-      ...this.autoReconnectProjects.keys(),
-      ...this.reconnectStates.keys(),
     ]);
     await Promise.all([...projectIds].map((id) => this.disconnect(id, 'app-exit')));
     this.generations.clear();
@@ -1167,7 +924,6 @@ export class SshBroker {
     for (const [token, context] of this.contexts) {
       if (context.projectId === projectId) this.contexts.delete(token);
     }
-    this.logSearchCursors.clearProject(projectId);
   }
 
   async openContext(projectId, expectedDocsHash, clientInstanceId = null, expectedSecurityConfigHash = null) {
@@ -1419,7 +1175,6 @@ export class SshBroker {
     const securityConfigHash = this.store.securityConfigHash(config);
     if (docsHash !== context.docsHash || securityConfigHash !== context.securityConfigHash) {
       this.contexts.delete(contextToken);
-      this.logSearchCursors.clearProject(projectId);
       throw new AppError('PROJECT_CONTEXT_REQUIRED', '项目文档或安全配置已经更新，请重新打开项目。');
     }
     return session;
@@ -1540,282 +1295,4 @@ export class SshBroker {
     }
   }
 
-  async upload(projectId, contextToken, localPath, remotePath) {
-    const session = await this.requireContext(projectId, contextToken);
-    const config = await this.store.get(projectId);
-    const operationId = crypto.randomUUID();
-    const source = path.resolve(String(localPath ?? ''));
-    const target = String(remotePath ?? '').trim();
-    if (!target || target.includes('\0')) throw new AppError('PATH_INVALID', '远程路径无效。');
-    const stats = await fsp.lstat(source).catch(() => {
-      throw new AppError('PATH_INVALID', '本地产物不存在。');
-    });
-    if (!stats.isFile() || stats.isSymbolicLink()) {
-      throw new AppError('PATH_INVALID', '只能上传非符号链接的普通文件。');
-    }
-    const maxBytes = Number(config.limits.maxUploadMB ?? 500) * 1024 * 1024;
-    if (stats.size > maxBytes) throw new AppError('FILE_TOO_LARGE', '上传文件超过项目限制。');
-    const hash = await hashFile(source);
-    const afterHash = await fsp.lstat(source);
-    if (!sameFileSnapshot(stats, afterHash)) {
-      throw new AppError('LOCAL_FILE_CHANGED', '本地产物在校验期间发生变化，请重新上传。');
-    }
-    const temp = `${target}.part-${crypto.randomBytes(6).toString('hex')}`;
-    await withSftp(session.client, async (sftp, lifecycle) => {
-      try {
-        await sftpFastPut(sftp, source, temp);
-        const [remoteStats, afterUpload] = await Promise.all([
-          sftpStat(sftp, temp),
-          fsp.lstat(source),
-        ]);
-        if (remoteStats.size !== stats.size || !sameFileSnapshot(stats, afterUpload)) {
-          throw new AppError('TRANSFER_INTEGRITY_FAILED', '上传期间文件发生变化或远端大小不一致。');
-        }
-        await sftpRename(sftp, temp, target);
-      } catch (error) {
-        if (!lifecycle.signal.aborted && !isSftpInterruptedError(error)) {
-          await sftpUnlink(sftp, temp);
-        }
-        throw error;
-      }
-    });
-    const auditWarning = await this.appendAuditSafe(projectId, {
-      type: 'upload',
-      operationId,
-      result: 'success',
-      localName: path.basename(source),
-      remotePath: target,
-      sizeBytes: stats.size,
-      sha256: hash,
-    });
-    return { operationId, localPath: source, remotePath: target, sizeBytes: stats.size, sha256: hash, auditWarning };
-  }
-
-  async download(projectId, contextToken, remotePath) {
-    const session = await this.requireContext(projectId, contextToken);
-    const config = await this.store.get(projectId);
-    const source = String(remotePath ?? '').trim();
-    if (!source || source.includes('\0')) throw new AppError('PATH_INVALID', '远程路径无效。');
-    const downloadsDir = this.store.downloadsDir(projectId);
-    await fsp.mkdir(downloadsDir, { recursive: true });
-    const base = path.posix.basename(source).replace(/[^\p{L}\p{N}._-]+/gu, '_') || 'download.log';
-    const operationId = crypto.randomUUID();
-    const finalPath = path.join(downloadsDir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${operationId}-${base}`);
-    const tempPath = `${finalPath}.part`;
-    let sizeBytes = 0;
-    try {
-      await withSftp(session.client, async (sftp) => {
-        const stats = await sftpStat(sftp, source).catch((error) => {
-          if (isSftpInterruptedError(error)) throw error;
-          throw new AppError('PATH_INVALID', '远程文件不存在或无权读取。');
-        });
-        if (!stats.isFile()) throw new AppError('PATH_INVALID', '只能下载普通文件。');
-        sizeBytes = stats.size;
-        const maxBytes = Number(config.limits.maxDownloadMB ?? 100) * 1024 * 1024;
-        if (sizeBytes > maxBytes) throw new AppError('FILE_TOO_LARGE', '下载文件超过项目限制。');
-        await sftpFastGet(sftp, source, tempPath);
-      });
-      const downloadedStats = await fsp.stat(tempPath);
-      const maxBytes = Number(config.limits.maxDownloadMB ?? 100) * 1024 * 1024;
-      if (downloadedStats.size > maxBytes) {
-        throw new AppError('FILE_TOO_LARGE', '下载文件在传输期间超过项目限制。');
-      }
-      sizeBytes = downloadedStats.size;
-      await fsp.rename(tempPath, finalPath);
-    } catch (error) {
-      await fsp.rm(tempPath, { force: true });
-      throw error;
-    }
-    const hash = await hashFile(finalPath);
-    const auditWarning = await this.appendAuditSafe(projectId, {
-      type: 'download',
-      operationId,
-      result: 'success',
-      remotePath: source,
-      localName: path.basename(finalPath),
-      sizeBytes,
-      sha256: hash,
-    });
-    return { operationId, remotePath: source, localPath: finalPath, sizeBytes, sha256: hash, auditWarning };
-  }
-
-  async searchLogs(projectId, contextToken, options = {}) {
-    const session = await this.requireContext(projectId, contextToken);
-    const operationId = crypto.randomUUID();
-    const pageSize = clampInteger(options.pageSize, 5, 1, 10, '分页大小');
-    if (options.cursor) {
-      let page;
-      try {
-        page = this.logSearchCursors.page({
-          cursor: String(options.cursor),
-          projectId,
-          token: String(contextToken),
-          pageSize,
-        });
-      } catch (error) {
-        throw new AppError(error?.code ?? 'INVALID_LOG_SEARCH_CURSOR', '日志搜索游标无效或已经过期。');
-      }
-      const auditWarning = await this.appendAuditSafe(projectId, {
-        type: 'log-search-page',
-        operationId,
-        parentOperationId: page.metadata?.searchOperationId ?? null,
-        result: 'success',
-        returnedContexts: page.items.length,
-        offset: page.offset,
-        hasMore: page.hasMore,
-      });
-      return this.formatLogSearchPage(operationId, page, auditWarning, contextToken);
-    }
-
-    if (this.activeLogSearchProjects.has(projectId)) {
-      throw new AppError('LOG_SEARCH_BUSY', '该项目已有日志搜索正在进行，请稍后重试。');
-    }
-    if (this.activeLogSearchCount >= 2) {
-      throw new AppError('LOG_SEARCH_BUSY', '本地已有两个日志搜索正在进行，请稍后重试。');
-    }
-    this.activeLogSearchProjects.add(projectId);
-    this.activeLogSearchCount += 1;
-    try {
-      return await this.searchLogsInitial(projectId, contextToken, options, operationId, pageSize, session);
-    } finally {
-      this.activeLogSearchProjects.delete(projectId);
-      this.activeLogSearchCount -= 1;
-    }
-  }
-
-  async searchLogsInitial(projectId, contextToken, options, operationId, pageSize, session) {
-    const config = await this.store.get(projectId);
-    if (!Array.isArray(options.files) || options.files.length < 1 || options.files.length > 10) {
-      throw new AppError('INVALID_ARGUMENT', '每次日志搜索需要指定 1 到 10 个日志文件。');
-    }
-    if (!Array.isArray(options.keywords) || options.keywords.length < 1 || options.keywords.length > 10) {
-      throw new AppError('INVALID_ARGUMENT', '每次日志搜索需要指定 1 到 10 个关键词。');
-    }
-    const keywords = options.keywords.map((entry) => String(entry ?? ''));
-    if (keywords.some((entry) => !entry || entry.length > 256 || /[\u0000-\u001f\u007f]/.test(entry))) {
-      throw new AppError('INVALID_ARGUMENT', '日志关键词不能为空、包含控制字符或超过 256 字符。');
-    }
-    const files = [...new Set(options.files.map(normalizeRemoteLogPath))];
-    const beforeLines = clampInteger(options.beforeLines, 3, 0, 50, '前置上下文行数');
-    const afterLines = clampInteger(options.afterLines, 5, 0, 50, '后置上下文行数');
-    const maxMatches = clampInteger(options.maxMatches, 200, 1, 500, '最大匹配数');
-    const projectScanLimit = Math.floor(Number(config.limits.maxLogScanMB ?? 50) * 1024 * 1024);
-    const requestedScanLimit = options.maxScanBytes === undefined
-      ? projectScanLimit
-      : clampInteger(options.maxScanBytes, projectScanLimit, 65_536, projectScanLimit, '日志扫描字节数');
-    const perFileBudget = Math.max(1, Math.floor(requestedScanLimit / files.length));
-    const snapshots = await withSftp(session.client, async (sftp, lifecycle) => {
-      const values = [];
-      for (const file of files) {
-        let canonicalFile;
-        let stats;
-        try {
-          [canonicalFile, stats] = await Promise.all([
-            sftpRealpath(sftp, file),
-            sftpStat(sftp, file),
-          ]);
-        } catch (error) {
-          if (isSftpInterruptedError(error)) throw error;
-          throw new AppError('PATH_INVALID', '日志文件不存在或无权读取。');
-        }
-        canonicalFile = path.posix.normalize(canonicalFile);
-        if (!stats.isFile()) throw new AppError('PATH_INVALID', '结构化日志搜索只能读取普通文件。');
-        const scanBytes = Math.min(Number(stats.size), perFileBudget);
-        const startByte = Math.max(0, Number(stats.size) - scanBytes);
-        const content = await sftpReadRange(sftp, canonicalFile, startByte, scanBytes, lifecycle);
-        values.push({
-          path: file,
-          content,
-          sizeBytes: Number(stats.size),
-          scannedBytes: content.length,
-          truncated: startByte > 0,
-          startByte,
-        });
-      }
-      return values;
-    }, {
-      timeoutMs: 120_000,
-      timeoutCode: 'LOG_SCAN_TIMEOUT',
-      timeoutMessage: '日志搜索超过两分钟，已中止本次扫描。',
-    });
-
-    let search;
-    try {
-      search = searchLogSnapshots({
-        snapshots,
-        keywords,
-        keywordMode: options.keywordMode ?? 'OR',
-        caseSensitive: options.caseSensitive === true,
-        beforeLines,
-        afterLines,
-        maxMatches,
-      });
-    } catch (error) {
-      throw new AppError(error?.code ?? 'INVALID_ARGUMENT', '日志搜索参数无效。');
-    }
-    const { contexts: rawContexts, matches: _matches, ...rawSummary } = search;
-    const summary = boundLogSearchSummary(rawSummary);
-    const bounded = boundLogContexts(rawContexts);
-    const contexts = bounded.contexts;
-    summary.outputTruncated = bounded.outputTruncated;
-    summary.truncated ||= bounded.outputTruncated;
-    summary.truncation.outputTruncated = bounded.outputTruncated;
-    summary.lineNumberScope = 'scanned_snapshot';
-    summary.generatedAtUtc = new Date().toISOString();
-    summary.searchOperationId = operationId;
-    summary.files = snapshots.map(({ path: file, sizeBytes, scannedBytes, truncated, startByte }) => ({
-      path: file,
-      sizeBytes,
-      scannedBytes,
-      startByte,
-      truncated,
-    }));
-    let page;
-    try {
-      page = this.logSearchCursors.start({
-        projectId,
-        token: String(contextToken),
-        items: contexts,
-        metadata: summary,
-        pageSize,
-      });
-    } catch (error) {
-      throw new AppError(error?.code ?? 'LOG_SEARCH_CACHE_LIMIT', '日志搜索结果超过本地分页缓存限制，请缩小范围。');
-    }
-    const auditWarning = await this.appendAuditSafe(projectId, {
-      type: 'log-search',
-      operationId,
-      result: 'success',
-      fileCount: files.length,
-      keywordHashes: keywords.map((keyword) => crypto.createHash('sha256').update(keyword).digest('hex')),
-      scannedBytes: snapshots.reduce((sum, snapshot) => sum + snapshot.scannedBytes, 0),
-      totalMatches: search.totalMatches,
-      returnedContexts: page.items.length,
-      truncated: search.truncated,
-      hasMore: page.hasMore,
-    });
-    return this.formatLogSearchPage(operationId, page, auditWarning, contextToken);
-  }
-
-  formatLogSearchPage(operationId, page, auditWarning, contextToken) {
-    const context = this.contexts.get(String(contextToken ?? ''));
-    const contextExpiresAt = context ? context.createdAt + CONTEXT_TTL_MS : page.expiresAt;
-    const effectiveExpiresAt = Math.min(page.expiresAt, contextExpiresAt);
-    return {
-      operationId,
-      searchOperationId: page.metadata?.searchOperationId ?? operationId,
-      summary: page.metadata,
-      contexts: page.items,
-      pagination: {
-        offset: page.offset,
-        nextOffset: page.nextOffset,
-        totalContexts: page.totalItems,
-        remainingContexts: page.remainingItems,
-        hasMore: page.hasMore,
-        nextCursor: page.nextCursor,
-        expiresAt: new Date(effectiveExpiresAt).toISOString(),
-      },
-      auditWarning,
-    };
-  }
 }

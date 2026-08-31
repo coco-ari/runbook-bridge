@@ -6,12 +6,12 @@ import net from 'node:net';
 import test from 'node:test';
 import { BrokerServer } from '../src/broker-server.mjs';
 import { callBroker } from '../src/broker-client.mjs';
-import { ensureBrokerToken } from '../src/broker-auth.mjs';
+import { rotateBrokerToken } from '../src/broker-auth.mjs';
 
 test('local broker requires the shared per-user token and returns structured data', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-broker-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const token = await ensureBrokerToken(root);
+  const token = await rotateBrokerToken(root);
   const v2Service = { listProjects() { return { projects: [{ projectId: 'demo' }] }; } };
   const server = new BrokerServer({ dataRoot: root, token, v2Service });
   await server.start();
@@ -27,7 +27,7 @@ test('local broker requires the shared per-user token and returns structured dat
 test('broker survives an abandoned client and stop closes idle pipe clients promptly', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-broker-lifecycle-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const token = await ensureBrokerToken(root);
+  const token = await rotateBrokerToken(root);
   const v2Service = {
     async listProjects() {
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -59,7 +59,7 @@ test('broker survives an abandoned client and stop closes idle pipe clients prom
 test('broker preserves legacy log search and forwards every bounded search field', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-broker-log-search-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const token = await ensureBrokerToken(root);
+  const token = await rotateBrokerToken(root);
   const invocations = [];
   const v2Service = {
     invoke(params, capability, args) {
@@ -139,7 +139,7 @@ test('broker preserves legacy log search and forwards every bounded search field
 test('broker routes MySQL schema search through the existing describe capability', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-broker-schema-search-'));
   t.after(() => fs.rm(root, {recursive:true,force:true}));
-  const token = await ensureBrokerToken(root);
+  const token = await rotateBrokerToken(root);
   const invocations = [];
   const server = new BrokerServer({
     dataRoot:root,

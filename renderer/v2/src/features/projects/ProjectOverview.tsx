@@ -61,10 +61,8 @@ function ProjectOverviewSkeleton() {
 }
 
 function ProjectOverviewError({
-  error,
   onReload,
 }: {
-  readonly error: WorkspaceReadError
   readonly onReload?: (() => void) | undefined
 }) {
   return (
@@ -91,7 +89,7 @@ export function ProjectOverview({
   project,
 }: ProjectOverviewProps) {
   if (loading && !project) return <ProjectOverviewSkeleton />
-  if (error) return <ProjectOverviewError error={error} onReload={onReload} />
+  if (error) return <ProjectOverviewError onReload={onReload} />
   if (!project) {
     return (
       <Empty className="min-h-52 bg-surface/45 ring-1 ring-inset ring-border/60" data-testid="project-overview-empty">
