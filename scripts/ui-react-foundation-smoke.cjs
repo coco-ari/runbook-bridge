@@ -338,6 +338,251 @@ async function pressKey(win,keyCode,modifiers = []) {
   await wait(100);
 }
 
+async function assertProjectDragSorting(win) {
+  const originalProjects = [...workspaceProjects];
+  const storageKey = 'ai-ops-project-order-v1';
+  const operations = 'project-operations';
+  const data = 'project-data';
+  const isolated = 'project-isolated';
+  const match = 'project-drag-search-match';
+  const chromiumDebugger = win.webContents.debugger;
+  const alreadyAttached = chromiumDebugger.isAttached();
+  let interceptedDrag = null;
+  let completed = false;
+  let capturedPreview = false;
+  const onDebuggerMessage = (_event,method,params) => {
+    if (method === 'Input.dragIntercepted') interceptedDrag = params.data;
+  };
+  const readOrder = () => win.webContents.executeJavaScript(`(() => ({
+    visible:[...document.querySelectorAll('[data-project-id]')].map((row) => row.dataset.projectId),
+    saved:JSON.parse(localStorage.getItem('${storageKey}')),
+    selected:document.querySelector('[data-project-id][aria-current="page"]')?.dataset.projectId ?? null,
+    selectionKind:document.querySelector('#detail-main')?.dataset.selectionKind,
+  }))()`,true);
+  const assertOrder = async (expected,label,{visible = expected,selected = operations} = {}) => {
+    await waitFor(win,`JSON.stringify([...document.querySelectorAll('[data-project-id]')].map((row) => row.dataset.projectId)) === ${JSON.stringify(JSON.stringify(visible))}
+      && localStorage.getItem('${storageKey}') === ${JSON.stringify(JSON.stringify(expected))}`,label);
+    const snapshot = await readOrder();
+    assert.deepEqual(snapshot.visible,visible,`${label}: visible order`);
+    assert.deepEqual(snapshot.saved,expected,`${label}: saved full order`);
+    assert.equal(snapshot.selected,selected,`${label}: dragging must preserve project selection`);
+  };
+  const refreshProjects = async (count) => {
+    win.webContents.send('v2:workspace-changed',{});
+    await waitFor(win,`document.querySelectorAll('[data-project-id]').length === ${count}`,
+      `drag fixture workspace contains ${count} projects`);
+    await captureRenderedFrame(win);
+  };
+  const projectPoint = (projectId,position = 'middle') => win.webContents.executeJavaScript(`(() => {
+    const button = document.querySelector('[data-project-id="' + ${JSON.stringify(projectId)} + '"]');
+    if (!button) return null;
+    button.scrollIntoView({block:'nearest'});
+    const row = button.closest('[data-project-drop-id]');
+    const rect = (${JSON.stringify(position)} === 'middle' ? button : row)?.getBoundingClientRect();
+    if (!rect || rect.width === 0 || rect.height === 0) return null;
+    return {x:Math.round(rect.left + rect.width * 0.4),
+      y:Math.round(rect.top + rect.height * (${JSON.stringify(position)} === 'before' ? 0.2 : ${JSON.stringify(position)} === 'after' ? 0.8 : 0.5))};
+  })()`,true);
+  const beginDrag = async (sourceId) => {
+    const point = await projectPoint(sourceId);
+    assert.ok(point,`drag source ${sourceId} is visible`);
+    interceptedDrag = null;
+    await chromiumDebugger.sendCommand('Input.dispatchMouseEvent',{type:'mouseMoved',...point});
+    await chromiumDebugger.sendCommand('Input.dispatchMouseEvent',{type:'mousePressed',button:'left',buttons:1,clickCount:1,...point});
+    for (const delta of [8,18,30]) {
+      await chromiumDebugger.sendCommand('Input.dispatchMouseEvent',{
+        type:'mouseMoved',button:'left',buttons:1,x:point.x+delta,y:point.y,
+      });
+      if (interceptedDrag) break;
+    }
+    const deadline = Date.now() + 3000;
+    while (!interceptedDrag && Date.now() < deadline) await wait(20);
+    assert.ok(interceptedDrag,`Chromium must start a native HTML5 drag for ${sourceId}`);
+    await waitFor(win,`document.querySelector('[data-project-drop-id="${sourceId}"]')?.dataset.projectDragging === 'true'`,
+      `${sourceId} has native drag feedback`);
+    return interceptedDrag;
+  };
+  const dragProject = async (sourceId,targetId,position,{cancel = false,preview = true} = {}) => {
+    const dragData = await beginDrag(sourceId);
+    const target = await projectPoint(targetId,position);
+    assert.ok(target,`drag target ${targetId} is visible`);
+    for (const type of ['dragEnter','dragOver']) {
+      await chromiumDebugger.sendCommand('Input.dispatchDragEvent',{type,...target,data:dragData});
+    }
+    if (preview) {
+      await waitFor(win,`document.querySelector('[data-project-drop-id="${targetId}"]')?.dataset.projectDropTarget === '${position}'
+        && document.querySelector('[data-project-drop-id="${targetId}"] [data-project-drop-indicator]')?.dataset.position === '${position}'`,
+      `native drag previews ${position} ${targetId}`);
+    } else {
+      assert.equal(await win.webContents.executeJavaScript(
+        `document.querySelector('[data-project-drop-indicator]') === null`,true),true,
+      'an invalid drag target must not show a drop indicator');
+    }
+    if (preview && screenshotRoot && !capturedPreview) {
+      fs.mkdirSync(screenshotRoot,{recursive:true});
+      fs.writeFileSync(path.join(screenshotRoot,'project-drag-before-preview.png'),(await captureRenderedFrame(win)).toPNG());
+      capturedPreview = true;
+    }
+    await chromiumDebugger.sendCommand('Input.dispatchDragEvent',{
+      type:cancel ? 'dragCancel' : 'drop',...target,data:dragData,
+    });
+    await chromiumDebugger.sendCommand('Input.dispatchMouseEvent',{
+      type:'mouseReleased',button:'left',buttons:0,clickCount:1,...target,
+    });
+    await waitFor(win,`document.querySelector('[data-project-dragging="true"], [data-project-drop-indicator]') === null`,
+      `${cancel ? 'cancelled' : 'completed'} native drag clears feedback`);
+  };
+  const setSearch = async (value) => {
+    await clickThemeControl(win,'project-search');
+    await pressKey(win,'a',['control']);
+    if (value) await win.webContents.insertText(value);
+    else await pressKey(win,'BACKSPACE');
+    await waitFor(win,`document.querySelector('[data-testid="project-search"]')?.value === ${JSON.stringify(value)}`,
+      'native search input for project dragging');
+  };
+  try {
+    workspaceProjects.push({schemaVersion:2,projectId:match,name:'海隅拖动排序验证',revision:1,
+      environmentCount:0,pluginCount:0,environments:[]});
+    await refreshProjects(4);
+    const initialSelectionKind = (await readOrder()).selectionKind;
+    assert.deepEqual(await win.webContents.executeJavaScript(
+      `[...document.querySelectorAll('[data-project-id]')].map((button) => [button.dataset.projectId,button.draggable])`,true),
+    [[operations,true],[data,true],[isolated,false],[match,true]],'only ordinary projects are draggable');
+    await win.webContents.executeJavaScript(`(() => {
+      window.__projectDragEvents = [];
+      for (const type of ['dragstart','drop','dragend','click']) document.addEventListener(type,(event) => {
+        window.__projectDragEvents.push({type:event.type,trusted:event.isTrusted,project:event.target.closest?.('[data-project-id]')?.dataset.projectId ?? null});
+      },true);
+    })()`,true);
+    if (!alreadyAttached) chromiumDebugger.attach('1.3');
+    chromiumDebugger.on('message',onDebuggerMessage);
+    // Interception keeps the gesture inside Chromium instead of starting an OS
+    // drag loop; dragstart still originates from genuine browser mouse input.
+    await chromiumDebugger.sendCommand('Input.setInterceptDrags',{enabled:true});
+
+    await dragProject(match,operations,'before');
+    await assertOrder([match,operations,data,isolated],'native drag moves a project before another');
+    await dragProject(operations,data,'after');
+    await assertOrder([match,data,operations,isolated],'native drag moves a project after another');
+    assert.equal((await readOrder()).selectionKind,initialSelectionKind,'dragging must preserve the selected detail scope');
+    assert.match(await win.webContents.executeJavaScript(
+      `document.querySelector('[data-testid="project-order-announcement"]')?.textContent ?? ''`,true),/已移至/u);
+
+    await setSearch('海隅');
+    await waitFor(win,`document.querySelectorAll('[data-project-id]').length === 2`,'filtered drag list hides unrelated projects');
+    await dragProject(operations,match,'before');
+    const persistedOrder = [operations,match,data,isolated];
+    await assertOrder(persistedOrder,'filtered drag updates the full project order',{visible:[operations,match]});
+    await setSearch('');
+    await assertOrder(persistedOrder,'clearing search retains hidden projects and their relative order');
+
+    await dragProject(operations,data,'after',{cancel:true});
+    await assertOrder(persistedOrder,'cancelling a native drag retains the saved order');
+    await dragProject(operations,match,'before');
+    await assertOrder(persistedOrder,'dropping at the current position is a no-op');
+    await dragProject(operations,isolated,'before',{preview:false});
+    await assertOrder(persistedOrder,'dropping on an isolated project is ignored');
+
+    const externalTarget = await projectPoint(match,'after');
+    const externalData = {items:[{mimeType:'text/plain',data:operations}],dragOperationsMask:1};
+    for (const type of ['dragEnter','dragOver','drop']) {
+      await chromiumDebugger.sendCommand('Input.dispatchDragEvent',{type,...externalTarget,data:externalData});
+    }
+    await assertOrder(persistedOrder,'external text cannot reorder projects');
+    assert.equal(await win.webContents.executeJavaScript(
+      `document.querySelector('[data-project-drop-indicator]') === null`,true),true);
+
+    await win.webContents.executeJavaScript(`(() => {
+      window.__projectOrderSetItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key,value) {
+        if (key === '${storageKey}') throw new DOMException('Simulated storage limit','QuotaExceededError');
+        return window.__projectOrderSetItem.call(this,key,value);
+      };
+    })()`,true);
+    try {
+      await dragProject(operations,data,'after');
+      await assertOrder(persistedOrder,'failed persistence restores the prior project order');
+      await waitFor(win,`[...document.querySelectorAll('[data-sonner-toast]')].some((toast) => toast.textContent.includes('项目顺序保存失败'))`,
+        'failed drag persistence displays a visible error toast');
+
+      assert.match(await win.webContents.executeJavaScript(
+        `document.querySelector('[data-testid="project-order-announcement"]')?.textContent ?? ''`,true),/保存失败/u);
+    } finally {
+      await win.webContents.executeJavaScript(`Storage.prototype.setItem = window.__projectOrderSetItem; delete window.__projectOrderSetItem`,true);
+    }
+    const extraProjects = Array.from({length:12},(_,index) => ({
+      schemaVersion:2,projectId:`project-drag-scroll-${index+1}`,name:`拖动滚动验证 ${index+1}`,revision:1,
+      environmentCount:0,pluginCount:0,environments:[],
+    }));
+    workspaceProjects.push(...extraProjects);
+    await refreshProjects(16);
+    const longOrder = [...persistedOrder,...extraProjects.map((project) => project.projectId)];
+    const viewportSelector = '[data-testid="project-list-scroll"] [data-slot="scroll-area-viewport"]';
+    for (const direction of ['down','up']) {
+      const sourceId = direction === 'down' ? operations : extraProjects.at(-1).projectId;
+      const dragEndsBefore = await win.webContents.executeJavaScript(`window.__projectDragEvents.filter((event) => event.type === 'dragend').length`,true);
+      const dragData = await beginDrag(sourceId);
+      const edge = await win.webContents.executeJavaScript(`(() => {
+        const viewport = document.querySelector('${viewportSelector}');
+        const rect = viewport.getBoundingClientRect();
+        return {x:Math.round(rect.left+rect.width*0.4),
+          y:Math.round(${JSON.stringify(direction)} === 'down' ? rect.bottom-8 : rect.top+8),
+          scrollTop:viewport.scrollTop,scrollHeight:viewport.scrollHeight,clientHeight:viewport.clientHeight};
+      })()`,true);
+      assert.ok(edge.scrollHeight > edge.clientHeight+100,'long drag fixture overflows the project viewport');
+      for (const type of ['dragEnter','dragOver']) {
+        await chromiumDebugger.sendCommand('Input.dispatchDragEvent',{type,x:edge.x,y:edge.y,data:dragData});
+      }
+      await waitFor(win,`document.querySelector('${viewportSelector}').scrollTop ${direction === 'down' ? '>' : '<'} ${edge.scrollTop + (direction === 'down' ? 40 : -40)}`,
+        `a native drag automatically scrolls the long project list ${direction}`);
+      if (direction === 'down') await pressKey(win,'ESCAPE');
+      await chromiumDebugger.sendCommand('Input.dispatchDragEvent',{type:'dragCancel',x:edge.x,y:edge.y,data:dragData});
+      await chromiumDebugger.sendCommand('Input.cancelDragging');
+      await chromiumDebugger.sendCommand('Input.dispatchMouseEvent',{
+        type:'mouseReleased',button:'left',buttons:0,clickCount:1,x:edge.x,y:edge.y,
+      });
+      await waitFor(win,`document.querySelector('[data-project-dragging="true"], [data-project-drop-indicator]') === null`,
+        'aborting an edge drag clears the preview and dragged state');
+      // Hidden-window capture can keep Chromium's intercepted native edge scroll
+      // moving after dragCancel, even after dragend. Verify the application abort
+      // contract without using capturePage as a zero-motion assertion.
+      await chromiumDebugger.sendCommand('Input.dispatchMouseEvent',{type:'mouseMoved',buttons:0,x:8,y:8});
+      await waitFor(win,`window.__projectDragEvents.filter((event) => event.type === 'dragend' && event.trusted).length > ${dragEndsBefore}`,
+        'aborting an edge drag delivers trusted native dragend');
+      await assertOrder(longOrder,'aborting an edge drag keeps every project in its saved position');
+    }
+    workspaceProjects.splice(4);
+    await refreshProjects(4);
+    await assertOrder(persistedOrder,'removing temporary scroll fixtures preserves the dragged order');
+
+    const nativeEvents = await win.webContents.executeJavaScript(`window.__projectDragEvents`,true);
+    assert.ok(nativeEvents.some((event) => event.type === 'dragstart' && event.trusted),
+      'project sorting coverage must include trusted browser dragstart events');
+    assert.ok(nativeEvents.some((event) => event.type === 'drop' && event.trusted),
+      'project sorting coverage must include trusted browser drop events');
+
+    await collectWindowErrorDiagnostics(win);
+    win.reload();
+    await waitFor(win,`document.querySelector('[data-shell-ready="true"]') !== null
+      && document.querySelectorAll('[data-project-id]').length === 4`,
+    'drag order reload waits for the asynchronous workspace read');
+    await installWindowErrorDiagnostics(win);
+    await assertOrder(persistedOrder,'dragged project order survives Renderer reload');
+    completed = true;
+    process.stdout.write('Project drag sorting evidence: trusted browser before/after drops, filtered full-order preservation, cancellation, no-op, isolated/external rejection, storage failure, long-list edge scrolling/abort and reload persistence passed\n');
+  } finally {
+    if (chromiumDebugger.isAttached()) {
+      await chromiumDebugger.sendCommand('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',buttons:0,x:8,y:8}).catch(() => {});
+      await chromiumDebugger.sendCommand('Input.setInterceptDrags',{enabled:false}).catch(() => {});
+      chromiumDebugger.removeListener('message',onDebuggerMessage);
+      if (!alreadyAttached) chromiumDebugger.detach();
+    }
+    workspaceProjects.splice(0,workspaceProjects.length,...originalProjects);
+    await refreshProjects(originalProjects.length);
+    if (completed) await assertOrder(originalProjects.map((project) => project.projectId),'restore project fixture after drag sorting');
+  }
+}
+
 async function assertKeyboardResizerPersistence(win,{testId,keyCode,panelId}) {
   const selector = `[data-testid="${testId}"]`;
   const readSnapshot = () => win.webContents.executeJavaScript(`(() => {
@@ -3358,6 +3603,16 @@ async function run() {
     assert.equal(initial.selected,'project-operations');
     assert.equal(initial.confirmationAboveProjects,true);
     assert.equal(initial.addProjectBelowProjects,true);
+    if (app.commandLine.hasSwitch('project-drag-regression-only')) {
+      await assertProjectDragSorting(win);
+      await collectWindowErrorDiagnostics(win);
+      assert.deepEqual(mutationCalls,[]);
+      assert.deepEqual(externalRequests,[]);
+      assert.deepEqual(rendererErrors,[]);
+      assert.deepEqual(rendererWindowErrors,[]);
+      process.stdout.write('Focused project drag sorting smoke passed; no mutations or external requests\n');
+      return;
+    }
     await assertManualThemePreferences(win);
     if (app.commandLine.hasSwitch('theme-regression-only')) {
       await collectWindowErrorDiagnostics(win);
@@ -3368,6 +3623,7 @@ async function run() {
       process.stdout.write(`Focused theme preference smoke passed (${readCalls.length} read-only API calls; no mutations or external requests)\n`);
       return;
     }
+    await assertProjectDragSorting(win);
     await assertEnvironmentAccordionNavigation(win);
 
     const projectRoving = await win.webContents.executeJavaScript(`(() => {

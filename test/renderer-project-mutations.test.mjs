@@ -49,6 +49,62 @@ test('project mutation model preserves normalized names and the local stable ord
   );
 });
 
+test('relative project moves support both drop edges without mutating the source order', async () => {
+  const {moveProjectBeforeOrAfter} = await importModule(
+    'renderer/v2/src/features/projects/project-mutation-model.ts',
+  );
+  const original = Object.freeze(['project-a','project-b','project-c','project-d']);
+  const cases = [
+    ['project-a','project-c',false,['project-b','project-a','project-c','project-d']],
+    ['project-a','project-c',true,['project-b','project-c','project-a','project-d']],
+    ['project-d','project-b',false,['project-a','project-d','project-b','project-c']],
+    ['project-d','project-b',true,['project-a','project-b','project-d','project-c']],
+    ['project-a','project-d',true,['project-b','project-c','project-d','project-a']],
+    ['project-d','project-a',false,['project-d','project-a','project-b','project-c']],
+  ];
+  for (const [source,target,after,expected] of cases) {
+    assert.deepEqual(moveProjectBeforeOrAfter(original,source,target,after),expected);
+  }
+  assert.deepEqual(original,['project-a','project-b','project-c','project-d']);
+});
+
+test('relative project moves ignore unchanged positions and missing drag participants', async () => {
+  const {moveProjectBeforeOrAfter} = await importModule(
+    'renderer/v2/src/features/projects/project-mutation-model.ts',
+  );
+  const original = ['project-a','project-b','project-c'];
+  for (const [source,target,after] of [
+    ['project-b','project-b',false],
+    ['project-b','project-b',true],
+    ['project-a','project-b',false],
+    ['project-b','project-a',true],
+    ['removed-project','project-a',false],
+    ['project-a','removed-project',true],
+  ]) {
+    assert.deepEqual(moveProjectBeforeOrAfter(original,source,target,after),original);
+  }
+  assert.deepEqual(moveProjectBeforeOrAfter([],'project-a','project-b',false),[]);
+});
+
+test('persisted relative order survives a fresh workspace read with added and removed projects', async () => {
+  const {moveProjectBeforeOrAfter,normalizeProjectOrder,parseStoredProjectOrder} = await importModule(
+    'renderer/v2/src/features/projects/project-mutation-model.ts',
+  );
+  const moved = moveProjectBeforeOrAfter(
+    ['project-a','project-b','project-c'],'project-c','project-a',false,
+  );
+  const saved = parseStoredProjectOrder(JSON.stringify(moved));
+  assert.deepEqual(
+    normalizeProjectOrder(['project-a','project-b','project-c'],saved),
+    ['project-c','project-a','project-b'],
+  );
+  assert.deepEqual(
+    normalizeProjectOrder(['project-a','project-c','project-d'],saved),
+    ['project-c','project-a','project-d'],
+  );
+  assert.deepEqual(normalizeProjectOrder([],saved),[]);
+});
+
 test('project mutation controller is revision-bound, exact-scope and late-result fenced', () => {
   const controller = read('renderer/v2/src/features/projects/use-project-mutations.ts');
   assert.match(controller,/api\.createProject\(\{/u);
@@ -115,6 +171,17 @@ test('project mutations use compact Radix Dialogs and standalone typed delete wi
   assert.match(dialog,/Dialog as DialogPrimitive.*from "radix-ui"/u);
   assert.match(dialog,/<DialogPrimitive\.Content/u);
   assert.match(order,/PROJECT_ORDER_STORAGE_KEY/u);
+  assert.match(order,/if \(!projectsReady\) return\s+if \(sameOrder\(order, normalizedOrder\)\) return/u,
+    'startup loading must not erase the stored order before a successful workspace read');
+  assert.match(order,/if \(!projectsReady\) return false/u,
+    'order changes must wait for a successful workspace read');
+  const commit = order.slice(order.indexOf('const commit = useCallback'),order.indexOf('const moveProject = useCallback'));
+  assert.ok(commit.indexOf('storage.setItem') < commit.indexOf('setOrder(next)'),
+    'a failed storage write must not publish an order that was not saved');
+  assert.match(commit,/if \(!storage\) throw new Error\("Project order storage is unavailable"\)/u,
+    'unavailable storage must use the save-failure path rather than report a successful move');
+  assert.match(commit,/catch \{[\s\S]*?const failureMessage = "项目顺序保存失败，已恢复原顺序。"\s+setAnnouncement\(failureMessage\)\s+toast\.error\(failureMessage\)\s+return false/u,
+    'save failures must be visible for pointer users as well as announced to assistive technology');
   assert.match(order,/altKey/u);
   assert.match(order,/ArrowUp/u);
   assert.match(order,/ArrowDown/u);

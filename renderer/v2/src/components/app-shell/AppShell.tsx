@@ -187,6 +187,7 @@ export function AppShell() {
   const projects = workspace.data?.projects ?? []
   const projectOrder = useProjectOrder({
     projects,
+    projectsReady: workspace.data !== null,
     resolveFocusTarget: (projectId) =>
       document.querySelector<HTMLElement>(`[data-project-id="${projectId}"]`),
   })
@@ -1038,6 +1039,7 @@ export function AppShell() {
             error={workspace.error}
             loading={workspace.loading || confirmations.loading}
             onAction={openProjectAction}
+            onMoveProjectRelative={projectOrder.moveProjectRelative}
             onProjectKeyDown={projectOrder.onProjectKeyDown}
             onReload={workspace.reload}
             onSelectProject={selectProject}

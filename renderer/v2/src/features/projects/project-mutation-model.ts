@@ -112,6 +112,21 @@ export function moveProjectByOffset(
   }
 }
 
+export function moveProjectBeforeOrAfter(
+  projectIds: readonly string[],
+  sourceId: string,
+  targetId: string,
+  after: boolean,
+): readonly string[] {
+  if (sourceId === targetId || !projectIds.includes(sourceId) || !projectIds.includes(targetId)) {
+    return projectIds
+  }
+  const next = projectIds.filter((projectId) => projectId !== sourceId)
+  const targetIndex = next.indexOf(targetId)
+  next.splice(targetIndex + (after ? 1 : 0), 0, sourceId)
+  return next
+}
+
 export function removeProjectFromOrder(
   projectIds: readonly string[],
   projectId: string,

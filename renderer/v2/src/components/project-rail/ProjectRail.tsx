@@ -72,6 +72,8 @@ import type {
   WorkspaceProjectReadModel,
   WorkspaceReadError,
 } from "@/features/workspace/workspace-read-model"
+import type { ProjectOrderController } from "@/features/projects/ProjectOrderController"
+import { useProjectDragOrder } from "@/features/projects/use-project-drag-order"
 import { useRovingNavigation } from "@/hooks/use-roving-navigation"
 import { useMenuHandoff } from "@/hooks/use-menu-handoff"
 import { cn } from "@/lib/utils"
@@ -102,6 +104,7 @@ interface ProjectRailProps {
   readonly error?: WorkspaceReadError | null
   readonly loading?: boolean
   readonly onAction: (action: ProjectRailAction) => void
+  readonly onMoveProjectRelative?: ProjectOrderController["moveProjectRelative"] | undefined
   readonly onProjectKeyDown?: ((event: React.KeyboardEvent<HTMLElement>, projectId: string) => void) | undefined
   readonly onReload?: (() => void) | undefined
   readonly onSelectProject: (projectId: string) => void
@@ -207,6 +210,7 @@ export function ProjectRail({
   error = null,
   loading = false,
   onAction,
+  onMoveProjectRelative,
   onProjectKeyDown,
   onReload,
   onSelectProject,
@@ -217,6 +221,12 @@ export function ProjectRail({
 }: ProjectRailProps) {
   const projectNavigation = useRovingNavigation<HTMLElement>()
   const [projectQuery, setProjectQuery] = useState("")
+  const projectDrag = useProjectDragOrder({
+    disabled: loading || !!error,
+    onMoveProjectRelative,
+    projects,
+    query: projectQuery,
+  })
   const confirmationCount = pendingConfirmationCount
   const toggleDisabled = collapsed && expandDisabled
 
@@ -337,17 +347,22 @@ export function ProjectRail({
           </div>
           <SidebarGroupLabel className="mx-4 mt-3 mb-2 h-6 px-0 text-[11px] leading-4 tracking-normal">
             项目
+            <span aria-hidden="true" className={cn("ml-2 text-[10px] font-normal text-muted-foreground", (!projectDrag.enabled || collapsed) && "hidden")}>拖动排序</span>
             <span className="ml-auto font-mono tabular-nums">
               {normalizedProjectQuery ? `${visibleProjects.length}/${projects.length}` : projects.length}
             </span>
           </SidebarGroupLabel>
+          <p className="sr-only" id="project-order-help">拖动项目调整顺序，也可按 Alt + 上下方向键排序。顺序保存在本机。</p>
           <nav
             aria-label="项目导航"
             className="min-h-0 flex-1"
+            onDragLeave={projectDrag.onDragLeave}
+            onDragOver={projectDrag.onDragOver}
+            onDrop={projectDrag.onDrop}
             onFocusCapture={projectNavigation.onFocusCapture}
             onKeyDown={projectNavigation.onKeyDown}
           >
-            <ScrollArea className="h-full" data-testid="project-list-scroll">
+            <ScrollArea className="h-full" data-testid="project-list-scroll" viewportRef={projectDrag.viewportRef}>
             <SidebarGroup className="px-1.5 pt-0 pb-1">
               <SidebarGroupContent>
                 {error ? (
@@ -412,8 +427,23 @@ export function ProjectRail({
                       const selected =
                         selectedProjectId === project.projectId && !project.isolated
                       const isolationDescriptionId = `project-isolated-${project.projectId}`
+                      const dropPosition = projectDrag.dropTarget?.projectId === project.projectId
+                        ? (projectDrag.dropTarget.after ? "after" : "before") : undefined
                       return (
-                        <SidebarMenuItem key={project.projectId}>
+                        <SidebarMenuItem
+                          data-project-dragging={projectDrag.draggingProjectId === project.projectId || undefined}
+                          data-project-drop-id={project.projectId}
+                          data-project-drop-target={dropPosition}
+                          key={project.projectId}
+                        >
+                          {dropPosition ? (
+                            <span
+                              aria-hidden="true"
+                              className={cn("pointer-events-none absolute inset-x-1 z-10 h-0.5 rounded-full bg-primary", dropPosition === "after" ? "-bottom-px" : "-top-px")}
+                              data-position={dropPosition}
+                              data-project-drop-indicator
+                            />
+                          ) : null}
                           <ProjectContextMenu
                             onAction={onAction}
                             onSelectProject={() => {
@@ -424,7 +454,8 @@ export function ProjectRail({
                           >
                             <SidebarMenuButton
                               aria-current={selected ? "page" : undefined}
-                              aria-describedby={project.isolated ? isolationDescriptionId : undefined}
+                              aria-describedby={project.isolated ? isolationDescriptionId : "project-order-help"}
+                              aria-keyshortcuts={project.isolated ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
                               aria-disabled={project.isolated || undefined}
                               aria-label={`${project.name}，${projectDescription(project)}，${statusLabel(project.status)}`}
                               className={cn(
@@ -434,9 +465,12 @@ export function ProjectRail({
                                 selected && "bg-primary/[0.08] text-foreground before:bg-primary dark:text-primary",
                                 selected && "text-primary data-active:text-primary",
                                 project.isolated && "aria-disabled:pointer-events-auto",
+                                projectDrag.canDrag(project) && "cursor-grab active:cursor-grabbing",
+                                projectDrag.draggingProjectId === project.projectId && "opacity-40",
                               )}
                               data-project-id={project.projectId}
                               data-shell-nav-item
+                              draggable={projectDrag.canDrag(project)}
                               isActive={selected}
                               onClick={() => {
                                 if (!project.isolated) onSelectProject(project.projectId)
@@ -444,10 +478,12 @@ export function ProjectRail({
                               onKeyDown={(event) => {
                                 if (!project.isolated) onProjectKeyDown?.(event, project.projectId)
                               }}
+                              onDragEnd={projectDrag.clearDrag}
+                              onDragStart={(event) => projectDrag.onDragStart(event, project)}
                               size="default"
                               tabIndex={tabStopProjectId === project.projectId ? 0 : -1}
                               tooltip={{
-                                hidden: false,
+                                hidden: projectDrag.draggingProjectId !== null,
                                 sideOffset: 8,
                                 children: (
                                   <span className="min-w-0 space-y-1">
@@ -455,6 +491,7 @@ export function ProjectRail({
                                     <span className="block text-[11px] [overflow-wrap:anywhere]">
                                       {projectDescription(project)} · {statusLabel(project.status)}
                                     </span>
+                                    {projectDrag.canDrag(project) ? <span className="block text-[11px]">拖动排序 · Alt + ↑ / ↓</span> : null}
                                   </span>
                                 ),
                               }}

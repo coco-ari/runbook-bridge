@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { toast } from "sonner"
 
 import type { WorkspaceProjectReadModel } from "@/features/workspace/workspace-read-model"
 import {
   moveProjectByOffset,
+  moveProjectBeforeOrAfter,
   normalizeProjectOrder,
   parseStoredProjectOrder,
   PROJECT_ORDER_STORAGE_KEY,
@@ -10,6 +12,7 @@ import {
 
 export interface ProjectOrderControllerOptions {
   readonly projects: readonly WorkspaceProjectReadModel[]
+  readonly projectsReady: boolean
   readonly resolveFocusTarget?: ((projectId: string) => HTMLElement | null) | undefined
   readonly storage?: Pick<Storage, "getItem" | "setItem"> | null | undefined
 }
@@ -42,21 +45,9 @@ function sameOrder(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index])
 }
 
-function moveBeforeOrAfter(
-  ids: readonly string[],
-  sourceId: string,
-  targetId: string,
-  after: boolean,
-): readonly string[] {
-  if (sourceId === targetId || !ids.includes(sourceId) || !ids.includes(targetId)) return [...ids]
-  const next = ids.filter((projectId) => projectId !== sourceId)
-  const targetIndex = next.indexOf(targetId)
-  next.splice(targetIndex + (after ? 1 : 0), 0, sourceId)
-  return next
-}
-
 export function useProjectOrder({
   projects,
+  projectsReady,
   resolveFocusTarget,
   storage = defaultStorage(),
 }: ProjectOrderControllerOptions): ProjectOrderController {
@@ -80,6 +71,9 @@ export function useProjectOrder({
   }, [resolveFocusTarget])
 
   useEffect(() => {
+    // An empty list before the first successful workspace read is not a
+    // deletion of every project. Keep the saved preference until data arrives.
+    if (!projectsReady) return
     if (sameOrder(order, normalizedOrder)) return
     setOrder(normalizedOrder)
     try {
@@ -88,14 +82,18 @@ export function useProjectOrder({
       // Project order is a local navigation preference. Storage failures must
       // never prevent the workspace from opening.
     }
-  }, [normalizedOrder, order, storage])
+  }, [normalizedOrder, order, projectsReady, storage])
 
   const commit = useCallback((next: readonly string[], message: string, focusProjectId: string) => {
+    if (!projectsReady) return false
     if (sameOrder(normalizedOrder, next)) return false
     try {
-      storage?.setItem(PROJECT_ORDER_STORAGE_KEY, JSON.stringify(next))
+      if (!storage) throw new Error("Project order storage is unavailable")
+      storage.setItem(PROJECT_ORDER_STORAGE_KEY, JSON.stringify(next))
     } catch {
-      setAnnouncement("项目顺序保存失败，已恢复原顺序。")
+      const failureMessage = "项目顺序保存失败，已恢复原顺序。"
+      setAnnouncement(failureMessage)
+      toast.error(failureMessage)
       return false
     }
     setOrder(next)
@@ -104,7 +102,7 @@ export function useProjectOrder({
       focusTargetRef.current?.(focusProjectId)?.focus({ preventScroll: true })
     })
     return true
-  }, [normalizedOrder, storage])
+  }, [normalizedOrder, projectsReady, storage])
 
   const moveProject = useCallback((projectId: string, offset: -1 | 1) => {
     const project = projects.find((candidate) => candidate.projectId === projectId)
@@ -122,7 +120,7 @@ export function useProjectOrder({
     const project = projects.find((candidate) => candidate.projectId === projectId)
     const target = projects.find((candidate) => candidate.projectId === targetProjectId)
     if (!project || !target || project.isolated || target.isolated) return false
-    const next = moveBeforeOrAfter(normalizedOrder, projectId, targetProjectId, after)
+    const next = moveProjectBeforeOrAfter(normalizedOrder, projectId, targetProjectId, after)
     const position = next.indexOf(projectId) + 1
     return commit(
       next,

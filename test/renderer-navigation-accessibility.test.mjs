@@ -126,7 +126,8 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(projectRail,/size-\[7px\] rounded-full border border-muted-foreground/u);
   assert.doesNotMatch(projectRail,/absolute right-0 bottom-0/u);
   assert.match(projectRail,/aria-label=\{`\$\{project.name\}/u);
-  assert.match(projectRail,/hidden: false/u);
+  assert.match(projectRail,/hidden: projectDrag\.draggingProjectId !== null/u,
+    'project tooltips remain available at either rail width but do not cover drop targets during dragging');
   assert.match(projectRail,/statusLabel\(project.status\)/u);
   const projectFilter = projectRail.slice(projectRail.indexOf('const visibleProjects ='),projectRail.indexOf('const selectedProject ='));
   assert.doesNotMatch(projectFilter,/\bcollapsed\b/u,'the same query filters projects at either rail width');
