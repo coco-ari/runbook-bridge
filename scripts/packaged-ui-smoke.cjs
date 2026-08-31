@@ -14,6 +14,7 @@ const executable = path.resolve(
 const PROJECT_RAIL_COLLAPSED_WIDTH = 128;
 const PROJECT_RAIL_EXPANDED_MIN_WIDTH = 176;
 const LAYOUT_STORAGE_KEY = 'runbook-bridge:app-shell-layout:v1';
+const THEME_STORAGE_KEY = 'runbook-bridge:theme-preference:v1';
 const diagnosticDirectory = process.env.RUNBOOK_BRIDGE_PACKAGED_UI_DIAGNOSTIC_DIR;
 
 function recordDiagnostic(entries, entry) {
@@ -545,6 +546,138 @@ function assertProjectRailFocus(snapshot, anchor, trustedKeys, label) {
   assert.ok(Math.abs(snapshot.anchor.top - anchor.top) <= 1, `${label}: resizer vertical anchor stays fixed`);
 }
 
+async function waitForThemeUi(cdp, expression, label) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (await cdp.evaluate(expression)) return;
+    await delay(80);
+  }
+  throw new Error(`Packaged theme UI timed out: ${label}`);
+}
+
+async function clickThemeControl(cdp, testId) {
+  await cdp.call('Page.bringToFront');
+  await cdp.call('Page.captureScreenshot', {format:'png',fromSurface:true,captureBeyondViewport:false});
+  await waitForThemeUi(cdp, `(() => {
+    const target = document.querySelector('[data-testid="' + ${JSON.stringify(testId)} + '"]');
+    const rect = target?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0 || rect.top < 0 || rect.left < 0
+      || rect.bottom > innerHeight+1 || rect.right > innerWidth+1) return false;
+    const hit = document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);
+    return Boolean(hit && target.contains(hit));
+  })()`, `${testId} finishes positioning before native input`);
+  const point = await cdp.evaluate(`(() => {
+    const target = document.querySelector('[data-testid="' + ${JSON.stringify(testId)} + '"]');
+    const rect = target?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    return {x:rect.left+rect.width/2,y:rect.top+rect.height/2};
+  })()`);
+  assert.ok(point, `packaged ${testId} is visible`);
+  await cdp.call('Input.dispatchMouseEvent', {type:'mouseMoved', ...point});
+  await cdp.call('Input.dispatchMouseEvent', {type:'mousePressed', button:'left', clickCount:1, ...point});
+  await cdp.call('Input.dispatchMouseEvent', {type:'mouseReleased', button:'left', clickCount:1, ...point});
+}
+
+async function pressThemeKey(cdp, key, code, keyCode) {
+  for (const type of ['keyDown','keyUp']) {
+    await cdp.call('Input.dispatchKeyEvent', {
+      type, key, code, windowsVirtualKeyCode:keyCode, nativeVirtualKeyCode:keyCode,
+      ...(type === 'keyDown' && key === 'Enter' ? {text:'\r',unmodifiedText:'\r'} : {}),
+    });
+  }
+}
+
+async function selectThemePreference(cdp, preference) {
+  await clickThemeControl(cdp, 'theme-menu-trigger');
+  await waitForThemeUi(cdp, `document.querySelector('[data-testid="theme-menu"]')?.contains(document.activeElement) === true`, 'menu opens with native focus');
+  await cdp.call('Page.captureScreenshot', {format:'png',fromSurface:true,captureBeyondViewport:false});
+  await waitForThemeUi(cdp, `(() => {
+    const rect = document.querySelector('[data-testid="theme-menu"]')?.getBoundingClientRect();
+    return Boolean(rect && rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0
+      && rect.right <= innerWidth+1 && rect.bottom <= innerHeight+1);
+  })()`, 'menu finishes positioning before geometry assertions');
+  const radio = await cdp.evaluate(`(() => {
+    const option = document.querySelector('[data-testid="theme-option-${preference}"]');
+    const menu = document.querySelector('[data-testid="theme-menu"]');
+    const rect = menu?.getBoundingClientRect();
+    const options = [...(menu?.querySelectorAll('[role="menuitemradio"]') ?? [])];
+    return {role:option?.getAttribute('role'),options:options.length,
+      menuFits:Boolean(rect && rect.left >= 0 && rect.right <= innerWidth+1 && rect.top >= 0 && rect.bottom <= innerHeight+1),
+      optionsFit:options.every((item) => item.scrollWidth <= item.clientWidth+1)};
+  })()`);
+  assert.deepEqual(radio, {role:'menuitemradio',options:3,menuFits:true,optionsFit:true}, 'packaged theme radio options remain readable and inside the viewport');
+  await clickThemeControl(cdp, `theme-option-${preference}`);
+  await waitForThemeUi(cdp, `document.querySelector('[data-testid="theme-menu"]') === null
+    && document.activeElement === document.querySelector('[data-testid="theme-menu-trigger"]')`, 'selection restores theme trigger focus');
+}
+
+async function emulateSystemTheme(cdp, theme) {
+  await cdp.call('Emulation.setEmulatedMedia', {features:[{name:'prefers-color-scheme',value:theme}]});
+  await waitForThemeUi(cdp, `matchMedia('(prefers-color-scheme: dark)').matches === ${theme === 'dark'}`, 'system color-scheme media changes');
+}
+
+async function assertThemeState(cdp, preference, actual, label, {persisted = true} = {}) {
+  // The isolated empty workspace's confirmation entry displays a real toast
+  // without mutating data or introducing a special packaged testing API.
+  await clickThemeControl(cdp, 'confirmation-center');
+  await waitForThemeUi(cdp, `(() => {
+    const toasters = [...document.querySelectorAll('[data-sonner-toaster]')];
+    return document.documentElement.dataset.themePreference === '${preference}'
+      && document.documentElement.dataset.theme === '${actual}'
+      && (!${persisted} || localStorage.getItem('${THEME_STORAGE_KEY}') === '${preference}')
+      && toasters.length > 0 && toasters.every((toaster) => toaster.dataset.sonnerTheme === '${actual}');
+  })()`, label);
+}
+
+async function assertThemeControlGeometry(cdp, compact) {
+  const snapshot = await cdp.evaluate(`(() => {
+    const trigger = document.querySelector('[data-testid="theme-menu-trigger"]');
+    const label = trigger?.querySelector('span');
+    const rail = document.querySelector('[data-testid="project-rail"]');
+    const footer = document.querySelector('[data-testid="add-project-footer"]');
+    const rect = trigger?.getBoundingClientRect();
+    const railRect = rail?.getBoundingClientRect();
+    const hit = rect && document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);
+    return {width:railRect?.width,visible:Boolean(rect && rect.width > 0 && rect.height > 0 && railRect
+      && rect.left >= railRect.left && rect.right <= railRect.right+1 && rect.bottom <= innerHeight
+      && hit && trigger.contains(hit) && !trigger.closest('[inert],[aria-hidden="true"]')),
+      aboveFooter:Boolean(rect && footer && rect.bottom <= footer.getBoundingClientRect().top+1),
+      labelFits:Boolean(label && label.clientWidth > 0 && label.scrollWidth <= label.clientWidth+1),
+      noOverflow:Boolean(rail && rail.scrollWidth <= rail.clientWidth+1
+        && document.documentElement.scrollWidth <= document.documentElement.clientWidth+1)};
+  })()`);
+  assert.equal(snapshot.visible, true, 'packaged theme entry stays visible and reachable');
+  assert.equal(snapshot.aboveFooter, true, 'packaged theme entry stays above the project footer');
+  assert.equal(snapshot.labelFits, true, 'packaged theme mode label remains fully readable without truncation');
+  assert.equal(snapshot.noOverflow, true, 'packaged theme entry introduces no horizontal overflow');
+  if (compact) assert.ok(Math.abs(snapshot.width-128) <= 1, 'packaged theme entry fits the actual 128px rail');
+}
+
+async function exerciseThemePreferences(cdp) {
+  await assertThemeControlGeometry(cdp, false);
+  await emulateSystemTheme(cdp, 'light');
+  await assertThemeState(cdp, 'system', 'light', 'default system theme and Toaster', {persisted:false});
+  await selectThemePreference(cdp, 'dark');
+  await assertThemeState(cdp, 'dark', 'dark', 'manual dark overrides light system and Toaster');
+  await emulateSystemTheme(cdp, 'dark');
+  await selectThemePreference(cdp, 'light');
+  await assertThemeState(cdp, 'light', 'light', 'manual light overrides dark system and Toaster');
+  await emulateSystemTheme(cdp, 'light');
+  await emulateSystemTheme(cdp, 'dark');
+  await assertThemeState(cdp, 'light', 'light', 'system changes preserve the manual preference');
+  await selectThemePreference(cdp, 'system');
+  await assertThemeState(cdp, 'system', 'dark', 'return to system follows current dark media');
+  await emulateSystemTheme(cdp, 'light');
+  await assertThemeState(cdp, 'system', 'light', 'system preference and Toaster react live');
+  await clickThemeControl(cdp, 'theme-menu-trigger');
+  await waitForThemeUi(cdp, `document.querySelector('[data-testid="theme-menu"]')?.contains(document.activeElement) === true`, 'theme menu opens before Escape');
+  await pressThemeKey(cdp, 'Escape', 'Escape', 27);
+  await waitForThemeUi(cdp, `document.querySelector('[data-testid="theme-menu"]') === null
+    && document.activeElement === document.querySelector('[data-testid="theme-menu-trigger"]')`, 'Escape restores theme trigger focus');
+  assert.equal(await cdp.evaluate(`localStorage.getItem('${THEME_STORAGE_KEY}')`), 'system', 'Escape leaves the persisted preference unchanged');
+  process.stdout.write('Packaged theme controls passed: manual light/dark, live system changes, visible matching Toaster, native menu focus\n');
+}
+
 async function main() {
   await fsp.access(executable);
   const temporaryRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'runbook-bridge-packaged-ui-'));
@@ -604,6 +737,8 @@ async function main() {
     assert.doesNotMatch(inspection.csp, /script-src[^;]*(?:unsafe-inline|unsafe-eval)/u);
     assert.deepEqual(inspection.externalResources, []);
     assert.deepEqual(running.httpRequests, []);
+    await exerciseThemePreferences(running.cdp);
+    await waitForThemeUi(running.cdp, `document.querySelector('[data-sonner-toast]') === null`, 'theme toasts dismiss before rail geometry');
 
     // Exercise the installed renderer through native input without creating any
     // projects, replacing preload, or writing layout state directly.
@@ -613,6 +748,7 @@ async function main() {
     await pressProjectRailShortcut(running.cdp);
     const collapsed = await waitForProjectRail(running.cdp, true, 'collapse to 128px');
     assertProjectRailFocus(collapsed, anchor, ['Control+B'], 'collapse to 128px');
+    await assertThemeControlGeometry(running.cdp, true);
     const compactSearch = await assertProjectSearch(running.cdp, '128px project search placeholder');
     await exerciseProjectSearchInput(running.cdp);
     await pressProjectRailResizer(running.cdp);
@@ -624,14 +760,19 @@ async function main() {
     assertProjectRailFocus(beforeRestart, anchor, ['Control+B','Enter','Control+B'], 'persist collapsed rail before restart');
     await assertProjectSearch(running.cdp, 'collapsed project search preserves its input');
     assert.deepEqual(running.httpRequests, []);
+    await selectThemePreference(running.cdp, 'dark');
+    await assertThemeState(running.cdp, 'dark', 'dark', 'manual dark saved through the menu before process restart');
 
     // A real process restart with the same isolated profile verifies that the
     // persisted intent and the packaged panel geometry agree on startup.
     await stopPackagedApp(running);
     running = null;
     running = await startPackagedApp(isolation);
+    await emulateSystemTheme(running.cdp, 'light');
+    await assertThemeState(running.cdp, 'dark', 'dark', 'manual dark and Toaster survive a real restart on a light system');
     const afterRestart = await waitForProjectRail(running.cdp, true, 'restore 128px rail after process restart');
     assert.equal(afterRestart.savedCollapsed, true, 'collapsed rail persists across a packaged process restart');
+    await assertThemeControlGeometry(running.cdp, true);
     await assertProjectSearch(running.cdp, 'restored 128px project search');
     const restartAnchor = await focusProjectRailResizer(running.cdp);
     await pressProjectRailResizer(running.cdp);
@@ -645,6 +786,13 @@ async function main() {
     })()`);
     assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 58});
     assert.deepEqual(running.httpRequests, []);
+    await selectThemePreference(running.cdp, 'system');
+    await emulateSystemTheme(running.cdp, 'dark');
+    await assertThemeState(running.cdp, 'system', 'dark', 'system mode reacts after restarting a manual preference');
+    await emulateSystemTheme(running.cdp, 'light');
+    await assertThemeState(running.cdp, 'system', 'light', 'Toaster tracks the restored live system preference');
+    await waitForThemeUi(running.cdp, `document.querySelector('[data-sonner-toast]') === null`, 'theme toasts dismiss before packaged plugin lifecycle');
+    process.stdout.write('Packaged theme persistence passed: manual dark survives the real process restart; system tracking resumes after explicit selection\n');
     const pluginLifecycle = await exercisePackagedPluginLifecycle(running.cdp, dataRoot);
     assert.deepEqual(running.httpRequests, []);
     process.stdout.write(`Packaged plugin lifecycle passed: ${JSON.stringify(pluginLifecycle)}\n`);

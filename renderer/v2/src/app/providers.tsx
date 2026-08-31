@@ -1,6 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react"
-import { useEffect } from "react"
 
+import { ThemeProvider, useTheme } from "@/app/theme-provider"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
@@ -42,30 +42,20 @@ class RendererErrorBoundary extends Component<AppProvidersProps, ErrorBoundarySt
   }
 }
 
-function SystemTheme({ children }: AppProvidersProps) {
-  useEffect(() => {
-    const media = window.matchMedia("(prefers-color-scheme: dark)")
-    const applyTheme = () => {
-      document.documentElement.dataset.theme = media.matches ? "dark" : "light"
-    }
-
-    applyTheme()
-    media.addEventListener("change", applyTheme)
-    return () => media.removeEventListener("change", applyTheme)
-  }, [])
-
-  return children
+function ThemeNotifications() {
+  const { theme } = useTheme()
+  return <Toaster position="top-center" richColors theme={theme} />
 }
 
 export function AppProviders({ children }: AppProvidersProps) {
   return (
     <RendererErrorBoundary>
-      <SystemTheme>
+      <ThemeProvider>
         <TooltipProvider delayDuration={350} skipDelayDuration={100}>
           {children}
-          <Toaster position="top-center" richColors />
+          <ThemeNotifications />
         </TooltipProvider>
-      </SystemTheme>
+      </ThemeProvider>
     </RendererErrorBoundary>
   )
 }

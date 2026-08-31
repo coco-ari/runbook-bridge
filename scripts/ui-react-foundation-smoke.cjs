@@ -13,6 +13,7 @@ app.on('window-all-closed',() => {
 const root = path.resolve(__dirname,'..');
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(),'runbook-bridge-react-production-'));
 const pagePath = path.join(root,'renderer-build','v2','index.html');
+const THEME_STORAGE_KEY = 'runbook-bridge:theme-preference:v1';
 const screenshotDirectoryArgument = process.argv.find((value) => value.startsWith('--screenshot-dir='))
   ?.slice('--screenshot-dir='.length);
 const commandLineScreenshotDirectory = app.commandLine.getSwitchValue('screenshot-dir') || null;
@@ -438,6 +439,182 @@ async function setTheme(win,theme) {
     `${theme} theme`,
   );
   await wait(80);
+}
+
+async function clickThemeControl(win,testId) {
+  win.webContents.focus();
+  // Floating UI can expose a focused menu before its first positioned frame.
+  // Native input must use the painted target, never the initial offscreen rect.
+  await captureRenderedFrame(win);
+  await waitFor(win,`(() => {
+    const target = document.querySelector('[data-testid="' + ${JSON.stringify(testId)} + '"]');
+    const rect = target?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0 || rect.top < 0 || rect.left < 0
+      || rect.bottom > innerHeight+1 || rect.right > innerWidth+1) return false;
+    const hit = document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);
+    return Boolean(hit && target.contains(hit));
+  })()`,`${testId} finishes positioning before native input`);
+  const point = await win.webContents.executeJavaScript(`(() => {
+    const target = document.querySelector('[data-testid="' + ${JSON.stringify(testId)} + '"]');
+    if (!(target instanceof HTMLElement) || target.getClientRects().length === 0) return null;
+    const rect = target.getBoundingClientRect();
+    const point = {x:Math.round(rect.left+rect.width/2),y:Math.round(rect.top+rect.height/2)};
+    const hit = document.elementFromPoint(point.x,point.y);
+    window.__themeLastPointer = {testId:${JSON.stringify(testId)},point,
+      hitTestId:hit?.closest('[data-testid]')?.getAttribute('data-testid'),insideTarget:Boolean(hit && target.contains(hit)),
+      rect:{left:rect.left,top:rect.top,width:rect.width,height:rect.height}};
+    return point;
+  })()`,true);
+  assert.ok(point,`${testId} must be visible`);
+  win.webContents.sendInputEvent({type:'mouseMove',...point});
+  win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});
+  win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point});
+  await wait(80);
+}
+
+async function openThemeMenu(win) {
+  await clickThemeControl(win,'theme-menu-trigger');
+  await waitFor(win,`document.querySelector('[data-testid="theme-menu"][data-state="open"]')?.contains(document.activeElement) === true`,
+    'theme menu receives native focus');
+  const options = await win.webContents.executeJavaScript(`(() => {
+    const preference = document.documentElement.dataset.themePreference;
+    return ['light','dark','system'].map((value) => {
+      const option = document.querySelector('[data-testid="theme-option-' + value + '"]');
+      return {value,role:option?.getAttribute('role'),checked:option?.getAttribute('aria-checked'),expected:value === preference};
+    });
+  })()`,true);
+  assert.ok(options.every((option) => option.role === 'menuitemradio' && option.checked === String(option.expected)),
+    'theme menu exposes exactly the current preference as checked');
+}
+
+async function assertThemeMenuClosed(win,label) {
+  try {
+    await waitFor(win,`document.querySelector('[data-testid="theme-menu"]') === null
+      && document.activeElement === document.querySelector('[data-testid="theme-menu-trigger"]')`,
+    `${label}: theme menu closes and restores its trigger focus`);
+  } catch (error) {
+    const snapshot = await win.webContents.executeJavaScript(`(() => {
+      const menu = document.querySelector('[data-testid="theme-menu"]');
+      const trigger = document.querySelector('[data-testid="theme-menu-trigger"]');
+      const active = document.activeElement;
+      return {menuPresent:Boolean(menu),menuState:menu?.getAttribute('data-state'),triggerConnected:trigger?.isConnected,
+        triggerExpanded:trigger?.getAttribute('aria-expanded'),triggerFocused:active === trigger,hasFocus:document.hasFocus(),
+        active:{tag:active?.tagName,id:active?.id,testId:active?.getAttribute('data-testid'),role:active?.getAttribute('role')},
+        preference:document.documentElement.dataset.themePreference,theme:document.documentElement.dataset.theme,
+        stored:localStorage.getItem('${THEME_STORAGE_KEY}'),pointer:window.__themeLastPointer,
+        bodyPointerEvents:getComputedStyle(document.body).pointerEvents};
+    })()`,true);
+    throw new Error(`${error.message}\nTheme menu failure evidence: ${JSON.stringify(snapshot)}`);
+  }
+}
+
+async function selectThemePreference(win,preference) {
+  await openThemeMenu(win);
+  await clickThemeControl(win,`theme-option-${preference}`);
+  await assertThemeMenuClosed(win,preference);
+}
+
+async function assertThemeState(win,preference,actual,label,{persisted = true,toast = true} = {}) {
+  // This existing read-only action emits a real Sonner toast with no IPC while
+  // the initial/reloaded workspace has no selected environment.
+  if (toast) await clickThemeControl(win,'confirmation-center');
+  await waitFor(win,`(() => {
+    const root = document.documentElement;
+    const toasters = [...document.querySelectorAll('[data-sonner-toaster]')];
+    return root.dataset.themePreference === ${JSON.stringify(preference)}
+      && root.dataset.theme === ${JSON.stringify(actual)}
+      && (${persisted} === false || localStorage.getItem('${THEME_STORAGE_KEY}') === ${JSON.stringify(preference)})
+      && (!${toast} || (toasters.length > 0 && toasters.every((toaster) => toaster.dataset.sonnerTheme === ${JSON.stringify(actual)})));
+  })()`,`${label}: preference, effective theme, persistence and visible Toaster agree`);
+}
+
+async function assertThemeControlGeometry(win,{compact = false} = {}) {
+  const snapshot = await win.webContents.executeJavaScript(`(() => {
+    const rail = document.querySelector('[data-testid="project-rail"]');
+    const trigger = document.querySelector('[data-testid="theme-menu-trigger"]');
+    const footer = document.querySelector('[data-testid="add-project-footer"]');
+    const rect = trigger?.getBoundingClientRect();
+    const railRect = rail?.getBoundingClientRect();
+    const hit = rect && document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);
+    return {width:railRect?.width,visible:Boolean(rect && rect.width > 0 && rect.height > 0
+      && rect.left >= railRect.left && rect.right <= railRect.right+1 && rect.top >= 0 && rect.bottom <= innerHeight
+      && hit && trigger.contains(hit) && !trigger.closest('[inert],[aria-hidden="true"]')),
+      aboveFooter:Boolean(rect && footer && rect.bottom <= footer.getBoundingClientRect().top+1),
+      noOverflow:Boolean(rail && rail.scrollWidth <= rail.clientWidth+1
+        && document.documentElement.scrollWidth <= document.documentElement.clientWidth+1)};
+  })()`,true);
+  assert.equal(snapshot.visible,true,'theme control remains visible and reachable in the project rail');
+  assert.equal(snapshot.aboveFooter,true,'theme has its own row above the existing project footer');
+  assert.equal(snapshot.noOverflow,true,'theme control does not introduce horizontal overflow');
+  if (compact) assert.ok(Math.abs(snapshot.width-128) <= 1,'theme entry is usable in the real 128px rail');
+}
+
+async function assertManualThemePreferences(win) {
+  const originalSystemTheme = nativeTheme.themeSource;
+  const readCount = readCalls.length;
+  const mutationCount = mutationCalls.length;
+  await assertThemeControlGeometry(win);
+  await clickThemeControl(win,'project-search');
+  await win.webContents.insertText('海隅');
+  await waitFor(win,`document.querySelector('[data-testid="project-search"]')?.value === '海隅'`,'unsaved search input before theme changes');
+  await win.webContents.executeJavaScript(`window.__themeWorkspaceProbe = {
+    search:document.querySelector('[data-testid="project-search"]'),
+    detail:document.getElementById('detail-main'),
+    selected:document.querySelector('[data-project-id][aria-current="page"]')?.dataset.projectId,
+    tab:document.querySelector('[data-detail-tab][aria-selected="true"]')?.dataset.detailTab,
+  }`,true);
+  nativeTheme.themeSource = 'light';
+  await assertThemeState(win,'system','light','default follows system',{persisted:false});
+  await selectThemePreference(win,'dark');
+  await assertThemeState(win,'dark','dark','manual dark on a light system');
+  nativeTheme.themeSource = 'dark';
+  await assertThemeState(win,'dark','dark','manual dark survives system changes');
+  await selectThemePreference(win,'light');
+  await assertThemeState(win,'light','light','manual light on a dark system');
+  nativeTheme.themeSource = 'light';
+  await assertThemeState(win,'light','light','manual light remains explicit');
+  nativeTheme.themeSource = 'dark';
+  await assertThemeState(win,'light','light','system changes cannot override manual light');
+  await selectThemePreference(win,'system');
+  await assertThemeState(win,'system','dark','switch back to system');
+  nativeTheme.themeSource = 'light';
+  await assertThemeState(win,'system','light','system preference reacts live');
+
+  await openThemeMenu(win);
+  await pressKey(win,'ESCAPE');
+  await assertThemeMenuClosed(win,'Escape');
+  assert.equal(await win.webContents.executeJavaScript(`localStorage.getItem('${THEME_STORAGE_KEY}')`,true),'system',
+    'dismissing the theme menu does not change the preference');
+  await pressKey(win,'ENTER');
+  await waitFor(win,`document.querySelector('[data-testid="theme-menu"]')?.contains(document.activeElement) === true`,'keyboard opens theme menu');
+  await pressKey(win,'HOME');
+  await waitFor(win,`document.activeElement?.dataset.testid === 'theme-option-light'`,'Home focuses the light preference');
+  await pressKey(win,'DOWN');
+  await waitFor(win,`document.activeElement?.dataset.testid === 'theme-option-dark'`,'ArrowDown moves between theme options');
+  await pressKey(win,'ENTER');
+  await assertThemeMenuClosed(win,'keyboard selection');
+  await assertThemeState(win,'dark','dark','keyboard selects manual dark');
+  await selectThemePreference(win,'system');
+  nativeTheme.themeSource = originalSystemTheme;
+  await assertThemeState(win,'system',nativeTheme.shouldUseDarkColors ? 'dark' : 'light','restore system preference');
+  const preserved = await win.webContents.executeJavaScript(`(() => {
+    const before = window.__themeWorkspaceProbe;
+    const search = document.querySelector('[data-testid="project-search"]');
+    return {sameSearch:search === before.search,value:search?.value,sameDetail:document.getElementById('detail-main') === before.detail,
+      sameSelection:document.querySelector('[data-project-id][aria-current="page"]')?.dataset.projectId === before.selected,
+      sameTab:document.querySelector('[data-detail-tab][aria-selected="true"]')?.dataset.detailTab === before.tab};
+  })()`,true);
+  assert.deepEqual(preserved,{sameSearch:true,value:'海隅',sameDetail:true,sameSelection:true,sameTab:true},
+    'theme changes preserve the live unsaved search input, selected scope and detail tab without remounting the workspace');
+  await clickThemeControl(win,'project-search');
+  await pressKey(win,'a',['control']);
+  await pressKey(win,'BACKSPACE');
+  await waitFor(win,`document.querySelector('[data-testid="project-search"]')?.value === ''`,'clear the theme regression search through native input');
+  await win.webContents.executeJavaScript('delete window.__themeWorkspaceProbe',true);
+  await waitFor(win,`document.querySelector('[data-sonner-toast]') === null`,'theme evidence toasts dismiss before existing geometry assertions');
+  assert.equal(readCalls.length,readCount,'theme controls perform no read IPC');
+  assert.equal(mutationCalls.length,mutationCount,'theme controls perform no mutation IPC');
+  process.stdout.write('Theme preference evidence: light, dark, live system changes, native menu keyboard/focus, matching Toaster, no IPC\n');
 }
 
 async function assertEnvironmentAccordionNavigation(win) {
@@ -890,6 +1067,13 @@ async function assertCompactProjectRail(win,theme) {
     await focusSeparator();
     await toggleWithShortcut();
     await waitCollapsed(true,`compact project rail ${width}x${height}`);
+    await assertThemeControlGeometry(win,{compact:true});
+    if (width === 960) {
+      await openThemeMenu(win);
+      await pressKey(win,'ESCAPE');
+      await assertThemeMenuClosed(win,'compact theme menu');
+      await focusSeparator();
+    }
     await assertProjectSearchPlaceholder(win,`compact ${theme} ${width}x${height}`);
     if (width === 960) {
       await win.webContents.executeJavaScript(`window.__zoomSearchInput = document.querySelector('[data-testid="project-search"]')`,true);
@@ -1121,6 +1305,9 @@ async function assertCompactProjectRail(win,theme) {
         && document.querySelectorAll('[data-project-id]').length === ${workspaceProjects.length}`,
       'collapsed project rail reload ready');
       await waitCollapsed(true,'collapsed project rail persists across reload');
+      await waitFor(win,`document.documentElement.dataset.themePreference === 'system'
+        && localStorage.getItem('${THEME_STORAGE_KEY}') === 'system'`,
+      'system theme preference persists across a Renderer reload');
       await assertRendererKeyboardFocus(win);
       await rememberStableRail();
       await focusSeparator();
@@ -3171,6 +3358,16 @@ async function run() {
     assert.equal(initial.selected,'project-operations');
     assert.equal(initial.confirmationAboveProjects,true);
     assert.equal(initial.addProjectBelowProjects,true);
+    await assertManualThemePreferences(win);
+    if (app.commandLine.hasSwitch('theme-regression-only')) {
+      await collectWindowErrorDiagnostics(win);
+      assert.deepEqual(mutationCalls,[]);
+      assert.deepEqual(externalRequests,[]);
+      assert.deepEqual(rendererErrors,[]);
+      assert.deepEqual(rendererWindowErrors,[]);
+      process.stdout.write(`Focused theme preference smoke passed (${readCalls.length} read-only API calls; no mutations or external requests)\n`);
+      return;
+    }
     await assertEnvironmentAccordionNavigation(win);
 
     const projectRoving = await win.webContents.executeJavaScript(`(() => {
@@ -3693,6 +3890,10 @@ async function run() {
     assert.ok(savedLayout);
     assert.notEqual(savedLayout,layoutBefore);
 
+    const systemThemeBeforeReload = nativeTheme.themeSource;
+    await selectThemePreference(win,'light');
+    nativeTheme.themeSource = 'dark';
+    await assertThemeState(win,'light','light','manual light before reload',{toast:false});
     await collectWindowErrorDiagnostics(win);
     currentSmokeStep = 'renderer-reload';
     await win.reload();
@@ -3715,6 +3916,10 @@ async function run() {
       restored:JSON.parse(restoredLayout),
       saved:JSON.parse(savedLayout),
     });
+    await assertThemeState(win,'light','light','manual light survives reload against a dark system');
+    await selectThemePreference(win,'system');
+    nativeTheme.themeSource = systemThemeBeforeReload;
+    await assertThemeState(win,'system',nativeTheme.shouldUseDarkColors ? 'dark' : 'light','restore theme after reload evidence');
 
     const readOnlyChannels = new Set([
       'v2:project-list','v2:workspace-overview','v2:environment-list','v2:environment-status',

@@ -11,6 +11,7 @@ import {
 } from "@phosphor-icons/react"
 
 import { StatusIndicator, statusLabel } from "@/components/app-shell/StatusIndicator"
+import { ThemeMenu } from "@/components/app-shell/ThemeMenu"
 import {
   Alert,
   AlertDescription,
@@ -509,6 +510,8 @@ export function ProjectRail({
             </ScrollArea>
           </nav>
         </SidebarContent>
+
+        <ThemeMenu />
 
         <SidebarFooter
           className={cn(
