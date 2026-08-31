@@ -549,10 +549,25 @@ function assertProjectRailFocus(snapshot, anchor, trustedKeys, label) {
 async function waitForThemeUi(cdp, expression, label) {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
+    // Like rail geometry, menu exit animations need a real compositor frame
+    // when Windows considers the packaged test window occluded.
+    await cdp.call('Page.captureScreenshot', {format:'png',fromSurface:true,captureBeyondViewport:false});
     if (await cdp.evaluate(expression)) return;
     await delay(80);
   }
   throw new Error(`Packaged theme UI timed out: ${label}`);
+}
+
+async function waitForThemeToastsToDismiss(cdp, label) {
+  // Sonner intentionally pauses auto-dismiss while the page is hidden. Emulate
+  // foreground visibility only while clearing these evidence toasts, then
+  // restore native focus reporting before any input or focus assertions.
+  await cdp.call('Emulation.setFocusEmulationEnabled', {enabled:true});
+  try {
+    await waitForThemeUi(cdp, `document.querySelector('[data-sonner-toast]') === null`, label);
+  } finally {
+    await cdp.call('Emulation.setFocusEmulationEnabled', {enabled:false});
+  }
 }
 
 async function clickThemeControl(cdp, testId) {
@@ -738,7 +753,7 @@ async function main() {
     assert.deepEqual(inspection.externalResources, []);
     assert.deepEqual(running.httpRequests, []);
     await exerciseThemePreferences(running.cdp);
-    await waitForThemeUi(running.cdp, `document.querySelector('[data-sonner-toast]') === null`, 'theme toasts dismiss before rail geometry');
+    await waitForThemeToastsToDismiss(running.cdp, 'theme toasts dismiss before rail geometry');
 
     // Exercise the installed renderer through native input without creating any
     // projects, replacing preload, or writing layout state directly.
@@ -791,7 +806,7 @@ async function main() {
     await assertThemeState(running.cdp, 'system', 'dark', 'system mode reacts after restarting a manual preference');
     await emulateSystemTheme(running.cdp, 'light');
     await assertThemeState(running.cdp, 'system', 'light', 'Toaster tracks the restored live system preference');
-    await waitForThemeUi(running.cdp, `document.querySelector('[data-sonner-toast]') === null`, 'theme toasts dismiss before packaged plugin lifecycle');
+    await waitForThemeToastsToDismiss(running.cdp, 'theme toasts dismiss before packaged plugin lifecycle');
     process.stdout.write('Packaged theme persistence passed: manual dark survives the real process restart; system tracking resumes after explicit selection\n');
     const pluginLifecycle = await exercisePackagedPluginLifecycle(running.cdp, dataRoot);
     assert.deepEqual(running.httpRequests, []);
