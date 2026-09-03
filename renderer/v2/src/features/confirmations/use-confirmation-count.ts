@@ -5,29 +5,13 @@ import {
   type AiOpsV2Api,
   type ConfirmationRecord,
 } from "@/bridge/ai-ops-v2"
+import { countActiveConfirmations } from "@/features/confirmations/confirmation-count-model"
 
 type ConfirmationCountApi = Pick<AiOpsV2Api, "listConfirmations" | "onConfirmations">
 
 interface ConfirmationCountScope {
   readonly projectId: string | null
   readonly environmentId: string | null
-}
-
-function countValid(
-  items: readonly ConfirmationRecord[],
-  scope: ConfirmationCountScope,
-): number {
-  if (!scope.projectId || !scope.environmentId) return 0
-  const ids = new Set<string>()
-  for (const item of items) {
-    if (
-      typeof item.requestId === "string"
-      && item.requestId.length > 0
-      && item.projectId === scope.projectId
-      && item.environmentId === scope.environmentId
-    ) ids.add(item.requestId)
-  }
-  return ids.size
 }
 
 export function useConfirmationCount(
@@ -48,6 +32,7 @@ export function useConfirmationCount(
       }
     }
     setState({ count: 0, loading: true })
+    let latestItems: readonly ConfirmationRecord[] = []
     let api: ConfirmationCountApi
     try {
       api = getApi()
@@ -61,7 +46,8 @@ export function useConfirmationCount(
     void api.listConfirmations().then(
       (result) => {
         if (!active || generation !== generationRef.current) return
-        setState({ count: result.ok ? countValid(result.data, scope) : 0, loading: false })
+        latestItems = result.ok ? result.data : []
+        setState({ count: countActiveConfirmations(latestItems, scope), loading: false })
       },
       () => {
         if (active && generation === generationRef.current) setState({ count: 0, loading: false })
@@ -72,16 +58,26 @@ export function useConfirmationCount(
     try {
       unsubscribe = api.onConfirmations((items) => {
         if (active && generation === generationRef.current) {
-          setState({ count: countValid(items, scope), loading: false })
+          latestItems = items
+          setState({ count: countActiveConfirmations(latestItems, scope), loading: false })
         }
       })
     } catch {
       // The initial read remains authoritative when subscription setup fails.
     }
 
+    const timer = window.setInterval(() => {
+      if (!active || generation !== generationRef.current) return
+      const count = countActiveConfirmations(latestItems, scope)
+      setState((current) => current.loading || current.count === count
+        ? current
+        : { count, loading: false })
+    }, 1_000)
+
     return () => {
       active = false
       generationRef.current += 1
+      window.clearInterval(timer)
       unsubscribe()
     }
   }, [getApi, scope.environmentId, scope.projectId])

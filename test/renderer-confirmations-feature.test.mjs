@@ -14,6 +14,15 @@ const model = await import(pathToFileURL(path.join(
   'confirmations',
   'confirmation-execution-model.ts',
 )).href);
+const countModel = await import(pathToFileURL(path.join(
+  root,
+  'renderer',
+  'v2',
+  'src',
+  'features',
+  'confirmations',
+  'confirmation-count-model.ts',
+)).href);
 
 function confirmationItem(index) {
   return {
@@ -134,6 +143,18 @@ test('confirmation execution normalization omits unsafe arbitrary error text', (
   }), null);
 });
 
+test('confirmation badge counts only unexpired requests in the selected environment', () => {
+  const scope = {projectId:'project-example',environmentId:'environment-example'};
+  const now = 10_000;
+  assert.equal(countModel.countActiveConfirmations([
+    {requestId:'active',...scope,expiresAt:now + 1},
+    {requestId:'expired',...scope,expiresAt:now},
+    {requestId:'invalid-expiry',...scope,expiresAt:'later'},
+    {requestId:'other-environment',projectId:scope.projectId,environmentId:'other',expiresAt:now + 1},
+    {requestId:'active',...scope,expiresAt:now + 2},
+  ],scope,now),1);
+});
+
 test('React confirmation center preserves subscription, scope, expiry and approval gates', async () => {
   const [source,countHook,toggleGroup] = await Promise.all([
     fs.readFile(path.join(
@@ -170,10 +191,11 @@ test('React confirmation center preserves subscription, scope, expiry and approv
   assert.match(source, /if \(scopeMode === "plugin" && filter !== "plugin"\)/u);
   assert.doesNotMatch(source, /\["all", "全部"|\["project", projectName/u);
   assert.match(source, /if \(!matchesCurrentScope\(item\)\) return/u);
-  assert.match(countHook, /item\.projectId === scope\.projectId/u);
-  assert.match(countHook, /item\.environmentId === scope\.environmentId/u);
+  assert.match(countHook, /countActiveConfirmations/u);
   assert.match(countHook, /if \(!scope\.projectId \|\| !scope\.environmentId\)/u);
   assert.match(countHook, /setState\(\{ count: 0, loading: true \}\)/u);
+  assert.match(countHook, /window\.setInterval/u);
+  assert.match(countHook, /window\.clearInterval\(timer\)/u);
   assert.match(source, /feedbackRef/u);
   assert.match(source, /item\.expiresAt > now/u);
   assert.match(source, /CONFIRMATION_EXPIRED/u);
