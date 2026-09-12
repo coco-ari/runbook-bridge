@@ -3,7 +3,6 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import type {
   AiOpsV2Api,
   IpcResult,
-  MysqlQueryResult,
   MysqlTableDescription,
   MysqlTableSummary,
   PluginScope,
@@ -39,11 +38,9 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
   const [tablesAuditWarning, setTablesAuditWarning] = useState(false)
   const [selectedTable, setSelectedTable] = useState<MysqlTableSummary | null>(null)
   const [structure, setStructure] = useState<ReadState<MysqlTableDescription>>(emptyRead)
-  const [preview, setPreview] = useState<ReadState<MysqlQueryResult>>(emptyRead)
   const active = useRef(false)
-  const tickets = useRef({ tables: 0, structure: 0, preview: 0 })
-  const busy = useRef({ tables: false, preview: false })
-  const tableRef = useRef<MysqlTableSummary | null>(null)
+  const tickets = useRef({ tables: 0, structure: 0 })
+  const busy = useRef({ tables: false })
   const { projectId, environmentId, pluginInstanceId } = scope
 
   const loadTables = useCallback(async (cursor?: string) => {
@@ -54,12 +51,8 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
     setTablesError(null)
     if (!cursor) {
       ++tickets.current.structure
-      ++tickets.current.preview
-      busy.current.preview = false
-      tableRef.current = null
       setSelectedTable(null)
       setStructure(emptyRead())
-      setPreview(emptyRead())
       setTables([])
       setTablesLoaded(false)
       setNextCursor(null)
@@ -100,19 +93,15 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
     return () => {
       // 断连、切换作用域或配置后，旧请求不得回填到新的数据库会话。
       active.current = false
-      for (const key of ["tables", "structure", "preview"] as const) ++tickets.current[key]
-      busy.current = { tables: false, preview: false }
+      for (const key of ["tables", "structure"] as const) ++tickets.current[key]
+      busy.current = { tables: false }
     }
   }, [loadTables])
 
   const selectTable = async (table: MysqlTableSummary) => {
     if (!active.current || table.queryable !== true) return
     const ticket = ++tickets.current.structure
-    ++tickets.current.preview
-    busy.current.preview = false
-    tableRef.current = table
     setSelectedTable(table)
-    setPreview(emptyRead())
     setStructure({ data: null, loading: true, error: null })
     try {
       const data = unwrap(await api.mysqlDescribeTable({ projectId, environmentId, pluginInstanceId, table: table.name }))
@@ -124,27 +113,9 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
     }
   }
 
-  const runPreview = async () => {
-    const table = tableRef.current
-    if (!active.current || !table || table.queryable !== true || busy.current.preview) return
-    const ticket = ++tickets.current.preview
-    busy.current.preview = true
-    setPreview({ data: null, loading: true, error: null })
-    try {
-      const data = unwrap(await api.mysqlPreviewTable({ projectId, environmentId, pluginInstanceId, table: table.name }))
-      if (active.current && ticket === tickets.current.preview) setPreview({ data, loading: false, error: null })
-    } catch (error) {
-      if (active.current && ticket === tickets.current.preview) {
-        setPreview({ data: null, loading: false, error: readError(error, "数据预览失败，请重试。") })
-      }
-    } finally {
-      if (active.current && ticket === tickets.current.preview) busy.current.preview = false
-    }
-  }
-
   return {
     tables, tablesLoading, tablesLoaded, tablesError, tablesTruncated, tablesAuditWarning, nextCursor,
-    selectedTable, structure, preview,
-    loadTables, selectTable, runPreview,
+    selectedTable, structure,
+    loadTables, selectTable,
   }
 }

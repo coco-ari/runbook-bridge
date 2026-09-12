@@ -185,6 +185,13 @@ export interface MysqlTablePayload extends PluginScope {
   readonly table: string
 }
 
+export interface MysqlPreviewPayload extends MysqlTablePayload {
+  readonly where?: string
+  readonly orderBy?: readonly Readonly<{ column: string; direction: "asc" | "desc" }>[]
+  readonly limit?: number
+  readonly offset?: number
+}
+
 export interface MysqlQueryPayload extends PluginScope {
   readonly sql: string
   readonly params?: readonly (string | number | boolean | null)[]
@@ -558,7 +565,7 @@ export interface AiOpsV2Api {
   mysqlListTables(payload: MysqlTableListPayload): Promise<IpcResult<MysqlTableListData>>
   mysqlDescribeTable(payload: MysqlTablePayload): Promise<IpcResult<MysqlTableDescription>>
   mysqlQueryReadonly(payload: MysqlQueryPayload): Promise<IpcResult<MysqlQueryResult>>
-  mysqlPreviewTable(payload: MysqlTablePayload): Promise<IpcResult<MysqlQueryResult>>
+  mysqlPreviewTable(payload: MysqlPreviewPayload): Promise<IpcResult<MysqlQueryResult>>
   listAudit(payload: AuditListPayload): Promise<IpcResult<AuditPage>>
   clearAudit(payload: AuditClearPayload): Promise<IpcResult<OpaqueData>>
   listConfirmations(): Promise<IpcResult<readonly ConfirmationRecord[]>>

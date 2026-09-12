@@ -94,6 +94,12 @@ async function startLoopbackFixtures() {
             {COLUMN_NAME:'id',COLUMN_TYPE:'int',IS_NULLABLE:'NO',COLUMN_KEY:'PRI',COLUMN_DEFAULT:null,EXTRA:''},
             {COLUMN_NAME:'label',COLUMN_TYPE:'varchar(64)',IS_NULLABLE:'YES',COLUMN_KEY:'',COLUMN_DEFAULT:null,EXTRA:''},
           ], names.map(column));
+        } else if (/^SELECT \* FROM \x60records\x60(?: WHERE \(\x60id\x60 >= \d+\))? ORDER BY \x60id\x60 (?:ASC|DESC) LIMIT \d+, \d+$/u.test(query)) {
+          const [, offset, limit] = query.match(/LIMIT (\d+), (\d+)$/u);
+          const minimum = Number(query.match(/WHERE \(\x60id\x60 >= (\d+)\)/u)?.[1] ?? 1);
+          let rows = Array.from({length:103}, (_,index) => ({id:String(index+1),label:'fixture-row'})).filter(row => Number(row.id) >= minimum);
+          if (query.includes(' DESC LIMIT ')) rows.reverse();
+          client.writeTextResult(rows.slice(Number(offset),Number(offset)+Number(limit)), [column('id'),column('label')]);
         } else if (/^SELECT (?:\*|`id`, `label`) FROM `records` LIMIT \d+$/u.test(query)) {
           const limit = Math.min(103, Number(query.match(/LIMIT (\d+)$/u)[1]));
           client.writeTextResult(Array.from({length:limit}, (_, index) => ({id:String(index + 1),label:'fixture-row'})), [column('id'),column('label')]);
@@ -214,6 +220,19 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
         assert.equal(preview.rowCount, 100);
         assert.equal(preview.truncated, true);
         assert.equal(preview.limitsApplied.maxRows, 100);
+        const browse = {...databaseScope,table:'records',where:'id >= 3',orderBy:[{column:'id',direction:'asc'}],limit:20,offset:0};
+        const firstPage = await success('mysqlPreviewTable', browse);
+        assert.equal(firstPage.rowCount, 20);
+        assert.equal(String(firstPage.rows[0].id), '3');
+        const nextPage = await success('mysqlPreviewTable', {...browse,offset:20});
+        assert.equal(nextPage.rowCount, 20);
+        assert.equal(String(nextPage.rows[0].id), '23');
+        const descending = await success('mysqlPreviewTable', {...browse,orderBy:[{column:'id',direction:'desc'}]});
+        assert.equal(String(descending.rows[0].id), '103');
+        const beforeRejectedFilter = fixture.counts.mysqlQueries;
+        const rejectedFilter = await invoke('mysqlPreviewTable', {...browse,where:'id IN (SELECT id FROM archive.records)'});
+        assert.equal(rejectedFilter.ok, false);
+        assert.equal(fixture.counts.mysqlQueries, beforeRejectedFilter, '跨库筛选必须在进入数据库连接前被拒绝');
         const rows = await success('mysqlQueryReadonly', {...databaseScope,sql:'SELECT id, label FROM records LIMIT 2'});
         assert.equal(rows.rowCount, 2);
         assert.deepEqual(rows.columns.map((item) => item.name), ['id','label']);

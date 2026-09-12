@@ -1,3 +1,4 @@
+const { browseFixture, assertSqlAssistanceAndBrowse } = require('./database-assist-ui.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -42,7 +43,7 @@ const forbiddenCalls = [];
 const externalRequests = [];
 const rendererErrors = [];
 const releases = new Set();
-const state = { sequence:1, failList:false, failDescribe:false, failPreview:false, holdNext:null };
+const state = { sequence:1, failList:false, failDescribe:false, failPreview:false, browseFixture:false, holdNext:null };
 const ok = (data) => ({ok:true,data});
 const failed = (message) => ({ok:false,error:{code:'MYSQL_QUERY_FAILED',message}});
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve,ms));
@@ -173,10 +174,11 @@ function registerMockApi() {
       {name:'label',type:'varchar(255)',nullable:true,key:null,default:null,extra:null},
       {name:'optional',type:'text',nullable:true,key:null,default:null,extra:null},
     ]}));
-  registerDatabase('v2:mysql-preview-table',() => state.failPreview
+  registerDatabase('v2:mysql-preview-table',(payload) => state.failPreview
     ? failed('模拟数据预览失败。')
-    : ok(queryResult([{id:1,label:MARKUP,optional:null},{id:2,label:'已完成订单',optional:''}],{truncated:true,maxRows:100})));
+    : state.browseFixture ? ok(browseFixture(payload)) : ok(queryResult([{id:1,label:MARKUP,optional:null},{id:2,label:'已完成订单',optional:''}],{truncated:true,maxRows:100})));
   registerDatabase('v2:mysql-query-readonly',({pluginInstanceId,sql}) => {
+    if (sql === 'SELECT sort_probe FROM orders') return ok(queryResult([{id:10,label:'ten'},{id:2,label:'two'},{id:1,label:'one'}]));
     if (sql === SHOWCASE_SQL) return ok({
       ...queryResult(Array.from({length:24},(_,index) => ({
         order_no:`DEMO-20260912-${String(index+1).padStart(4,'0')}`,customer_name:`演示客户 ${String(index+1).padStart(2,'0')}`,
@@ -619,7 +621,7 @@ async function run() {
     await click(win,testId('mysql-preview-run'));
     await textContains(win,'mysql-preview-result','已完成订单');
     await waitFor(win,`document.querySelector('${testId('mysql-preview-truncated')}') !== null`,'预览截断提示');
-    assert.deepEqual(databaseCalls.at(-1),{channel:'v2:mysql-preview-table',payload:{...scope(PRIMARY_ID),table:'orders'}});
+    assert.deepEqual(databaseCalls.at(-1),{channel:'v2:mysql-preview-table',payload:{...scope(PRIMARY_ID),table:'orders',where:'',orderBy:[{column:'id',direction:'asc'}],limit:20,offset:0}});
     await assertTextOnly(win,'mysql-preview-result');
     await textContains(win,'mysql-preview-result','NULL');
     await textContains(win,'mysql-preview-result','（空字符串）');
@@ -772,6 +774,7 @@ async function run() {
     await click(win,testId('mysql-query-run'));
     await textContains(win,'mysql-query-result','演示客户 24');
     await screenshot(win,'workspace');
+    await assertSqlAssistanceAndBrowse({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID});
     await assertNoPersistence(win);
     assert.deepEqual(forbiddenCalls,[],'只读数据库工作区不得调用配置变更通道。');
     assert.deepEqual(externalRequests,[],'数据库 UI 测试不得发起外部网络请求。');

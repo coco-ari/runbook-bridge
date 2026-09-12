@@ -1,11 +1,12 @@
 import { AppError } from './errors.mjs';
+import { desktopMysqlPreviewSql } from './desktop-mysql-preview.mjs';
 import { parseOffsetCursor } from './pagination-cursor.mjs';
 
 const SCOPE_FIELDS = ['projectId', 'environmentId', 'pluginInstanceId'];
 const OPERATION_FIELDS = {
   listTables: ['cursor', 'limit'],
   describeTable: ['table'],
-  previewTable: ['table'],
+  previewTable: ['table', 'where', 'orderBy', 'limit', 'offset'],
   queryReadonly: ['sql', 'params'],
 };
 
@@ -45,5 +46,5 @@ export function prepareDesktopMysqlOperation(payload, operation) {
   }
   return operation === 'describeTable'
     ? { scope, capability: 'describe', args: { table } }
-    : { scope, capability: 'select', args: { sql: `SELECT * FROM \`${table.replaceAll('`', '``')}\`` }, preview: true };
+    : { scope, capability: 'select', args: { sql: desktopMysqlPreviewSql(table, payload) }, preview: true };
 }

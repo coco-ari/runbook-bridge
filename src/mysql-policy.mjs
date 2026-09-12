@@ -102,9 +102,12 @@ export function applyMysqlRowLimit(validated, maxRows) {
   const ast = structuredClone(validated.ast);
   const requested = Number(maxRows) + 1;
   const values = ast.limit?.value ?? [];
-  const existing = values.length === 1 ? Number(values[0]?.value) : values.length === 2 ? Number(values[1]?.value) : null;
+  const countIndex = values.length === 2 && ast.limit.seperator !== 'offset' ? 1 : 0;
+  const existing = values.length ? Number(values[countIndex]?.value) : null;
   if (!Number.isFinite(existing) || existing > requested) {
-    ast.limit = { seperator: '', value: [{ type: 'number', value: requested }] };
+    // 调整读取上限时保留 OFFSET，兼容 LIMIT 数量 OFFSET 偏移和 LIMIT 偏移,数量。
+    if (values.length === 2) ast.limit.value[countIndex] = { type:'number', value:requested };
+    else ast.limit = { seperator: '', value: [{ type: 'number', value: requested }] };
   }
   return parser.sqlify(ast, { database: 'MySQL' });
 }

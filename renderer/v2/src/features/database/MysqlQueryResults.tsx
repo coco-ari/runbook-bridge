@@ -8,14 +8,20 @@ import { Input } from "@/components/ui/input"
 import { MysqlResultRowDetail, mysqlCopyCellText } from "@/features/database/MysqlResultRowDetail"
 import { MYSQL_RESULT_PAGE_SIZE, mysqlByteSize, mysqlCellText } from "@/features/database/mysql-workspace-model"
 
+import { compareMysqlCells, type MysqlSort } from "./mysql-sql-assist"
+
 interface MysqlQueryResultsProps {
   readonly result: MysqlQueryResult
   readonly kind: "query" | "preview"
   readonly testIdPrefix?: string
+  readonly sort?: MysqlSort | null
+  readonly onSort?: (sort: MysqlSort | null) => void
+  readonly stream?: Readonly<{ key: string; loading: boolean; hasMore: boolean; message: string; onLoadMore: () => void }>
 }
 
 interface ResultViewState {
-  readonly result: MysqlQueryResult
+  readonly result: MysqlQueryResult | string
+  readonly sort: MysqlSort | null
   readonly filter: string
   readonly page: number
   readonly pageSize: number
@@ -28,37 +34,55 @@ interface CopyNotice {
   readonly failed: boolean
 }
 
-export function MysqlQueryResults({ result, kind, testIdPrefix }: MysqlQueryResultsProps) {
-  const [viewState, setViewState] = useState<ResultViewState>({ result, filter: "", page: 0, pageSize: MYSQL_RESULT_PAGE_SIZE, selectedRow: null })
+export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, stream }: MysqlQueryResultsProps) {
+  const viewIdentity = stream?.key ?? result
+  const [viewState, setViewState] = useState<ResultViewState>({ result: viewIdentity, sort: null, filter: "", page: 0, pageSize: MYSQL_RESULT_PAGE_SIZE, selectedRow: null })
   const [copyNotice, setCopyNotice] = useState<CopyNotice | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const lastScrollTop = useRef(0)
   const selectedRowRef = useRef<HTMLTableRowElement | null>(null)
   const detailId = useId()
   const prefix = testIdPrefix ?? `mysql-${kind}`
-  const state: ResultViewState = viewState.result === result ? viewState : { result, filter: "", page: 0, pageSize: MYSQL_RESULT_PAGE_SIZE, selectedRow: null }
+  const state: ResultViewState = viewState.result === viewIdentity ? viewState : { result: viewIdentity, sort: null, filter: "", page: 0, pageSize: MYSQL_RESULT_PAGE_SIZE, selectedRow: null }
   const filter = state.filter.trim().toLocaleLowerCase()
   const duplicateColumns = new Set(result.columns.map((column) => column.name)).size !== result.columns.length
+  const selectedSort = onSort ? sort : state.sort
   const filteredRows = useMemo(() => {
     if (duplicateColumns) return []
-    return result.rows.map((row, index) => ({ row, index })).filter(({ row }) => !filter || result.columns.some((column) => mysqlCellText(row[column.name]).toLocaleLowerCase().includes(filter)))
-  }, [duplicateColumns, filter, result])
+    const filtered = result.rows.map((row, index) => ({ row, index })).filter(({ row }) => !filter || result.columns.some((column) => mysqlCellText(row[column.name]).toLocaleLowerCase().includes(filter)))
+    if (selectedSort && !onSort) {
+      const type = result.columns.find(column => column.name === selectedSort.column)?.type
+      const numeric = type !== undefined && [0, 1, 2, 3, 4, 5, 8, 9, 13, 246].includes(type)
+      filtered.sort((a, b) => (compareMysqlCells(a.row[selectedSort.column], b.row[selectedSort.column], numeric) * (selectedSort.direction === "asc" ? 1 : -1)) || a.index - b.index)
+    }
+    return filtered
+  }, [duplicateColumns, filter, result, selectedSort, onSort])
   const columnWidths = useMemo(() => result.columns.map((column) => Math.min(280, Math.max(168, column.name.length * 8 + 32))), [result])
   const lastPage = Math.max(0, Math.ceil(filteredRows.length / state.pageSize) - 1)
   const visiblePage = Math.min(state.page, lastPage)
   const start = visiblePage * state.pageSize
-  const rows = filteredRows.slice(start, start + state.pageSize)
+  const rows = stream ? filteredRows : filteredRows.slice(start, start + state.pageSize)
   const selectedRow = !duplicateColumns && state.selectedRow !== null ? result.rows[state.selectedRow] : undefined
   const notice = copyNotice?.result === result ? copyNotice : null
 
   useLayoutEffect(() => {
+    lastScrollTop.current = 0
     if (scrollRef.current) scrollRef.current.scrollTop = 0
-  }, [result, filter, visiblePage, state.pageSize])
+  }, [viewIdentity, filter, visiblePage, state.pageSize])
 
   function changeView(update: Partial<Omit<ResultViewState, "result">>) {
-    setViewState({ ...state, ...update, result })
+    setViewState({ ...state, ...update, result: viewIdentity })
     setCopyNotice(null)
   }
 
+  function sortColumn(column: string) {
+    const next: MysqlSort | null = selectedSort?.column !== column ? { column, direction: "asc" } : selectedSort.direction === "asc" ? { column, direction: "desc" } : null
+    if (onSort) onSort(next)
+    else changeView({ sort: next, page: 0, selectedRow: null })
+  }
+  function loadAtBottom(element: HTMLDivElement) {
+    if (stream?.hasMore && !stream.loading && !filter && element.scrollHeight - element.scrollTop - element.clientHeight < 64) stream.onLoadMore()
+  }
   function closeDetail() {
     changeView({ selectedRow: null })
     if (selectedRowRef.current?.isConnected) selectedRowRef.current.focus()
@@ -129,15 +153,15 @@ export function MysqlQueryResults({ result, kind, testIdPrefix }: MysqlQueryResu
       {!duplicateColumns ? (
         <>
           <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
-            <div aria-label="查询结果表格，可横向和纵向滚动" className="min-h-0 min-w-0 flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" data-testid={`${prefix}-table-scroll`} ref={scrollRef} role="region" tabIndex={0}>
+            <div aria-label="查询结果表格，可横向和纵向滚动" className="min-h-0 min-w-0 flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" data-testid={`${prefix}-table-scroll`} onScroll={(event) => { if (event.currentTarget.scrollTop > lastScrollTop.current) loadAtBottom(event.currentTarget); lastScrollTop.current = event.currentTarget.scrollTop }} onWheel={(event) => { if (event.deltaY > 0) loadAtBottom(event.currentTarget) }} ref={scrollRef} role="region" tabIndex={0}>
               <table className="w-full table-fixed border-separate border-spacing-0 text-xs" style={{ minWidth: 48 + columnWidths.reduce((sum, width) => sum + width, 0) }}>
                 <colgroup><col style={{ width: 48 }} />{result.columns.map((column, index) => <col key={column.name} style={{ width: columnWidths[index] }} />)}</colgroup>
                 <thead>
                   <tr>
                     <th className="sticky top-0 z-10 h-8 border-b border-r bg-surface-inset px-3 text-right font-normal text-text-faint" scope="col"><span className="sr-only">行号</span>#</th>
                     {result.columns.map((column) => (
-                      <th className="sticky top-0 z-10 h-8 border-b bg-surface-inset px-3 text-left font-mono text-[11px] font-normal text-muted-foreground" key={column.name} scope="col" title={column.table ? `${column.table}.${column.name}` : column.name}>
-                        <span className="block truncate">{column.name}</span>
+                      <th aria-sort={selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "ascending" : "descending" : "none"} className="sticky top-0 z-10 h-8 border-b bg-surface-inset px-3 text-left font-mono text-[11px] font-normal text-muted-foreground" key={column.name} scope="col" title={column.table ? `${column.table}.${column.name}` : column.name}>
+                        <button aria-label={`按 ${column.name} 排序`} className="mysql-column-sort" data-column={column.name} data-testid={`${prefix}-sort`} onClick={() => sortColumn(column.name)} title={onSort ? "在数据库中排序：升序 / 降序 / 默认" : "当前返回结果排序：升序 / 降序 / 默认"} type="button"><span>{column.name}</span><span aria-hidden="true">{selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "↑" : "↓" : "↕"}</span></button>
                       </th>
                     ))}
                   </tr>
@@ -180,10 +204,10 @@ export function MysqlQueryResults({ result, kind, testIdPrefix }: MysqlQueryResu
           <footer className="flex min-h-9 shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-1 text-[11px] tabular-nums text-muted-foreground">
             <span>{filteredRows.length ? `${start + 1} 至 ${start + rows.length}` : "0"} / {filteredRows.length} 行{filter ? ` · 共返回 ${result.rows.length} 行` : " · 当前返回结果"}</span>
             <span aria-live="polite" className={`min-w-0 flex-1 truncate ${notice?.failed ? "text-danger" : "text-text-faint"}`} role="status">{notice?.message || "单击行查看详情 · 双击单元格复制"}</span>
-            <label className="ml-auto flex items-center gap-1.5"><span className="sr-only">每页结果行数</span><select aria-label="每页结果行数" className="h-6 rounded border bg-surface px-1 text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-ring" onChange={(event) => changeView({ pageSize: Number(event.target.value), page: 0, selectedRow: null })} value={state.pageSize}>{[25, 50, MYSQL_RESULT_PAGE_SIZE].map((size) => <option key={size} value={size}>{size} 行 / 页</option>)}</select></label>
+            {stream ? <><span className="ml-auto" data-testid={`${prefix}-load-status`}>{stream.message}</span><Button data-testid={`${prefix}-load-more`} disabled={!stream.hasMore || stream.loading || Boolean(filter)} onClick={stream.onLoadMore} size="sm" variant="ghost">{stream.loading ? "加载中…" : "继续加载"}</Button></> : <><label className="ml-auto flex items-center gap-1.5"><span className="sr-only">每页结果行数</span><select aria-label="每页结果行数" className="h-6 rounded border bg-surface px-1 text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-ring" onChange={(event) => changeView({ pageSize: Number(event.target.value), page: 0, selectedRow: null })} value={state.pageSize}>{[25, 50, MYSQL_RESULT_PAGE_SIZE].map((size) => <option key={size} value={size}>{size} 行 / 页</option>)}</select></label>
             <Button aria-label="上一页结果" disabled={visiblePage === 0} onClick={() => changeView({ page: visiblePage - 1, selectedRow: null })} size="icon-xs" type="button" variant="ghost"><CaretLeft aria-hidden="true" className="size-3.5" /></Button>
             <span className="min-w-10 text-center">{visiblePage + 1} / {lastPage + 1}</span>
-            <Button aria-label="下一页结果" data-testid={`${prefix}-next-page`} disabled={visiblePage === lastPage} onClick={() => changeView({ page: visiblePage + 1, selectedRow: null })} size="icon-xs" type="button" variant="ghost"><CaretRight aria-hidden="true" className="size-3.5" /></Button>
+            <Button aria-label="下一页结果" data-testid={`${prefix}-next-page`} disabled={visiblePage === lastPage} onClick={() => changeView({ page: visiblePage + 1, selectedRow: null })} size="icon-xs" type="button" variant="ghost"><CaretRight aria-hidden="true" className="size-3.5" /></Button></>}
           </footer>
         </>
       ) : <div className="min-h-0 flex-1" />}

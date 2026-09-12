@@ -1,4 +1,8 @@
-import { ArrowClockwise, ArrowLeft, CaretDown, CaretUp, Code, Database, Key, ListBullets, MagnifyingGlass, Play, Plugs, Plus, ShieldCheck, SidebarSimple, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
+import { ArrowClockwise, ArrowLeft, CaretDown, CaretUp, Code, Database, Key, ListBullets, MagnifyingGlass, Plugs, Plus, ShieldCheck, SidebarSimple, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
+import { toast } from "sonner"
+import { MysqlTableBrowser } from "./MysqlTableBrowser"
+import { useMysqlSchemaCache } from "./use-mysql-schema-cache"
+import { MYSQL_TABLE_DRAG_TYPE, mysqlSelectSnippet } from "./mysql-sql-assist"
 import { useId, useState } from "react"
 import { usePanelRef } from "react-resizable-panels"
 
@@ -88,6 +92,8 @@ function WorkspaceHeader({ plugin, connected, onBack, projectName, environmentNa
 function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorkspaceProps, "api" | "scope" | "plugin">) {
   const state = useMysqlWorkspace(api, scope)
   const queries = useMysqlQueryDocuments(api, scope)
+  const getSchema = useMysqlSchemaCache(api, scope)
+  const dragScope = mysqlWorkspaceSessionKey(scope, plugin)
   const [search, setSearch] = useState("")
   const [documentTab, setDocumentTab] = useState("query-1")
   const [activeQueryId, setActiveQueryId] = useState("query-1")
@@ -110,6 +116,19 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
   function createQuery() {
     const id = queries.createDocument()
     if (id) selectDocument(id)
+  }
+
+  function generateQuery(table: string) {
+    if (!state.tables.some(item => item.name === table && item.queryable)) return
+    const current = queries.documents.find(document => document.id === activeQueryId)
+    const id = current && !current.sql.trim() && !current.result.loading ? current.id : queries.createDocument()
+    if (!id) { toast.error("最多打开 6 个查询，请先关闭一个标签。现有 SQL 已保留。"); return }
+    queries.updateSql(id, mysqlSelectSnippet(table))
+    selectDocument(id)
+    window.setTimeout(() => document.querySelector<HTMLTextAreaElement>('[data-testid="mysql-sql-editor"]')?.focus(), 0)
+  }
+  function dropTable(data: string) {
+    try { const payload = JSON.parse(data); if (payload.scope === dragScope && typeof payload.table === "string") generateQuery(payload.table) } catch { /* 忽略其他窗口或非工作区的拖放内容。 */ }
   }
 
   function closeQuery(id: string) {
@@ -146,7 +165,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
               {state.tablesError ? <ReadError message={state.tablesError} testId="mysql-tables-error" /> : null}
               <div aria-busy={state.tablesLoading || undefined} className="mysql-sidebar-table-list" data-testid="mysql-table-list">
                 {visibleTables.map((table) => (
-                  <Button aria-label={table.name} aria-pressed={state.selectedTable?.name === table.name} className={cn("mysql-table-button", state.selectedTable?.name === table.name && "is-selected")} data-table-name={table.name} data-testid="mysql-table-item" disabled={!table.queryable} key={table.name} onClick={() => { setDocumentTab("table"); setTableTab("structure"); void state.selectTable(table) }} title={table.queryable ? table.name : `${table.name}：当前策略不支持读取此表`} type="button" variant="ghost"><TableIcon aria-hidden="true" /><span>{table.name}</span>{table.type === "VIEW" ? <small>视图</small> : null}</Button>
+                  <div className="mysql-table-row" key={table.name}><Button draggable={table.queryable} onDragStart={(event) => { event.dataTransfer.effectAllowed = "copy"; event.dataTransfer.setData(MYSQL_TABLE_DRAG_TYPE, JSON.stringify({ scope: dragScope, table: table.name })) }} aria-label={table.name} aria-pressed={state.selectedTable?.name === table.name} className={cn("mysql-table-button", state.selectedTable?.name === table.name && "is-selected")} data-table-name={table.name} data-testid="mysql-table-item" disabled={!table.queryable} key={table.name} onClick={() => { setDocumentTab("table"); setTableTab("structure"); void state.selectTable(table) }} title={table.queryable ? table.name : `${table.name}：当前策略不支持读取此表`} type="button" variant="ghost"><TableIcon aria-hidden="true" /><span>{table.name}</span>{table.type === "VIEW" ? <small>视图</small> : null}</Button>{table.queryable ? <Button aria-label={`生成 ${table.name} 查询`} className="mysql-table-generate" data-testid="mysql-table-generate" onClick={() => generateQuery(table.name)} size="icon-sm" title="生成 SELECT 查询，也可将表拖入编辑区" type="button" variant="ghost"><Code /></Button> : null}</div>
                 ))}
                 {!visibleTables.length && !state.tablesLoading && state.tablesLoaded ? <p className="mysql-sidebar-empty">{searchTerm ? "已加载的表中没有匹配项。" : "当前数据库没有数据表。"}</p> : null}
                 {state.tablesLoading ? <p className="mysql-sidebar-empty" role="status">正在读取数据表…</p> : null}
@@ -176,7 +195,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
                   <ResizablePanel collapsedSize="42px" collapsible defaultSize="252px" groupResizeBehavior="preserve-pixel-size" id={`${uniqueId}-editor`} maxSize="70%" minSize="150px" onResize={(size) => setEditorCollapsed(size.inPixels < 80)} panelRef={editorRef}>
                     {queries.documents.map((document) => (
                       <div className="mysql-query-document-view" data-query-document={document.id} hidden={document.id !== activeQueryId} key={document.id}>
-                        <MysqlSqlEditor active={document.id === activeQueryId} collapsed={editorCollapsed} loading={document.result.loading} onChange={(sql) => queries.updateSql(document.id, sql)} onRun={() => void queries.runQuery(document.id, document.sql)} value={document.sql} />
+                        <MysqlSqlEditor tables={state.tables} getSchema={getSchema} onTableDrop={dropTable} active={document.id === activeQueryId} collapsed={editorCollapsed} loading={document.result.loading} onChange={(sql) => queries.updateSql(document.id, sql)} onRun={() => void queries.runQuery(document.id, document.sql)} value={document.sql} />
                       </div>
                     ))}
                   </ResizablePanel>
@@ -196,7 +215,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
               <TabsContent className={cn("mysql-document-content", documentTab !== "table" && "hidden")} forceMount value="table">
                 {state.selectedTable ? (
                   <Tabs className="mysql-table-content" onValueChange={setTableTab} value={tableTab}>
-                    <div className="mysql-table-toolbar"><TabsList aria-label="数据表视图" variant="line"><TabsTrigger data-testid="mysql-table-preview-tab" value="preview"><TableIcon aria-hidden="true" />数据预览</TabsTrigger><TabsTrigger data-testid="mysql-table-structure-tab" value="structure"><ListBullets aria-hidden="true" />表结构</TabsTrigger></TabsList><span className="mysql-table-name" title={state.selectedTable.name}>{state.selectedTable.name}</span>{tableTab === "structure" ? <Button aria-label="刷新表结构" disabled={state.structure.loading} onClick={() => { if (state.selectedTable) void state.selectTable(state.selectedTable) }} size="icon-sm" title="刷新结构" type="button" variant="ghost"><ArrowClockwise aria-hidden="true" /></Button> : <Button data-testid="mysql-preview-run" disabled={state.preview.loading} onClick={() => void state.runPreview()} size="sm" type="button"><Play aria-hidden="true" />{state.preview.loading ? "查询中…" : "预览前 100 行"}</Button>}</div>
+                    <div className="mysql-table-toolbar"><TabsList aria-label="数据表视图" variant="line"><TabsTrigger data-testid="mysql-table-preview-tab" value="preview"><TableIcon aria-hidden="true" />数据预览</TabsTrigger><TabsTrigger data-testid="mysql-table-structure-tab" value="structure"><ListBullets aria-hidden="true" />表结构</TabsTrigger></TabsList><span className="mysql-table-name" title={state.selectedTable.name}>{state.selectedTable.name}</span>{tableTab === "structure" ? <Button aria-label="刷新表结构" disabled={state.structure.loading} onClick={() => { if (state.selectedTable) void state.selectTable(state.selectedTable) }} size="icon-sm" title="刷新结构" type="button" variant="ghost"><ArrowClockwise aria-hidden="true" /></Button> : null}</div>
                     <TabsContent className={cn("mysql-table-view", tableTab !== "structure" && "hidden")} forceMount value="structure">
                       {state.structure.loading ? <ReadLoading label="正在读取表结构…" /> : null}
                       {state.structure.error ? <ReadError message={state.structure.error} testId="mysql-structure-error" /> : null}
@@ -204,13 +223,10 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
                       {state.structure.data ? <TableStructure description={state.structure.data} /> : null}
                     </TabsContent>
                     <TabsContent className={cn("mysql-table-view", tableTab !== "preview" && "hidden")} forceMount value="preview">
-                      {state.preview.loading ? <ReadLoading label="正在读取预览数据…" /> : null}
-                      {state.preview.error ? <ReadError message={state.preview.error} testId="mysql-preview-error" /> : null}
-                      {state.preview.data ? <MysqlQueryResults kind="preview" result={state.preview.data} /> : null}
-                      {!state.preview.data && !state.preview.loading && !state.preview.error ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><TableIcon aria-hidden="true" /></EmptyMedia><EmptyTitle>预览表中的数据</EmptyTitle><EmptyDescription>点击“预览前 100 行”按需读取。<br />未指定排序，返回顺序可能变化。</EmptyDescription></EmptyHeader></Empty> : null}
+                      <MysqlTableBrowser api={api} scope={scope} table={state.selectedTable.name} description={state.structure.data} maxRows={typeof plugin.limits?.maxRows === "number" ? plugin.limits.maxRows : 100} key={state.selectedTable.name} />
                     </TabsContent>
                   </Tabs>
-                ) : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><TableIcon aria-hidden="true" /></EmptyMedia><EmptyTitle>选择一张数据表</EmptyTitle><EmptyDescription>查看字段结构，或按需预览最多 100 行数据。</EmptyDescription></EmptyHeader></Empty>}
+                ) : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><TableIcon aria-hidden="true" /></EmptyMedia><EmptyTitle>选择一张数据表</EmptyTitle><EmptyDescription>查看字段结构，或筛选、排序并分批浏览数据。</EmptyDescription></EmptyHeader></Empty>}
               </TabsContent>
             </Tabs>
           </ResizablePanel>
