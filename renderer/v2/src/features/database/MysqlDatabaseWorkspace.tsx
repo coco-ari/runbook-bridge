@@ -1,242 +1,223 @@
-import { ArrowClockwise, Database, MagnifyingGlass, Play, Plugs, Table as TableIcon, WarningCircle } from "@phosphor-icons/react"
+import { ArrowClockwise, ArrowLeft, CaretDown, CaretUp, Code, Database, Key, ListBullets, MagnifyingGlass, Play, Plugs, Plus, ShieldCheck, SidebarSimple, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
 import { useId, useState } from "react"
+import { usePanelRef } from "react-resizable-panels"
 
 import type { AiOpsV2Api, MysqlTableDescription, PluginScope } from "@/bridge/ai-ops-v2"
-import { FeatureToolbar } from "@/components/detail-workspace/FeatureToolbar"
+import { ThemeMenu } from "@/components/app-shell/ThemeMenu"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
 import { Input } from "@/components/ui/input"
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Textarea } from "@/components/ui/textarea"
 import { MysqlQueryResults } from "@/features/database/MysqlQueryResults"
+import { MysqlSqlEditor } from "@/features/database/MysqlSqlEditor"
 import { mysqlCellText, mysqlDatabaseName, mysqlWorkspaceMatchesScope, mysqlWorkspaceSessionKey } from "@/features/database/mysql-workspace-model"
+import { MYSQL_MAX_QUERY_DOCUMENTS, useMysqlQueryDocuments } from "@/features/database/use-mysql-query-documents"
 import { useMysqlWorkspace } from "@/features/database/use-mysql-workspace"
 import type { PluginConfigurationRecord } from "@/features/plugins/plugin-types"
 import { cn } from "@/lib/utils"
+import "@/features/database/mysql-database-workspace.css"
 
 export interface MysqlDatabaseWorkspaceProps {
   readonly api: AiOpsV2Api
   readonly scope: PluginScope
   readonly plugin: PluginConfigurationRecord
   readonly connected: boolean
+  readonly onBack: () => void
+  readonly projectName: string
+  readonly environmentName: string
 }
 
 function ReadError({ message, testId }: { readonly message: string; readonly testId: string }) {
-  return (
-    <Alert data-testid={testId} variant="destructive">
-      <WarningCircle aria-hidden="true" />
-      <AlertTitle>读取失败</AlertTitle>
-      <AlertDescription>{message}</AlertDescription>
-    </Alert>
-  )
+  return <Alert className="rounded-none border-x-0" data-testid={testId} variant="destructive"><WarningCircle aria-hidden="true" /><AlertTitle>读取失败</AlertTitle><AlertDescription>{message}</AlertDescription></Alert>
 }
 
 function AuditWarning({ testId }: { readonly testId: string }) {
-  return (
-    <p className="flex items-start gap-1.5 text-xs leading-5 text-muted-foreground" data-testid={testId} role="status">
-      <WarningCircle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-      本次读取已完成，但操作记录未能保存。
-    </p>
-  )
+  return <p className="flex items-start gap-1.5 px-3 py-2 text-xs leading-5 text-muted-foreground" data-testid={testId} role="status"><WarningCircle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />本次读取已完成，但操作记录未能保存。</p>
 }
 
 function ReadLoading({ label }: { readonly label: string }) {
-  return (
-    <div aria-busy="true" aria-label={label} className="space-y-3 py-3" role="status">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <Skeleton className="h-8 w-full" />
-      <Skeleton className="h-24 w-full" />
-    </div>
-  )
-}
-
-function TableSelectionEmpty() {
-  return (
-    <Empty className="min-h-64">
-      <EmptyHeader>
-        <EmptyMedia variant="icon"><TableIcon aria-hidden="true" /></EmptyMedia>
-        <EmptyTitle>选择一张数据表</EmptyTitle>
-        <EmptyDescription>查看字段结构，或按需预览最多 100 行数据。</EmptyDescription>
-      </EmptyHeader>
-    </Empty>
-  )
+  return <div aria-busy="true" aria-label={label} className="space-y-3 p-4" role="status"><p className="text-xs text-muted-foreground">{label}</p><Skeleton className="h-8 w-full" /><Skeleton className="h-24 w-full" /></div>
 }
 
 function TableStructure({ description }: { readonly description: MysqlTableDescription }) {
   return (
-    <div className="min-w-0 overflow-hidden rounded-lg border" data-testid="mysql-table-structure">
-      <div aria-label="表结构，可横向滚动" className="max-h-[32rem] overflow-auto" role="region" tabIndex={0}>
-        <Table className="text-xs">
-          <TableHeader className="sticky top-0 z-10 bg-surface-inset">
-            <TableRow>
-              {["字段", "类型", "允许 NULL", "索引", "默认值", "其他"].map((label) => <TableHead key={label} scope="col">{label}</TableHead>)}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {description.columns.length ? description.columns.map((column) => (
-              <TableRow key={column.name}>
-                <TableCell className="font-mono font-medium">{column.name}</TableCell>
-                <TableCell className="font-mono">{column.type}</TableCell>
-                <TableCell>{column.nullable ? "是" : "否"}</TableCell>
-                <TableCell className="font-mono">{column.key || "无"}</TableCell>
-                <TableCell className="max-w-56 whitespace-pre-wrap break-all font-mono">{mysqlCellText(column.default)}</TableCell>
-                <TableCell className="max-w-56 whitespace-pre-wrap break-all">{column.extra || "无"}</TableCell>
-              </TableRow>
-            )) : (
-              <TableRow><TableCell className="h-24 text-center text-muted-foreground" colSpan={6}>未返回字段信息。</TableCell></TableRow>
-            )}
-          </TableBody>
-        </Table>
+    <section aria-label="表结构" className="mysql-structure" data-testid="mysql-table-structure">
+      <div className="mysql-structure-summary"><ListBullets aria-hidden="true" />表结构<span>{description.columns.length} 个字段</span></div>
+      <div aria-label="表结构，可横向滚动" className="mysql-structure-scroll" role="region" tabIndex={0}>
+        <table>
+          <colgroup><col style={{ width: 48 }} /><col style={{ width: 200 }} /><col style={{ width: 170 }} /><col style={{ width: 95 }} /><col style={{ width: 95 }} /><col style={{ width: 220 }} /><col /></colgroup>
+          <thead><tr>{["#", "字段", "类型", "允许 NULL", "索引", "默认值", "其他"].map((label) => <th key={label} scope="col">{label}</th>)}</tr></thead>
+          <tbody>
+            {description.columns.length ? description.columns.map((column, index) => (
+              <tr key={column.name}>
+                <td className="mysql-structure-row-number">{index + 1}</td>
+                <td className="font-mono" title={column.name}>{column.name}</td>
+                <td className="font-mono text-muted-foreground" title={column.type}>{column.type}</td>
+                <td>{column.nullable ? "是" : "否"}</td>
+                <td><span className="mysql-structure-key">{column.key === "PRI" ? <Key aria-hidden="true" /> : null}{column.key || "无"}</span></td>
+                <td className="font-mono" title={mysqlCellText(column.default)}>{mysqlCellText(column.default)}</td>
+                <td title={column.extra || "无"}>{column.extra || "无"}</td>
+              </tr>
+            )) : <tr><td className="text-center text-muted-foreground" colSpan={7}>未返回字段信息。</td></tr>}
+          </tbody>
+        </table>
       </div>
-    </div>
+    </section>
   )
 }
 
-function MysqlConnectedWorkspace({ api, scope, plugin }: Omit<MysqlDatabaseWorkspaceProps, "connected">) {
+function WorkspaceHeader({ plugin, connected, onBack, projectName, environmentName }: Pick<MysqlDatabaseWorkspaceProps, "plugin" | "connected" | "onBack" | "projectName" | "environmentName">) {
+  const database = mysqlDatabaseName(plugin)
+  return (
+    <header className="mysql-workspace-header">
+      <Button aria-label="返回数据库详情" data-testid="mysql-workspace-back" onClick={onBack} size="sm" type="button" variant="ghost"><ArrowLeft aria-hidden="true" /><span>返回详情</span></Button>
+      <span className="mysql-workspace-header-divider" />
+      <Database aria-hidden="true" className="size-5 shrink-0 text-primary" />
+      <div className="mysql-workspace-identity"><h2 title={database || plugin.displayName}>{database || plugin.displayName}</h2><p title={`${projectName} / ${environmentName} / ${plugin.displayName}`}>{projectName}<span>/</span>{environmentName}<span>/</span>{plugin.displayName}</p></div>
+      <Badge className="shrink-0 gap-1 text-[11px]" variant="outline"><ShieldCheck aria-hidden="true" className="size-3" />只读</Badge>
+      <span className={cn("mysql-workspace-connection", connected && "is-connected")}><span />{connected ? "已连接" : "未连接"}</span>
+      <div className="mysql-workspace-theme"><ThemeMenu /></div>
+    </header>
+  )
+}
+
+function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorkspaceProps, "api" | "scope" | "plugin">) {
   const state = useMysqlWorkspace(api, scope)
+  const queries = useMysqlQueryDocuments(api, scope)
   const [search, setSearch] = useState("")
-  const [tab, setTab] = useState("structure")
-  const [sql, setSql] = useState("")
+  const [documentTab, setDocumentTab] = useState("query-1")
+  const [activeQueryId, setActiveQueryId] = useState("query-1")
+  const [tableTab, setTableTab] = useState("structure")
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [editorCollapsed, setEditorCollapsed] = useState(false)
+  const sidebarRef = usePanelRef()
+  const editorRef = usePanelRef()
   const uniqueId = useId()
-  const headingId = `${uniqueId}-heading`
-  const editorId = `${uniqueId}-sql`
   const searchHintId = `${uniqueId}-search-hint`
-  const sqlHintId = `${uniqueId}-sql-hint`
   const database = mysqlDatabaseName(plugin)
   const searchTerm = search.trim().toLocaleLowerCase()
   const visibleTables = state.tables.filter((table) => table.name.toLocaleLowerCase().includes(searchTerm))
 
+  function selectDocument(value: string) {
+    setDocumentTab(value)
+    if (value !== "table") setActiveQueryId(value)
+  }
+
+  function createQuery() {
+    const id = queries.createDocument()
+    if (id) selectDocument(id)
+  }
+
+  function closeQuery(id: string) {
+    if (queries.documents.length <= 1) return
+    if (id === activeQueryId) {
+      const next = queries.documents.find((document) => document.id !== id)!
+      setActiveQueryId(next.id)
+      if (documentTab !== "table") setDocumentTab(next.id)
+    }
+    queries.closeDocument(id)
+  }
+
+  function toggleSidebar() {
+    if (sidebarRef.current?.isCollapsed()) sidebarRef.current.expand()
+    else sidebarRef.current?.collapse()
+  }
+
+  function toggleEditor() {
+    if (editorRef.current?.isCollapsed()) editorRef.current.expand()
+    else editorRef.current?.collapse()
+  }
+
   return (
-    <section aria-labelledby={headingId} className="min-w-0 @container/database" data-testid="mysql-database-workspace">
-      <FeatureToolbar
-        description={<span>当前数据库 <span className="break-all font-mono text-foreground">{database}</span>，查询仅在此数据库内执行。</span>}
-        meta={<Badge variant="outline">只读</Badge>}
-        title="数据库查询"
-        titleId={headingId}
-      />
-      <div className="grid min-w-0 gap-4 @2xl/database:grid-cols-[13rem_minmax(0,1fr)]">
-        <aside aria-label="数据表" className="min-w-0 rounded-lg border bg-surface-inset/30">
-          <div className="space-y-3 border-b p-3">
-            <div className="flex items-center justify-between gap-2">
-              <h3 className="flex items-center gap-2 text-sm font-medium"><Database aria-hidden="true" />数据表</h3>
-              <Button aria-label="刷新数据表" data-testid="mysql-tables-refresh" disabled={state.tablesLoading} onClick={() => void state.loadTables()} size="icon-sm" title="刷新数据表" type="button" variant="ghost">
-                <ArrowClockwise aria-hidden="true" className={state.tablesLoading ? "motion-safe:animate-spin" : ""} />
-              </Button>
-            </div>
-            <div className="relative">
-              <MagnifyingGlass aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input aria-describedby={searchHintId} aria-label="搜索已加载的数据表" className="pl-8" data-testid="mysql-table-search" onChange={(event) => setSearch(event.target.value)} placeholder="搜索表名" value={search} />
-            </div>
-            <p className="text-[11px] leading-4 text-muted-foreground" id={searchHintId}>搜索仅筛选已加载的 {state.tables.length} 张表。</p>
-          </div>
-          {state.tablesAuditWarning ? <div className="px-3 py-2"><AuditWarning testId="mysql-tables-audit-warning" /></div> : null}
-          {state.tablesError ? <div className="p-2"><ReadError message={state.tablesError} testId="mysql-tables-error" /></div> : null}
-          <div aria-busy={state.tablesLoading || undefined} className="max-h-52 overflow-y-auto p-1.5 @2xl/database:max-h-[35rem]" data-testid="mysql-table-list">
-            {visibleTables.map((table) => (
-              <Button
-                aria-pressed={state.selectedTable?.name === table.name}
-                className={cn("h-auto min-h-9 w-full justify-start gap-2 rounded-md px-2 py-2 text-left font-normal", state.selectedTable?.name === table.name && "bg-surface-selected text-primary")}
-                data-table-name={table.name}
-                data-testid="mysql-table-item"
-                disabled={!table.queryable}
-                key={table.name}
-                onClick={() => { setTab("structure"); void state.selectTable(table) }}
-                title={table.queryable ? table.name : `${table.name}：当前策略不支持读取此表`}
-                type="button"
-                variant="ghost"
-              >
-                <TableIcon aria-hidden="true" className="shrink-0" />
-                <span className="min-w-0 flex-1 truncate font-mono text-xs">{table.name}</span>
-                {table.type === "VIEW" ? <span className="shrink-0 text-[10px] text-muted-foreground">视图</span> : null}
-              </Button>
-            ))}
-            {!visibleTables.length && !state.tablesLoading && state.tablesLoaded ? (
-              <p className="px-2 py-7 text-center text-xs leading-5 text-muted-foreground">{searchTerm ? "已加载的表中没有匹配项。" : "当前数据库没有数据表。"}</p>
-            ) : null}
-            {state.tablesLoading ? <p className="px-2 py-4 text-center text-xs text-muted-foreground" role="status">正在读取数据表…</p> : null}
-          </div>
-          {state.nextCursor ? (
-            <div className="border-t p-2">
-              <Button className="w-full" data-testid="mysql-tables-load-more" disabled={state.tablesLoading} onClick={() => { if (state.nextCursor) void state.loadTables(state.nextCursor) }} size="sm" type="button" variant="outline">
-                {state.tablesLoading ? "读取中…" : "加载更多数据表"}
-              </Button>
-            </div>
-          ) : state.tablesTruncated ? <p className="border-t px-3 py-2 text-[11px] text-muted-foreground">表列表已达到读取上限。</p> : null}
-        </aside>
-        <Tabs className="min-w-0 gap-4" onValueChange={setTab} value={tab}>
-          <div className="min-w-0 overflow-x-auto pb-1">
-            <TabsList aria-label="数据库工作区" variant="segmented">
-              <TabsTrigger className="px-3 text-xs" data-testid="mysql-table-structure-tab" value="structure">表结构</TabsTrigger>
-              <TabsTrigger className="px-3 text-xs" data-testid="mysql-table-preview-tab" value="preview">数据预览</TabsTrigger>
-              <TabsTrigger className="px-3 text-xs" data-testid="mysql-sql-tab" value="sql">SQL 查询</TabsTrigger>
-            </TabsList>
-          </div>
-          <TabsContent className="min-w-0 space-y-3" value="structure">
-            {state.selectedTable ? (
-              <>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="min-w-0 break-all font-mono text-sm font-medium">{state.selectedTable.name}</h3>
-                  <Button disabled={state.structure.loading} onClick={() => { if (state.selectedTable) void state.selectTable(state.selectedTable) }} size="sm" type="button" variant="ghost"><ArrowClockwise aria-hidden="true" />刷新结构</Button>
-                </div>
-                {state.structure.loading ? <ReadLoading label="正在读取表结构…" /> : null}
-                {state.structure.error ? <ReadError message={state.structure.error} testId="mysql-structure-error" /> : null}
-                {state.structure.data?.auditWarning ? <AuditWarning testId="mysql-structure-audit-warning" /> : null}
-                {state.structure.data ? <TableStructure description={state.structure.data} /> : null}
-              </>
-            ) : <TableSelectionEmpty />}
-          </TabsContent>
-          <TabsContent className="min-w-0 space-y-3" value="preview">
-            {state.selectedTable ? (
-              <>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="min-w-0 break-all font-mono text-sm font-medium">{state.selectedTable.name}</h3>
-                  <Button data-testid="mysql-preview-run" disabled={state.preview.loading} onClick={() => void state.runPreview()} size="sm" type="button"><Play aria-hidden="true" />{state.preview.loading ? "查询中…" : "预览前 100 行"}</Button>
-                </div>
-                <p className="text-xs leading-5 text-muted-foreground">最多读取 100 行，仍受此连接配置的数量和大小上限约束。未指定排序，返回顺序可能变化。</p>
-                {state.preview.loading ? <ReadLoading label="正在读取预览数据…" /> : null}
-                {state.preview.error ? <ReadError message={state.preview.error} testId="mysql-preview-error" /> : null}
-                {state.preview.data ? <MysqlQueryResults kind="preview" result={state.preview.data} /> : null}
-                {!state.preview.data && !state.preview.loading && !state.preview.error ? <p className="py-12 text-center text-xs text-muted-foreground">点击“预览前 100 行”读取数据。</p> : null}
-              </>
-            ) : <TableSelectionEmpty />}
-          </TabsContent>
-          <TabsContent className="min-w-0 space-y-4" value="sql">
-            <div className="space-y-2">
-              <label className="text-xs font-medium" htmlFor={editorId}>SQL 语句</label>
-              <Textarea
-                aria-describedby={sqlHintId}
-                className="min-h-36 resize-y whitespace-pre font-mono text-xs leading-6"
-                data-testid="mysql-sql-editor"
-                disabled={state.query.loading}
-                id={editorId}
-                onChange={(event) => setSql(event.target.value)}
-                onKeyDown={(event) => {
-                  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-                    event.preventDefault()
-                    void state.runQuery(sql)
-                  }
-                }}
-                placeholder="SELECT 1"
-                spellCheck={false}
-                value={sql}
-              />
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <p className="min-w-0 flex-1 text-xs leading-5 text-muted-foreground" id={sqlHintId}>支持单条 SELECT。Ctrl / ⌘ + Enter 执行，结果受连接配置的上限约束。</p>
-                <Button data-testid="mysql-query-run" disabled={state.query.loading || !sql.trim()} onClick={() => void state.runQuery(sql)} size="sm" type="button"><Play aria-hidden="true" />{state.query.loading ? "查询中…" : "执行查询"}</Button>
+    <>
+      <div className="mysql-workspace-body">
+        <ResizablePanelGroup aria-label="数据库表列表与查询工作区" id={`${uniqueId}-workspace`} orientation="horizontal">
+          <ResizablePanel collapsedSize="48px" collapsible defaultSize="224px" groupResizeBehavior="preserve-pixel-size" id={`${uniqueId}-tables`} maxSize="340px" minSize="180px" onResize={(size) => setSidebarCollapsed(size.inPixels < 80)} panelRef={sidebarRef}>
+            <aside aria-label="数据表" className={cn("mysql-table-sidebar", sidebarCollapsed && "is-collapsed")} data-testid="mysql-table-sidebar">
+              <div className="mysql-sidebar-heading"><Database aria-hidden="true" /><strong title={database}>{database}</strong><Button aria-label="刷新数据表" data-testid="mysql-tables-refresh" disabled={state.tablesLoading} onClick={() => void state.loadTables()} size="icon-sm" title="刷新数据表" type="button" variant="ghost"><ArrowClockwise aria-hidden="true" className={state.tablesLoading ? "motion-safe:animate-spin" : ""} /></Button></div>
+              <div className="mysql-sidebar-search"><MagnifyingGlass aria-hidden="true" /><Input aria-describedby={searchHintId} aria-label="搜索已加载的数据表" data-testid="mysql-table-search" onChange={(event) => setSearch(event.target.value)} placeholder="搜索表名…" value={search} /></div>
+              <p className="mysql-sidebar-search-hint" id={searchHintId}>搜索已加载的 {state.tables.length} 张表</p>
+              <div className="mysql-sidebar-section-label"><CaretDown aria-hidden="true" />数据表<span>{state.tables.length}</span></div>
+              {state.tablesAuditWarning ? <AuditWarning testId="mysql-tables-audit-warning" /> : null}
+              {state.tablesError ? <ReadError message={state.tablesError} testId="mysql-tables-error" /> : null}
+              <div aria-busy={state.tablesLoading || undefined} className="mysql-sidebar-table-list" data-testid="mysql-table-list">
+                {visibleTables.map((table) => (
+                  <Button aria-label={table.name} aria-pressed={state.selectedTable?.name === table.name} className={cn("mysql-table-button", state.selectedTable?.name === table.name && "is-selected")} data-table-name={table.name} data-testid="mysql-table-item" disabled={!table.queryable} key={table.name} onClick={() => { setDocumentTab("table"); setTableTab("structure"); void state.selectTable(table) }} title={table.queryable ? table.name : `${table.name}：当前策略不支持读取此表`} type="button" variant="ghost"><TableIcon aria-hidden="true" /><span>{table.name}</span>{table.type === "VIEW" ? <small>视图</small> : null}</Button>
+                ))}
+                {!visibleTables.length && !state.tablesLoading && state.tablesLoaded ? <p className="mysql-sidebar-empty">{searchTerm ? "已加载的表中没有匹配项。" : "当前数据库没有数据表。"}</p> : null}
+                {state.tablesLoading ? <p className="mysql-sidebar-empty" role="status">正在读取数据表…</p> : null}
               </div>
-            </div>
-            {state.query.loading ? <ReadLoading label="正在执行查询…" /> : null}
-            {state.query.error ? <ReadError message={state.query.error} testId="mysql-query-error" /> : null}
-            {state.query.data ? <MysqlQueryResults kind="query" result={state.query.data} /> : null}
-            {!state.query.data && !state.query.loading && !state.query.error ? <p className="py-12 text-center text-xs text-muted-foreground">输入 SQL 后执行查询，结果会显示在这里。</p> : null}
-          </TabsContent>
-        </Tabs>
+              {state.nextCursor ? <div className="mysql-sidebar-more"><Button data-testid="mysql-tables-load-more" disabled={state.tablesLoading} onClick={() => { if (state.nextCursor) void state.loadTables(state.nextCursor) }} size="sm" type="button" variant="ghost">{state.tablesLoading ? "读取中…" : "加载更多数据表"}</Button></div> : null}
+              <div className="mysql-sidebar-footer"><span>{state.tables.length} 张表</span><span>{state.tablesTruncated && !state.nextCursor ? "已达读取上限" : state.nextCursor ? "还有更多" : state.tablesLoaded ? "已加载" : "待读取"}</span></div>
+            </aside>
+          </ResizablePanel>
+          <ResizableHandle aria-label="调整数据表列表宽度" data-testid="mysql-sidebar-resizer" id={`${uniqueId}-sidebar-resizer`} onDoubleClick={() => sidebarRef.current?.resize("224px")} withHandle />
+          <ResizablePanel className="min-h-0 min-w-0" id={`${uniqueId}-content`} minSize="360px">
+            <Tabs className="mysql-document-workspace" onValueChange={selectDocument} value={documentTab}>
+              <div className="mysql-document-tabs-row">
+                <TabsList aria-label="数据库工作区" className="mysql-document-tabs" variant="line">
+                  {queries.documents.map((document, index) => (
+                    <div className="mysql-document-tab-group" key={document.id}>
+                      <TabsTrigger className="mysql-document-tab" data-query-id={document.id} data-testid={index === 0 ? "mysql-sql-tab" : "mysql-sql-document-tab"} value={document.id}><Code aria-hidden="true" />{document.name}{document.result.loading ? <ArrowClockwise aria-hidden="true" className="size-3 motion-safe:animate-spin" /> : null}</TabsTrigger>
+                      {queries.documents.length > 1 ? <Button aria-label={`关闭 ${document.name}`} className="mysql-document-close" data-query-id={document.id} data-testid="mysql-query-close" onClick={() => closeQuery(document.id)} size="icon-sm" title={`关闭 ${document.name}`} type="button" variant="ghost"><X aria-hidden="true" /></Button> : null}
+                    </div>
+                  ))}
+                  <TabsTrigger className="mysql-document-tab" data-testid="mysql-table-document-tab" disabled={!state.selectedTable} title={state.selectedTable?.name} value="table"><TableIcon aria-hidden="true" /><span className="max-w-64 truncate font-mono">{state.selectedTable?.name || "数据表"}</span></TabsTrigger>
+                </TabsList>
+                <Button aria-label="新建 SQL 查询" className="mysql-new-query" data-testid="mysql-query-new" disabled={queries.documents.length >= MYSQL_MAX_QUERY_DOCUMENTS} onClick={createQuery} size="icon-sm" title={queries.documents.length >= MYSQL_MAX_QUERY_DOCUMENTS ? `最多打开 ${MYSQL_MAX_QUERY_DOCUMENTS} 个查询标签` : "新建 SQL 查询"} type="button" variant="ghost"><Plus aria-hidden="true" /></Button>
+                <div className="mysql-layout-controls"><Button aria-expanded={!sidebarCollapsed} aria-label={sidebarCollapsed ? "展开表列表" : "收起表列表"} data-testid="mysql-sidebar-toggle" onClick={toggleSidebar} size="icon-sm" title={sidebarCollapsed ? "展开表列表" : "收起表列表"} type="button" variant="ghost"><SidebarSimple aria-hidden="true" /></Button><Button aria-expanded={!editorCollapsed} aria-label={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} data-testid="mysql-editor-toggle" disabled={documentTab === "table"} onClick={toggleEditor} size="icon-sm" title={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} type="button" variant="ghost">{editorCollapsed ? <CaretDown aria-hidden="true" /> : <CaretUp aria-hidden="true" />}</Button></div>
+              </div>
+              <TabsContent className={cn("mysql-document-content", documentTab === "table" && "hidden")} forceMount value={activeQueryId}>
+                <ResizablePanelGroup aria-label="SQL 编辑器与查询结果" id={`${uniqueId}-query`} orientation="vertical">
+                  <ResizablePanel collapsedSize="42px" collapsible defaultSize="252px" groupResizeBehavior="preserve-pixel-size" id={`${uniqueId}-editor`} maxSize="70%" minSize="150px" onResize={(size) => setEditorCollapsed(size.inPixels < 80)} panelRef={editorRef}>
+                    {queries.documents.map((document) => (
+                      <div className="mysql-query-document-view" data-query-document={document.id} hidden={document.id !== activeQueryId} key={document.id}>
+                        <MysqlSqlEditor active={document.id === activeQueryId} collapsed={editorCollapsed} loading={document.result.loading} onChange={(sql) => queries.updateSql(document.id, sql)} onRun={() => void queries.runQuery(document.id, document.sql)} value={document.sql} />
+                      </div>
+                    ))}
+                  </ResizablePanel>
+                  <ResizableHandle aria-label="调整 SQL 编辑器与结果区高度" data-testid="mysql-editor-resizer" id={`${uniqueId}-editor-resizer`} onDoubleClick={() => editorRef.current?.resize("252px")} withHandle />
+                  <ResizablePanel className="min-h-0 min-w-0" id={`${uniqueId}-result`} minSize="150px">
+                    {queries.documents.map((document) => (
+                      <div className="mysql-query-result-area mysql-query-document-view" data-query-document={document.id} hidden={document.id !== activeQueryId} key={document.id}>
+                        {document.result.loading ? <ReadLoading label="正在执行查询…" /> : null}
+                        {document.result.error ? <ReadError message={document.result.error} testId={document.id === activeQueryId ? "mysql-query-error" : `mysql-${document.id}-error`} /> : null}
+                        {document.result.data ? <MysqlQueryResults kind="query" result={document.result.data} testIdPrefix={document.id === activeQueryId ? "mysql-query" : `mysql-${document.id}`} /> : null}
+                        {!document.result.data && !document.result.loading && !document.result.error ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><Code aria-hidden="true" /></EmptyMedia><EmptyTitle>编写你的第一条查询</EmptyTitle><EmptyDescription>执行只读 SQL，结果将在此显示。<br />查询受当前连接配置的数量和大小上限约束。</EmptyDescription></EmptyHeader></Empty> : null}
+                      </div>
+                    ))}
+                  </ResizablePanel>
+                </ResizablePanelGroup>
+              </TabsContent>
+              <TabsContent className={cn("mysql-document-content", documentTab !== "table" && "hidden")} forceMount value="table">
+                {state.selectedTable ? (
+                  <Tabs className="mysql-table-content" onValueChange={setTableTab} value={tableTab}>
+                    <div className="mysql-table-toolbar"><TabsList aria-label="数据表视图" variant="line"><TabsTrigger data-testid="mysql-table-preview-tab" value="preview"><TableIcon aria-hidden="true" />数据预览</TabsTrigger><TabsTrigger data-testid="mysql-table-structure-tab" value="structure"><ListBullets aria-hidden="true" />表结构</TabsTrigger></TabsList><span className="mysql-table-name" title={state.selectedTable.name}>{state.selectedTable.name}</span>{tableTab === "structure" ? <Button aria-label="刷新表结构" disabled={state.structure.loading} onClick={() => { if (state.selectedTable) void state.selectTable(state.selectedTable) }} size="icon-sm" title="刷新结构" type="button" variant="ghost"><ArrowClockwise aria-hidden="true" /></Button> : <Button data-testid="mysql-preview-run" disabled={state.preview.loading} onClick={() => void state.runPreview()} size="sm" type="button"><Play aria-hidden="true" />{state.preview.loading ? "查询中…" : "预览前 100 行"}</Button>}</div>
+                    <TabsContent className={cn("mysql-table-view", tableTab !== "structure" && "hidden")} forceMount value="structure">
+                      {state.structure.loading ? <ReadLoading label="正在读取表结构…" /> : null}
+                      {state.structure.error ? <ReadError message={state.structure.error} testId="mysql-structure-error" /> : null}
+                      {state.structure.data?.auditWarning ? <AuditWarning testId="mysql-structure-audit-warning" /> : null}
+                      {state.structure.data ? <TableStructure description={state.structure.data} /> : null}
+                    </TabsContent>
+                    <TabsContent className={cn("mysql-table-view", tableTab !== "preview" && "hidden")} forceMount value="preview">
+                      {state.preview.loading ? <ReadLoading label="正在读取预览数据…" /> : null}
+                      {state.preview.error ? <ReadError message={state.preview.error} testId="mysql-preview-error" /> : null}
+                      {state.preview.data ? <MysqlQueryResults kind="preview" result={state.preview.data} /> : null}
+                      {!state.preview.data && !state.preview.loading && !state.preview.error ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><TableIcon aria-hidden="true" /></EmptyMedia><EmptyTitle>预览表中的数据</EmptyTitle><EmptyDescription>点击“预览前 100 行”按需读取。<br />未指定排序，返回顺序可能变化。</EmptyDescription></EmptyHeader></Empty> : null}
+                    </TabsContent>
+                  </Tabs>
+                ) : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><TableIcon aria-hidden="true" /></EmptyMedia><EmptyTitle>选择一张数据表</EmptyTitle><EmptyDescription>查看字段结构，或按需预览最多 100 行数据。</EmptyDescription></EmptyHeader></Empty>}
+              </TabsContent>
+            </Tabs>
+          </ResizablePanel>
+        </ResizablePanelGroup>
       </div>
-    </section>
+      <footer className="mysql-workspace-status"><span><ShieldCheck aria-hidden="true" />只读连接</span><span className="font-mono" title={database}>{database}</span><span className="mysql-workspace-status-note">SQL 与查询结果仅保留在当前会话</span></footer>
+    </>
   )
 }
 
@@ -244,19 +225,16 @@ export function MysqlDatabaseWorkspace(props: MysqlDatabaseWorkspaceProps) {
   const { api, scope, plugin, connected } = props
   const database = mysqlDatabaseName(plugin)
   const matchesScope = mysqlWorkspaceMatchesScope(scope, plugin)
-  if (!connected || plugin.pluginType !== "mysql" || !database || !matchesScope) {
-    return (
-      <section aria-label="数据库查询" data-testid="mysql-database-workspace">
-        <Empty className="min-h-72" data-testid="mysql-database-offline">
-          <EmptyHeader>
-            <EmptyMedia variant="icon"><Plugs aria-hidden="true" /></EmptyMedia>
-            <EmptyTitle>{!matchesScope ? "正在切换数据库" : plugin.pluginType !== "mysql" ? "仅 MySQL 支持数据库查询" : !database ? "尚未配置数据库" : "连接后即可查询数据库"}</EmptyTitle>
-            <EmptyDescription>{!matchesScope ? "等待当前插件配置载入。" : !database ? "请在连接配置中选择一个数据库。" : "在概览中连接此 MySQL 插件，即可浏览数据表、查看结构和执行只读查询。"}</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      </section>
-    )
-  }
-  // 用完整作用域和配置版本隔离数据；断连时卸载会话并清除查询结果。
-  return <MysqlConnectedWorkspace api={api} key={mysqlWorkspaceSessionKey(scope, plugin)} plugin={plugin} scope={scope} />
+  const ready = connected && plugin.pluginType === "mysql" && Boolean(database) && matchesScope
+  return (
+    <section aria-label="数据库工作区" className="mysql-workspace h-full min-h-0" data-testid="mysql-database-workspace">
+      <WorkspaceHeader {...props} connected={ready} />
+      {ready ? (
+        // 用完整作用域和配置版本隔离数据；断连时卸载会话并清除查询结果。
+        <MysqlConnectedWorkspace api={api} key={mysqlWorkspaceSessionKey(scope, plugin)} plugin={plugin} scope={scope} />
+      ) : (
+        <Empty className="min-h-0 flex-1" data-testid="mysql-database-offline"><EmptyHeader><EmptyMedia variant="icon"><Plugs aria-hidden="true" /></EmptyMedia><EmptyTitle>{!matchesScope ? "正在切换数据库" : plugin.pluginType !== "mysql" ? "仅 MySQL 支持数据库查询" : !database ? "尚未配置数据库" : "连接后即可查询数据库"}</EmptyTitle><EmptyDescription>{!matchesScope ? "等待当前插件配置载入。" : !database ? "请在连接配置中选择一个数据库。" : "返回详情连接此 MySQL 插件，即可浏览数据表、查看结构和执行只读查询。"}</EmptyDescription></EmptyHeader></Empty>
+      )}
+    </section>
+  )
 }

@@ -40,10 +40,9 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
   const [selectedTable, setSelectedTable] = useState<MysqlTableSummary | null>(null)
   const [structure, setStructure] = useState<ReadState<MysqlTableDescription>>(emptyRead)
   const [preview, setPreview] = useState<ReadState<MysqlQueryResult>>(emptyRead)
-  const [query, setQuery] = useState<ReadState<MysqlQueryResult>>(emptyRead)
   const active = useRef(false)
-  const tickets = useRef({ tables: 0, structure: 0, preview: 0, query: 0 })
-  const busy = useRef({ tables: false, preview: false, query: false })
+  const tickets = useRef({ tables: 0, structure: 0, preview: 0 })
+  const busy = useRef({ tables: false, preview: false })
   const tableRef = useRef<MysqlTableSummary | null>(null)
   const { projectId, environmentId, pluginInstanceId } = scope
 
@@ -101,8 +100,8 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
     return () => {
       // 断连、切换作用域或配置后，旧请求不得回填到新的数据库会话。
       active.current = false
-      for (const key of ["tables", "structure", "preview", "query"] as const) ++tickets.current[key]
-      busy.current = { tables: false, preview: false, query: false }
+      for (const key of ["tables", "structure", "preview"] as const) ++tickets.current[key]
+      busy.current = { tables: false, preview: false }
     }
   }, [loadTables])
 
@@ -143,26 +142,9 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
     }
   }
 
-  const runQuery = async (sql: string) => {
-    if (!active.current || !sql.trim() || busy.current.query) return
-    const ticket = ++tickets.current.query
-    busy.current.query = true
-    setQuery({ data: null, loading: true, error: null })
-    try {
-      const data = unwrap(await api.mysqlQueryReadonly({ projectId, environmentId, pluginInstanceId, sql }))
-      if (active.current && ticket === tickets.current.query) setQuery({ data, loading: false, error: null })
-    } catch (error) {
-      if (active.current && ticket === tickets.current.query) {
-        setQuery({ data: null, loading: false, error: readError(error, "SQL 查询失败，请重试。") })
-      }
-    } finally {
-      if (active.current && ticket === tickets.current.query) busy.current.query = false
-    }
-  }
-
   return {
     tables, tablesLoading, tablesLoaded, tablesError, tablesTruncated, tablesAuditWarning, nextCursor,
-    selectedTable, structure, preview, query,
-    loadTables, selectTable, runPreview, runQuery,
+    selectedTable, structure, preview,
+    loadTables, selectTable, runPreview,
   }
 }

@@ -1,5 +1,6 @@
 import {
   ArrowClockwise,
+  ArrowsOutSimple,
   GearSix,
   LinkBreak,
   LinkSimple,
@@ -45,6 +46,8 @@ interface PluginConnectionPanelProps {
   readonly runtime?: EnvironmentRuntime | null
   readonly onRuntime?: (runtime: EnvironmentRuntime) => void
   readonly onEdit: () => void
+  readonly onOpenWorkspace?: (() => void) | undefined
+  readonly workspaceRetained?: boolean
 }
 
 const PHASE_COPY = {
@@ -122,6 +125,8 @@ export function PluginConnectionPanel({
   runtime = null,
   onRuntime,
   onEdit,
+  onOpenWorkspace,
+  workspaceRetained = false,
 }: PluginConnectionPanelProps) {
   const connectionTriggerRef = useRef<HTMLButtonElement | null>(null)
   const connection = usePluginConnection({
@@ -256,6 +261,20 @@ export function PluginConnectionPanel({
               <GearSix aria-hidden="true" />
               修改配置
             </Button>
+            {onOpenWorkspace ? (
+              <Button
+                data-testid="plugin-workspace-open"
+                disabled={editingBlocked || connection.state.phase !== "connected"}
+                onClick={onOpenWorkspace}
+                size="sm"
+                title={connection.state.phase === "connected" ? "进入数据库工作区" : "请先连接数据库"}
+                type="button"
+                variant={connection.state.phase === "connected" ? "default" : "outline"}
+              >
+                <ArrowsOutSimple aria-hidden="true" />
+                {workspaceRetained ? "继续工作区" : "打开工作区"}
+              </Button>
+            ) : null}
           </ButtonGroup>
 
           {connection.state.error && !connection.state.challenge ? (

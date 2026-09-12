@@ -4,7 +4,6 @@ import {
   CaretRight,
   ChatsCircle,
   ClockCounterClockwise,
-  Database,
   DotsThree,
   FolderOpen,
   GearSix,
@@ -50,7 +49,6 @@ import { AuditFeature } from "@/features/audit/AuditFeature"
 import { ConfirmationsFeature, type ConfirmationScope } from "@/features/confirmations/ConfirmationsFeature"
 import { PluginConnectionPanel } from "@/features/connections/PluginConnectionPanel"
 import { EnvironmentConnectionPanel } from "@/features/connections/EnvironmentConnectionPanel"
-import { MysqlDatabaseWorkspace } from "@/features/database/MysqlDatabaseWorkspace"
 import { EnvironmentOverview } from "@/features/environments/EnvironmentOverview"
 import { PluginAgentAccess } from "@/features/plugins/PluginAgentAccess"
 import { PluginOverview } from "@/features/plugins/PluginOverview"
@@ -79,6 +77,8 @@ export type WorkspaceDetailAction =
   | Readonly<{ type: "delete-plugin"; plugin: PluginConfigurationRecord }>
 
 export interface WorkspaceDetailProps {
+  readonly onOpenDatabaseWorkspace: () => void
+  readonly databaseWorkspaceRetained: boolean
   readonly activeTab: string
   readonly api: AiOpsV2Api
   readonly collapsed: boolean
@@ -155,7 +155,6 @@ function CollapsedDetail({ onToggle }: { readonly onToggle: () => void }) {
 
 function DetailTabIcon({ value }: { readonly value: string }) {
   const iconProps = { "aria-hidden": true, size: 15, weight: "bold" as const }
-  if (value === "database") return <Database {...iconProps} />
   if (value === "agent") return <ShieldCheck {...iconProps} />
   if (value === "runbook") return <BookOpenText {...iconProps} />
   if (value === "questions") return <ChatsCircle {...iconProps} />
@@ -221,6 +220,8 @@ function SelectionActions({
 }
 
 export function WorkspaceDetail({
+  onOpenDatabaseWorkspace,
+  databaseWorkspaceRetained,
   api,
   activeTab,
   collapsed,
@@ -534,7 +535,7 @@ export function WorkspaceDetail({
                   onReload={onReloadEnvironment}
                   plugin={plugin}
                   connectionPanel={supportedPlugin ? (
-                    <PluginConnectionPanel api={api} onEdit={() => onAction({ type: "edit-plugin", plugin: supportedPlugin, returnFocus: "plugin-action-edit" })} onRuntime={onReloadEnvironment} plugin={supportedPlugin} runtime={rawRuntime} />
+                    <PluginConnectionPanel workspaceRetained={databaseWorkspaceRetained} onOpenWorkspace={supportedPlugin.pluginType === "mysql" ? onOpenDatabaseWorkspace : undefined} api={api} onEdit={() => onAction({ type: "edit-plugin", plugin: supportedPlugin, returnFocus: "plugin-action-edit" })} onRuntime={onReloadEnvironment} plugin={supportedPlugin} runtime={rawRuntime} />
                   ) : null}
                 />
               ) : environment ? (
@@ -558,17 +559,6 @@ export function WorkspaceDetail({
                 <ProjectOverview error={workspaceError} loading={workspaceLoading} onReload={onReloadWorkspace} project={project} />
               )}
             </PersistentTabsContent>
-
-            {supportedPlugin?.pluginType === "mysql" && project && environment ? (
-              <PersistentTabsContent activeValue={activeTab} value="database">
-                <MysqlDatabaseWorkspace
-                  api={api}
-                  connected={selectedPluginRuntime?.status === "connected"}
-                  plugin={supportedPlugin}
-                  scope={{ projectId: project.projectId, environmentId: environment.environmentId, pluginInstanceId: supportedPlugin.pluginInstanceId }}
-                />
-              </PersistentTabsContent>
-            ) : null}
 
             {selectionKind === "plugin" || selectionKind === "mysql-plugin" ? (
               <PersistentTabsContent activeValue={activeTab} value="agent">

@@ -28,12 +28,14 @@ app.setPath('sessionData',path.join(dataRoot,'session'));
 
 const PROJECT_ID = 'project-database-smoke';
 const ENVIRONMENT_ID = 'environment-database-smoke';
+const SECOND_ENVIRONMENT_ID = 'environment-database-review-smoke';
 const PRIMARY_ID = 'plugin-orders-smoke';
 const OTHER_ID = 'plugin-reports-smoke';
 const OFFLINE_ID = 'plugin-offline-smoke';
 const MARKUP = '<img id="database-result-injection" src="https://untrusted.example.invalid/image" onerror="window.__databaseInjected=true">';
 const SQL_MARKER = 'database-smoke-volatile-sql';
 const LATE_MARKER = '迟到的订单范围结果';
+const SHOWCASE_SQL = "SELECT order_no, customer_name, total_amount, status, created_at\nFROM orders\nWHERE status = '已完成'\nLIMIT 24";
 const registeredChannels = new Set();
 const databaseCalls = [];
 const forbiddenCalls = [];
@@ -78,7 +80,12 @@ function runtime() {
   };
 }
 
-function environment() {
+function environment(environmentId = ENVIRONMENT_ID) {
+  if (environmentId === SECOND_ENVIRONMENT_ID) return {
+    projectId:PROJECT_ID,environmentId,name:'隔离验证环境',revision:1,
+    pluginCount:0,readyPluginCount:0,draftCount:0,resourcePreview:[],resourcePreviewTruncated:false,
+    runtime:{...runtime(),environmentId,phase:'disconnected',desiredConnected:false,eligibleCount:0,connectedCount:0,plugins:{}},
+  };
   return {
     projectId:PROJECT_ID,environmentId:ENVIRONMENT_ID,name:'数据库模拟环境',revision:1,
     pluginCount:plugins.length,readyPluginCount:plugins.length,draftCount:0,
@@ -90,7 +97,7 @@ function environment() {
 function workspace() {
   return [{
     schemaVersion:2,projectId:PROJECT_ID,name:'数据库工作区验证',revision:1,
-    environmentCount:1,pluginCount:plugins.length,environments:[environment()],
+    environmentCount:2,pluginCount:plugins.length,environments:[environment(),environment(SECOND_ENVIRONMENT_ID)],
   }];
 }
 
@@ -138,9 +145,9 @@ function registerDatabase(channel,handler) {
 function registerMockApi() {
   registerRead('v2:project-list',() => workspace().map(({environments:_,...record}) => record));
   registerRead('v2:workspace-overview',workspace);
-  registerRead('v2:environment-list',() => [environment()]);
-  registerRead('v2:environment-status',runtime);
-  registerRead('v2:plugin-list',() => plugins);
+  registerRead('v2:environment-list',() => [environment(),environment(SECOND_ENVIRONMENT_ID)]);
+  registerRead('v2:environment-status',({environmentId}) => environment(environmentId).runtime);
+  registerRead('v2:plugin-list',({environmentId}) => environmentId === ENVIRONMENT_ID ? plugins : []);
   registerRead('v2:plugin-assess',({pluginInstanceId}) => plugins.find((record) => record.pluginInstanceId === pluginInstanceId)?.assessment);
   registerRead('v2:plugin-credential-status',() => ({fields:{primary:false,proxy:false},legacyAvailable:false}));
   registerRead('v2:plugin-databases',() => []);
@@ -170,6 +177,13 @@ function registerMockApi() {
     ? failed('模拟数据预览失败。')
     : ok(queryResult([{id:1,label:MARKUP,optional:null},{id:2,label:'已完成订单',optional:''}],{truncated:true,maxRows:100})));
   registerDatabase('v2:mysql-query-readonly',({pluginInstanceId,sql}) => {
+    if (sql === SHOWCASE_SQL) return ok({
+      ...queryResult(Array.from({length:24},(_,index) => ({
+        order_no:`DEMO-20260912-${String(index+1).padStart(4,'0')}`,customer_name:`演示客户 ${String(index+1).padStart(2,'0')}`,
+        total_amount:(128+index*37.5).toFixed(2),status:'已完成',created_at:`2026-09-12 09:${String(index*2).padStart(2,'0')}:00`,
+      }))),
+      columns:['order_no','customer_name','total_amount','status','created_at'].map((name) => ({name,table:'orders',type:253})),
+    });
     if (sql.includes('fixture_failure')) return failed('模拟只读 SQL 查询失败。');
     if (sql.includes('duplicate_columns')) return ok({
       ...queryResult([{id:1,label:'不得误展示的重名列值',optional:null}]),
@@ -254,11 +268,119 @@ async function activateDetailTab(win,tab) {
   await waitFor(win,`document.querySelector(${JSON.stringify(selector)})?.getAttribute('aria-selected') === 'true'`,`${tab} 页签激活`);
 }
 
-async function selectPlugin(win,pluginInstanceId) {
+async function isVisible(win,id) {
+  return win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(testId(id))})?.getClientRects().length > 0`,true);
+}
+
+async function returnToDetails(win) {
+  if (!await isVisible(win,'mysql-workspace-back')) return;
+  await click(win,testId('mysql-workspace-back'));
+  await waitFor(win,`document.querySelector('${testId('mysql-full-window-workspace')}')?.getClientRects().length === 0`,'返回详情后工作区隐藏');
+}
+
+async function selectPluginDetails(win,pluginInstanceId) {
+  await returnToDetails(win);
   await click(win,testId(`plugin-trigger-${pluginInstanceId}`));
   await waitFor(win,`document.querySelector(${JSON.stringify(testId(`plugin-trigger-${pluginInstanceId}`))})?.getAttribute('aria-current') === 'page'`,'插件范围切换');
-  await activateDetailTab(win,'database');
-  await waitFor(win,`document.querySelector(${JSON.stringify(testId('mysql-database-workspace'))}) !== null`,'数据库工作区');
+  await activateDetailTab(win,'overview');
+  await waitFor(win,`document.querySelector('${testId('plugin-workspace-open')}')?.getClientRects().length > 0`,'连接区的工作区入口');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-detail-tab="database"]') === null`,true),true,'数据库工作区不应继续占用详情页签。');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('plugin-workspace-open')}')?.closest('${testId('plugin-overview-actions')}')?.contains(document.querySelector('${testId('plugin-connection-primary')}')) === true`,true),true,'工作区入口必须紧邻插件连接操作。');
+}
+
+async function openDatabaseWorkspace(win) {
+  await click(win,testId('plugin-workspace-open'));
+  await waitFor(win,`document.querySelector('${testId('mysql-full-window-workspace')}')?.getClientRects().length > 0`,'数据库大窗口');
+  await waitFor(win,`document.querySelector('${testId('mysql-database-workspace')}')?.getClientRects().length > 0`,'数据库工作区');
+}
+
+async function selectPlugin(win,pluginInstanceId) {
+  await selectPluginDetails(win,pluginInstanceId);
+  await openDatabaseWorkspace(win);
+}
+
+async function assertFullWindow(win) {
+  const geometry = await win.webContents.executeJavaScript(`(() => {
+    const element = document.querySelector('${testId('mysql-full-window-workspace')}');
+    const bounds = element.getBoundingClientRect();
+    return {width:bounds.width,height:bounds.height,left:bounds.left,top:bounds.top,viewport:[innerWidth,innerHeight],overflow:document.documentElement.scrollWidth > innerWidth};
+  })()`,true);
+  assert.ok(geometry.width >= geometry.viewport[0]*0.95,'数据库工作区必须占满应用宽度。');
+  assert.ok(geometry.height >= geometry.viewport[1]*0.95,'数据库工作区必须占满应用高度。');
+  assert.ok(Math.abs(geometry.left) <= 2 && Math.abs(geometry.top) <= 2,'大窗口应从应用内容区起点展开。');
+  assert.equal(geometry.overflow,false,'数据库工作区不得造成页面横向溢出。');
+}
+
+async function dragDivider(win,id,dx,dy) {
+  const selector = `[role="separator"][id$="-${id.replace('mysql-','')}"]`;
+  win.webContents.focus();
+  await waitFor(win,'document.hasFocus()','分隔条拖动前的真实焦点');
+  await captureFrame(win);
+  const point = await win.webContents.executeJavaScript(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    const bounds = element?.getBoundingClientRect();
+    return bounds ? {x:Math.round(bounds.left+bounds.width/2),y:Math.round(bounds.top+bounds.height/2)} : null;
+  })()`,true);
+  assert.ok(point,`分隔条必须可见：${id}`);
+  win.webContents.sendInputEvent({type:'mouseMove',...point});
+  win.webContents.sendInputEvent({type:'mouseDown',...point,button:'left',clickCount:1});
+  await captureFrame(win);
+  for (let step=1; step<=6; step+=1) {
+    win.webContents.sendInputEvent({type:'mouseMove',button:'left',modifiers:['leftButtonDown'],x:point.x+Math.round(dx*step/6),y:point.y+Math.round(dy*step/6),movementX:Math.round(dx/6),movementY:Math.round(dy/6)});
+    await captureFrame(win);
+  }
+  win.webContents.sendInputEvent({type:'mouseUp',x:point.x+dx,y:point.y+dy,button:'left',clickCount:1});
+  await wait(100);
+}
+
+async function elementSize(win,id,dimension) {
+  return win.webContents.executeJavaScript(`document.querySelector('${testId(id)}')?.getBoundingClientRect()[${JSON.stringify(dimension)}] ?? 0`,true);
+}
+
+async function pressBodyShortcut(win,keyCode) {
+  win.webContents.focus();
+  await win.webContents.executeJavaScript('document.activeElement?.blur()',true);
+  await waitFor(win,'document.activeElement === document.body','快捷键测试焦点位于 body');
+  win.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers:['control']});
+  win.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers:['control']});
+  await wait(100);
+}
+
+async function assertBackgroundShortcutsDisabled(win) {
+  const collapsed = await win.webContents.executeJavaScript(`document.querySelector('${testId('project-rail')}').dataset.collapsed`,true);
+  for (const key of ['K','N','B']) await pressBodyShortcut(win,key);
+  assert.equal(await isVisible(win,'global-command'),false,'body 焦点不得绕过工作区拦截打开全局命令。');
+  assert.equal(await win.webContents.executeJavaScript(`[...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].some((element) => element.getClientRects().length > 0)`,true),false,'工作区中不得通过后台快捷键打开弹窗。');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('project-rail')}').dataset.collapsed`,true),collapsed,'工作区中的 Ctrl+B 不得改变后台栏布局。');
+}
+
+async function assertBackgroundShortcutsRestored(win) {
+  await pressBodyShortcut(win,'K');
+  await waitFor(win,`document.querySelector('${testId('global-command')}')?.getClientRects().length > 0`,'返回详情后恢复全局快捷键');
+  win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});
+  win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});
+  await waitFor(win,`!document.querySelector('${testId('global-command')}') || document.querySelector('${testId('global-command')}').getClientRects().length === 0`,'关闭全局命令');
+}
+
+async function assertResizableWorkspace(win) {
+  const sidebarWidth=await elementSize(win,'mysql-table-sidebar','width');
+  await dragDivider(win,'mysql-sidebar-resizer',80,0);
+  const sidebarAfter=await elementSize(win,'mysql-table-sidebar','width');
+  assert.ok(sidebarAfter > sidebarWidth+40,`侧栏宽度必须响应真实鼠标拖动：${sidebarWidth} → ${sidebarAfter}`);
+  await dragDivider(win,'mysql-sidebar-resizer',-80,0);
+  const editorHeight=await elementSize(win,'mysql-query-editor-panel','height');
+  await dragDivider(win,'mysql-editor-resizer',0,60);
+  assert.ok(await elementSize(win,'mysql-query-editor-panel','height') > editorHeight+30,'编辑器高度必须响应真实鼠标拖动。');
+  await dragDivider(win,'mysql-editor-resizer',0,-60);
+  await click(win,testId('mysql-sidebar-toggle'));
+  await captureFrame(win);
+  await waitFor(win,`document.querySelector('${testId('mysql-table-sidebar')}').getBoundingClientRect().width < 90`,'侧栏收起后释放查询宽度');
+  await click(win,testId('mysql-sidebar-toggle'));
+  await captureFrame(win);
+  await click(win,testId('mysql-editor-toggle'));
+  await captureFrame(win);
+  await waitFor(win,`document.querySelector('${testId('mysql-query-editor-panel')}').getBoundingClientRect().height < ${editorHeight-50}`,'编辑器收起后释放结果高度');
+  await click(win,testId('mysql-editor-toggle'));
 }
 
 async function textContains(win,id,text) {
@@ -291,21 +413,132 @@ async function assertNoPersistence(win) {
   assert.deepEqual(values.databases,[],'数据库工作区不应创建本地查询历史数据库。');
 }
 
-async function screenshot(win,name) {
-  if (!screenshotRoot) return;
-  fs.mkdirSync(screenshotRoot,{recursive:true});
+async function assertQueryDocuments(win,originalSql) {
+  await fill(win,testId('mysql-query-filter'),'模拟订单');
+  await click(win,testId('mysql-query-next-page'));
+  await click(win,`${testId('mysql-query-row')}[data-row-index="104"]`);
+  await textContains(win,'mysql-query-row-detail','模拟订单 105');
+  const editorView = await win.webContents.executeJavaScript(`(() => {
+    const editor=document.querySelector('${testId('mysql-sql-editor')}');
+    editor.setSelectionRange(8,20);
+    editor.scrollLeft=64;
+    return {start:editor.selectionStart,end:editor.selectionEnd,left:editor.scrollLeft};
+  })()`,true);
+  await click(win,testId('mysql-query-new'));
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').value`,true),'','新标签应使用独立的空编辑器。');
+  await click(win,testId('mysql-sql-tab'));
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-query-filter')}').value`,true),'模拟订单','切换标签应保留每个结果筛选条件。');
+  await textContains(win,'mysql-query-result','模拟订单 105');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-query-row')}').dataset.rowIndex`,true),'101','切换标签应保留结果当前页。');
+  await textContains(win,'mysql-query-row-detail','模拟订单 105');
+  const restoredEditor = await win.webContents.executeJavaScript(`(() => {
+    const editor=document.querySelector('${testId('mysql-sql-editor')}');
+    return {start:editor.selectionStart,end:editor.selectionEnd,left:editor.scrollLeft};
+  })()`,true);
+  assert.deepEqual(restoredEditor,editorView,'切换标签应保留编辑器选区及水平滚动。');
+  await click(win,testId('mysql-query-close-detail'));
+  await fill(win,testId('mysql-query-filter'),'');
+  await click(win,testId('mysql-sql-document-tab'));
+  await fill(win,testId('mysql-sql-editor'),'SELECT * FROM orders WHERE 1 = 0');
+  await click(win,testId('mysql-query-run'));
+  await textContains(win,'mysql-query-summary','返回 0 行');
+  await click(win,testId('mysql-sql-tab'));
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').value`,true),originalSql,'每个 SQL 标签必须保留独立文本。');
+  await textContains(win,'mysql-query-result','模拟订单 100');
+  await click(win,testId('mysql-sql-document-tab'));
+  const secondId = await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-document-tab')}').dataset.queryId`,true);
+  const hold = {channel:'v2:mysql-query-readonly',pluginInstanceId:PRIMARY_ID,result:queryResult([{id:701,label:'仅属于第二个 SQL 标签',optional:null}])};
+  state.holdNext = hold;
+  await fill(win,testId('mysql-sql-editor'),'SELECT delayed_document FROM orders');
+  await click(win,testId('mysql-query-run'));
+  await waitUntil(() => Boolean(hold.release),'独立标签延迟请求');
+  await click(win,testId('mysql-sql-tab'));
+  hold.release();
+  await wait(100);
+  await textContains(win,'mysql-query-result','模拟订单 100');
+  await click(win,testId('mysql-sql-document-tab'));
+  await textContains(win,'mysql-query-result','仅属于第二个 SQL 标签');
+  await click(win,`${testId('mysql-query-close')}[data-query-id="${secondId}"]`);
+  await click(win,testId('mysql-query-new'));
+  const thirdId = await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-document-tab')}').dataset.queryId`,true);
+  const closedHold = {channel:'v2:mysql-query-readonly',pluginInstanceId:PRIMARY_ID,result:queryResult([{id:702,label:'已关闭标签的迟到结果',optional:null}])};
+  state.holdNext = closedHold;
+  await fill(win,testId('mysql-sql-editor'),'SELECT closed_document FROM orders');
+  await click(win,testId('mysql-query-run'));
+  await waitUntil(() => Boolean(closedHold.release),'关闭标签前挂起请求');
+  await click(win,`${testId('mysql-query-close')}[data-query-id="${thirdId}"]`);
+  closedHold.release();
+  await wait(100);
+  await textContains(win,'mysql-query-result','模拟订单 100');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-query-result')}').textContent.includes('已关闭标签的迟到结果')`,true),false,'关闭标签的请求不得回填。');
+  for (let index=0; index<5; index+=1) await click(win,testId('mysql-query-new'));
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-query-new')}').disabled`,true),true,'最多只能打开六个 SQL 标签。');
+  const extraIds = await win.webContents.executeJavaScript(`[...document.querySelectorAll('${testId('mysql-sql-document-tab')}')].map((element) => element.dataset.queryId)`,true);
+  for (const id of extraIds) await click(win,`${testId('mysql-query-close')}[data-query-id="${id}"]`);
+  await click(win,testId('mysql-sql-tab'));
+  await textContains(win,'mysql-query-result','模拟订单 100');
+}
+
+async function assertResultDetails(win) {
+  const callCount = databaseCalls.length;
+  await click(win,`${testId('mysql-query-row')}[data-row-index="0"]`);
+  await textContains(win,'mysql-query-row-detail',MARKUP);
+  await assertTextOnly(win,'mysql-query-row-detail');
+  await click(win,`${testId('mysql-query-copy-cell')}[data-column-name="label"]`);
+  assert.equal(await win.webContents.executeJavaScript('window.__databaseClipboardWrites.at(-1)',true),MARKUP,'复制单元格必须保留原始文本。');
+  await click(win,testId('mysql-query-copy-row'));
+  const copiedRow = JSON.parse(await win.webContents.executeJavaScript('window.__databaseClipboardWrites.at(-1)',true));
+  assert.deepEqual(copiedRow,{id:1,label:MARKUP,optional:null},'复制行必须保留字段和 NULL。');
+  await screenshot(win,'row-detail');
+  await click(win,testId('mysql-query-close-detail'));
+  await fill(win,testId('mysql-query-filter'),'模拟订单 105');
+  await waitFor(win,`document.querySelectorAll('${testId('mysql-query-row')}').length === 1`,'返回数据本地筛选');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-query-row')}').dataset.rowIndex`,true),'104','筛选结果应保留返回数组的行索引。');
+  assert.equal(databaseCalls.length,callCount,'结果筛选、查看与复制不得重新查询数据库。');
+  await fill(win,testId('mysql-query-filter'),'');
+}
+
+async function setExactViewport(win,width,height) {
+  win.setContentSize(width,height);
+  await waitFor(win,`innerWidth === ${width} && innerHeight === ${height}`,'截图窗口尺寸');
+  win.webContents.invalidate();
+  await wait(100);
+}
+
+async function captureFrame(win) {
   await win.webContents.capturePage();
   win.webContents.invalidate();
   await win.webContents.executeJavaScript('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))',true);
   await wait(100);
-  const theme = await win.webContents.executeJavaScript('document.documentElement.dataset.theme',true);
-  fs.writeFileSync(path.join(screenshotRoot,`database-${name}-${theme}.png`),(await win.webContents.capturePage()).toPNG());
-  if (name === 'query' || name === 'preview') {
-    await win.webContents.executeJavaScript(`document.querySelector('${testId(`mysql-${name}-result`)}')?.scrollIntoView({block:'start'})`,true);
-    win.webContents.invalidate();
-    await wait(120);
-    fs.writeFileSync(path.join(screenshotRoot,`database-${name}-result-${theme}.png`),(await win.webContents.capturePage()).toPNG());
+  return win.webContents.capturePage();
+}
+
+async function screenshot(win,name) {
+  if (!screenshotRoot) return;
+  fs.mkdirSync(screenshotRoot,{recursive:true});
+  // 隐藏窗口截图暂停过渡，按最终主题样式采集，避免继承颜色停留在中间帧。
+  await win.webContents.executeJavaScript(`(() => {const style=document.createElement('style');style.id='database-screenshot-motion';style.textContent='*,*::before,*::after{transition:none!important;animation:none!important}';document.head.append(style)})()`,true);
+  const originalTheme = nativeTheme.themeSource;
+  const originalSize = await win.webContents.executeJavaScript('[innerWidth,innerHeight]',true);
+  for (const theme of ['dark','light']) {
+    nativeTheme.themeSource=theme;
+    await waitFor(win,`document.documentElement.dataset.theme === '${theme}'`,'截图主题切换');
+    await win.webContents.capturePage();
+    await wait(name === 'workspace-entry' ? 1000 : 350);
+    for (const [width,height] of [[1600,1000],[1400,900]]) {
+      await setExactViewport(win,width,height);
+      if (await isVisible(win,'mysql-full-window-workspace')) await assertFullWindow(win);
+      const frame = (await captureFrame(win)).toPNG();
+      fs.writeFileSync(path.join(screenshotRoot,`database-${name}-${theme}-${width}x${height}.png`),frame);
+      if (name === 'workspace-entry' && width === 1600) {
+        fs.writeFileSync(path.join(screenshotRoot,`mysql-workspace-entry-${theme}.png`),frame);
+
+      }
+    }
   }
+  nativeTheme.themeSource=originalTheme;
+  await setExactViewport(win,...originalSize);
+  await win.webContents.executeJavaScript("document.getElementById('database-screenshot-motion')?.remove()",true);
 }
 
 async function run() {
@@ -318,7 +551,7 @@ async function run() {
     callback(blocked ? {cancel:true} : {});
   });
   const win = new BrowserWindow({
-    show:false,useContentSize:true,width:1280,height:820,
+    show:false,useContentSize:true,width:1600,height:1000,
     webPreferences:{preload:path.join(root,'src','preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false},
   });
   win.webContents.setWindowOpenHandler(() => ({action:'deny'}));
@@ -333,6 +566,8 @@ async function run() {
     await waitFor(win,'document.querySelector(\'[data-shell-ready="true"]\') !== null','React 工作区加载');
     await win.webContents.executeJavaScript(`(() => {
       window.__databaseStorageWrites = [];
+      window.__databaseClipboardWrites = [];
+      Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async (text) => { window.__databaseClipboardWrites.push(String(text)); }}});
       const original = Storage.prototype.setItem;
       Storage.prototype.setItem = function(key,value) {
         window.__databaseStorageWrites.push([String(key),String(value)]);
@@ -341,14 +576,23 @@ async function run() {
     })()`,true);
     await click(win,`[data-project-id="${PROJECT_ID}"]`);
     await click(win,testId(`environment-trigger-${ENVIRONMENT_ID}`));
-    await selectPlugin(win,OFFLINE_ID);
-    await textContains(win,'mysql-database-offline','连接');
-    assert.equal(databaseCalls.length,0,'离线工作区不得发起数据库请求。');
+    await selectPluginDetails(win,OFFLINE_ID);
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('plugin-workspace-open')}').disabled`,true),true,'未连接的工作区入口必须禁用。');
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('plugin-workspace-open')}').title`,true),'请先连接数据库','离线入口必须说明不可用原因。');
+    await win.webContents.executeJavaScript(`document.querySelector('${testId('plugin-workspace-open')}').click()`,true);
+    assert.equal(await isVisible(win,'mysql-full-window-workspace'),false,'未连接不得展开工作区。');
+    assert.equal(databaseCalls.length,0,'离线插件不得发起数据库请求。');
     await screenshot(win,'offline');
 
-    await selectPlugin(win,PRIMARY_ID);
+    await selectPluginDetails(win,PRIMARY_ID);
+    assert.equal(databaseCalls.length,0,'详情页不得提前加载数据表。');
+    await screenshot(win,'workspace-entry');
+    await openDatabaseWorkspace(win);
+    await assertFullWindow(win);
     await textContains(win,'mysql-table-list','orders');
     assert.deepEqual(databaseCalls[0],{channel:'v2:mysql-list-tables',payload:{...scope(PRIMARY_ID),limit:100}});
+    await assertResizableWorkspace(win);
+    await assertBackgroundShortcutsDisabled(win);
     await fill(win,testId('mysql-table-search'),'orders');
     assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('${testId('mysql-table-item')}').length`,true),1);
     await fill(win,testId('mysql-table-search'),'');
@@ -403,6 +647,19 @@ async function run() {
     await waitFor(win,`document.querySelector('${testId('mysql-query-truncated')}') !== null`,'查询截断提示');
     assert.deepEqual(databaseCalls.at(-1),{channel:'v2:mysql-query-readonly',payload:{...scope(PRIMARY_ID),sql}});
     await screenshot(win,'query');
+    await click(win,testId('mysql-query-copy'));
+    assert.equal(await win.webContents.executeJavaScript('window.__databaseClipboardWrites.at(-1)',true),sql,'复制 SQL 必须保留编辑器文本。');
+    await assertResultDetails(win);
+    await assertQueryDocuments(win,sql);
+    const beforeReturnCalls=databaseCalls.length;
+    await returnToDetails(win);
+    await textContains(win,'plugin-workspace-open','继续工作区');
+    await waitFor(win,`document.activeElement === document.querySelector('${testId('plugin-workspace-open')}')`,'返回焦点恢复到工作区入口');
+    await assertBackgroundShortcutsRestored(win);
+    await openDatabaseWorkspace(win);
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').value`,true),sql,'返回再打开必须保留当前连接的 SQL。');
+    await textContains(win,'mysql-query-result','模拟订单 100');
+    assert.equal(databaseCalls.length,beforeReturnCalls,'继续工作区不得自动重复查询。');
     await click(win,testId('mysql-query-next-page'));
     await textContains(win,'mysql-query-result','模拟订单 105');
     await assertNoPersistence(win);
@@ -469,7 +726,8 @@ async function run() {
     active.assessment = assessment('disconnected');
     state.sequence += 1;
     win.webContents.send('v2:environment-status-changed',runtime());
-    await textContains(win,'mysql-database-offline','连接');
+    await waitFor(win,`document.querySelector('${testId('mysql-full-window-workspace')}') === null`,'断连销毁数据库会话');
+    await waitFor(win,`document.querySelector('${testId('plugin-workspace-open')}')?.disabled === true`,'断连入口禁用');
     const disconnectedCalls = databaseCalls.length;
     await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-query-run')}')?.click()`,true);
     await wait(100);
@@ -477,9 +735,43 @@ async function run() {
     active.assessment = assessment('connected');
     state.sequence += 1;
     win.webContents.send('v2:environment-status-changed',runtime());
+    await waitFor(win,`document.querySelector('${testId('plugin-workspace-open')}')?.disabled === false`,'重连入口恢复');
+    await openDatabaseWorkspace(win);
     await textContains(win,'mysql-table-list','reports');
     await click(win,testId('mysql-sql-tab'));
     assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').value.includes(${JSON.stringify(SQL_MARKER)})`,true),false,'重连后必须清除旧 SQL。');
+    await fill(win,testId('mysql-sql-editor'),`SELECT '${SQL_MARKER}' FROM reports`);
+    await returnToDetails(win);
+    await click(win,testId(`environment-trigger-${SECOND_ENVIRONMENT_ID}`));
+    await waitFor(win,`document.querySelector('${testId('mysql-full-window-workspace')}') === null`,'切换环境销毁保留的数据库工作区');
+    await click(win,testId(`environment-trigger-${ENVIRONMENT_ID}`));
+    await selectPlugin(win,OTHER_ID);
+    await click(win,testId('mysql-sql-tab'));
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').value.includes(${JSON.stringify(SQL_MARKER)})`,true),false,'切换环境后不得恢复旧 SQL。');
+    await fill(win,testId('mysql-sql-editor'),`SELECT '${SQL_MARKER}' FROM reports`);
+    active.revision += 1;
+    win.webContents.send('v2:workspace-changed',{...scope(OTHER_ID),type:'plugin-updated'});
+    await waitFor(win,`document.querySelector('${testId('mysql-full-window-workspace')}') === null`,'配置版本变更销毁旧工作区');
+    await openDatabaseWorkspace(win);
+    await click(win,testId('mysql-sql-tab'));
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').value.includes(${JSON.stringify(SQL_MARKER)})`,true),false,'配置修订后不得恢复旧 SQL。');
+    await fill(win,testId('mysql-sql-editor'),`SELECT '${SQL_MARKER}' FROM reports`);
+    active.assessment = assessment('disconnected');
+    state.sequence += 1;
+    win.webContents.send('v2:environment-status-changed',runtime());
+    active.assessment = assessment('connected');
+    state.sequence += 1;
+    win.webContents.send('v2:environment-status-changed',runtime());
+    await waitFor(win,`document.querySelector('${testId('mysql-full-window-workspace')}') === null`,'快速断连重连仍须销毁旧会话');
+    await openDatabaseWorkspace(win);
+    await click(win,testId('mysql-sql-tab'));
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').value.includes(${JSON.stringify(SQL_MARKER)})`,true),false,'同批快速断重连不得恢复旧 SQL。');
+    await selectPlugin(win,PRIMARY_ID);
+    await click(win,testId('mysql-sql-tab'));
+    await fill(win,testId('mysql-sql-editor'),SHOWCASE_SQL);
+    await click(win,testId('mysql-query-run'));
+    await textContains(win,'mysql-query-result','演示客户 24');
+    await screenshot(win,'workspace');
     await assertNoPersistence(win);
     assert.deepEqual(forbiddenCalls,[],'只读数据库工作区不得调用配置变更通道。');
     assert.deepEqual(externalRequests,[],'数据库 UI 测试不得发起外部网络请求。');
