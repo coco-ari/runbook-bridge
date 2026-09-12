@@ -1,5 +1,6 @@
+import { WorkspaceBackButton, WorkspaceHeaderActions } from "@/components/workspace/WorkspaceControls"
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
-import { ArrowLeft, CaretDown, CaretUp, CheckCircle, FileText, LinkBreak, SpinnerGap, TerminalWindow, UploadSimple, X } from "@phosphor-icons/react"
+import { CaretDown, CaretUp, CheckCircle, FileText, SpinnerGap, TerminalWindow, UploadSimple, X } from "@phosphor-icons/react"
 import { usePanelRef } from "react-resizable-panels"
 import type { AiOpsV2Api, EnvironmentRuntime, PluginScope, ServerDirectoryEntry, ServerUploadJob, ServerUploadPreparation } from "@/bridge/ai-ops-v2"
 import { Badge } from "@/components/ui/badge"
@@ -152,11 +153,10 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
 
   return <div className="server-workspace" hidden={!visible} data-testid="server-workspace" data-workspace-key={serverWorkspaceKey(scope)}>
     <header className="server-workspace-header">
-      <Button size="sm" variant="ghost" data-testid="server-workspace-back" onClick={onBack} title="返回详情，终端和上传任务继续运行"><ArrowLeft />返回详情</Button>
+      <WorkspaceBackButton label="返回服务器详情" testId="server-workspace-back" onClick={onBack} />
       <span className="h-5 w-px bg-border" />
       <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-sm font-semibold">{entry.plugin.displayName}</h1><Badge variant={connected ? "success" : "outline"}>{connected ? "已连接" : "已断开"}</Badge></div><p className="truncate text-[11px] text-muted-foreground">{entry.projectName} / {entry.environmentName}<span className="server-workspace-identity"> · {sshIdentity}</span></p></div>
-      <Button size="sm" variant="outline" disabled={!connected || Boolean(connection.state.operation)} onClick={() => { void connection.disconnect() }}><LinkBreak />断开连接</Button>
-      <Button size="icon-sm" variant="ghost" aria-label="关闭工作区" title="关闭工作区并结束终端" onClick={() => setCloseDialog(true)}><X /></Button>
+      <WorkspaceHeaderActions connected={connected} busy={Boolean(connection.state.operation)} onDisconnect={() => { void connection.disconnect() }} onClose={() => setCloseDialog(true)} prefix="server-workspace" closeLabel="关闭工作区" closeTitle="关闭工作区并结束终端" />
     </header>
     {!connected ? <div className="server-workspace-connection-notice" role="status">服务器连接已断开。返回详情连接后，请手动打开终端。<Button size="sm" variant="ghost" onClick={onBack}>返回详情</Button></div> : null}
     {connection.state.error ? <div role="alert" className="server-workspace-error">{connection.state.error.message}</div> : null}

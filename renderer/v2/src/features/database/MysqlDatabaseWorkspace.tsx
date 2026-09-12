@@ -1,5 +1,6 @@
+import { WorkspaceBackButton, WorkspaceHeaderActions, WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
-import { ArrowClockwise, ArrowLeft, ArrowsIn, ArrowsOut, CaretDown, CaretUp, Code, Database, MagnifyingGlass, LinkBreak, Plugs, Plus, ShieldCheck, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
+import { ArrowClockwise, CaretDown, CaretUp, Code, Database, MagnifyingGlass, Plugs, ShieldCheck, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
 import { toast } from "sonner"
 import { MysqlTableDocument } from "./MysqlTableDocument"
 import { useMysqlSchemaCache } from "./use-mysql-schema-cache"
@@ -8,7 +9,6 @@ import { useId, useRef, useState } from "react"
 import { usePanelRef } from "react-resizable-panels"
 
 import type { AiOpsV2Api, PluginScope } from "@/bridge/ai-ops-v2"
-import { ThemeMenu } from "@/components/app-shell/ThemeMenu"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -65,12 +65,10 @@ function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, envi
   }
   return <>
     <header className="mysql-workspace-header">
-      <Button aria-label="返回数据库详情" data-testid="mysql-workspace-back" onClick={onBack} size="sm" type="button" variant="ghost"><ArrowLeft /><span>返回详情</span></Button>
+      <WorkspaceBackButton label="返回数据库详情" testId="mysql-workspace-back" onClick={onBack} />
       <span className="mysql-workspace-header-divider" />
       <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-sm font-semibold" title={plugin.displayName}>{plugin.displayName}</h1><Badge variant={connected ? "success" : "outline"}>{connected ? "已连接" : "未连接"}</Badge><Badge variant="outline"><ShieldCheck className="size-3" />只读</Badge></div><p className="truncate text-[11px] text-muted-foreground" title={projectName + " / " + environmentName + " · " + database}>{projectName} / {environmentName} · {database}</p></div>
-      <div className="mysql-workspace-theme"><ThemeMenu /></div>
-      <Button data-testid="mysql-workspace-disconnect" size="sm" variant="outline" disabled={!connected || disconnecting} onClick={() => void disconnect()}><LinkBreak />{disconnecting ? "断开中…" : "断开连接"}</Button>
-      <Button data-testid="mysql-workspace-close" size="icon-sm" variant="ghost" aria-label="关闭数据库工作区" onClick={() => setClosing(true)}><X /></Button>
+      <WorkspaceHeaderActions connected={connected} busy={disconnecting} onDisconnect={() => void disconnect()} onClose={() => setClosing(true)} prefix="mysql-workspace" closeLabel="关闭数据库工作区" closeTitle="关闭工作区并清除查询" />
     </header>
     <Dialog open={closing} onOpenChange={setClosing}><DialogContent><DialogHeader><DialogTitle>关闭数据库工作区</DialogTitle><DialogDescription>将清除当前工作区的 SQL、筛选条件和查询结果。数据库连接保持。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => { setClosing(false); onBack() }}>返回详情并保留</Button><Button data-testid="mysql-workspace-confirm-close" onClick={onClose}>关闭工作区</Button></DialogFooter></DialogContent></Dialog>
   </>
@@ -159,7 +157,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
         <ResizablePanelGroup aria-label="数据库表列表与查询工作区" id={`${uniqueId}-workspace`} orientation="horizontal">
           <ResizablePanel collapsedSize={0} collapsible defaultSize="224px" groupResizeBehavior="preserve-pixel-size" id={`${uniqueId}-tables`} maxSize="340px" minSize="180px" onResize={(size) => setSidebarCollapsed(size.inPixels < 1)} panelRef={sidebarRef}>
             <aside aria-label="数据表" className="mysql-table-sidebar" hidden={sidebarCollapsed} inert={sidebarCollapsed} data-testid="mysql-table-sidebar">
-              <div className="mysql-sidebar-heading"><Database aria-hidden="true" /><strong title={database}>{database}</strong><Button aria-label="刷新数据表" data-testid="mysql-tables-refresh" disabled={state.tablesLoading} onClick={() => void state.loadTables()} size="icon-sm" title="刷新数据表" type="button" variant="ghost"><ArrowClockwise aria-hidden="true" className={state.tablesLoading ? "motion-safe:animate-spin" : ""} /></Button></div>
+              <div className="mysql-sidebar-heading"><Database aria-hidden="true" /><strong title={database}>{database}</strong><WorkspaceIconButton action="refresh" label="刷新数据表" data-testid="mysql-tables-refresh" busy={state.tablesLoading} onClick={() => void state.loadTables()} /></div>
               <div className="mysql-sidebar-search"><MagnifyingGlass aria-hidden="true" /><Input ref={searchRef} aria-describedby={searchHintId} aria-label="搜索已加载的数据表" data-testid="mysql-table-search" onChange={(event) => setSearch(event.target.value)} placeholder="搜索表名…" value={search} />{search ? <Button aria-label="清除表名搜索" className="mysql-sidebar-search-clear" data-testid="mysql-table-search-clear" onClick={() => { setSearch(""); searchRef.current?.focus({ preventScroll: true }) }} size="icon-xs" title="清除搜索" type="button" variant="ghost"><X aria-hidden="true" /></Button> : null}</div>
               <p className="mysql-sidebar-search-hint" id={searchHintId}>搜索已加载的 {state.tables.length} 张表</p>
               <div className="mysql-sidebar-section-label"><CaretDown aria-hidden="true" />数据表<span>{state.tables.length}</span></div>
@@ -184,16 +182,16 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
                   {queries.documents.map((document, index) => (
                     <div className="mysql-document-tab-group" key={document.id}>
                       <TabsTrigger className="mysql-document-tab" data-query-id={document.id} data-testid={index === 0 ? "mysql-sql-tab" : "mysql-sql-document-tab"} value={document.id}><Code aria-hidden="true" />{document.name}{document.result.loading ? <ArrowClockwise aria-hidden="true" className="size-3 motion-safe:animate-spin" /> : null}</TabsTrigger>
-                      {queries.documents.length > 1 ? <Button aria-label={`关闭 ${document.name}`} className="mysql-document-close" data-query-id={document.id} data-testid="mysql-query-close" onClick={() => closeQuery(document.id)} size="icon-sm" title={`关闭 ${document.name}`} type="button" variant="ghost"><X aria-hidden="true" /></Button> : null}
+                      {queries.documents.length > 1 ? <WorkspaceIconButton action="close" label={`关闭 ${document.name}`} className="mysql-document-close" data-query-id={document.id} data-testid="mysql-query-close" onClick={() => closeQuery(document.id)} /> : null}
                     </div>
                   ))}
                   {openTables.map(table => <div className="mysql-document-tab-group" key={table}>
                     <TabsTrigger className="mysql-document-tab" data-testid="mysql-table-document-tab" data-table-name={table} title={table} value={"table:" + table}><TableIcon aria-hidden="true" /><span className="max-w-64 truncate font-mono">{table}</span></TabsTrigger>
-                    <Button aria-label={"关闭表 " + table} className="mysql-document-close" data-testid="mysql-table-close" data-table-name={table} onClick={() => closeTable(table)} size="icon-sm" title={"关闭表 " + table} type="button" variant="ghost"><X /></Button>
+                    <WorkspaceIconButton action="close" label={"关闭表 " + table} className="mysql-document-close" data-testid="mysql-table-close" data-table-name={table} onClick={() => closeTable(table)} />
                   </div>)}
                 </TabsList>
-                <Button aria-label="新建 SQL 查询" className="mysql-new-query" data-testid="mysql-query-new" disabled={queries.documents.length >= MYSQL_MAX_QUERY_DOCUMENTS} onClick={createQuery} size="icon-sm" title={queries.documents.length >= MYSQL_MAX_QUERY_DOCUMENTS ? `最多打开 ${MYSQL_MAX_QUERY_DOCUMENTS} 个查询标签` : "新建 SQL 查询"} type="button" variant="ghost"><Plus aria-hidden="true" /></Button>
-                <div className="mysql-layout-controls"><Button aria-expanded={!sidebarCollapsed} aria-label={sidebarCollapsed ? "恢复分栏" : "最大化查询区"} data-testid="mysql-sidebar-toggle" onClick={toggleSidebar} size="icon-sm" title={sidebarCollapsed ? "恢复分栏" : "最大化查询区"} type="button" variant="ghost">{sidebarCollapsed ? <ArrowsIn aria-hidden="true" /> : <ArrowsOut aria-hidden="true" />}</Button><Button aria-expanded={!editorCollapsed} aria-label={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} data-testid="mysql-editor-toggle" disabled={documentTab.startsWith("table:")} onClick={toggleEditor} size="icon-sm" title={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} type="button" variant="ghost">{editorCollapsed ? <CaretDown aria-hidden="true" /> : <CaretUp aria-hidden="true" />}</Button></div>
+                <WorkspaceIconButton action="add" label="新建 SQL 查询" className="mysql-new-query" data-testid="mysql-query-new" disabled={queries.documents.length >= MYSQL_MAX_QUERY_DOCUMENTS} onClick={createQuery} title={queries.documents.length >= MYSQL_MAX_QUERY_DOCUMENTS ? `最多打开 ${MYSQL_MAX_QUERY_DOCUMENTS} 个查询标签` : "新建 SQL 查询"} />
+                <div className="mysql-layout-controls"><WorkspaceIconButton action={sidebarCollapsed ? "restore" : "maximize"} label={sidebarCollapsed ? "恢复分栏" : "最大化查询区"} aria-expanded={!sidebarCollapsed} data-testid="mysql-sidebar-toggle" onClick={toggleSidebar} /><Button aria-expanded={!editorCollapsed} aria-label={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} data-testid="mysql-editor-toggle" disabled={documentTab.startsWith("table:")} onClick={toggleEditor} size="icon-sm" title={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} type="button" variant="ghost">{editorCollapsed ? <CaretDown aria-hidden="true" /> : <CaretUp aria-hidden="true" />}</Button></div>
               </div>
               <TabsContent className={cn("mysql-document-content", documentTab.startsWith("table:") && "hidden")} forceMount value={activeQueryId}>
                 <ResizablePanelGroup aria-label="SQL 编辑器与查询结果" id={`${uniqueId}-query`} orientation="vertical">

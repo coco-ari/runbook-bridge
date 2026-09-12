@@ -1,5 +1,5 @@
 import { useEffect } from "react"
-import { Plus, X } from "@phosphor-icons/react"
+import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 
 interface WorkspaceTabsProps {
   readonly id: string
@@ -24,9 +24,9 @@ export function WorkspaceTabs({ id, label, items, active, onSelect, onClose, onA
           const next = items[event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + items.length) % items.length]
           if (next) { onSelect(next.id); requestAnimationFrame(() => document.getElementById(id + "-tab-" + next.id)?.focus()) }
         }}><span>{item.label}</span></button>
-        <button type="button" className="server-tab-close" aria-label={"关闭" + item.title} title="关闭标签" onClick={() => onClose(item.id)}><X size={13} /></button>
+        <WorkspaceIconButton action="close" className="server-tab-close" label={"关闭" + item.title} title="关闭标签" onClick={() => onClose(item.id)} />
       </div>)}
     </div>
-    {onAdd ? <button type="button" className="server-tab-add" aria-label="新增终端" title={addDisabled ? "每个工作区最多保留 8 个终端标签" : "新增独立终端"} disabled={addDisabled} onClick={onAdd}><Plus size={18} /></button> : null}
+    {onAdd ? <WorkspaceIconButton action="add" className="server-tab-add" label="新增终端" title={addDisabled ? "每个工作区最多保留 8 个终端标签" : "新增独立终端"} disabled={addDisabled} onClick={onAdd} /> : null}
   </div>
 }

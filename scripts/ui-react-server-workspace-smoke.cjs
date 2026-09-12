@@ -201,6 +201,8 @@ async function run() {
   await click('[data-testid="plugin-open-workspace"]');
   await until(`document.querySelector('.xterm-rows')?.textContent.includes('operator@demo')`, '真实 xterm 收到输出');
   assert.equal(opened.length, 1, '首次点击只创建一个会话');
+  await require('./workspace-controls-ui.cjs')({evaluate,click,until,win,root:'[data-testid=server-workspace]'});
+  assert.equal(opened.length,1,'工作区主题切换不得重建终端');
   assert.ok(await evaluate(`document.querySelector('[aria-label="三栏工作台"]').closest('[inert]') !== null`), '工作区禁用背景导航');
   await until(`document.querySelector('[role="treeitem"][title="/srv"]')`, '文件目录');
   assert.ok(await evaluate(`document.querySelectorAll('.server-workspace [role="treeitem"]').length < 60`), '200条目录采用虚拟列表');

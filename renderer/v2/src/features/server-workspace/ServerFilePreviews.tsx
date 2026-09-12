@@ -1,7 +1,7 @@
+import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { useCallback, useEffect, useId, useRef, useState } from "react"
-import { ArrowClockwise, FileText, SpinnerGap } from "@phosphor-icons/react"
+import { FileText, SpinnerGap } from "@phosphor-icons/react"
 import type { AiOpsV2Api, PluginScope, ServerDirectoryEntry, ServerFilePreview } from "@/bridge/ai-ops-v2"
-import { Button } from "@/components/ui/button"
 import { WorkspaceTabs } from "./WorkspaceTabs"
 import { formatTransferBytes, isWorkspacePathStale, parentRemotePath, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
 
@@ -64,7 +64,7 @@ export function ServerFilePreviews({ api, scope, connected, request, onOpenChang
     <WorkspaceTabs id={groupId} label="文件标签" items={tabs.map((tab) => ({ id: tab.id, title: tab.path, label: tab.name + (tabs.filter((other) => other.name === tab.name).length > 1 ? " · " + parentRemotePath(tab.path) : "") }))} active={active} onSelect={setActive} onClose={close} />
     {notice ? <div className="server-workspace-error" role="status">{notice}</div> : null}
     {tabs.map((tab) => <div key={tab.id} className="server-preview-tab-panel" role="tabpanel" id={groupId + "-panel-" + tab.id} aria-labelledby={groupId + "-tab-" + tab.id} hidden={active !== tab.id}>
-      <div className="server-workspace-toolbar"><div className="flex min-w-0 items-center gap-2"><FileText size={16} /><span className="truncate font-mono text-xs" title={tab.path}>{tab.path}</span><span className="shrink-0 text-[11px] text-muted-foreground">只读</span></div><div className="flex shrink-0 items-center gap-1"><Button size="icon-sm" variant="ghost" aria-label="刷新文件预览" disabled={!connected || tab.loading} onClick={() => { void read(tab) }}><ArrowClockwise /></Button><Button size="icon-sm" variant="ghost" aria-label="关闭文件预览" onClick={() => close(tab.id)}>×</Button></div></div>
+      <div className="server-workspace-toolbar"><div className="flex min-w-0 items-center gap-2"><FileText size={16} /><span className="truncate font-mono text-xs" title={tab.path}>{tab.path}</span><span className="shrink-0 text-[11px] text-muted-foreground">只读</span></div><div className="flex shrink-0 items-center gap-1"><WorkspaceIconButton action="refresh" label="刷新文件预览" disabled={!connected} busy={tab.loading} onClick={() => { void read(tab) }} /><WorkspaceIconButton action="close" label="关闭文件预览" onClick={() => close(tab.id)} /></div></div>
       {tab.loading ? <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground"><SpinnerGap className="animate-spin" />正在读取文件…</div> : tab.error ? <div className="server-workspace-error" role="alert">{tab.error}</div> : tab.data ? <><pre className="server-preview-content">{tab.data.content.includes("\0") ? "此文件包含二进制内容，无法进行文本预览。" : tab.data.content}</pre><div className="server-preview-footer">{formatTransferBytes(tab.data.size)}{tab.data.truncated ? " · 仅预览前 256 KB" : " · UTF-8"}</div></> : null}
     </div>)}
   </section>

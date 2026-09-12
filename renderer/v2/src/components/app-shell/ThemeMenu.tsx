@@ -19,12 +19,12 @@ const options = [
   { value: "system", label: "跟随系统", Icon: Desktop },
 ] as const
 
-export function ThemeMenu() {
+export function ThemeMenu({ placement = "sidebar" }: { readonly placement?: "sidebar" | "workspace" }) {
   const { preference, setPreference } = useTheme()
   const selected = options.find((option) => option.value === preference) ?? options[2]
 
   return (
-    <div className="shrink-0 px-2 pb-2 pt-1" data-testid="theme-controls">
+    <div className={placement === "workspace" ? "shrink-0" : "shrink-0 px-2 pb-2 pt-1"} data-testid="theme-controls">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
@@ -40,7 +40,7 @@ export function ThemeMenu() {
             <CaretUpDown aria-hidden="true" className="size-3 shrink-0" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-44" data-testid="theme-menu" side="top">
+        <DropdownMenuContent align={placement === "workspace" ? "end" : "start"} className="w-44" data-testid="theme-menu" side={placement === "workspace" ? "bottom" : "top"}>
           <DropdownMenuLabel>外观主题</DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuRadioGroup

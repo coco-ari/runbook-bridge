@@ -606,6 +606,8 @@ async function run() {
     await assertFullWindow(win);
     await textContains(win,'mysql-table-list','orders');
     assert.deepEqual(databaseCalls[0],{channel:'v2:mysql-list-tables',payload:{...scope(PRIMARY_ID),limit:100}});
+    await require('./workspace-controls-ui.cjs')({evaluate:source=>win.webContents.executeJavaScript(source,true),click:selector=>click(win,selector),until:(expression,label)=>waitFor(win,expression,label),win,root:'[data-testid=mysql-database-workspace]'});
+    assert.equal(databaseCalls.length,1,'主题切换不得重新请求数据库');
     await assertResizableWorkspace(win);
     await assertBackgroundShortcutsDisabled(win);
     await fill(win,testId('mysql-table-search'),'orders');

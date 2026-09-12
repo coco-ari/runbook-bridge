@@ -1,7 +1,8 @@
+import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
-import { ArrowsIn, ArrowsOut, Plus, Stop, TerminalWindow } from "@phosphor-icons/react"
+import { Plus, Stop, TerminalWindow } from "@phosphor-icons/react"
 import type { AiOpsV2Api, PluginScope } from "@/bridge/ai-ops-v2"
 import { useTheme } from "@/app/theme-provider"
 import { Button } from "@/components/ui/button"
@@ -240,7 +241,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, maximize
             if (!sessionId) return
             try { unwrapWorkspaceResult(await api.serverTerminalClose({ ...scope, sessionId })); finish("人工终端会话已结束，文件传输继续。") } catch (failure) { setError(workspaceErrorMessage(failure)) }
           }}><Stop />结束会话</Button> : <Button size="sm" variant="ghost" disabled={!connected || status === "opening"} onClick={() => { void open() }}><Plus />打开终端</Button>}
-          <Button size="icon-sm" variant="ghost" aria-label={maximized ? "恢复分栏" : "最大化终端"} title={maximized ? "恢复分栏" : "最大化终端"} onClick={onMaximize}>{maximized ? <ArrowsIn /> : <ArrowsOut />}</Button>
+          <WorkspaceIconButton action={maximized ? "restore" : "maximize"} label={maximized ? "恢复分栏" : "最大化终端"} onClick={onMaximize} />
         </div>
       </div>
       {error ? <div role="alert" className="server-workspace-error">{error}<Button size="sm" variant="ghost" aria-label="收起终端提示" onClick={() => setError("")}>收起</Button></div> : null}

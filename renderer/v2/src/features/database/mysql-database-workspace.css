@@ -77,15 +77,6 @@
   color:var(--primary)
 }
 
-.mysql-workspace-theme {
-  margin-left:auto;
-  flex-shrink:0
-}
-
-.mysql-workspace-theme [data-testid=theme-controls] {
-  padding:0
-}
-
 .mysql-workspace-body {
   min-height:0;
   flex:1;
@@ -840,7 +831,6 @@
 
 .mysql-workspace-header { min-height:56px; padding:7px 14px 7px 8px; background:var(--surface) }
 .mysql-workspace-header-divider { height:20px }
-.mysql-workspace-theme { margin-left:0 }
 .mysql-table-content { display:flex; flex:1; min-height:0; flex-direction:column; overflow:hidden }
 .mysql-column-sort[draggable=true] { cursor:grab }
 .mysql-column-sort[draggable=true]:active { cursor:grabbing }

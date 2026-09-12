@@ -1,5 +1,6 @@
+import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowClockwise, ArrowUp, CaretDown, CaretRight, CaretUpDown, Eye, EyeSlash, File, FileCode, FileText, FileZip, FolderSimple, FolderOpen, Link, PencilSimple, SpinnerGap, TerminalWindow, TreeStructure, UploadSimple } from "@phosphor-icons/react"
+import { ArrowUp, CaretDown, CaretRight, CaretUpDown, Eye, EyeSlash, File, FileCode, FileText, FileZip, FolderSimple, FolderOpen, Link, PencilSimple, SpinnerGap, TerminalWindow, TreeStructure, UploadSimple } from "@phosphor-icons/react"
 import type { AiOpsV2Api, PluginScope, ServerDirectoryEntry, ServerDirectoryPage } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -283,7 +284,7 @@ export function ServerFileTree({ api, scope, connected, path, onPath, onPreview,
       <div className="server-file-actions">
         <Button size="icon-sm" variant="ghost" aria-label="收起所有目录" title="收起所有目录" onClick={() => { setExpanded(new Set()); if (scrollRef.current) scrollRef.current.scrollTop = 0 }}><CaretUpDown /></Button>
         <Button size="icon-sm" variant="ghost" aria-label="显示隐藏文件" title={showHidden ? "隐藏点文件" : "显示隐藏文件"} aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}>{showHidden ? <Eye /> : <EyeSlash />}</Button>
-        <Button size="icon-sm" variant="ghost" title="刷新目录" aria-label="刷新目录" disabled={!connected} onClick={() => { void load(root); if (path !== root) void load(path) }}><ArrowClockwise /></Button>
+        <WorkspaceIconButton action="refresh" label="刷新目录" disabled={!connected} onClick={() => { void load(root); if (path !== root) void load(path) }} />
         <Button size="icon-sm" variant="ghost" title="上传文件" aria-label="上传文件" disabled={!connected} onClick={onUpload}><UploadSimple /></Button>
       </div>
     </div>

@@ -1,5 +1,6 @@
+import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { useEffect, useRef, useState } from "react"
-import { ArrowClockwise, Key, ListBullets, Table as TableIcon } from "@phosphor-icons/react"
+import { Key, ListBullets, Table as TableIcon } from "@phosphor-icons/react"
 import type { AiOpsV2Api, MysqlTableDescription, PluginScope } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -58,7 +59,7 @@ export function MysqlTableDocument({ api, scope, table, visible, dragScope, maxR
   useEffect(() => { void refresh(); return () => { ticket.current++ } }, [])
   return <div className="mysql-table-content">
     {visible ? <>
-      <div className="mysql-table-toolbar"><Tabs value={tab} onValueChange={setTab}><TabsList aria-label="数据表视图" variant="line"><TabsTrigger data-testid="mysql-table-preview-tab" value="preview"><TableIcon />数据预览</TabsTrigger><TabsTrigger data-testid="mysql-table-structure-tab" value="structure"><ListBullets />表结构</TabsTrigger></TabsList></Tabs><span className="mysql-table-name" title={table}>{table}</span><Button aria-label="刷新表结构" disabled={loading} onClick={() => void refresh()} size="icon-sm" title="刷新结构" type="button" variant="ghost"><ArrowClockwise /></Button></div>
+      <div className="mysql-table-toolbar"><Tabs value={tab} onValueChange={setTab}><TabsList aria-label="数据表视图" variant="line"><TabsTrigger data-testid="mysql-table-preview-tab" value="preview"><TableIcon />数据预览</TabsTrigger><TabsTrigger data-testid="mysql-table-structure-tab" value="structure"><ListBullets />表结构</TabsTrigger></TabsList></Tabs><span className="mysql-table-name" title={table}>{table}</span><WorkspaceIconButton action="refresh" label="刷新表结构" busy={loading} onClick={() => void refresh()} /></div>
       {error ? <div role="alert" className="mysql-browser-error" data-testid="mysql-structure-error">{error}<Button onClick={() => void refresh()} size="sm" variant="ghost">重试</Button></div> : null}
       {description?.auditWarning ? <p role="status" className="mysql-browser-error">表结构已读取，但操作记录未能保存。</p> : null}
       {tab === "structure" ? loading ? <p role="status">正在读取表结构…</p> : description ? <TableStructure description={description} /> : null : null}
