@@ -386,9 +386,11 @@ async function assertResizableWorkspace(win) {
   await dragDivider(win,'mysql-editor-resizer',0,-60);
   await click(win,testId('mysql-sidebar-toggle'));
   await captureFrame(win);
-  await waitFor(win,`document.querySelector('${testId('mysql-table-sidebar')}').getBoundingClientRect().width < 90`,'侧栏收起后释放查询宽度');
+  await waitFor(win,`document.querySelector('${testId('mysql-table-sidebar')}').closest('[data-slot=resizable-panel]').getBoundingClientRect().width < 1`,'侧栏完全收起，不保留图标栏');
+  assert.equal(await win.webContents.executeJavaScript("document.querySelector('[data-testid=mysql-sidebar-toggle]').getAttribute('aria-label')",true),'恢复分栏');
   await click(win,testId('mysql-sidebar-toggle'));
   await captureFrame(win);
+  assert.ok(await elementSize(win,'mysql-table-sidebar','width') >= 180,'恢复表列表宽度');
   await click(win,testId('mysql-editor-toggle'));
   await captureFrame(win);
   await waitFor(win,`document.querySelector('${testId('mysql-query-editor-panel')}').getBoundingClientRect().height < ${editorHeight-50}`,'编辑器收起后释放结果高度');
@@ -608,7 +610,13 @@ async function run() {
     await assertBackgroundShortcutsDisabled(win);
     await fill(win,testId('mysql-table-search'),'orders');
     assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('${testId('mysql-table-item')}').length`,true),1);
-    await fill(win,testId('mysql-table-search'),'');
+    const beforeClearSearch = databaseCalls.length;
+    await click(win,testId('mysql-table-search-clear'));
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('[data-testid=mysql-table-search]').value",true),'');
+    assert.equal(await win.webContents.executeJavaScript("document.activeElement === document.querySelector('[data-testid=mysql-table-search]')",true),true,'清空后焦点保留在搜索框');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('[data-testid=mysql-table-search-clear]')",true),null,'空搜索不显示清除按钮');
+    assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('[data-testid=mysql-table-item]').length",true),2,'清空恢复全部已加载表');
+    assert.equal(databaseCalls.length,beforeClearSearch,'清除搜索不重新请求数据库');
     await click(win,testId('mysql-tables-load-more'));
     await textContains(win,'mysql-table-list','archived_orders');
     assert.deepEqual(databaseCalls.at(-1),{channel:'v2:mysql-list-tables',payload:{...scope(PRIMARY_ID),limit:100,cursor:'100'}});

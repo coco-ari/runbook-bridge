@@ -152,6 +152,7 @@
 .mysql-sidebar-search input {
   height:30px;
   padding-left:30px;
+  padding-right:30px;
   font-size:11px;
   background:var(--background)
 }
@@ -270,23 +271,7 @@
   color:var(--muted-foreground)
 }
 
-.mysql-table-sidebar.is-collapsed .mysql-sidebar-heading {
-  justify-content:center;
-  padding:0
-}
-
-.mysql-table-sidebar.is-collapsed .mysql-sidebar-heading>strong,.mysql-table-sidebar.is-collapsed .mysql-sidebar-heading>button,.mysql-table-sidebar.is-collapsed .mysql-sidebar-search,.mysql-table-sidebar.is-collapsed .mysql-sidebar-search-hint,.mysql-table-sidebar.is-collapsed .mysql-sidebar-section-label,.mysql-table-sidebar.is-collapsed .mysql-sidebar-more,.mysql-table-sidebar.is-collapsed .mysql-sidebar-footer,.mysql-table-sidebar.is-collapsed .mysql-table-button>span,.mysql-table-sidebar.is-collapsed .mysql-table-button>small,.mysql-table-sidebar.is-collapsed .mysql-sidebar-empty {
-  display:none
-}
-
-.mysql-table-sidebar.is-collapsed .mysql-table-button {
-  justify-content:center;
-  padding:0
-}
-
-.mysql-table-sidebar.is-collapsed [role=alert],.mysql-table-sidebar.is-collapsed [role=status] {
-  display:none
-}
+.mysql-table-sidebar[hidden] { display:none }
 
 .mysql-document-workspace {
   height:100%;
@@ -834,7 +819,6 @@
 .mysql-table-row .mysql-table-button { flex: 1; min-width: 0; width: auto; }
 .mysql-table-generate { flex-shrink: 0; opacity: 0; margin-right: 3px; }
 .mysql-table-row:hover .mysql-table-generate, .mysql-table-row:focus-within .mysql-table-generate { opacity: 1; }
-.mysql-table-sidebar.is-collapsed .mysql-table-generate { display: none; }
 .mysql-sql-error-line { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .mysql-editor-completions { position: absolute; z-index: 20; width: 270px; max-width: 100%; max-height: 150px; overflow: auto; padding: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--foreground); box-shadow: 0 8px 24px #0003; }
 .mysql-editor-completions button { display: flex; align-items: center; width: 100%; min-height: 28px; gap: 12px; border-radius: 3px; padding: 4px 8px; text-align: left; font: 11px var(--font-mono); }
@@ -861,3 +845,5 @@
 .mysql-column-sort[draggable=true] { cursor:grab }
 .mysql-column-sort[draggable=true]:active { cursor:grabbing }
 .mysql-table-filter-bar input:focus { outline:1px solid var(--primary) }
+
+.mysql-sidebar-search .mysql-sidebar-search-clear { position:absolute; right:4px; top:50%; transform:translateY(-50%); color:var(--muted-foreground) }

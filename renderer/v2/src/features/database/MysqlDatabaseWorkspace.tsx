@@ -1,10 +1,10 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
-import { ArrowClockwise, ArrowLeft, CaretDown, CaretUp, Code, Database, MagnifyingGlass, LinkBreak, Plugs, Plus, ShieldCheck, SidebarSimple, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
+import { ArrowClockwise, ArrowLeft, ArrowsIn, ArrowsOut, CaretDown, CaretUp, Code, Database, MagnifyingGlass, LinkBreak, Plugs, Plus, ShieldCheck, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
 import { toast } from "sonner"
 import { MysqlTableDocument } from "./MysqlTableDocument"
 import { useMysqlSchemaCache } from "./use-mysql-schema-cache"
 import { MYSQL_TABLE_DRAG_TYPE, mysqlSelectSnippet } from "./mysql-sql-assist"
-import { useId, useState } from "react"
+import { useId, useRef, useState } from "react"
 import { usePanelRef } from "react-resizable-panels"
 
 import type { AiOpsV2Api, PluginScope } from "@/bridge/ai-ops-v2"
@@ -82,6 +82,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
   const getSchema = useMysqlSchemaCache(api, scope)
   const dragScope = mysqlWorkspaceSessionKey(scope, plugin)
   const [search, setSearch] = useState("")
+  const searchRef = useRef<HTMLInputElement>(null)
   const [documentTab, setDocumentTab] = useState("query-1")
   const [activeQueryId, setActiveQueryId] = useState("query-1")
   const [openTables, setOpenTables] = useState<readonly string[]>([])
@@ -156,10 +157,10 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
     <>
       <div className="mysql-workspace-body">
         <ResizablePanelGroup aria-label="数据库表列表与查询工作区" id={`${uniqueId}-workspace`} orientation="horizontal">
-          <ResizablePanel collapsedSize="48px" collapsible defaultSize="224px" groupResizeBehavior="preserve-pixel-size" id={`${uniqueId}-tables`} maxSize="340px" minSize="180px" onResize={(size) => setSidebarCollapsed(size.inPixels < 80)} panelRef={sidebarRef}>
-            <aside aria-label="数据表" className={cn("mysql-table-sidebar", sidebarCollapsed && "is-collapsed")} data-testid="mysql-table-sidebar">
+          <ResizablePanel collapsedSize={0} collapsible defaultSize="224px" groupResizeBehavior="preserve-pixel-size" id={`${uniqueId}-tables`} maxSize="340px" minSize="180px" onResize={(size) => setSidebarCollapsed(size.inPixels < 1)} panelRef={sidebarRef}>
+            <aside aria-label="数据表" className="mysql-table-sidebar" hidden={sidebarCollapsed} inert={sidebarCollapsed} data-testid="mysql-table-sidebar">
               <div className="mysql-sidebar-heading"><Database aria-hidden="true" /><strong title={database}>{database}</strong><Button aria-label="刷新数据表" data-testid="mysql-tables-refresh" disabled={state.tablesLoading} onClick={() => void state.loadTables()} size="icon-sm" title="刷新数据表" type="button" variant="ghost"><ArrowClockwise aria-hidden="true" className={state.tablesLoading ? "motion-safe:animate-spin" : ""} /></Button></div>
-              <div className="mysql-sidebar-search"><MagnifyingGlass aria-hidden="true" /><Input aria-describedby={searchHintId} aria-label="搜索已加载的数据表" data-testid="mysql-table-search" onChange={(event) => setSearch(event.target.value)} placeholder="搜索表名…" value={search} /></div>
+              <div className="mysql-sidebar-search"><MagnifyingGlass aria-hidden="true" /><Input ref={searchRef} aria-describedby={searchHintId} aria-label="搜索已加载的数据表" data-testid="mysql-table-search" onChange={(event) => setSearch(event.target.value)} placeholder="搜索表名…" value={search} />{search ? <Button aria-label="清除表名搜索" className="mysql-sidebar-search-clear" data-testid="mysql-table-search-clear" onClick={() => { setSearch(""); searchRef.current?.focus({ preventScroll: true }) }} size="icon-xs" title="清除搜索" type="button" variant="ghost"><X aria-hidden="true" /></Button> : null}</div>
               <p className="mysql-sidebar-search-hint" id={searchHintId}>搜索已加载的 {state.tables.length} 张表</p>
               <div className="mysql-sidebar-section-label"><CaretDown aria-hidden="true" />数据表<span>{state.tables.length}</span></div>
               {state.tablesAuditWarning ? <AuditWarning testId="mysql-tables-audit-warning" /> : null}
@@ -192,7 +193,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
                   </div>)}
                 </TabsList>
                 <Button aria-label="新建 SQL 查询" className="mysql-new-query" data-testid="mysql-query-new" disabled={queries.documents.length >= MYSQL_MAX_QUERY_DOCUMENTS} onClick={createQuery} size="icon-sm" title={queries.documents.length >= MYSQL_MAX_QUERY_DOCUMENTS ? `最多打开 ${MYSQL_MAX_QUERY_DOCUMENTS} 个查询标签` : "新建 SQL 查询"} type="button" variant="ghost"><Plus aria-hidden="true" /></Button>
-                <div className="mysql-layout-controls"><Button aria-expanded={!sidebarCollapsed} aria-label={sidebarCollapsed ? "展开表列表" : "收起表列表"} data-testid="mysql-sidebar-toggle" onClick={toggleSidebar} size="icon-sm" title={sidebarCollapsed ? "展开表列表" : "收起表列表"} type="button" variant="ghost"><SidebarSimple aria-hidden="true" /></Button><Button aria-expanded={!editorCollapsed} aria-label={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} data-testid="mysql-editor-toggle" disabled={documentTab.startsWith("table:")} onClick={toggleEditor} size="icon-sm" title={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} type="button" variant="ghost">{editorCollapsed ? <CaretDown aria-hidden="true" /> : <CaretUp aria-hidden="true" />}</Button></div>
+                <div className="mysql-layout-controls"><Button aria-expanded={!sidebarCollapsed} aria-label={sidebarCollapsed ? "恢复分栏" : "最大化查询区"} data-testid="mysql-sidebar-toggle" onClick={toggleSidebar} size="icon-sm" title={sidebarCollapsed ? "恢复分栏" : "最大化查询区"} type="button" variant="ghost">{sidebarCollapsed ? <ArrowsIn aria-hidden="true" /> : <ArrowsOut aria-hidden="true" />}</Button><Button aria-expanded={!editorCollapsed} aria-label={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} data-testid="mysql-editor-toggle" disabled={documentTab.startsWith("table:")} onClick={toggleEditor} size="icon-sm" title={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} type="button" variant="ghost">{editorCollapsed ? <CaretDown aria-hidden="true" /> : <CaretUp aria-hidden="true" />}</Button></div>
               </div>
               <TabsContent className={cn("mysql-document-content", documentTab.startsWith("table:") && "hidden")} forceMount value={activeQueryId}>
                 <ResizablePanelGroup aria-label="SQL 编辑器与查询结果" id={`${uniqueId}-query`} orientation="vertical">
