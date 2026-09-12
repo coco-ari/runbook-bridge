@@ -34,7 +34,7 @@ async function assertSqlAssistanceAndBrowse({win,fill,click,waitFor,textContains
   assert.equal(await evaluate("document.querySelector('[data-testid=mysql-query-row] td:nth-child(2)').textContent.trim()"),'10','结果支持降序');
   state.browseFixture = true;
   await click(win,'[data-testid=mysql-table-item][data-table-name=orders]');
-  await textContains(win,'mysql-table-structure','bigint');
+  await textContains(win,'mysql-preview-summary','返回 20 行');
   await click(win,testId('mysql-table-preview-tab'));
   await click(win,testId('mysql-preview-run'));
   await textContains(win,'mysql-preview-summary','返回 20 行');

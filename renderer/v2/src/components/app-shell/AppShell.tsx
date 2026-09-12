@@ -1246,6 +1246,7 @@ export function AppShell() {
             environmentName={selectedEnvironment.name}
             key={databaseSessionKey}
             onBack={closeDatabaseWorkspace}
+            onClose={() => { setDatabaseSession(null); closeDatabaseWorkspace() }}
             plugin={selectedPluginRecord}
             projectName={selectedProject.name}
             scope={databaseScope}

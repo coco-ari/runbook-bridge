@@ -1,12 +1,13 @@
-import { ArrowClockwise, ArrowLeft, CaretDown, CaretUp, Code, Database, Key, ListBullets, MagnifyingGlass, Plugs, Plus, ShieldCheck, SidebarSimple, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
+import { ArrowClockwise, ArrowLeft, CaretDown, CaretUp, Code, Database, MagnifyingGlass, LinkBreak, Plugs, Plus, ShieldCheck, SidebarSimple, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
 import { toast } from "sonner"
-import { MysqlTableBrowser } from "./MysqlTableBrowser"
+import { MysqlTableDocument } from "./MysqlTableDocument"
 import { useMysqlSchemaCache } from "./use-mysql-schema-cache"
 import { MYSQL_TABLE_DRAG_TYPE, mysqlSelectSnippet } from "./mysql-sql-assist"
 import { useId, useState } from "react"
 import { usePanelRef } from "react-resizable-panels"
 
-import type { AiOpsV2Api, MysqlTableDescription, PluginScope } from "@/bridge/ai-ops-v2"
+import type { AiOpsV2Api, PluginScope } from "@/bridge/ai-ops-v2"
 import { ThemeMenu } from "@/components/app-shell/ThemeMenu"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -18,7 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { MysqlQueryResults } from "@/features/database/MysqlQueryResults"
 import { MysqlSqlEditor } from "@/features/database/MysqlSqlEditor"
-import { mysqlCellText, mysqlDatabaseName, mysqlWorkspaceMatchesScope, mysqlWorkspaceSessionKey } from "@/features/database/mysql-workspace-model"
+import { mysqlDatabaseName, mysqlWorkspaceMatchesScope, mysqlWorkspaceSessionKey } from "@/features/database/mysql-workspace-model"
 import { MYSQL_MAX_QUERY_DOCUMENTS, useMysqlQueryDocuments } from "@/features/database/use-mysql-query-documents"
 import { useMysqlWorkspace } from "@/features/database/use-mysql-workspace"
 import type { PluginConfigurationRecord } from "@/features/plugins/plugin-types"
@@ -30,6 +31,7 @@ export interface MysqlDatabaseWorkspaceProps {
   readonly scope: PluginScope
   readonly plugin: PluginConfigurationRecord
   readonly connected: boolean
+  readonly onClose: () => void
   readonly onBack: () => void
   readonly projectName: string
   readonly environmentName: string
@@ -47,46 +49,32 @@ function ReadLoading({ label }: { readonly label: string }) {
   return <div aria-busy="true" aria-label={label} className="space-y-3 p-4" role="status"><p className="text-xs text-muted-foreground">{label}</p><Skeleton className="h-8 w-full" /><Skeleton className="h-24 w-full" /></div>
 }
 
-function TableStructure({ description }: { readonly description: MysqlTableDescription }) {
-  return (
-    <section aria-label="表结构" className="mysql-structure" data-testid="mysql-table-structure">
-      <div className="mysql-structure-summary"><ListBullets aria-hidden="true" />表结构<span>{description.columns.length} 个字段</span></div>
-      <div aria-label="表结构，可横向滚动" className="mysql-structure-scroll" role="region" tabIndex={0}>
-        <table>
-          <colgroup><col style={{ width: 48 }} /><col style={{ width: 200 }} /><col style={{ width: 170 }} /><col style={{ width: 95 }} /><col style={{ width: 95 }} /><col style={{ width: 220 }} /><col /></colgroup>
-          <thead><tr>{["#", "字段", "类型", "允许 NULL", "索引", "默认值", "其他"].map((label) => <th key={label} scope="col">{label}</th>)}</tr></thead>
-          <tbody>
-            {description.columns.length ? description.columns.map((column, index) => (
-              <tr key={column.name}>
-                <td className="mysql-structure-row-number">{index + 1}</td>
-                <td className="font-mono" title={column.name}>{column.name}</td>
-                <td className="font-mono text-muted-foreground" title={column.type}>{column.type}</td>
-                <td>{column.nullable ? "是" : "否"}</td>
-                <td><span className="mysql-structure-key">{column.key === "PRI" ? <Key aria-hidden="true" /> : null}{column.key || "无"}</span></td>
-                <td className="font-mono" title={mysqlCellText(column.default)}>{mysqlCellText(column.default)}</td>
-                <td title={column.extra || "无"}>{column.extra || "无"}</td>
-              </tr>
-            )) : <tr><td className="text-center text-muted-foreground" colSpan={7}>未返回字段信息。</td></tr>}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  )
-}
-
-function WorkspaceHeader({ plugin, connected, onBack, projectName, environmentName }: Pick<MysqlDatabaseWorkspaceProps, "plugin" | "connected" | "onBack" | "projectName" | "environmentName">) {
+function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, environmentName, api, scope, comfortable, onDensity }: MysqlDatabaseWorkspaceProps & { readonly comfortable: boolean; readonly onDensity: () => void }) {
   const database = mysqlDatabaseName(plugin)
-  return (
+  const [disconnecting, setDisconnecting] = useState(false)
+  const [closing, setClosing] = useState(false)
+  async function disconnect() {
+    if (disconnecting) return
+    setDisconnecting(true)
+    try {
+      const response = await api.disconnectPlugin(scope)
+      if (!response.ok) throw new Error(response.error.message)
+      onBack()
+    } catch (error) { toast.error(error instanceof Error ? error.message : "断开连接失败") }
+    finally { setDisconnecting(false) }
+  }
+  return <>
     <header className="mysql-workspace-header">
-      <Button aria-label="返回数据库详情" data-testid="mysql-workspace-back" onClick={onBack} size="sm" type="button" variant="ghost"><ArrowLeft aria-hidden="true" /><span>返回详情</span></Button>
+      <Button aria-label="返回数据库详情" data-testid="mysql-workspace-back" onClick={onBack} size="sm" type="button" variant="ghost"><ArrowLeft /><span>返回详情</span></Button>
       <span className="mysql-workspace-header-divider" />
-      <Database aria-hidden="true" className="size-5 shrink-0 text-primary" />
-      <div className="mysql-workspace-identity"><h2 title={database || plugin.displayName}>{database || plugin.displayName}</h2><p title={`${projectName} / ${environmentName} / ${plugin.displayName}`}>{projectName}<span>/</span>{environmentName}<span>/</span>{plugin.displayName}</p></div>
-      <Badge className="shrink-0 gap-1 text-[11px]" variant="outline"><ShieldCheck aria-hidden="true" className="size-3" />只读</Badge>
-      <span className={cn("mysql-workspace-connection", connected && "is-connected")}><span />{connected ? "已连接" : "未连接"}</span>
+      <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-sm font-semibold" title={plugin.displayName}>{plugin.displayName}</h1><Badge variant={connected ? "success" : "outline"}>{connected ? "已连接" : "未连接"}</Badge><Badge variant="outline"><ShieldCheck className="size-3" />只读</Badge></div><p className="truncate text-[11px] text-muted-foreground" title={projectName + " / " + environmentName + " · " + database}>{projectName} / {environmentName} · {database}</p></div>
+      <Button data-testid="mysql-workspace-density" aria-pressed={comfortable} onClick={onDensity} size="sm" variant="ghost">{comfortable ? "舒适密度" : "紧凑密度"}</Button>
       <div className="mysql-workspace-theme"><ThemeMenu /></div>
+      <Button data-testid="mysql-workspace-disconnect" size="sm" variant="outline" disabled={!connected || disconnecting} onClick={() => void disconnect()}><LinkBreak />{disconnecting ? "断开中…" : "断开连接"}</Button>
+      <Button data-testid="mysql-workspace-close" size="icon-sm" variant="ghost" aria-label="关闭数据库工作区" onClick={() => setClosing(true)}><X /></Button>
     </header>
-  )
+    <Dialog open={closing} onOpenChange={setClosing}><DialogContent><DialogHeader><DialogTitle>关闭数据库工作区</DialogTitle><DialogDescription>将清除当前工作区的 SQL、筛选条件和查询结果。数据库连接保持。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => { setClosing(false); onBack() }}>返回详情并保留</Button><Button data-testid="mysql-workspace-confirm-close" onClick={onClose}>关闭工作区</Button></DialogFooter></DialogContent></Dialog>
+  </>
 }
 
 function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorkspaceProps, "api" | "scope" | "plugin">) {
@@ -97,7 +85,8 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
   const [search, setSearch] = useState("")
   const [documentTab, setDocumentTab] = useState("query-1")
   const [activeQueryId, setActiveQueryId] = useState("query-1")
-  const [tableTab, setTableTab] = useState("structure")
+  const [openTables, setOpenTables] = useState<readonly string[]>([])
+  const selectedTable = documentTab.startsWith("table:") ? documentTab.slice(6) : null
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [editorCollapsed, setEditorCollapsed] = useState(false)
   const sidebarRef = usePanelRef()
@@ -110,7 +99,20 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
 
   function selectDocument(value: string) {
     setDocumentTab(value)
-    if (value !== "table") setActiveQueryId(value)
+    if (!value.startsWith("table:")) setActiveQueryId(value)
+  }
+
+  function openTable(name: string) {
+    if (!openTables.includes(name)) {
+      if (openTables.length >= 6) { toast.error("最多打开 6 张表，请先关闭一个表标签。"); return }
+      setOpenTables(current => [...current, name])
+    }
+    selectDocument("table:" + name)
+  }
+  function closeTable(name: string) {
+    const remaining = openTables.filter(table => table !== name)
+    setOpenTables(remaining)
+    if (selectedTable === name) selectDocument(remaining.length ? "table:" + remaining.at(-1) : activeQueryId)
   }
 
   function createQuery() {
@@ -136,7 +138,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
     if (id === activeQueryId) {
       const next = queries.documents.find((document) => document.id !== id)!
       setActiveQueryId(next.id)
-      if (documentTab !== "table") setDocumentTab(next.id)
+      if (!documentTab.startsWith("table:")) setDocumentTab(next.id)
     }
     queries.closeDocument(id)
   }
@@ -165,7 +167,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
               {state.tablesError ? <ReadError message={state.tablesError} testId="mysql-tables-error" /> : null}
               <div aria-busy={state.tablesLoading || undefined} className="mysql-sidebar-table-list" data-testid="mysql-table-list">
                 {visibleTables.map((table) => (
-                  <div className="mysql-table-row" key={table.name}><Button draggable={table.queryable} onDragStart={(event) => { event.dataTransfer.effectAllowed = "copy"; event.dataTransfer.setData(MYSQL_TABLE_DRAG_TYPE, JSON.stringify({ scope: dragScope, table: table.name })) }} aria-label={table.name} aria-pressed={state.selectedTable?.name === table.name} className={cn("mysql-table-button", state.selectedTable?.name === table.name && "is-selected")} data-table-name={table.name} data-testid="mysql-table-item" disabled={!table.queryable} key={table.name} onClick={() => { setDocumentTab("table"); setTableTab("structure"); void state.selectTable(table) }} title={table.queryable ? table.name : `${table.name}：当前策略不支持读取此表`} type="button" variant="ghost"><TableIcon aria-hidden="true" /><span>{table.name}</span>{table.type === "VIEW" ? <small>视图</small> : null}</Button>{table.queryable ? <Button aria-label={`生成 ${table.name} 查询`} className="mysql-table-generate" data-testid="mysql-table-generate" onClick={() => generateQuery(table.name)} size="icon-sm" title="生成 SELECT 查询，也可将表拖入编辑区" type="button" variant="ghost"><Code /></Button> : null}</div>
+                  <div className="mysql-table-row" key={table.name}><Button draggable={table.queryable} onDragStart={(event) => { event.dataTransfer.effectAllowed = "copy"; event.dataTransfer.setData(MYSQL_TABLE_DRAG_TYPE, JSON.stringify({ scope: dragScope, table: table.name })) }} aria-label={table.name} aria-pressed={selectedTable === table.name} className={cn("mysql-table-button", selectedTable === table.name && "is-selected")} data-table-name={table.name} data-testid="mysql-table-item" disabled={!table.queryable} key={table.name} onClick={() => openTable(table.name)} title={table.queryable ? table.name : `${table.name}：当前策略不支持读取此表`} type="button" variant="ghost"><TableIcon aria-hidden="true" /><span>{table.name}</span>{table.type === "VIEW" ? <small>视图</small> : null}</Button>{table.queryable ? <Button aria-label={`生成 ${table.name} 查询`} className="mysql-table-generate" data-testid="mysql-table-generate" onClick={() => generateQuery(table.name)} size="icon-sm" title="生成 SELECT 查询，也可将表拖入编辑区" type="button" variant="ghost"><Code /></Button> : null}</div>
                 ))}
                 {!visibleTables.length && !state.tablesLoading && state.tablesLoaded ? <p className="mysql-sidebar-empty">{searchTerm ? "已加载的表中没有匹配项。" : "当前数据库没有数据表。"}</p> : null}
                 {state.tablesLoading ? <p className="mysql-sidebar-empty" role="status">正在读取数据表…</p> : null}
@@ -185,12 +187,15 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
                       {queries.documents.length > 1 ? <Button aria-label={`关闭 ${document.name}`} className="mysql-document-close" data-query-id={document.id} data-testid="mysql-query-close" onClick={() => closeQuery(document.id)} size="icon-sm" title={`关闭 ${document.name}`} type="button" variant="ghost"><X aria-hidden="true" /></Button> : null}
                     </div>
                   ))}
-                  <TabsTrigger className="mysql-document-tab" data-testid="mysql-table-document-tab" disabled={!state.selectedTable} title={state.selectedTable?.name} value="table"><TableIcon aria-hidden="true" /><span className="max-w-64 truncate font-mono">{state.selectedTable?.name || "数据表"}</span></TabsTrigger>
+                  {openTables.map(table => <div className="mysql-document-tab-group" key={table}>
+                    <TabsTrigger className="mysql-document-tab" data-testid="mysql-table-document-tab" data-table-name={table} title={table} value={"table:" + table}><TableIcon aria-hidden="true" /><span className="max-w-64 truncate font-mono">{table}</span></TabsTrigger>
+                    <Button aria-label={"关闭表 " + table} className="mysql-document-close" data-testid="mysql-table-close" data-table-name={table} onClick={() => closeTable(table)} size="icon-sm" title={"关闭表 " + table} type="button" variant="ghost"><X /></Button>
+                  </div>)}
                 </TabsList>
                 <Button aria-label="新建 SQL 查询" className="mysql-new-query" data-testid="mysql-query-new" disabled={queries.documents.length >= MYSQL_MAX_QUERY_DOCUMENTS} onClick={createQuery} size="icon-sm" title={queries.documents.length >= MYSQL_MAX_QUERY_DOCUMENTS ? `最多打开 ${MYSQL_MAX_QUERY_DOCUMENTS} 个查询标签` : "新建 SQL 查询"} type="button" variant="ghost"><Plus aria-hidden="true" /></Button>
-                <div className="mysql-layout-controls"><Button aria-expanded={!sidebarCollapsed} aria-label={sidebarCollapsed ? "展开表列表" : "收起表列表"} data-testid="mysql-sidebar-toggle" onClick={toggleSidebar} size="icon-sm" title={sidebarCollapsed ? "展开表列表" : "收起表列表"} type="button" variant="ghost"><SidebarSimple aria-hidden="true" /></Button><Button aria-expanded={!editorCollapsed} aria-label={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} data-testid="mysql-editor-toggle" disabled={documentTab === "table"} onClick={toggleEditor} size="icon-sm" title={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} type="button" variant="ghost">{editorCollapsed ? <CaretDown aria-hidden="true" /> : <CaretUp aria-hidden="true" />}</Button></div>
+                <div className="mysql-layout-controls"><Button aria-expanded={!sidebarCollapsed} aria-label={sidebarCollapsed ? "展开表列表" : "收起表列表"} data-testid="mysql-sidebar-toggle" onClick={toggleSidebar} size="icon-sm" title={sidebarCollapsed ? "展开表列表" : "收起表列表"} type="button" variant="ghost"><SidebarSimple aria-hidden="true" /></Button><Button aria-expanded={!editorCollapsed} aria-label={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} data-testid="mysql-editor-toggle" disabled={documentTab.startsWith("table:")} onClick={toggleEditor} size="icon-sm" title={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} type="button" variant="ghost">{editorCollapsed ? <CaretDown aria-hidden="true" /> : <CaretUp aria-hidden="true" />}</Button></div>
               </div>
-              <TabsContent className={cn("mysql-document-content", documentTab === "table" && "hidden")} forceMount value={activeQueryId}>
+              <TabsContent className={cn("mysql-document-content", documentTab.startsWith("table:") && "hidden")} forceMount value={activeQueryId}>
                 <ResizablePanelGroup aria-label="SQL 编辑器与查询结果" id={`${uniqueId}-query`} orientation="vertical">
                   <ResizablePanel collapsedSize="42px" collapsible defaultSize="252px" groupResizeBehavior="preserve-pixel-size" id={`${uniqueId}-editor`} maxSize="70%" minSize="150px" onResize={(size) => setEditorCollapsed(size.inPixels < 80)} panelRef={editorRef}>
                     {queries.documents.map((document) => (
@@ -212,22 +217,9 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
                   </ResizablePanel>
                 </ResizablePanelGroup>
               </TabsContent>
-              <TabsContent className={cn("mysql-document-content", documentTab !== "table" && "hidden")} forceMount value="table">
-                {state.selectedTable ? (
-                  <Tabs className="mysql-table-content" onValueChange={setTableTab} value={tableTab}>
-                    <div className="mysql-table-toolbar"><TabsList aria-label="数据表视图" variant="line"><TabsTrigger data-testid="mysql-table-preview-tab" value="preview"><TableIcon aria-hidden="true" />数据预览</TabsTrigger><TabsTrigger data-testid="mysql-table-structure-tab" value="structure"><ListBullets aria-hidden="true" />表结构</TabsTrigger></TabsList><span className="mysql-table-name" title={state.selectedTable.name}>{state.selectedTable.name}</span>{tableTab === "structure" ? <Button aria-label="刷新表结构" disabled={state.structure.loading} onClick={() => { if (state.selectedTable) void state.selectTable(state.selectedTable) }} size="icon-sm" title="刷新结构" type="button" variant="ghost"><ArrowClockwise aria-hidden="true" /></Button> : null}</div>
-                    <TabsContent className={cn("mysql-table-view", tableTab !== "structure" && "hidden")} forceMount value="structure">
-                      {state.structure.loading ? <ReadLoading label="正在读取表结构…" /> : null}
-                      {state.structure.error ? <ReadError message={state.structure.error} testId="mysql-structure-error" /> : null}
-                      {state.structure.data?.auditWarning ? <AuditWarning testId="mysql-structure-audit-warning" /> : null}
-                      {state.structure.data ? <TableStructure description={state.structure.data} /> : null}
-                    </TabsContent>
-                    <TabsContent className={cn("mysql-table-view", tableTab !== "preview" && "hidden")} forceMount value="preview">
-                      <MysqlTableBrowser api={api} scope={scope} table={state.selectedTable.name} description={state.structure.data} maxRows={typeof plugin.limits?.maxRows === "number" ? plugin.limits.maxRows : 100} key={state.selectedTable.name} />
-                    </TabsContent>
-                  </Tabs>
-                ) : <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><TableIcon aria-hidden="true" /></EmptyMedia><EmptyTitle>选择一张数据表</EmptyTitle><EmptyDescription>查看字段结构，或筛选、排序并分批浏览数据。</EmptyDescription></EmptyHeader></Empty>}
-              </TabsContent>
+              {openTables.map(table => <TabsContent className={cn("mysql-document-content", selectedTable !== table && "hidden")} forceMount value={"table:" + table} key={table}>
+                <MysqlTableDocument api={api} scope={scope} table={table} visible={selectedTable === table} dragScope={dragScope} maxRows={typeof plugin.limits?.maxRows === "number" ? plugin.limits.maxRows : 100} />
+              </TabsContent>)}
             </Tabs>
           </ResizablePanel>
         </ResizablePanelGroup>
@@ -239,12 +231,13 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
 
 export function MysqlDatabaseWorkspace(props: MysqlDatabaseWorkspaceProps) {
   const { api, scope, plugin, connected } = props
+  const [comfortable, setComfortable] = useState(false)
   const database = mysqlDatabaseName(plugin)
   const matchesScope = mysqlWorkspaceMatchesScope(scope, plugin)
   const ready = connected && plugin.pluginType === "mysql" && Boolean(database) && matchesScope
   return (
-    <section aria-label="数据库工作区" className="mysql-workspace h-full min-h-0" data-testid="mysql-database-workspace">
-      <WorkspaceHeader {...props} connected={ready} />
+    <section aria-label="数据库工作区" className={cn("mysql-workspace h-full min-h-0", comfortable && "mysql-workspace-comfortable")} data-testid="mysql-database-workspace">
+      <WorkspaceHeader {...props} connected={ready} comfortable={comfortable} onDensity={() => setComfortable(value => !value)} />
       {ready ? (
         // 用完整作用域和配置版本隔离数据；断连时卸载会话并清除查询结果。
         <MysqlConnectedWorkspace api={api} key={mysqlWorkspaceSessionKey(scope, plugin)} plugin={plugin} scope={scope} />

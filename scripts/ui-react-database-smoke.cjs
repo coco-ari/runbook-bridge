@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain, nativeTheme, session } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeTheme, session, clipboard } = require('electron');
 
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('force-device-scale-factor','1');
@@ -159,6 +159,7 @@ function registerMockApi() {
   registerRead('v2:quick-question-list',() => ({schemaVersion:1,projectId:PROJECT_ID,environmentId:ENVIRONMENT_ID,revision:1,items:[]}));
   registerDatabase('v2:mysql-list-tables',({pluginInstanceId,cursor}) => {
     if (state.failList) return failed('模拟数据表列表读取失败。');
+    if (state.extraTables) return ok({tables:Array.from({length:6},(_,index)=>({name:'fixture_'+(index+1),type:'BASE TABLE',queryable:true})),nextCursor:null,truncated:false});
     if (pluginInstanceId === OTHER_ID) return ok({tables:[{name:'reports',type:'BASE TABLE',queryable:true}],nextCursor:null,truncated:false});
     return ok(cursor ? {
       tables:[{name:'archived_orders',type:'BASE TABLE',queryable:true}],nextCursor:null,truncated:false,
@@ -198,7 +199,16 @@ function registerMockApi() {
       id:index+1,label:index === 0 ? MARKUP : `模拟订单 ${index+1}`,optional:index === 0 ? null : '',
     })),{truncated:true}));
   });
-  // 所有未列入只读测试范围的真实 preload 通道都明确禁止执行。
+  register('v2:connection-intent',async (event,payload) => {
+    assert.equal(state.allowDisconnect,true,'仅显式断开测试允许连接操作');
+    assert.deepEqual(payload,{...scope(PRIMARY_ID),intent:'disconnect',source:'legacy-plugin'});
+    if (state.failDisconnect) return failed('模拟断开失败');
+    plugins.find(plugin => plugin.pluginInstanceId === PRIMARY_ID).assessment = assessment('disconnected');
+    state.sequence++;
+    event.sender.send('v2:environment-status-changed',runtime());
+    return ok({snapshot:runtime()});
+  });
+  // 所有未列入本次测试范围的真实 preload 通道都明确禁止执行。
   const preload = fs.readFileSync(path.join(root,'src','preload.cjs'),'utf8');
   for (const [,channel] of preload.matchAll(/ipcRenderer\.invoke\('([^']+)'/gu)) {
     if (registeredChannels.has(channel)) continue;
@@ -552,6 +562,7 @@ async function run() {
     if (blocked) externalRequests.push(details.url);
     callback(blocked ? {cancel:true} : {});
   });
+  session.defaultSession.setPermissionRequestHandler((_contents,_permission,callback) => callback(false));
   const win = new BrowserWindow({
     show:false,useContentSize:true,width:1600,height:1000,
     webPreferences:{preload:path.join(root,'src','preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false},
@@ -606,8 +617,10 @@ async function run() {
     await wait(100);
     assert.equal(databaseCalls.length,viewCalls,'不可查询的 View 不得发起表读取。');
     await click(win,`${testId('mysql-table-item')}[data-table-name="orders"]`);
+    await textContains(win,'mysql-preview-result','已完成订单');
+    assert.equal(databaseCalls.filter(call => call.channel === 'v2:mysql-preview-table').length,1,'首次点击表自动读取一页');
+    await click(win,testId('mysql-table-structure-tab'));
     await textContains(win,'mysql-table-structure','bigint');
-    assert.deepEqual(databaseCalls.at(-1),{channel:'v2:mysql-describe-table',payload:{...scope(PRIMARY_ID),table:'orders'}});
     await screenshot(win,'structure');
     state.failDescribe = true;
     await click(win,`${testId('mysql-table-item')}[data-table-name="archived_orders"]`);
@@ -617,7 +630,7 @@ async function run() {
     await textContains(win,'mysql-table-structure','bigint');
 
     await click(win,testId('mysql-table-preview-tab'));
-    assert.equal(databaseCalls.filter((call) => call.channel === 'v2:mysql-preview-table').length,0,'切页签不得自动查询表数据。');
+    assert.equal(databaseCalls.filter((call) => call.channel === 'v2:mysql-preview-table').length,1,'切回已打开表不得重复预览。');
     await click(win,testId('mysql-preview-run'));
     await textContains(win,'mysql-preview-result','已完成订单');
     await waitFor(win,`document.querySelector('${testId('mysql-preview-truncated')}') !== null`,'预览截断提示');
@@ -775,6 +788,7 @@ async function run() {
     await textContains(win,'mysql-query-result','演示客户 24');
     await screenshot(win,'workspace');
     await assertSqlAssistanceAndBrowse({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID});
+    await require('./database-tabs-ui.cjs')({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID,clipboard});
     await assertNoPersistence(win);
     assert.deepEqual(forbiddenCalls,[],'只读数据库工作区不得调用配置变更通道。');
     assert.deepEqual(externalRequests,[],'数据库 UI 测试不得发起外部网络请求。');

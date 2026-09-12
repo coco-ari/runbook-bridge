@@ -1,3 +1,4 @@
+import { copyMysqlText } from "./mysql-clipboard"
 import { Copy, Play } from "@phosphor-icons/react"
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
 import { toast } from "sonner"
@@ -104,7 +105,7 @@ export function MysqlSqlEditor({ active = true, value, loading, collapsed, onCha
 
   async function copySql() {
     try {
-      await navigator.clipboard.writeText(value)
+      await copyMysqlText(value)
       toast.success("SQL 已复制")
     } catch {
       toast.error("无法访问剪贴板，请选中 SQL 后复制。")

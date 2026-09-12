@@ -3,13 +3,17 @@ import { Play } from "@phosphor-icons/react"
 import type { AiOpsV2Api, MysqlQueryResult, MysqlTableDescription, PluginScope } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { MysqlQueryResults } from "./MysqlQueryResults"
+import { MysqlQueryResults, type MysqlResultViewSnapshot } from "./MysqlQueryResults"
 import { MYSQL_BROWSE_MAX_BYTES, MYSQL_BROWSE_MAX_ROWS, MYSQL_BROWSE_PAGE_SIZE, quoteMysqlIdentifier, type MysqlSort } from "./mysql-sql-assist"
 
-export function MysqlTableBrowser({ api, scope, table, description, maxRows }: {
+export function MysqlTableBrowser({ api, scope, table, description, maxRows, visible, dragScope }: {
   readonly api: AiOpsV2Api; readonly scope: PluginScope; readonly table: string
+  readonly visible: boolean; readonly dragScope: string
   readonly description: MysqlTableDescription | null; readonly maxRows: number
 }) {
+  const filterRef = useRef<HTMLInputElement>(null)
+  const snapshot = useRef<MysqlResultViewSnapshot | null>(null)
+  const started = useRef(false)
   const [where, setWhere] = useState("")
   const [sort, setSort] = useState<MysqlSort | null>(null)
   const [result, setResult] = useState<MysqlQueryResult | null>(null)
@@ -68,16 +72,39 @@ export function MysqlTableBrowser({ api, scope, table, description, maxRows }: {
       if (active.current && owner.current === ticket) { busy.current = false; setLoading(false) }
     }
   }
+  useEffect(() => {
+    if (description && !started.current) { started.current = true; void readPage(true) }
+  }, [description])
+  function dropColumn(event: React.DragEvent<HTMLInputElement>) {
+    const raw = event.dataTransfer.getData("application/x-runbook-mysql-column")
+    if (!raw) return
+    event.preventDefault()
+    try {
+      const payload = JSON.parse(raw)
+      if (payload.workspace !== dragScope || payload.table !== table || typeof payload.column !== "string" || !result?.columns.some(column => column.name === payload.column)) return
+      const input = event.currentTarget
+      const start = input.selectionStart ?? where.length
+      const end = input.selectionEnd ?? start
+      const quoted = quoteMysqlIdentifier(payload.column)
+      const prefix = start && !/\s$/.test(where.slice(0, start)) ? " " : ""
+      const inserted = prefix + quoted + " "
+      const next = where.slice(0, start) + inserted + where.slice(end)
+      if (next.length > 8192) return
+      setWhere(next)
+      window.setTimeout(() => { filterRef.current?.focus(); filterRef.current?.setSelectionRange(start + inserted.length, start + inserted.length) }, 0)
+    } catch { /* 只接收本表的字段拖放。 */ }
+  }
+  if (!visible) return null
   const apply = () => { void readPage(true, { where: where.trim(), sort }) }
   return <div className="mysql-table-browser">
     <form className="mysql-table-filter-bar" onSubmit={event => { event.preventDefault(); apply() }}>
       <span className="mysql-table-select" title={`SELECT * FROM ${quoteMysqlIdentifier(table)}`}>SELECT * FROM <strong>{quoteMysqlIdentifier(table)}</strong></span>
       <span className="text-primary">WHERE</span>
-      <Input aria-label="表数据筛选条件" data-testid="mysql-table-where" maxLength={8192} onChange={event => setWhere(event.target.value)} placeholder="条件，如 id > 100；留空查询整表" value={where} />
+      <Input ref={filterRef} onDragOver={event => { if (event.dataTransfer.types.includes("application/x-runbook-mysql-column")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy" } }} onDrop={dropColumn} aria-label="表数据筛选条件" data-testid="mysql-table-where" maxLength={8192} onChange={event => setWhere(event.target.value)} placeholder="条件，如 id > 100；留空查询整表" value={where} />
       <span className="shrink-0 font-mono">LIMIT {pageSize}</span>
       <Button data-testid="mysql-preview-run" size="sm" type="submit"><Play />{loading ? "重新查询" : "执行"}</Button>
     </form>
     {error ? <p className="mysql-browser-error" data-testid="mysql-preview-error" role="alert">{error}{result ? <Button data-testid="mysql-preview-retry" onClick={() => void readPage(false)} size="sm" variant="ghost">重试加载</Button> : null}</p> : null}
-    {result ? <MysqlQueryResults kind="preview" result={result} sort={sort} onSort={next => { setSort(next); void readPage(true, { where: where.trim(), sort: next }) }} stream={{ key: `${table}/${generation}`, loading, hasMore: hasMore && !error, onLoadMore: () => void readPage(false), message }} /> : <div className="mysql-browser-empty" role="status">{loading ? "正在读取数据…" : message || `输入筛选条件或直接执行，每次读取 ${pageSize} 行。`}</div>}
+    {result ? <MysqlQueryResults snapshot={snapshot} columnDragScope={{ workspace: dragScope, table }} kind="preview" result={result} sort={sort} onSort={next => { setSort(next); void readPage(true, { where: where.trim(), sort: next }) }} stream={{ key: `${table}/${generation}`, loading, hasMore: hasMore && !error, onLoadMore: () => void readPage(false), message }} /> : <div className="mysql-browser-empty" role="status">{loading ? "正在读取数据…" : message || `输入筛选条件或直接执行，每次读取 ${pageSize} 行。`}</div>}
   </div>
 }

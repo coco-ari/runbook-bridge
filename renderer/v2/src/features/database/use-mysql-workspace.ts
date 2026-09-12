@@ -3,21 +3,10 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import type {
   AiOpsV2Api,
   IpcResult,
-  MysqlTableDescription,
   MysqlTableSummary,
   PluginScope,
 } from "@/bridge/ai-ops-v2"
 import { MYSQL_TABLE_PAGE_SIZE } from "@/features/database/mysql-workspace-model"
-
-interface ReadState<T> {
-  readonly data: T | null
-  readonly loading: boolean
-  readonly error: string | null
-}
-
-function emptyRead<T>(): ReadState<T> {
-  return { data: null, loading: false, error: null }
-}
 
 function unwrap<T>(result: IpcResult<T>): T {
   if (!result.ok) throw new Error(result.error.message)
@@ -36,10 +25,8 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [tablesTruncated, setTablesTruncated] = useState(false)
   const [tablesAuditWarning, setTablesAuditWarning] = useState(false)
-  const [selectedTable, setSelectedTable] = useState<MysqlTableSummary | null>(null)
-  const [structure, setStructure] = useState<ReadState<MysqlTableDescription>>(emptyRead)
   const active = useRef(false)
-  const tickets = useRef({ tables: 0, structure: 0 })
+  const tickets = useRef({ tables: 0 })
   const busy = useRef({ tables: false })
   const { projectId, environmentId, pluginInstanceId } = scope
 
@@ -50,9 +37,6 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
     setTablesLoading(true)
     setTablesError(null)
     if (!cursor) {
-      ++tickets.current.structure
-      setSelectedTable(null)
-      setStructure(emptyRead())
       setTables([])
       setTablesLoaded(false)
       setNextCursor(null)
@@ -93,29 +77,13 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
     return () => {
       // 断连、切换作用域或配置后，旧请求不得回填到新的数据库会话。
       active.current = false
-      for (const key of ["tables", "structure"] as const) ++tickets.current[key]
+      for (const key of ["tables"] as const) ++tickets.current[key]
       busy.current = { tables: false }
     }
   }, [loadTables])
 
-  const selectTable = async (table: MysqlTableSummary) => {
-    if (!active.current || table.queryable !== true) return
-    const ticket = ++tickets.current.structure
-    setSelectedTable(table)
-    setStructure({ data: null, loading: true, error: null })
-    try {
-      const data = unwrap(await api.mysqlDescribeTable({ projectId, environmentId, pluginInstanceId, table: table.name }))
-      if (active.current && ticket === tickets.current.structure) setStructure({ data, loading: false, error: null })
-    } catch (error) {
-      if (active.current && ticket === tickets.current.structure) {
-        setStructure({ data: null, loading: false, error: readError(error, "表结构读取失败，请重试。") })
-      }
-    }
-  }
-
   return {
     tables, tablesLoading, tablesLoaded, tablesError, tablesTruncated, tablesAuditWarning, nextCursor,
-    selectedTable, structure,
-    loadTables, selectTable,
+    loadTables,
   }
 }

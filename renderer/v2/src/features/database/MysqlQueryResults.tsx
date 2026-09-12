@@ -1,5 +1,6 @@
+import { copyMysqlText } from "./mysql-clipboard"
 import { CaretLeft, CaretRight, CheckCircle, Clock, MagnifyingGlass, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
-import { useId, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
 
 import type { MysqlQueryResult } from "@/bridge/ai-ops-v2"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -14,6 +15,8 @@ interface MysqlQueryResultsProps {
   readonly result: MysqlQueryResult
   readonly kind: "query" | "preview"
   readonly testIdPrefix?: string
+  readonly columnDragScope?: Readonly<{ workspace: string; table: string }>
+  readonly snapshot?: RefObject<MysqlResultViewSnapshot | null>
   readonly sort?: MysqlSort | null
   readonly onSort?: (sort: MysqlSort | null) => void
   readonly stream?: Readonly<{ key: string; loading: boolean; hasMore: boolean; message: string; onLoadMore: () => void }>
@@ -28,15 +31,17 @@ interface ResultViewState {
   readonly selectedRow: number | null
 }
 
+export interface MysqlResultViewSnapshot { readonly state: ResultViewState; readonly top: number; readonly left: number }
+
 interface CopyNotice {
   readonly result: MysqlQueryResult
   readonly message: string
   readonly failed: boolean
 }
 
-export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, stream }: MysqlQueryResultsProps) {
+export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, stream, columnDragScope, snapshot }: MysqlQueryResultsProps) {
   const viewIdentity = stream?.key ?? result
-  const [viewState, setViewState] = useState<ResultViewState>({ result: viewIdentity, sort: null, filter: "", page: 0, pageSize: MYSQL_RESULT_PAGE_SIZE, selectedRow: null })
+  const [viewState, setViewState] = useState<ResultViewState>(snapshot?.current?.state.result === viewIdentity ? snapshot.current.state : { result: viewIdentity, sort: null, filter: "", page: 0, pageSize: MYSQL_RESULT_PAGE_SIZE, selectedRow: null })
   const [copyNotice, setCopyNotice] = useState<CopyNotice | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastScrollTop = useRef(0)
@@ -65,7 +70,21 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
   const selectedRow = !duplicateColumns && state.selectedRow !== null ? result.rows[state.selectedRow] : undefined
   const notice = copyNotice?.result === result ? copyNotice : null
 
+  const latestState = useRef(state)
+  latestState.current = state
   useLayoutEffect(() => {
+    const element = scrollRef.current
+    if (element && snapshot?.current?.state.result === viewIdentity) {
+      element.scrollTop = snapshot.current.top
+      element.scrollLeft = snapshot.current.left
+      lastScrollTop.current = element.scrollTop
+    }
+    return () => {
+      if (snapshot && element) snapshot.current = { state: latestState.current, top: element.scrollTop, left: element.scrollLeft }
+    }
+  }, [snapshot, viewIdentity])
+  useLayoutEffect(() => {
+    if (snapshot?.current?.state === state) return
     lastScrollTop.current = 0
     if (scrollRef.current) scrollRef.current.scrollTop = 0
   }, [viewIdentity, filter, visiblePage, state.pageSize])
@@ -91,7 +110,7 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
 
   async function copyText(text: string, description: string) {
     try {
-      await navigator.clipboard.writeText(text)
+      await copyMysqlText(text)
       setCopyNotice({ result, message: description, failed: false })
     } catch {
       setCopyNotice({ result, message: "复制失败，请选中详情内容后手动复制。", failed: true })
@@ -161,7 +180,7 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
                     <th className="sticky top-0 z-10 h-8 border-b border-r bg-surface-inset px-3 text-right font-normal text-text-faint" scope="col"><span className="sr-only">行号</span>#</th>
                     {result.columns.map((column) => (
                       <th aria-sort={selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "ascending" : "descending" : "none"} className="sticky top-0 z-10 h-8 border-b bg-surface-inset px-3 text-left font-mono text-[11px] font-normal text-muted-foreground" key={column.name} scope="col" title={column.table ? `${column.table}.${column.name}` : column.name}>
-                        <button aria-label={`按 ${column.name} 排序`} className="mysql-column-sort" data-column={column.name} data-testid={`${prefix}-sort`} onClick={() => sortColumn(column.name)} title={onSort ? "在数据库中排序：升序 / 降序 / 默认" : "当前返回结果排序：升序 / 降序 / 默认"} type="button"><span>{column.name}</span><span aria-hidden="true">{selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "↑" : "↓" : "↕"}</span></button>
+                        <button aria-label={`按 ${column.name} 排序`} draggable={Boolean(columnDragScope)} onDragStart={event => { if (columnDragScope) { event.dataTransfer.effectAllowed = "copy"; event.dataTransfer.setData("application/x-runbook-mysql-column", JSON.stringify({ ...columnDragScope, column: column.name })) } }} className="mysql-column-sort" data-column={column.name} data-testid={`${prefix}-sort`} onClick={() => sortColumn(column.name)} title={onSort ? "在数据库中排序：升序 / 降序 / 默认" : "当前返回结果排序：升序 / 降序 / 默认"} type="button"><span>{column.name}</span><span aria-hidden="true">{selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "↑" : "↓" : "↕"}</span></button>
                       </th>
                     ))}
                   </tr>

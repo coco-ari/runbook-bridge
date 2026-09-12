@@ -56,7 +56,7 @@ corepack pnpm run test:ui:all
 | `corepack pnpm run test:ui:business` | 项目、环境、运维说明和快捷提问变更，失败重试与编辑保护 |
 | `corepack pnpm run test:ui:plugins` | 插件新增、编辑、连接、Host Key、安全确认及取消流程 |
 | `corepack pnpm run test:ui:server-workspace` | 服务器终端、文件浏览与传输，以及服务器、数据库、Redis 之间的工作区往返 |
-| `corepack pnpm run test:ui:database` | MySQL 表浏览、结构、语法提示、拖表生成 SQL、别名字段补全、筛选排序与滚动分页、结果边界和迟到响应隔离 |
+| `corepack pnpm run test:ui:database` | MySQL 多表标签、默认 20 行预览、字段拖入筛选、受限权限下系统剪贴板、关闭清理、语法提示、拖表生成 SQL、别名字段补全、筛选排序与滚动分页、结果边界和迟到响应隔离 |
 | `corepack pnpm run test:ui:plugin-matrix` | 插件表单与真实探针、编辑会话、凭据解析器的组合，取消、重试和删除重建 |
 
 `test:ui:all` 串行执行上表六组；这些入口均先构建 Renderer。不要修改生产策略来迁就 smoke，也不要用无条件成功的 mock 或源码正则替代实际行为检查。
