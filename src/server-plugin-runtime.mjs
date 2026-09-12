@@ -263,6 +263,10 @@ export class ServerPluginRuntime extends EventEmitter {
     return this.broker.execute(resource, authorization.contextToken, command);
   }
 
+  openTerminal(plugin, options = {}) {
+    return this.broker.openTerminal(this.key(plugin), options);
+  }
+
   listRemoteDirectory(plugin, remotePath, options = {}) {
     return this.broker.listRemoteDirectory(this.key(plugin), remotePath, options);
   }
@@ -287,8 +291,8 @@ export class ServerPluginRuntime extends EventEmitter {
     return this.broker.downloadRemoteFile(this.key(plugin), remotePath, localPath, maxBytes);
   }
 
-  uploadRemoteFile(plugin, localPath, remotePath, precondition) {
-    return this.broker.uploadRemoteFileApproved(this.key(plugin), localPath, remotePath, precondition);
+  uploadRemoteFile(plugin, localPath, remotePath, precondition, options = {}) {
+    return this.broker.uploadRemoteFileApproved(this.key(plugin), localPath, remotePath, precondition, options);
   }
 
   writeRemoteFile(plugin, remotePath, content, precondition) {

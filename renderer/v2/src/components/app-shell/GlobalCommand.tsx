@@ -18,6 +18,7 @@ import type {
 } from "@/features/workspace/workspace-read-model"
 
 interface GlobalCommandProps {
+  readonly disabled?: boolean
   readonly onCreateEnvironment?: (() => void) | undefined
   readonly onCreateProject: () => void
   readonly onOpenChange: (open: boolean) => void
@@ -34,6 +35,7 @@ interface GlobalCommandProps {
 }
 
 export function GlobalCommand({
+  disabled = false,
   onCreateEnvironment,
   onCreateProject,
   onOpenChange,
@@ -57,6 +59,7 @@ export function GlobalCommand({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (disabled) return
       if (!(event.metaKey || event.ctrlKey) || event.altKey) return
       const key = event.key.toLowerCase()
       const anotherModal = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]'))
@@ -84,7 +87,7 @@ export function GlobalCommand({
     }
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [onCreateProject, onOpenChange, open])
+  }, [disabled, onCreateProject, onOpenChange, open])
 
   const run = (action: () => void) => {
     pendingActionRef.current = action

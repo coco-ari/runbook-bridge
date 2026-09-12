@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import { useGroupRef, usePanelRef, type Layout, type LayoutChangedMeta, type PanelSize } from "react-resizable-panels"
 import { toast } from "sonner"
 import { focusWorkspaceElement } from "@/lib/workspace-focus"
@@ -7,6 +7,8 @@ import {
   getAiOpsV2,
   type PluginRecord,
 } from "@/bridge/ai-ops-v2"
+import type { ServerWorkspaceEntry } from "@/features/server-workspace/ServerWorkspace"
+import { serverWorkspaceKey } from "@/features/server-workspace/workspace-model"
 import { GlobalCommand } from "@/components/app-shell/GlobalCommand"
 import { WorkspaceDetail, type WorkspaceDetailAction } from "@/components/detail-workspace/WorkspaceDetail"
 import {
@@ -83,6 +85,8 @@ import {
   type AppShellLayoutState,
 } from "@/state/layout-state"
 
+const ServerWorkspace = lazy(() => import("@/features/server-workspace/ServerWorkspace").then((module) => ({ default: module.ServerWorkspace })))
+
 interface PendingSelection {
   readonly environmentId?: string
   readonly focusTarget?: (() => HTMLElement | null) | undefined
@@ -133,6 +137,20 @@ export function AppShell() {
   )
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const [projectPanelPixels, setProjectPanelPixels] = useState<number | null>(null)
+  const [serverWorkspaces, setServerWorkspaces] = useState<readonly ServerWorkspaceEntry[]>([])
+  const [activeServerWorkspace, setActiveServerWorkspace] = useState<string | null>(null)
+  const removeServerWorkspaces = useCallback((scope: { projectId: string; environmentId?: string; pluginInstanceId?: string }) => {
+    const matches = (entry: ServerWorkspaceEntry) => entry.plugin.projectId === scope.projectId && (!scope.environmentId || entry.plugin.environmentId === scope.environmentId) && (!scope.pluginInstanceId || entry.plugin.pluginInstanceId === scope.pluginInstanceId)
+    setServerWorkspaces((current) => current.filter((entry) => !matches(entry)))
+    setActiveServerWorkspace((current) => {
+      if (!current) return null
+      const [projectId, environmentId, pluginInstanceId] = JSON.parse(current) as string[]
+      return projectId === scope.projectId && (!scope.environmentId || environmentId === scope.environmentId) && (!scope.pluginInstanceId || pluginInstanceId === scope.pluginInstanceId) ? null : current
+    })
+  }, [])
+  useEffect(() => api.onWorkspaceChanged((change) => {
+    if (["project-deleted", "environment-deleted", "plugin-deleted"].includes(change.type) && change.projectId) removeServerWorkspaces({ projectId: change.projectId, ...(change.environmentId ? { environmentId: change.environmentId } : {}), ...(change.pluginInstanceId ? { pluginInstanceId: change.pluginInstanceId } : {}) })
+  }), [api, removeServerWorkspaces])
   const [commandOpen, setCommandOpen] = useState(false)
   const [detailTab, setDetailTab] = useState("overview")
   const [notice, setNotice] = useState("")
@@ -204,6 +222,7 @@ export function AppShell() {
       })
       toast.success("环境已创建")
     } else if (event.kind === "deleted") {
+      removeServerWorkspaces({ projectId: event.projectId, environmentId: event.environmentId })
       if (
         selection.projectId === event.projectId
         && selection.environmentId === event.environmentId
@@ -218,7 +237,7 @@ export function AppShell() {
     } else if (event.kind === "renamed") {
       toast.success("环境名称已更新")
     }
-  }, [selection.environmentId, selection.projectId, workspace])
+  }, [removeServerWorkspaces, selection.environmentId, selection.projectId, workspace])
 
   const environmentMutations = useEnvironmentMutations({
     api,
@@ -902,7 +921,15 @@ export function AppShell() {
 
   const openDetailAction = useCallback((action: WorkspaceDetailAction) => {
     rememberFocus()
-    if (action.type === "create-project") requestNavigation(() => setProjectSurface({ kind: "create" }))
+    if (action.type === "open-server-workspace") {
+      const key = serverWorkspaceKey(action.plugin)
+      const retained = serverWorkspaces.some((entry) => serverWorkspaceKey(entry.plugin) === key)
+      if (!retained && serverWorkspaces.length >= 8) { toast.error("最多保留 8 个服务器工作区，请先关闭一个工作区。"); return }
+      const nextEntry = { plugin: action.plugin, projectName: selectedProject?.name ?? "", environmentName: selectedEnvironment?.name ?? "", runtime: rawRuntime }
+      setServerWorkspaces((current) => retained ? current.map((entry) => serverWorkspaceKey(entry.plugin) === key ? nextEntry : entry) : [...current, nextEntry])
+      setActiveServerWorkspace(key)
+      setCommandOpen(false)
+    } else if (action.type === "create-project") requestNavigation(() => setProjectSurface({ kind: "create" }))
     else if (action.type === "edit-project") setProjectSurface({ kind: "settings", project: action.project })
     else if (action.type === "edit-environment") {
       setEnvironmentSurface({ kind: "settings", project: action.project, environment: action.environment })
@@ -916,7 +943,7 @@ export function AppShell() {
     } else {
       requestNavigation(() => setPluginSurface({ kind: "delete", plugin: action.plugin }))
     }
-  }, [enterPluginEditor, rememberFocus, requestNavigation, selectedEnvironment])
+  }, [enterPluginEditor, rememberFocus, requestNavigation, selectedEnvironment, selectedProject, rawRuntime, serverWorkspaces])
 
   const handleProjectCommitted = useCallback((event: ProjectMutationEvent) => {
     workspace.reload()
@@ -1014,7 +1041,8 @@ export function AppShell() {
     : "拖动调整项目栏宽度，双击恢复默认宽度（224 像素，受窗口空间限制）。聚焦分隔线后，按左右方向键调整宽度，按 Enter 折叠或展开；在非输入区域也可按 Ctrl+B。"
 
   return (
-    <div className="h-full max-h-full min-h-0 w-full min-w-0 overflow-hidden bg-background text-foreground" data-shell-ready="true" data-testid="react-app-shell">
+    <div className="h-full max-h-full min-h-0 relative w-full min-w-0 overflow-hidden bg-background text-foreground" data-shell-ready="true" data-testid="react-app-shell">
+      <div inert={Boolean(activeServerWorkspace)} aria-hidden={Boolean(activeServerWorkspace)} style={{ visibility: activeServerWorkspace ? "hidden" : "visible", height: "100%", width: "100%" }}>
       <a
         className="fixed left-3 top-2 z-[70] -translate-y-14 rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground shadow-sm outline-none transition-transform focus:translate-y-0 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background"
         href="#detail-main"
@@ -1113,6 +1141,7 @@ export function AppShell() {
             environmentLoading={environmentStatus.loading || pluginList.loading}
             key={`${[selection.projectId,selection.environmentId,selection.pluginInstanceId].filter(Boolean).join("/") || "workspace"}/${detailDraftEpoch}`}
             onAction={openDetailAction}
+            serverWorkspaceRetained={selectedPluginRecord ? serverWorkspaces.some((entry) => serverWorkspaceKey(entry.plugin) === serverWorkspaceKey(selectedPluginRecord)) : false}
             onAgentAccessDirtyChange={setAgentAccessDirty}
             onAgentAccessSavingChange={setAgentAccessSaving}
             onLocateScope={locateConfirmationScope}
@@ -1141,8 +1170,15 @@ export function AppShell() {
           />}
         </ResizablePanel>
       </ResizablePanelGroup>
+      </div>
+      {serverWorkspaces.map((entry) => {
+        const key = serverWorkspaceKey(entry.plugin)
+        const back = () => { setActiveServerWorkspace(null); scheduleWorkspaceFocus(() => document.querySelector<HTMLElement>('[data-testid="plugin-open-workspace"]')) }
+        return <Suspense key={key} fallback={key === activeServerWorkspace ? <div className="absolute inset-0 z-30 grid place-items-center bg-background text-sm text-muted-foreground">正在打开服务器工作区…</div> : null}><ServerWorkspace api={api} entry={entry} visible={key === activeServerWorkspace} onBack={back} onClose={() => { setServerWorkspaces((current) => current.filter((item) => serverWorkspaceKey(item.plugin) !== key)); back() }} /></Suspense>
+      })}
 
       <GlobalCommand
+        disabled={Boolean(activeServerWorkspace)}
         onCreateEnvironment={selectedProject ? () => {
           rememberFocus()
           requestNavigation(() => setEnvironmentSurface({ kind: "create", project: selectedProject }))
@@ -1203,6 +1239,7 @@ export function AppShell() {
           api={api}
           dependents={dependentPlugins(pluginSurface.plugin, scopedPluginRecords)}
           onDeleted={(outcome) => {
+            removeServerWorkspaces(pluginSurface.plugin)
             setPluginSurface(null)
             if (workspace.data && selectedProject && selectedEnvironment) {
               dispatchSelection({

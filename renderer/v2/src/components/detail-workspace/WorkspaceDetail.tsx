@@ -65,6 +65,7 @@ import type {
 } from "@/features/workspace/workspace-read-model"
 
 export type WorkspaceDetailAction =
+  | Readonly<{ type: "open-server-workspace"; plugin: PluginConfigurationRecord }>
   | Readonly<{ type: "create-project" }>
   | Readonly<{ type: "edit-project"; project: WorkspaceProjectReadModel }>
   | Readonly<{
@@ -77,6 +78,7 @@ export type WorkspaceDetailAction =
   | Readonly<{ type: "delete-plugin"; plugin: PluginConfigurationRecord }>
 
 export interface WorkspaceDetailProps {
+  readonly serverWorkspaceRetained?: boolean
   readonly activeTab: string
   readonly api: AiOpsV2Api
   readonly collapsed: boolean
@@ -218,6 +220,7 @@ function SelectionActions({
 }
 
 export function WorkspaceDetail({
+  serverWorkspaceRetained = false,
   api,
   activeTab,
   collapsed,
@@ -531,7 +534,7 @@ export function WorkspaceDetail({
                   onReload={onReloadEnvironment}
                   plugin={plugin}
                   connectionPanel={supportedPlugin ? (
-                    <PluginConnectionPanel api={api} onEdit={() => onAction({ type: "edit-plugin", plugin: supportedPlugin, returnFocus: "plugin-action-edit" })} onRuntime={onReloadEnvironment} plugin={supportedPlugin} runtime={rawRuntime} />
+                    <PluginConnectionPanel api={api} onOpenWorkspace={() => onAction({ type: "open-server-workspace", plugin: supportedPlugin })} workspaceRetained={serverWorkspaceRetained} onEdit={() => onAction({ type: "edit-plugin", plugin: supportedPlugin, returnFocus: "plugin-action-edit" })} onRuntime={onReloadEnvironment} plugin={supportedPlugin} runtime={rawRuntime} />
                   ) : null}
                 />
               ) : environment ? (

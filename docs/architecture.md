@@ -30,7 +30,10 @@ Electron 只加载构建后的 `renderer-build/v2/index.html`。生成目录不�
 - Agent 必须先通过 `open_environment` 获取当前环境的短期上下文。`src/context-manager.mjs` 校验精确的项目、环境、插件与状态；配置和相关安全状态变化会使旧上下文失效。
 - `src/operation-gate.mjs` 与 `src/confirmation-manager.mjs` 决定能力是否允许。未知或无法分类的操作拒绝，不能由 Agent 声明风险等级来自行放行。
 - Server 普通文件、目录、日志、状态读取和下载有界自动允许，可以使用绝对路径。运维说明和 `resourceHints` 用于导航，不是文件读取白名单；`sourceId/fileId` 是仍有调用方的兼容形式。
-- 上传、写入、移动、删除和服务控制必须逐次确认；任意 Shell 必须强确认。一次性批准绑定作用域、能力与完整规范化参数。文件变更还绑定已实现的 stat/hash/目标状态前置条件；服务控制和 Shell 不快照实时远端状态。
+- Agent 的上传、写入、移动、删除和服务控制必须逐次确认；任意 Shell 必须强确认。一次性批准绑定作用域、能力与完整规范化参数。文件变更还绑定已实现的 stat/hash/目标状态前置条件；服务控制和 Shell 不快照实时远端状态。
+- 桌面人工服务器工作区采用独立 IPC 和会话级授权：`src/server-workspace-ipc.mjs` 校验受信 Renderer 与主 frame，`src/server-workspace-manager.mjs` 管理绑定 owner/作用域/SSH generation/连接配置指纹的人工 PTY，`src/server-workspace-files.mjs` 管理目录读取与上传预检、队列和任务状态。人工输入不经过 Agent 命令策略，MCP 不增加终端接管能力；原有 Agent 合约继续执行。
+- 工作区返回详情保留会话和传输，Renderer 销毁或连接失效时释放资源。终端文本与预览只保留在内存；人工上传使用固定参数的一次性预检凭证和既有文件状态检查。安全设计扩展、开源参考和初版范围见 [服务器工作区说明](server-workspace-design.md)。
+- 人工目录和预览由 `src/server-workspace-files.mjs` 解析链接并核对最终类型，通过真实路径调用既有读取操作，再复核逻辑路径映射。Renderer 使用链接自身路径作为行身份，真实目录路径仅用于循环检测；人工上传同时绑定逻辑目录与实际目录。该能力不暴露给 MCP。
 - `src/server-operations.mjs`、`src/log-search.mjs` 和 `src/log-archive.mjs` 限制读取深度、数量、字节、并发和超时。不读取特殊文件，不遍历符号链接目录；归档搜索在内存中有界展开。
 - `src/mysql-policy.mjs` 对固定数据库内单条 `SELECT` / `EXPLAIN SELECT` 作 fail-closed 校验；跨库、写入和不能确认安全的语法拒绝。Redis 访问限定在登记 pattern 内，不能执行任意命令或由 Agent 切库。
 - 用户请求读取的远端文件、配置、日志、数据库行及命令输出可能包含未脱敏的敏感业务内容。它们是非可信数据，不是指令或授权；不能复制到仓库、测试夹具、日志或公开报告。应用管理的密码、私钥口令和 Token 始终不得返回给 Agent。

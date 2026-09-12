@@ -1,7 +1,10 @@
+import { DEFAULT_TERMINAL_COLORS, probeTerminalShell } from './server-terminal-startup.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import ssh2 from 'ssh2';
 import { AppError } from './errors.mjs';
 import { evaluateCommandPolicy } from './command-policy.mjs';
@@ -130,7 +133,7 @@ function transferError(error) {
   return new AppError('TRANSFER_FAILED', '文件传输失败。');
 }
 
-function withSftp(client, action, { timeoutMs = 0, timeoutCode = 'TRANSFER_TIMEOUT', timeoutMessage = '文件传输超时。' } = {}) {
+function withSftp(client, action, { timeoutMs = 0, timeoutCode = 'TRANSFER_TIMEOUT', timeoutMessage = '文件传输超时。', signal = null } = {}) {
   return new Promise((resolve, reject) => {
     const controller = new AbortController();
     let sftp = null;
@@ -167,6 +170,7 @@ function withSftp(client, action, { timeoutMs = 0, timeoutCode = 'TRANSFER_TIMEO
       settled = true;
       clearTimeout(timeoutTimer);
       clearTimeout(forceCloseTimer);
+      signal?.removeEventListener('abort', onExternalAbort);
       safeEnd();
       if (error) reject(transferError(error));
       else resolve(value);
@@ -183,6 +187,13 @@ function withSftp(client, action, { timeoutMs = 0, timeoutCode = 'TRANSFER_TIMEO
       sftp?.removeListener('end', onSftpEnd);
       sftp?.removeListener('close', onSftpClose);
     };
+
+    const onExternalAbort = () => abort(new AppError('TRANSFER_CANCELLED', '文件上传已取消。'));
+    signal?.addEventListener('abort', onExternalAbort, { once: true });
+    if (signal?.aborted) {
+      finish(new AppError('TRANSFER_CANCELLED', '文件上传已取消。'));
+      return;
+    }
 
     if (timeoutMs > 0) {
       timeoutTimer = setTimeout(
@@ -411,9 +422,22 @@ async function sftpReadRange(sftp, remotePath, start, maxBytes, { signal, abort 
   return total === output.length ? output : Buffer.from(output.subarray(0, total));
 }
 
-function sftpRename(sftp, from, to) {
+function sftpRename(sftp, from, to, { overwrite = false } = {}) {
   return new Promise((resolve, reject) => {
-    sftp.rename(from, to, (error) => (error ? reject(error) : resolve()));
+    const complete = (error) => (error ? reject(error) : resolve());
+    if (overwrite && typeof sftp.ext_openssh_rename === 'function') {
+      try {
+        sftp.ext_openssh_rename(from, to, complete);
+        return;
+      } catch (error) {
+        if (!/does not support this extended request/u.test(String(error?.message ?? ''))) {
+          reject(error);
+          return;
+        }
+      }
+    }
+    // 不支持原子覆盖的服务器仍走普通重命名，绝不先删除已经存在的目标。
+    sftp.rename(from, to, complete);
   });
 }
 
@@ -437,22 +461,21 @@ function sftpChmod(sftp, target, mode) {
   return new Promise((resolve, reject) => sftp.chmod(target, mode, (error) => (error ? reject(error) : resolve())));
 }
 
-function sftpFastPut(sftp, localPath, remotePath) {
-  return new Promise((resolve, reject) => {
-    sftp.fastPut(localPath, remotePath, (error) => (error ? reject(error) : resolve()));
-  });
-}
-
 function sftpFastGet(sftp, remotePath, localPath) {
   return new Promise((resolve, reject) => {
     sftp.fastGet(remotePath, localPath, (error) => (error ? reject(error) : resolve()));
   });
 }
 
-async function hashFile(filePath) {
+async function hashFile(filePath, { signal } = {}) {
   const hash = crypto.createHash('sha256');
-  const stream = fs.createReadStream(filePath);
-  for await (const chunk of stream) hash.update(chunk);
+  const stream = fs.createReadStream(filePath, { signal });
+  try {
+    for await (const chunk of stream) hash.update(chunk);
+  } catch (error) {
+    if (signal?.aborted) throw new AppError('TRANSFER_CANCELLED', '文件上传已取消。');
+    throw error;
+  }
   return hash.digest('hex');
 }
 
@@ -993,6 +1016,67 @@ export class SshBroker {
     return session;
   }
 
+  async openTerminal(projectId, { cols = 80, rows = 24, defaultColors = true } = {}) {
+    const session = this.requireSession(projectId);
+    if (!Number.isInteger(cols) || cols < 2 || cols > 500 || !Number.isInteger(rows) || rows < 1 || rows > 300) {
+      throw new AppError('INVALID_ARGUMENT', '终端尺寸无效。');
+    }
+    if (typeof defaultColors !== 'boolean') throw new AppError('INVALID_ARGUMENT', '默认配色设置无效。');
+    let startupCommand = null;
+    if (defaultColors && typeof session.client.exec === 'function') {
+      // 每条 SSH 连接只探测一次；探测失败仍可正常打开人工终端。
+      session.terminalShellPromise ??= probeTerminalShell(session.client);
+      if (await session.terminalShellPromise) startupCommand = DEFAULT_TERMINAL_COLORS;
+      if (this.sessions.get(projectId) !== session) throw new AppError('TERMINAL_CLOSED', 'SSH 连接已经变化，请重新打开终端。');
+    }
+    // 仅桌面人工会话使用 PTY；Agent 的单命令策略与确认路径保持独立。
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        clearTimeout(timer);
+        session.client.removeListener?.('close', onConnectionClosed);
+        session.client.removeListener?.('end', onConnectionClosed);
+      };
+      const onConnectionClosed = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new AppError('TERMINAL_CLOSED', 'SSH 连接已经关闭。'));
+      };
+      const timer = setTimeout(() => {
+        settled = true;
+        cleanup();
+        reject(new AppError('TERMINAL_OPEN_TIMEOUT', '打开服务器终端超时。'));
+      }, 15_000);
+      session.client.once?.('close', onConnectionClosed);
+      session.client.once?.('end', onConnectionClosed);
+      try {
+        session.client.shell({ term: 'xterm-256color', cols, rows, width: 0, height: 0 }, (error, channel) => {
+          cleanup();
+          if (settled || this.sessions.get(projectId) !== session) {
+            channel?.on('error', () => undefined);
+            channel?.destroy();
+            if (!settled) reject(new AppError('TERMINAL_CLOSED', 'SSH 连接已经变化，请重新打开终端。'));
+            return;
+          }
+          settled = true;
+          if (error) {
+            reject(new AppError('TERMINAL_OPEN_FAILED', '服务器未能建立交互终端。'));
+            return;
+          }
+          channel.pause();
+          channel.stderr?.pause();
+          channel.desktopStartupCommand = startupCommand;
+          resolve(channel);
+        });
+      } catch {
+        settled = true;
+        cleanup();
+        reject(new AppError('TERMINAL_OPEN_FAILED', '服务器未能建立交互终端。'));
+      }
+    });
+  }
+
   async openForward(projectId, targetHost, targetPort) {
     const session = this.requireSession(projectId);
     const host = String(targetHost ?? '').trim();
@@ -1019,13 +1103,14 @@ export class SshBroker {
     });
   }
 
-  async withInternalSftp(projectId, operation, { timeoutMs = SFTP_READ_INACTIVITY_MS } = {}) {
+  async withInternalSftp(projectId, operation, { timeoutMs = SFTP_READ_INACTIVITY_MS, signal = null } = {}) {
     const session = this.requireSession(projectId);
     return withSftp(
       session.client,
       (sftp, lifecycle) => operation(sftp, session, lifecycle),
       {
         timeoutMs,
+        signal,
         timeoutCode: 'SFTP_OPERATION_TIMEOUT',
         timeoutMessage: '服务器文件操作超时，请检查 SFTP 服务和目标路径。',
       },
@@ -1087,7 +1172,11 @@ export class SshBroker {
     });
   }
 
-  async uploadRemoteFileApproved(projectId, localPath, remotePath, precondition) {
+  async uploadRemoteFileApproved(projectId, localPath, remotePath, precondition, { onProgress, signal, beforeCommit } = {}) {
+    const assertNotCancelled = () => {
+      if (signal?.aborted) throw new AppError('TRANSFER_CANCELLED', '文件上传已取消。');
+    };
+    assertNotCancelled();
     const source = path.resolve(String(localPath ?? ''));
     const target = normalizeAbsoluteRemotePath(remotePath);
     const before = await fsp.lstat(source).catch(() => { throw new AppError('PATH_INVALID', '本地上传文件不存在。'); });
@@ -1095,22 +1184,62 @@ export class SshBroker {
     if (before.size !== precondition?.local?.size || before.mtimeMs !== precondition?.local?.mtimeMs) {
       throw new AppError('LOCAL_FILE_CHANGED', '本地文件在确认后发生变化，需要重新确认。');
     }
-    const sha256 = await hashFile(source);
+    const sha256 = await hashFile(source, { signal });
+    assertNotCancelled();
     if (sha256 !== precondition?.local?.sha256) throw new AppError('LOCAL_FILE_CHANGED', '本地文件内容在确认后发生变化，需要重新确认。');
     const temporary = `${target}.part-${crypto.randomBytes(6).toString('hex')}`;
     await this.withInternalSftp(projectId, async (sftp, _session, lifecycle) => {
       await requireRemoteSnapshot(sftp, target, precondition.remote);
+      let localHandle;
       try {
-        await sftpFastPut(sftp, source, temporary);
+        throwIfAborted(lifecycle.signal);
+        localHandle = await fsp.open(source, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
+          .catch(() => { throw new AppError('LOCAL_FILE_CHANGED', '本地文件在确认后无法读取或已被替换。'); });
+        const sameLocalState = (stats) => stats.isFile() && !stats.isSymbolicLink()
+          && stats.size === before.size && stats.mtimeMs === before.mtimeMs
+          && stats.ino === before.ino && stats.dev === before.dev;
+        if (!sameLocalState(await localHandle.stat())) throw new AppError('LOCAL_FILE_CHANGED', '本地文件在确认后已被替换。');
+        const contentHash = crypto.createHash('sha256');
+        let transferredBytes = 0;
+        const report = (phase) => onProgress?.({ transferredBytes, totalBytes: before.size, phase });
+        const meter = new Transform({
+          transform(chunk, _encoding, callback) {
+            contentHash.update(chunk);
+            transferredBytes += chunk.length;
+            callback(null, chunk);
+          },
+        });
+        const mode = precondition.remote?.type === 'file' ? precondition.remote.mode & 0o777 : 0o644;
+        // 有界批量写入复用 SSH2 的 _writev，避免每个小块都独占一次网络往返。
+        const writer = sftp.createWriteStream(temporary, { flags: 'wx', mode, highWaterMark: 512 * 1024 });
+        writer.on('drain', () => report('uploading'));
+        report('uploading');
+        await pipeline(
+          fs.createReadStream(source, { fd: localHandle.fd, autoClose: false, start: 0, highWaterMark: 64 * 1024 }),
+          meter,
+          writer,
+          { signal: lifecycle.signal },
+        );
+        report('verifying');
+        throwIfAborted(lifecycle.signal);
+        const [currentPath, currentHandle] = await Promise.all([fsp.lstat(source), localHandle.stat()])
+          .catch(() => { throw new AppError('LOCAL_FILE_CHANGED', '本地文件在上传期间已被移除或替换。'); });
+        if (!sameLocalState(currentPath) || !sameLocalState(currentHandle) || transferredBytes !== before.size || contentHash.digest('hex') !== sha256) {
+          throw new AppError('LOCAL_FILE_CHANGED', '本地文件在上传期间发生变化，上传已停止。');
+        }
         const uploaded = await sftpStat(sftp, temporary);
         if (Number(uploaded.size) !== before.size) throw new AppError('TRANSFER_INTEGRITY_FAILED', '远端临时文件大小与本地文件不一致。');
+        await beforeCommit?.();
         await requireRemoteSnapshot(sftp, target, precondition.remote);
-        await sftpRename(sftp, temporary, target);
+        throwIfAborted(lifecycle.signal);
+        await sftpRename(sftp, temporary, target, { overwrite: precondition.remote.exists });
       } catch (error) {
-        if (!lifecycle.signal.aborted && !isSftpInterruptedError(error)) await sftpUnlink(sftp, temporary);
+        if (!isSftpInterruptedError(error) && !isSftpInterruptedError(lifecycle.signal.reason)) await sftpUnlink(sftp, temporary);
         throw error;
+      } finally {
+        await localHandle?.close();
       }
-    }, { timeoutMs:10 * 60 * 1000 });
+    }, { timeoutMs:10 * 60 * 1000, signal });
     return { localPath:source, remotePath:target, bytes:before.size, sha256 };
   }
 

@@ -3456,7 +3456,7 @@ async function assertViewport(win,width,height,theme,capture) {
   assert.deepEqual(snapshot.pluginActionGroup,{
     buttonGroup:true,
     contained:true,
-    count:2,
+    count:3,
     equalHeights:true,
     joined:true,
     noOverlap:true,
@@ -3514,7 +3514,7 @@ async function assertSecurity(win) {
     styleAttributeProbe.remove();
     return result;
   })()`,true);
-  assert.equal(snapshot.apiNames.length,58);
+  assert.equal(snapshot.apiNames.length,69);
   assert.equal(snapshot.hasRequire,false);
   assert.equal(snapshot.hasProcess,false);
   assert.equal(snapshot.inlineStyleAttributeWidth,'13px');

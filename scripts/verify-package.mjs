@@ -58,6 +58,9 @@ try {
       `packaged renderer differs from verified build: ${relative}`);
   }
   assert.ok(Object.hasOwn(renderer.sourceHashes, 'plugin-creation-identity.mjs'));
+  for (const module of ['server-workspace-manager.mjs', 'server-workspace-files.mjs', 'server-workspace-ipc.mjs']) {
+    assert.ok(Object.hasOwn(renderer.sourceHashes, module), '安装包缺少服务器工作区模块：' + module);
+  }
   const javascriptAssets = renderer.references.filter((item) => item.endsWith('.js'));
   const stylesheetAssets = renderer.references.filter((item) => item.endsWith('.css'));
   assert.ok(javascriptAssets.length >= 1, 'packaged renderer must reference a JavaScript asset');

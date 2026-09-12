@@ -7,6 +7,17 @@ const legacyConnectionSnapshot = (payload) => requestConnectionIntent(payload).t
 
 contextBridge.exposeInMainWorld('aiOps', {
   v2: {
+    serverTerminalOpen: (payload) => ipcRenderer.invoke('v2:server-terminal-open', payload),
+    serverTerminalRead: (payload) => ipcRenderer.invoke('v2:server-terminal-read', payload),
+    serverTerminalWrite: (payload) => ipcRenderer.invoke('v2:server-terminal-write', payload),
+    serverTerminalResize: (payload) => ipcRenderer.invoke('v2:server-terminal-resize', payload),
+    serverTerminalClose: (payload) => ipcRenderer.invoke('v2:server-terminal-close', payload),
+    serverWorkspaceListDirectory: (payload) => ipcRenderer.invoke('v2:server-workspace-list-directory', payload),
+    serverWorkspaceReadFile: (payload) => ipcRenderer.invoke('v2:server-workspace-read-file', payload),
+    serverWorkspacePickUpload: (payload) => ipcRenderer.invoke('v2:server-workspace-pick-upload', payload),
+    serverWorkspaceConfirmUpload: (payload) => ipcRenderer.invoke('v2:server-workspace-confirm-upload', payload),
+    serverWorkspaceCancelUpload: (payload) => ipcRenderer.invoke('v2:server-workspace-cancel-upload', payload),
+    serverWorkspaceUploads: (payload) => ipcRenderer.invoke('v2:server-workspace-uploads', payload),
     listProjects: () => ipcRenderer.invoke('v2:project-list'),
     workspaceOverview: () => ipcRenderer.invoke('v2:workspace-overview'),
     createProject: (input) => ipcRenderer.invoke('v2:project-create', input),

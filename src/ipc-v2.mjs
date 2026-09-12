@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { registerServerWorkspaceIpc } from './server-workspace-ipc.mjs';
 import { AppError, toPublicError } from './errors.mjs';
 import { legacyCredentialConfigForPlugin } from './credential-store.mjs';
 import { CredentialUseResolver } from './credential-use-resolver.mjs';
@@ -139,6 +140,7 @@ function assertExactQuickQuestionPayload(payload, allowedFields, label) {
 }
 
 export function registerV2Ipc(ipcMain, services) {
+  registerServerWorkspaceIpc(ipcMain, services);
   const { workspaceStore: store, connectionManager, credentialVault, legacyCredentialStore, configTransactionJournal, contextManager, confirmationManager, pluginManager, mysqlRuntime, pluginEditSessionManager, pluginProbeManager } = services;
   const credentialUseResolver = services.credentialUseResolver ?? new CredentialUseResolver(credentialVault);
   const handle = (name, fn) => ipcMain.handle(`v2:${name}`, resultHandler(fn));
@@ -284,8 +286,13 @@ export function registerV2Ipc(ipcMain, services) {
     }
     return result;
   };
+  const invalidateServerWorkspace = (scope) => {
+    services.serverWorkspaceManager?.closeScope(scope, 'configuration-changed');
+    services.serverWorkspaceFiles?.closeScope(scope);
+  };
   const commitPreparedPlugin = (prepared, payload) => {
     if (prepared.change.kind === 'none') return prepared.before;
+    if (['session-affecting', 'dependency-affecting'].includes(prepared.change.kind)) invalidateServerWorkspace(payload);
     if (prepared.after && typeof store.commitPluginSnapshot === 'function') {
       return store.commitPluginSnapshot(prepared.after,prepared.before.revision);
     }
@@ -611,6 +618,7 @@ export function registerV2Ipc(ipcMain, services) {
       if (typeof connectionManager.disconnect === 'function') {
         await Promise.all(environments.map((environment) => connectionManager.disconnect(projectId, environment.environmentId, 'project-delete-cleanup')));
       }
+      invalidateServerWorkspace({ projectId });
       const value = await store.deleteProject(projectId);
       legacyCredentialStore?.invalidateProject(projectId);
       contextManager.invalidateProject(projectId);
@@ -704,11 +712,13 @@ export function registerV2Ipc(ipcMain, services) {
     if (!runtimeActive && typeof connectionManager.disconnect === 'function') {
       await connectionManager.disconnect(projectId, environmentId, 'environment-delete-cleanup');
     }
+    if (!runtimeActive) invalidateServerWorkspace({ projectId, environmentId });
     const value = await store.deleteEnvironment(projectId, environmentId, { runtimeActive });
     legacyCredentialStore?.invalidateEnvironment(projectId,environmentId);
     contextManager.invalidateEnvironment(projectId, environmentId);
     confirmationManager.invalidateEnvironment?.(projectId, environmentId);
     await connectionManager.forgetEnvironment?.(projectId, environmentId);
+    services.broadcast?.('v2:workspace-changed', { type:'environment-deleted', projectId, environmentId });
     return {...value,credentialsPreserved:true};
     }));
   });
@@ -936,6 +946,7 @@ export function registerV2Ipc(ipcMain, services) {
     try { ({plugin} = await store.preflightDeletePlugin(projectId, environmentId, pluginInstanceId)); }
     catch (error) { restoreOnFailure(); throw error; }
     let value;
+    invalidateServerWorkspace({ projectId, environmentId, pluginInstanceId });
     try { value = await store.deletePlugin(projectId, environmentId, pluginInstanceId); }
     catch (error) { restoreOnFailure(); throw error; }
     legacyCredentialStore?.invalidatePlugin(projectId,environmentId,pluginInstanceId);
@@ -951,6 +962,7 @@ export function registerV2Ipc(ipcMain, services) {
     }
     contextManager.invalidateEnvironment(projectId, environmentId);
     confirmationManager.invalidatePlugin?.(projectId, environmentId, pluginInstanceId);
+    services.broadcast?.('v2:workspace-changed', { type:'plugin-deleted', projectId, environmentId, pluginInstanceId });
     return { ...value, credentialsPreserved:true,...(runtimeWarning ? {runtimeWarning} : {}) };
     }));
   });

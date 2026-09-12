@@ -378,7 +378,80 @@ export interface AuditClearPayload extends EnvironmentScope {
 
 export type Unsubscribe = () => void
 
+export interface ServerTerminalSession {
+  readonly sessionId: string
+  readonly status: "open" | "closed"
+  readonly cols: number
+  readonly rows: number
+}
+
+export interface ServerTerminalRead {
+  readonly data: Uint8Array
+  readonly status: "open" | "closed"
+  readonly exitCode?: number | null
+}
+
+export interface ServerDirectoryEntry {
+  readonly linkTarget?: string
+  readonly linkTargetType?: "directory" | "file" | "special" | "unavailable"
+  readonly name: string
+  readonly path: string
+  readonly size: number
+  readonly mtime: number
+  readonly mode: number
+  readonly type: "directory" | "file" | "symlink" | "special"
+}
+
+export interface ServerDirectoryPage {
+  readonly canonicalPath?: string
+  readonly path: string
+  readonly entries: readonly ServerDirectoryEntry[]
+  readonly nextCursor: string | null
+  readonly truncated: boolean
+}
+
+export interface ServerFilePreview {
+  readonly canonicalPath?: string
+  readonly path: string
+  readonly content: string
+  readonly size: number
+  readonly startByte: number
+  readonly endByte: number
+  readonly mtime: number
+  readonly nextCursor: string | null
+  readonly truncated: boolean
+}
+
+export interface ServerUploadPreparation {
+  readonly sourcePath?: string
+  readonly preparationId: string
+  readonly path: string
+  readonly expiresAt: number
+  readonly files: readonly { readonly name: string; readonly bytes: number; readonly remotePath: string; readonly exists: boolean }[]
+}
+
+export interface ServerUploadJob {
+  readonly jobId: string
+  readonly name: string
+  readonly path: string
+  readonly bytes: number
+  readonly transferred: number
+  readonly status: "queued" | "running" | "verifying" | "completed" | "cancelled" | "error"
+  readonly message?: string
+}
+
 export interface AiOpsV2Api {
+  serverTerminalOpen(payload: PluginScope & { cols: number; rows: number; tabId?: string; defaultColors?: boolean }): Promise<IpcResult<ServerTerminalSession>>
+  serverTerminalRead(payload: PluginScope & { sessionId: string }): Promise<IpcResult<ServerTerminalRead>>
+  serverTerminalWrite(payload: PluginScope & { sessionId: string; data: string; encoding?: "utf8" | "binary" }): Promise<IpcResult<OpaqueData>>
+  serverTerminalResize(payload: PluginScope & { sessionId: string; cols: number; rows: number }): Promise<IpcResult<OpaqueData>>
+  serverTerminalClose(payload: PluginScope & { sessionId: string }): Promise<IpcResult<OpaqueData>>
+  serverWorkspaceListDirectory(payload: PluginScope & { path: string; cursor?: string | null }): Promise<IpcResult<ServerDirectoryPage>>
+  serverWorkspaceReadFile(payload: PluginScope & { path: string }): Promise<IpcResult<ServerFilePreview>>
+  serverWorkspacePickUpload(payload: PluginScope & { path: string }): Promise<IpcResult<ServerUploadPreparation | null>>
+  serverWorkspaceConfirmUpload(payload: PluginScope & { preparationId: string; overwrite: boolean }): Promise<IpcResult<{ jobs: readonly ServerUploadJob[] }>>
+  serverWorkspaceCancelUpload(payload: PluginScope & { jobId: string }): Promise<IpcResult<ServerUploadJob>>
+  serverWorkspaceUploads(payload: PluginScope): Promise<IpcResult<{ jobs: readonly ServerUploadJob[] }>>
   listProjects(): Promise<IpcResult<readonly ProjectRecord[]>>
   workspaceOverview(): Promise<IpcResult<readonly WorkspaceProject[]>>
   createProject(input: ProjectCreateInput): Promise<IpcResult<ProjectRecord>>
@@ -440,6 +513,17 @@ export interface AiOpsV2Api {
 }
 
 export const AI_OPS_V2_API_NAMES = [
+  "serverTerminalOpen",
+  "serverTerminalRead",
+  "serverTerminalWrite",
+  "serverTerminalResize",
+  "serverTerminalClose",
+  "serverWorkspaceListDirectory",
+  "serverWorkspaceReadFile",
+  "serverWorkspacePickUpload",
+  "serverWorkspaceConfirmUpload",
+  "serverWorkspaceCancelUpload",
+  "serverWorkspaceUploads",
   "listProjects",
   "workspaceOverview",
   "createProject",

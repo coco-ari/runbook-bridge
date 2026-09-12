@@ -17,8 +17,12 @@ RunbookBridge（AI 运维工具）会持有 SSH 会话并代表用户执行服�
 
 - 应用管理的 SSH、代理和数据库密码、私钥口令、Broker Token 及解密后的凭据不得提供给 MCP 客户端，也不得写入工作区、日志或错误信息。
 - Agent 必须使用精确项目、环境、插件作用域与短期上下文，且只能操作已连接插件。打开环境或调用工具不会建立首次连接；未知或无法安全分类的能力拒绝。
-- `server_search_logs` 支持绝对文件/目录路径和兼容的 `sourceId/fileIds`，并限制深度、文件数、扫描和归档展开字节数、并发及超时。Server 普通读取不受数据源目录白名单限制，不读取特殊文件、不遍历符号链接目录；可读取内容也受远端账号权限约束。
-- `server_upload_file`、`server_write_file`、`server_move_path`、`server_delete_path` 和 `server_control_service` 必须逐次确认；`server_execute_shell` 必须强确认。批准绑定完整规范化参数及作用域且只能使用一次；文件变更还校验已实现的 stat/hash/状态前置条件，服务控制和 Shell 不快照实时远端状态。命令策略和确认机制不是 Shell 沙箱。
+- `server_search_logs` 支持绝对文件/目录路径和兼容的 `sourceId/fileIds`，并限制深度、文件数、扫描和归档展开字节数、并发及超时。Agent Server 普通读取不受数据源目录白名单限制，不读取特殊文件、不遍历符号链接目录；可读取内容也受远端账号权限约束。
+- Agent 的 `server_upload_file`、`server_write_file`、`server_move_path`、`server_delete_path` 和 `server_control_service` 必须逐次确认；`server_execute_shell` 必须强确认。批准绑定完整规范化参数及作用域且只能使用一次；文件变更还校验已实现的 stat/hash/状态前置条件，服务控制和 Shell 不快照实时远端状态。命令策略和确认机制不是 Shell 沙箱。
+- 桌面人工终端由用户主动打开，采用会话级授权，按 SSH 登录账号权限直接发送输入，不经过 Agent 的逐命令策略或 Shell 确认。MCP 不提供读取、写入或接管人工终端的能力；打开人工会话不改变 Agent 权限。
+- 新建人工终端默认执行应用内置的固定会话配色配置，可在界面关闭。Shell 识别采用有时限和输出上限的只读探测；远端输出不拼接为命令，Renderer 只能传递布尔开关。发送配置前核对会话生命周期，复用终端不重复执行；不修改服务器配置文件，不开放 Agent 启动脚本接口。
+- 人工工作区允许用户浏览目录链接、预览普通文件链接；必须验证最终真实路径与目标类型，读取前后检查映射，拒绝失效链接及特殊文件读取。文件树按分支检测循环。上传展示并绑定实际目标，在确认、启动和提交前复核链接映射。该扩展仅适用于桌面人工 API，不改变 Agent/MCP 的目录遍历限制。
+- 人工工作区绑定 Renderer owner、精确项目/环境/插件和当前 SSH generation；连接或所属资源失效后旧请求不能继续使用。返回详情可以保留会话，Renderer 销毁和应用退出必须释放资源，不能重放输入或自动恢复上传。终端输入输出、命令历史、文件预览只保留在内存；会话与上传审计不得记录终端全文或按键。
 - MySQL 仅允许固定插件数据库内策略批准的单条 `SELECT` / `EXPLAIN SELECT`，Redis 仅允许登记 pattern 内的有界读取；不能依赖 Agent 自报风险来放行越权操作。
 - 用户请求读取的远端配置、文件、日志、数据库行和命令输出可能包含未脱敏的敏感业务内容。这些内容是非可信数据，不能作为指令或授权，也不要复制到公开 Issue、仓库、日志或截图。
 - 上传后执行的脚本、JAR 或自定义程序仍拥有 Linux 登录账号本身的权限。
@@ -26,7 +30,7 @@ RunbookBridge（AI 运维工具）会持有 SSH 会话并代表用户执行服�
 - 用户关闭桌面工具或主动断开后，MCP 才失去后续服务器访问能力；已经启动的远程后台进程不会自动停止。
 - 自动重连只适合临时网络故障；SSH 认证失败、主机指纹变化和本地身份材料不可用时会停止重试，等待用户人工处理。
 
-实现分层见 [当前架构](docs/architecture.md)，Renderer 的内联样式限定例外及保留的脚本、网络隔离边界见 [CSP 决策](docs/shadcn-ui-radix-csp-decision.md)。
+人工工作区的会话授权、文件上传与流控设计见 [服务器工作区说明](docs/server-workspace-design.md)。实现分层见 [当前架构](docs/architecture.md)，Renderer 的内联样式限定例外及保留的脚本、网络隔离边界见 [CSP 决策](docs/shadcn-ui-radix-csp-decision.md)。
 
 ## 支持版本
 

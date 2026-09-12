@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, powerMonitor, session } from 'electron';
@@ -17,6 +17,8 @@ import { RedisPluginRuntime } from './redis-plugin-runtime.mjs';
 import { PluginManager } from './plugin-manager.mjs';
 import { EnvironmentConnectionManager } from './environment-connection-manager.mjs';
 import { ServerOperations } from './server-operations.mjs';
+import { ServerWorkspaceManager } from './server-workspace-manager.mjs';
+import { ServerWorkspaceFiles } from './server-workspace-files.mjs';
 import { EnvironmentContextManager } from './context-manager.mjs';
 import { ConfirmationManager } from './confirmation-manager.mjs';
 import { V2Service } from './v2-service.mjs';
@@ -173,6 +175,8 @@ if (process.argv.includes('--mcp')) {
           if (event.type === 'lost') environmentConnectionManager.pluginLost(event.projectId, event.environmentId, event.pluginInstanceId, event.error).catch(() => undefined);
         });
         const serverOperations = new ServerOperations(serverRuntime, workspaceStore);
+        const serverWorkspaceManager = new ServerWorkspaceManager({ workspaceStore, serverRuntime, serverOperations });
+        const serverWorkspaceFiles = new ServerWorkspaceFiles({ workspaceStore, serverRuntime, serverOperations });
         const contextManager = new EnvironmentContextManager(workspaceStore);
         const confirmationManager = new ConfirmationManager();
         const credentialUseResolver = new CredentialUseResolver(pluginCredentialVault);
@@ -198,7 +202,7 @@ if (process.argv.includes('--mcp')) {
           }
         };
         const v2Service = new V2Service({ workspaceStore, connectionManager: environmentConnectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault: pluginCredentialVault, mutationCoordinator, workspaceChanged:(payload) => broadcast('v2:workspace-changed', payload) });
-        v2 = { workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, mutationCoordinator, credentialUseResolver, validationRuntime, pluginProbeManager, pluginEditSessionManager, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
+        v2 = { serverWorkspaceManager, serverWorkspaceFiles, workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, mutationCoordinator, credentialUseResolver, validationRuntime, pluginProbeManager, pluginEditSessionManager, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
         const token = await rotateBrokerToken(dataRoot);
         brokerServer = new BrokerServer({ dataRoot, token, v2Service, appVersion: app.getVersion() });
         await brokerServer.start();
@@ -206,6 +210,13 @@ if (process.argv.includes('--mcp')) {
           ...v2,
           broadcast,
           quickQuestionClipboard:clipboard,
+          isWorkspaceRenderer: (sender) => sender.getURL() === pathToFileURL(path.join(__dirname, '..', 'renderer-build', 'v2', 'index.html')).href,
+          pickServerUploadFiles: async (sender) => {
+            const window = BrowserWindow.fromWebContents(sender);
+            if (!window || window.isDestroyed()) return [];
+            const result = await dialog.showOpenDialog(window, { title: '选择要上传的文件', properties: ['openFile', 'multiSelections'] });
+            return result.canceled ? [] : result.filePaths;
+          },
         });
         createWindow();
         powerMonitor.on('resume', () => environmentConnectionManager.networkChanged('system-resume').catch(() => undefined));
@@ -223,6 +234,8 @@ if (process.argv.includes('--mcp')) {
       event.preventDefault();
       app.__aiOpsClosing = true;
       v2?.networkWatcher?.stop();
+      v2?.serverWorkspaceManager?.dispose();
+      v2?.serverWorkspaceFiles?.dispose();
       v2?.pluginProbeManager?.invalidateAll?.();
       v2?.pluginEditSessionManager?.invalidateAll?.({allowSaving:true});
       const watchdog = setTimeout(() => app.quit(), SHUTDOWN_WATCHDOG_MS);

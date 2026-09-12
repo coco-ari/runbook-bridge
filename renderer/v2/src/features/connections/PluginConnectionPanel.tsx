@@ -5,6 +5,7 @@ import {
   LinkSimple,
   Plugs,
   SpinnerGap,
+  TerminalWindow,
   WarningCircle,
   XCircle,
 } from "@phosphor-icons/react"
@@ -45,6 +46,8 @@ interface PluginConnectionPanelProps {
   readonly runtime?: EnvironmentRuntime | null
   readonly onRuntime?: (runtime: EnvironmentRuntime) => void
   readonly onEdit: () => void
+  readonly onOpenWorkspace?: () => void
+  readonly workspaceRetained?: boolean
 }
 
 const PHASE_COPY = {
@@ -122,6 +125,8 @@ export function PluginConnectionPanel({
   runtime = null,
   onRuntime,
   onEdit,
+  onOpenWorkspace,
+  workspaceRetained = false,
 }: PluginConnectionPanelProps) {
   const connectionTriggerRef = useRef<HTMLButtonElement | null>(null)
   const connection = usePluginConnection({
@@ -256,6 +261,7 @@ export function PluginConnectionPanel({
               <GearSix aria-hidden="true" />
               修改配置
             </Button>
+            {plugin.pluginType === "server" && onOpenWorkspace ? <Button data-testid="plugin-open-workspace" disabled={connection.state.phase !== "connected" || busy} title={connection.state.phase !== "connected" ? "请先连接服务器" : "打开目录树、终端和文件上传"} onClick={onOpenWorkspace} size="sm" type="button" variant={connection.state.phase === "connected" ? "default" : "outline"}><TerminalWindow aria-hidden="true" />{workspaceRetained ? "继续工作区" : "打开工作区"}</Button> : null}
           </ButtonGroup>
 
           {connection.state.error && !connection.state.challenge ? (

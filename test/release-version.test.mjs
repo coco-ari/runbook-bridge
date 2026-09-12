@@ -43,3 +43,13 @@ test('release workflow passes github.ref_name through an environment variable be
   assert.ok(verification < workflow.indexOf('- name: Install dependencies'));
   assert.ok(verification < workflow.indexOf('- name: Build Windows installer'));
 });
+
+
+test('预发布工作流不会抢占稳定版 Latest，并附带安装包校验值', async () => {
+  const workflow = await fs.readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /GITHUB_REF_NAME\.Contains\('-'\)/u);
+  assert.match(workflow, /'--prerelease', '--latest=false'/u);
+  assert.match(workflow, /Get-FileHash -LiteralPath \$releaseInstaller -Algorithm SHA256/u);
+  assert.match(workflow, /\$releaseInstaller, \$checksumPath, '--verify-tag'/u);
+  assert.match(workflow, /Release already exists; preserving its published assets and notes/u);
+});

@@ -69,4 +69,19 @@ jobs:
           if (-not $installer) { throw "Windows installer was not produced." }
           $releaseInstaller = Join-Path $installer.DirectoryName "RunbookBridge-Setup-$($env:GITHUB_REF_NAME.TrimStart('v')).exe"
           Copy-Item -LiteralPath $installer.FullName -Destination $releaseInstaller
-          gh release create $env:GITHUB_REF_NAME $releaseInstaller --generate-notes --title $env:GITHUB_REF_NAME
+          $checksumPath = "$releaseInstaller.sha256"
+          $checksum = (Get-FileHash -LiteralPath $releaseInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$checksum  $(Split-Path -Leaf $releaseInstaller)" | Set-Content -LiteralPath $checksumPath -Encoding utf8NoBOM
+          $releaseArgs = @('release', 'create', $env:GITHUB_REF_NAME, $releaseInstaller, $checksumPath, '--verify-tag', '--generate-notes', '--title', $env:GITHUB_REF_NAME)
+          if ($env:GITHUB_REF_NAME.Contains('-')) {
+            $releaseArgs += @('--prerelease', '--latest=false', '--notes', '服务器工作区预发布版本，供体验与反馈；日常使用请选择 README 中的稳定版，试用前备份本地数据。')
+          } else {
+            $releaseArgs += @('--latest', '--notes', '稳定版本。安装与使用方法请参阅 README，下载 .exe 安装包即可使用。')
+          }
+          gh release view $env:GITHUB_REF_NAME --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release already exists; preserving its published assets and notes."
+            exit 0
+          }
+          gh @releaseArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
