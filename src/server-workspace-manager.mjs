@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { createTerminalStartup } from './server-terminal-startup.mjs';
 import { AppError } from './errors.mjs';
 import { pluginConnectionFingerprint } from './plugin-change-classifier.mjs';
 
@@ -137,8 +138,10 @@ export class ServerWorkspaceManager {
       }
       record.channel = channel;
       record.status = 'open';
-      record.onData = (chunk) => {
-        const buffer = Buffer.from(chunk);
+      record.startup = record.defaultColors && channel.desktopStartupCommand ? createTerminalStartup(channel.desktopStartupCommand) : null;
+      record.onData = (chunk, stderr = false) => {
+        let buffer = Buffer.from(chunk);
+        if (record.startup) buffer = stderr && !record.startup.done ? Buffer.alloc(0) : record.startup.consume(buffer);
         if (!buffer.length || record.status === 'closed') return;
         record.chunks.push(buffer);
         record.queuedBytes += buffer.length;
@@ -150,7 +153,7 @@ export class ServerWorkspaceManager {
         record.waiter?.();
       };
       channel.on('data', record.onData);
-      channel.stderr?.on('data', record.onData);
+      channel.stderr?.on('data', (chunk) => record.onData(chunk, true));
       channel.on('exit', (code) => { if (Number.isInteger(code)) record.exitCode = code; });
       channel.once('end', () => this.finish(record, 'remote-exit', false));
       channel.once('close', (code) => {
@@ -161,7 +164,8 @@ export class ServerWorkspaceManager {
       channel.resume();
       channel.stderr?.resume();
       // 完成所有权复核后才发送固定配置；就绪前拒绝人工输入，并复用同一初始化 Promise。
-      if (record.defaultColors && channel.desktopStartupCommand) await this.writeRecord(record, Buffer.from(channel.desktopStartupCommand + '\r'));
+      if (record.startup) await Promise.all([this.writeRecord(record, Buffer.from(record.startup.command)), record.startup.ready]);
+      record.startup = null;
       if (record.status === 'closed') throw new AppError('TERMINAL_CLOSED', '终端打开操作已取消。');
       record.initializing = false;
       return publicSession(record);
@@ -302,6 +306,7 @@ export class ServerWorkspaceManager {
     record.status = 'closed';
     record.waiter?.();
     for (const complete of [...record.pendingWrites]) complete(true);
+    record.startup?.cancel();
     if (destroy) {
       try { record.channel?.close(); record.channel?.destroy(); } catch { /* 通道可能已经关闭。 */ }
     }

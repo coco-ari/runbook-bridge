@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ServerWorkspaceManager } from '../src/server-workspace-manager.mjs';
-import { DEFAULT_TERMINAL_COLORS, probeTerminalShell } from '../src/server-terminal-startup.mjs';
+import { DEFAULT_TERMINAL_COLORS, probeTerminalShell, createTerminalStartup } from '../src/server-terminal-startup.mjs';
 import { SshBroker } from '../src/ssh-broker.mjs';
 
 const scope = { projectId: 'project-a', environmentId: 'test', pluginInstanceId: 'server-a' };
@@ -23,6 +23,12 @@ class TerminalChannel extends Duplex {
   pause() { this.pauseCount += 1; return super.pause(); }
   resume() { this.resumeCount += 1; return super.resume(); }
   close() { this.destroy(); }
+}
+
+function startupMarker(command) {
+  const label = command.match(/runbook-ready:[a-f0-9]{32}/u)?.[0];
+  assert.ok(label, '初始化命令包含独立完成标记');
+  return Buffer.from('\x1b]' + label + '\x07');
 }
 
 function fixture(t, options = {}) {
@@ -346,7 +352,12 @@ test('默认配色先于人工输入发送，新标签执行一次，复用与�
     options.push(option);
     const channel = new TerminalChannel();
     channel.desktopStartupCommand = DEFAULT_TERMINAL_COLORS;
-    if (!channels.length) channel._write = (chunk, _encoding, done) => { channel.writes.push(Buffer.from(chunk)); complete = done; };
+    channel._write = (chunk, _encoding, done) => {
+      channel.writes.push(Buffer.from(chunk));
+      const acknowledge = () => { channel.push(startupMarker(chunk.toString())); channel.push('operator@example:~$ '); done(); };
+      if (channels.length === 1) complete = acknowledge;
+      else acknowledge();
+    };
     channels.push(channel);
     return channel;
   } });
@@ -359,7 +370,8 @@ test('默认配色先于人工输入发送，新标签执行一次，复用与�
   const record = [...manager.sessions.values()][0];
   await assert.rejects(manager.writeTerminal(1, { ...scope, sessionId: record.sessionId, data: 'ls\r' }), { code: 'TERMINAL_CLOSED' });
   assert.equal(channels.length, 1);
-  assert.deepEqual(channels[0].writes.map(value => value.toString()), [DEFAULT_TERMINAL_COLORS + '\r']);
+  assert.equal(channels[0].writes.length, 1);
+  assert.ok(channels[0].writes[0].toString().startsWith(DEFAULT_TERMINAL_COLORS));
   complete();
   const first = await opening;
   assert.equal((await reuse).sessionId, first.sessionId);
@@ -367,7 +379,8 @@ test('默认配色先于人工输入发送，新标签执行一次，复用与�
   await manager.openTerminal(1, { ...scope, tabId: 'second' });
   await manager.openTerminal(1, { ...scope, tabId: 'disabled', defaultColors: false });
   assert.equal(channels[0].writes.length, 1);
-  assert.equal(channels[1].writes[0].toString(), DEFAULT_TERMINAL_COLORS + '\r');
+  assert.ok(channels[1].writes[0].toString().startsWith(DEFAULT_TERMINAL_COLORS));
+  assert.notDeepEqual(startupMarker(channels[0].writes[0].toString()), startupMarker(channels[1].writes[0].toString()));
   assert.equal(channels[2].writes.length, 0);
   assert.deepEqual(options.map(item => item.defaultColors), [true, true, false]);
   for (const defaultColors of [null, 'true', 1, {}]) await assert.rejects(manager.openTerminal(1, { ...scope, defaultColors }), { code: 'INVALID_ARGUMENT' });
@@ -379,7 +392,7 @@ test('窗口关闭中止未完成配色，迟到通道不能执行启动配置',
   channel._write = () => undefined;
   const { manager, runtime } = fixture(t, { openTerminal: async () => channel });
   const opening = manager.openTerminal(1, scope);
-  const rejected = assert.rejects(opening, { code: 'TERMINAL_WRITE_FAILED' });
+  const rejected = assert.rejects(opening, { code: 'TERMINAL_CLOSED' });
   await delay(0);
   manager.closeOwner(1);
   await rejected;
@@ -458,4 +471,54 @@ test('broker 缓存当前连接的 Shell 探测，关闭自动配色不发送探
   assert.equal(skipped.desktopStartupCommand, null);
   assert.equal(unknown.calls.length, 1);
   skipped.destroy();
+});
+
+test('静默初始化识别所有分包边界，不泄漏命令回显且完整保留后续 UTF-8 字节', async () => {
+  const sample = createTerminalStartup(DEFAULT_TERMINAL_COLORS);
+  const size = startupMarker(sample.command).length;
+  sample.cancel();
+  for (let split = 0; split <= size; split += 1) {
+    const startup = createTerminalStartup(DEFAULT_TERMINAL_COLORS);
+    const marker = startupMarker(startup.command);
+    const prompt = Buffer.from('operator@example:~$ 中文😀');
+    assert.equal(startup.consume(Buffer.from('登录横幅\r\n' + startup.command + '\r\n' + startup.command)).length, 0);
+    assert.equal(startup.done, false, '可见命令中的标记文本不能提前结束初始化');
+    assert.equal(startup.consume(marker.subarray(0, split)).length, 0);
+    const tail = startup.consume(Buffer.concat([marker.subarray(split), prompt.subarray(0, prompt.length - 2)]));
+    const last = startup.consume(prompt.subarray(prompt.length - 2));
+    await startup.ready;
+    assert.deepEqual(Buffer.concat([tail, last]), prompt);
+    const userText = Buffer.from(DEFAULT_TERMINAL_COLORS + '\r\n\x1b[32m用户正常输出\x1b[0m');
+    assert.deepEqual(startup.consume(userText), userText, '初始化完成后不再过滤任何用户命令或输出');
+  }
+});
+
+test('静默初始化超时、输出超限和取消都会结束等待，不无限隐藏内容', async () => {
+  const timed = createTerminalStartup(DEFAULT_TERMINAL_COLORS, { timeoutMs: 10 });
+  await assert.rejects(timed.ready, { code: 'TERMINAL_STARTUP_TIMEOUT' });
+  const bounded = createTerminalStartup(DEFAULT_TERMINAL_COLORS, { maxBytes: 64 });
+  bounded.consume(Buffer.alloc(65, 97));
+  await assert.rejects(bounded.ready, { code: 'TERMINAL_STARTUP_FAILED' });
+  const cancelled = createTerminalStartup(DEFAULT_TERMINAL_COLORS);
+  cancelled.cancel();
+  await assert.rejects(cancelled.ready, { code: 'TERMINAL_CLOSED' });
+  assert.equal(cancelled.consume(startupMarker(cancelled.command)).length, 0);
+});
+
+test('配置写入完成仍须等待远端确认，确认前断线不会返回可用会话', async (t) => {
+  const channel = new TerminalChannel();
+  channel.desktopStartupCommand = DEFAULT_TERMINAL_COLORS;
+  const { manager } = fixture(t, { openTerminal: async () => channel });
+  let resolved = false;
+  const opening = manager.openTerminal(1, scope).then(result => { resolved = true; return result; });
+  const rejected = assert.rejects(opening, { code: 'TERMINAL_CLOSED' });
+  await delay(0);
+  channel.push(channel.writes[0]);
+  await delay(0);
+  assert.equal(resolved, false);
+  const record = [...manager.sessions.values()][0];
+  assert.equal(record.queuedBytes, 0, '启动脚本不进入输出或回滚缓冲');
+  manager.closeOwner(1);
+  await rejected;
+  assert.equal(channel.destroyed, true);
 });

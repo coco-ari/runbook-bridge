@@ -52,8 +52,17 @@ test('真实本地 SSH 协议分配 PTY、持续收发字节并传播窗口变�
         remote.write(Buffer.from('\x1b[32m终端就绪😀\x1b[0m\r\n'));
         const current = remote;
         current.on('data', (data) => {
-          if (data.toString() === DEFAULT_TERMINAL_COLORS + '\r') startupCommands.push(data.toString());
-          else current.write(data);
+          if (data.toString().startsWith(DEFAULT_TERMINAL_COLORS)) {
+            startupCommands.push(data.toString());
+            const label = data.toString().match(/runbook-ready:[a-f0-9]{32}/u)?.[0];
+            assert.ok(label);
+            const marker = Buffer.from('\x1b]' + label + '\x07');
+            current.write(data);
+            current.write('\r\noperator@example:~$ ');
+            current.write(data);
+            current.write(marker.subarray(0, 7));
+            current.write(Buffer.concat([marker.subarray(7), Buffer.from('operator@example:~$ ')]));
+          } else current.write(data);
         });
       });
     }));
@@ -92,8 +101,8 @@ test('真实本地 SSH 协议分配 PTY、持续收发字节并传播窗口变�
     }
     assert.fail('本地 SSH 终端未在时限内返回预期数据');
   };
-  const initial = await receive((data) => data.includes(Buffer.from('终端就绪😀')));
-  assert.equal(initial.content.toString(), '\x1b[32m终端就绪😀\x1b[0m\r\n');
+  const initial = await receive((data) => data.includes(Buffer.from('operator@example:~$ ')));
+  assert.equal(initial.content.toString(), 'operator@example:~$ ');
   assert.equal(pty.term, 'xterm-256color');
   assert.equal(pty.cols, 132);
   assert.equal(pty.rows, 37);
@@ -105,7 +114,8 @@ test('真实本地 SSH 协议分配 PTY、持续收发字节并传播窗口变�
   assert.equal((await manager.openTerminal(1, scope)).sessionId, session.sessionId);
   assert.equal(shellCount, 1);
   assert.equal(probes, 1);
-  assert.deepEqual(startupCommands, [DEFAULT_TERMINAL_COLORS + '\r']);
+  assert.equal(startupCommands.length, 1);
+  assert.ok(startupCommands[0].startsWith(DEFAULT_TERMINAL_COLORS));
   await manager.resizeTerminal(1, { ...payload, cols: 101, rows: 29 });
   for (let i = 0; i < 50 && !windows.length; i += 1) await delay(10);
   assert.equal(windows[0].cols, 101);

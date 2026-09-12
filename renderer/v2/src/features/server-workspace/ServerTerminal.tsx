@@ -235,7 +235,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, comforta
       <div className="server-workspace-toolbar">
         <div className="flex min-w-0 items-center gap-2"><TerminalWindow size={16} className="text-primary" /><span className="font-medium">终端</span><span className="text-xs text-muted-foreground">{status === "open" ? "人工会话" : status === "opening" ? "正在打开…" : "会话已结束"}</span></div>
         <div className="flex items-center gap-1">
-          <Button size="sm" variant="ghost" disabled={status !== "open"} onClick={() => { setDefaultColors(readDefaultColors()); setColorHelp(true) }}>目录配色</Button>
+          <Button size="sm" variant="ghost" onClick={() => { setDefaultColors(readDefaultColors()); setColorHelp(true) }}>目录配色</Button>
           {status === "open" ? <Button size="sm" variant="ghost" onClick={async () => {
             const sessionId = sessionRef.current
             if (!sessionId) return
@@ -249,7 +249,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, comforta
       <div className="server-terminal-container" ref={containerRef} />
       <Dialog open={colorHelp} onOpenChange={setColorHelp}>
         <DialogContent onCloseAutoFocus={(event) => { event.preventDefault(); if (visibleRef.current) terminalRef.current?.focus() }}>
-          <DialogHeader><DialogTitle>终端目录配色</DialogTitle><DialogDescription>新终端默认自动设置目录、软链接和可执行文件的颜色，并提供 ll 命令。支持常见 POSIX Shell，不修改服务器配置文件。</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>终端目录配色</DialogTitle><DialogDescription>新终端会在后台完成配色，直接显示命令提示符，并提供 ll 命令。支持常见 POSIX Shell，不修改服务器配置文件。</DialogDescription></DialogHeader>
           <label className="flex items-center gap-3 text-sm"><input type="checkbox" checked={defaultColors} onChange={(event) => {
             const enabled = event.target.checked
             try { localStorage.setItem(DEFAULT_COLORS_KEY, String(enabled)); setDefaultColors(enabled) } catch { setError("无法保存自动配色偏好，请检查本地存储。") }

@@ -1,3 +1,6 @@
+import crypto from 'node:crypto';
+import { AppError } from './errors.mjs';
+
 // 固定的人工终端启动配置；不接受 Renderer 或远端输出作为命令内容。
 export const DEFAULT_TERMINAL_COLORS = "if command ls --color=auto -d . >/dev/null 2>&1; then export LS_COLORS='di=01;34:ln=01;36:ex=01;32:or=01;31:fi=0:*.zip=01;35:*.tar=01;35:*.gz=01;35:*.jar=01;35'; alias ls='ls --color=auto'; alias ll='ls -alF --color=auto'; else case $(command uname -s) in Darwin|FreeBSD|OpenBSD|NetBSD|DragonFly) export CLICOLOR=1 LSCOLORS=ExFxCxDxBxegedabagacad; alias ls='ls -G'; alias ll='ls -alF -G';; esac; fi";
 
@@ -42,4 +45,56 @@ export function probeTerminalShell(client, timeoutMs = 1500) {
       });
     } catch { finish(); }
   });
+}
+
+// 只隔离新会话的初始化输出；完成标记之后按原始字节转发，不匹配用户命令文本。
+export function createTerminalStartup(command, { timeoutMs = 15_000, maxBytes = 1024 * 1024 } = {}) {
+  const token = crypto.randomBytes(16).toString('hex');
+  const label = 'runbook-ready:' + token;
+  const marker = Buffer.from('\x1b]' + label + '\x07');
+  let pending = Buffer.alloc(0);
+  let received = 0;
+  let settled = false;
+  let done = false;
+  let resolveReady;
+  let rejectReady;
+  const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+  // 写入或通道初始化可能先失败，保持取消路径没有未处理的 Promise 拒绝。
+  void ready.catch(() => undefined);
+  const finish = (error) => {
+    if (settled) return;
+    settled = true;
+    done = !error;
+    clearTimeout(timer);
+    pending = Buffer.alloc(0);
+    if (error) rejectReady(error);
+    else resolveReady();
+  };
+  const timer = setTimeout(() => finish(new AppError('TERMINAL_STARTUP_TIMEOUT', '终端初始化超时。可在「目录配色」关闭自动配色后重新打开终端。')), timeoutMs);
+  return {
+    // 使用转义形式构造控制字符，避免命令本身的回显被误认成完成标记。
+    command: command + "; printf '\\033]" + label + "\\007'\r",
+    ready,
+    get done() { return done; },
+    consume(chunk) {
+      if (done) return chunk;
+      if (settled) return Buffer.alloc(0);
+      received += chunk.length;
+      if (received > maxBytes) {
+        finish(new AppError('TERMINAL_STARTUP_FAILED', '终端初始化输出异常。可在「目录配色」关闭自动配色后重新打开终端。'));
+        return Buffer.alloc(0);
+      }
+      const combined = Buffer.concat([pending, chunk]);
+      const index = combined.indexOf(marker);
+      if (index !== -1) {
+        const remainder = combined.subarray(index + marker.length);
+        finish();
+        return remainder;
+      }
+      // 只保留可能跨包的标记尾部，登录横幅和回显不会累积到终端缓冲。
+      pending = Buffer.from(combined.subarray(Math.max(0, combined.length - marker.length + 1)));
+      return Buffer.alloc(0);
+    },
+    cancel() { finish(new AppError('TERMINAL_CLOSED', '终端初始化已取消。')); },
+  };
 }
