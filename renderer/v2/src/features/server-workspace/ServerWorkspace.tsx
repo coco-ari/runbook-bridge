@@ -41,7 +41,6 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
   const connection = usePluginConnection({ api, plugin: scope, runtime, onRuntime: setRuntime })
   const connected = connection.state.phase === "connected"
   const [path, setPath] = useState("/")
-  const [comfortable, setComfortable] = useState(false)
   const [maximized, setMaximized] = useState(false)
   const [previewRequest, setPreviewRequest] = useState<Readonly<{ file: ServerDirectoryEntry; id: number }> | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
@@ -151,12 +150,11 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
     } catch (failure) { if (mountedRef.current) setUploadError(workspaceErrorMessage(failure)) }
   }
 
-  return <div className={`server-workspace${comfortable ? " server-workspace-comfortable" : ""}`} hidden={!visible} data-testid="server-workspace" data-workspace-key={serverWorkspaceKey(scope)}>
+  return <div className="server-workspace" hidden={!visible} data-testid="server-workspace" data-workspace-key={serverWorkspaceKey(scope)}>
     <header className="server-workspace-header">
       <Button size="sm" variant="ghost" data-testid="server-workspace-back" onClick={onBack} title="返回详情，终端和上传任务继续运行"><ArrowLeft />返回详情</Button>
       <span className="h-5 w-px bg-border" />
       <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-sm font-semibold">{entry.plugin.displayName}</h1><Badge variant={connected ? "success" : "outline"}>{connected ? "已连接" : "已断开"}</Badge></div><p className="truncate text-[11px] text-muted-foreground">{entry.projectName} / {entry.environmentName}<span className="server-workspace-identity"> · {sshIdentity}</span></p></div>
-      <Button size="sm" variant="ghost" className="server-workspace-density" aria-pressed={comfortable} onClick={() => setComfortable((value) => !value)}>{comfortable ? "舒适密度" : "紧凑密度"}</Button>
       <Button size="sm" variant="outline" disabled={!connected || Boolean(connection.state.operation)} onClick={() => { void connection.disconnect() }}><LinkBreak />断开连接</Button>
       <Button size="icon-sm" variant="ghost" aria-label="关闭工作区" title="关闭工作区并结束终端" onClick={() => setCloseDialog(true)}><X /></Button>
     </header>
@@ -166,7 +164,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
     <div className="server-workspace-body">
       <ResizablePanelGroup orientation="horizontal" id={`${panelId}-panels`}>
         <ResizablePanel id={`${panelId}-files`} defaultSize="320px" minSize="240px" maxSize="50%" collapsible collapsedSize={0} panelRef={treePanelRef}>
-          <ServerFileTree api={api} scope={scope} connected={connected} comfortable={comfortable} path={path} onPath={setPath} onPreview={(file) => { void openPreview(file) }} onUpload={() => { void pickUpload() }} onInsertPath={(value) => setInsertion({ text: quoteRemotePath(value), id: Date.now() })} refreshEpoch={refreshEpoch} refreshPaths={refreshPaths} invalidatedPath={invalidatedPath} />
+          <ServerFileTree api={api} scope={scope} connected={connected} path={path} onPath={setPath} onPreview={(file) => { void openPreview(file) }} onUpload={() => { void pickUpload() }} onInsertPath={(value) => setInsertion({ text: quoteRemotePath(value), id: Date.now() })} refreshEpoch={refreshEpoch} refreshPaths={refreshPaths} invalidatedPath={invalidatedPath} />
         </ResizablePanel>
         <ResizableHandle className={maximized ? "hidden" : ""} aria-label="调整文件树宽度" />
         <ResizablePanel id={`${panelId}-console`} minSize="280px">
@@ -176,7 +174,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
             </ResizablePanel>
             <ResizableHandle className={!previewOpen || maximized ? "hidden" : ""} aria-label="调整文件预览高度" />
             <ResizablePanel id={`${panelId}-terminal`} minSize="180px">
-              <ServerTerminalTabs api={api} scope={scope} visible={visible} connected={connected} comfortable={comfortable} maximized={maximized} onMaximize={() => setMaximized((value) => !value)} insertion={insertion} />
+              <ServerTerminalTabs api={api} scope={scope} visible={visible} connected={connected} maximized={maximized} onMaximize={() => setMaximized((value) => !value)} insertion={insertion} />
             </ResizablePanel>
           </ResizablePanelGroup>
         </ResizablePanel>

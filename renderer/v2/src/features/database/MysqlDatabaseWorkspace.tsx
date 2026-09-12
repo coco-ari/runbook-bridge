@@ -49,7 +49,7 @@ function ReadLoading({ label }: { readonly label: string }) {
   return <div aria-busy="true" aria-label={label} className="space-y-3 p-4" role="status"><p className="text-xs text-muted-foreground">{label}</p><Skeleton className="h-8 w-full" /><Skeleton className="h-24 w-full" /></div>
 }
 
-function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, environmentName, api, scope, comfortable, onDensity }: MysqlDatabaseWorkspaceProps & { readonly comfortable: boolean; readonly onDensity: () => void }) {
+function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, environmentName, api, scope }: MysqlDatabaseWorkspaceProps) {
   const database = mysqlDatabaseName(plugin)
   const [disconnecting, setDisconnecting] = useState(false)
   const [closing, setClosing] = useState(false)
@@ -68,7 +68,6 @@ function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, envi
       <Button aria-label="返回数据库详情" data-testid="mysql-workspace-back" onClick={onBack} size="sm" type="button" variant="ghost"><ArrowLeft /><span>返回详情</span></Button>
       <span className="mysql-workspace-header-divider" />
       <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-sm font-semibold" title={plugin.displayName}>{plugin.displayName}</h1><Badge variant={connected ? "success" : "outline"}>{connected ? "已连接" : "未连接"}</Badge><Badge variant="outline"><ShieldCheck className="size-3" />只读</Badge></div><p className="truncate text-[11px] text-muted-foreground" title={projectName + " / " + environmentName + " · " + database}>{projectName} / {environmentName} · {database}</p></div>
-      <Button data-testid="mysql-workspace-density" aria-pressed={comfortable} onClick={onDensity} size="sm" variant="ghost">{comfortable ? "舒适密度" : "紧凑密度"}</Button>
       <div className="mysql-workspace-theme"><ThemeMenu /></div>
       <Button data-testid="mysql-workspace-disconnect" size="sm" variant="outline" disabled={!connected || disconnecting} onClick={() => void disconnect()}><LinkBreak />{disconnecting ? "断开中…" : "断开连接"}</Button>
       <Button data-testid="mysql-workspace-close" size="icon-sm" variant="ghost" aria-label="关闭数据库工作区" onClick={() => setClosing(true)}><X /></Button>
@@ -231,13 +230,12 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
 
 export function MysqlDatabaseWorkspace(props: MysqlDatabaseWorkspaceProps) {
   const { api, scope, plugin, connected } = props
-  const [comfortable, setComfortable] = useState(false)
   const database = mysqlDatabaseName(plugin)
   const matchesScope = mysqlWorkspaceMatchesScope(scope, plugin)
   const ready = connected && plugin.pluginType === "mysql" && Boolean(database) && matchesScope
   return (
-    <section aria-label="数据库工作区" className={cn("mysql-workspace h-full min-h-0", comfortable && "mysql-workspace-comfortable")} data-testid="mysql-database-workspace">
-      <WorkspaceHeader {...props} connected={ready} comfortable={comfortable} onDensity={() => setComfortable(value => !value)} />
+    <section aria-label="数据库工作区" className="mysql-workspace h-full min-h-0" data-testid="mysql-database-workspace">
+      <WorkspaceHeader {...props} connected={ready} />
       {ready ? (
         // 用完整作用域和配置版本隔离数据；断连时卸载会话并清除查询结果。
         <MysqlConnectedWorkspace api={api} key={mysqlWorkspaceSessionKey(scope, plugin)} plugin={plugin} scope={scope} />

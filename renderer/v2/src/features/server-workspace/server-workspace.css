@@ -64,10 +64,7 @@
 .server-upload-progress { display: flex; width: 150px; flex-shrink: 0; flex-direction: column; align-items: flex-end; gap: 4px; color: var(--muted-foreground); font-size: 10px; }
 .server-upload-progress progress { width: 100%; height: 3px; accent-color: var(--primary); }
 .server-workspace-footer { display: flex; min-height: 23px; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--border); padding: 0 12px; color: var(--muted-foreground); font-size: 10px; }
-.server-workspace-comfortable .server-tree-row { height: 38px; font-size: 15px; }
-.server-workspace-comfortable .server-workspace-toolbar { height: 42px; min-height: 42px; }
-.server-workspace-comfortable .server-upload-tray-header { height: 40px; }
-@media (max-width: 900px) { .server-workspace-header { gap: 7px; padding-right: 8px; } .server-workspace-density { display: none; } .server-upload-progress { width: 115px; } }
+@media (max-width: 900px) { .server-workspace-header { gap: 7px; padding-right: 8px; } .server-upload-progress { width: 115px; } }
 @media (max-height: 620px) { .server-workspace-header { min-height: 48px; } .server-upload-list { max-height: 100px; } .server-workspace-footer { display: none; } }
 
 .server-paste-queue { display: flex; flex-shrink: 0; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); padding: 5px 10px; background: var(--surface-inset); }

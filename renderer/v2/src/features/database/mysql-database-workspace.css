@@ -861,7 +861,3 @@
 .mysql-column-sort[draggable=true] { cursor:grab }
 .mysql-column-sort[draggable=true]:active { cursor:grabbing }
 .mysql-table-filter-bar input:focus { outline:1px solid var(--primary) }
-.mysql-workspace-comfortable [data-testid$="-row"] { height:40px }
-.mysql-workspace-comfortable [data-testid$="-row"] td>span { height:39px; line-height:39px; font-size:12px }
-.mysql-workspace-comfortable .mysql-table-button { min-height:38px }
-.mysql-workspace-comfortable .mysql-structure td { height:40px }

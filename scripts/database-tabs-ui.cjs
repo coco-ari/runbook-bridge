@@ -29,9 +29,7 @@ module.exports = async function ({win,fill,click,waitFor,textContains,testId,scr
   assert.equal(databaseCalls.length,beforeSwitch,'拖字段不自动执行筛选');
   await evaluate("(() => { const transfer=new DataTransfer(); transfer.setData('application/x-runbook-mysql-column',JSON.stringify({workspace:'other',table:'orders',column:'id'})); document.querySelector('[data-testid=mysql-table-where]').dispatchEvent(new DragEvent('drop',{dataTransfer:transfer,bubbles:true,cancelable:true})); })()");
   assert.equal(await evaluate("document.querySelector('[data-testid=mysql-table-where]').value"),'`label` ');
-  await click(win,testId('mysql-workspace-density'));
-  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-database-workspace]').classList.contains('mysql-workspace-comfortable')"),true);
-  await click(win,testId('mysql-workspace-density'));
+  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-workspace-density]')"),null,'数据库工作区固定紧凑布局，不提供密度切换');
   await click(win,'[data-testid=mysql-preview-row][data-row-index="0"]');
   await evaluate("window.__previousClipboard = navigator.clipboard; Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw new DOMException('Permission denied','NotAllowedError')}}})");
   await click(win,testId('mysql-preview-copy-row'));

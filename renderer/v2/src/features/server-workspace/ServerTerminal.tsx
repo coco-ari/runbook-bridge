@@ -20,13 +20,12 @@ export interface ServerTerminalProps {
   readonly scope: PluginScope
   readonly visible: boolean
   readonly connected: boolean
-  readonly comfortable: boolean
   readonly maximized: boolean
   readonly onMaximize: () => void
   readonly insertion: Readonly<{ text: string; id: number }> | null
 }
 
-export function ServerTerminal({ tabId, api, scope, visible, connected, comfortable, maximized, onMaximize, insertion }: ServerTerminalProps) {
+export function ServerTerminal({ tabId, api, scope, visible, connected, maximized, onMaximize, insertion }: ServerTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -211,13 +210,13 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, comforta
   useEffect(() => {
     const terminal = terminalRef.current
     if (!terminal) return
-    terminal.options.fontSize = comfortable ? 15 : 14
+    terminal.options.fontSize = 14
     terminal.options.theme = theme === "dark"
       ? { background: "#0c0e13", foreground: "#d9e0e9", cursor: "#34d399", selectionBackground: "#234e46", black: "#171b24", red: "#f87171", green: "#4ade80", yellow: "#facc15", blue: "#60a5fa", magenta: "#c084fc", cyan: "#22d3ee", white: "#e2e8f0", brightBlack: "#8995a7", brightRed: "#fca5a5", brightGreen: "#86efac", brightYellow: "#fde047", brightBlue: "#93c5fd", brightMagenta: "#d8b4fe", brightCyan: "#67e8f9", brightWhite: "#ffffff" }
       : { background: "#fbfcfd", foreground: "#202a3a", cursor: "#059669", selectionBackground: "#bbf7d0", black: "#1f2937", red: "#b91c1c", green: "#047857", yellow: "#a16207", blue: "#1d4ed8", magenta: "#7e22ce", cyan: "#0e7490", white: "#e5e7eb", brightBlack: "#6b7280", brightRed: "#b91c1c", brightGreen: "#166534", brightYellow: "#854d0e", brightBlue: "#1e40af", brightMagenta: "#86198f", brightCyan: "#155e75", brightWhite: "#374151" }
     const frame = requestAnimationFrame(() => { resize(); if (visible) terminal.focus() })
     return () => cancelAnimationFrame(frame)
-  }, [comfortable, resize, theme, visible])
+  }, [resize, theme, visible])
 
   useEffect(() => {
     if (!insertion || !visibleRef.current || !sessionRef.current) return

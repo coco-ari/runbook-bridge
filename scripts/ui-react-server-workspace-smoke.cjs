@@ -381,7 +381,7 @@ async function run() {
   while (uploads[0].transferred <= progressBefore && Date.now() < transferDeadline) await wait(50);
   assert.ok(uploads[0].transferred > progressBefore, '返回详情后任务继续');
   await click('[data-testid="plugin-open-workspace"]');
-  await clickText('舒适密度').catch(async () => clickText('紧凑密度'));
+  assert.equal(await evaluate("document.querySelector('.server-workspace-density')"),null,'服务器工作区固定紧凑布局，不提供密度切换');
   await snapshot('server-workspace-dark.png');
   await click('[aria-label="最大化终端"]');
   await wait(150);

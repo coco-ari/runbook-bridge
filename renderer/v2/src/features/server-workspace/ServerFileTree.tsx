@@ -12,7 +12,6 @@ interface ServerFileTreeProps {
   readonly api: AiOpsV2Api
   readonly scope: PluginScope
   readonly connected: boolean
-  readonly comfortable: boolean
   readonly path: string
   readonly onPath: (path: string) => void
   readonly onPreview: (entry: ServerDirectoryEntry) => void
@@ -23,7 +22,7 @@ interface ServerFileTreeProps {
   readonly refreshPaths: readonly string[]
 }
 
-export function ServerFileTree({ api, scope, connected, comfortable, path, onPath, onPreview, onUpload, onInsertPath, refreshEpoch, refreshPaths, invalidatedPath }: ServerFileTreeProps) {
+export function ServerFileTree({ api, scope, connected, path, onPath, onPreview, onUpload, onInsertPath, refreshEpoch, refreshPaths, invalidatedPath }: ServerFileTreeProps) {
   const [root, setRoot] = useState("/")
   const [draft, setDraft] = useState("/")
   const [editingPath, setEditingPath] = useState(false)
@@ -46,7 +45,7 @@ export function ServerFileTree({ api, scope, connected, comfortable, path, onPat
   const rootRef = useRef(root)
   const scrollRef = useRef<HTMLDivElement>(null)
   rootRef.current = root
-  const rowHeight = comfortable ? 38 : 32
+  const rowHeight = 32
   const breadcrumbs = path.split("/").filter(Boolean).map((name, index, parts) => ({ name, path: "/" + parts.slice(0, index + 1).join("/") }))
   useEffect(() => { if (editingPath) { pathInputRef.current?.focus(); pathInputRef.current?.select() } }, [editingPath])
 
