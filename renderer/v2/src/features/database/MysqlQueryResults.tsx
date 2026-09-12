@@ -95,7 +95,7 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
   }
 
   function sortColumn(column: string) {
-    const next: MysqlSort | null = selectedSort?.column !== column ? { column, direction: "asc" } : selectedSort.direction === "asc" ? { column, direction: "desc" } : null
+    const next: MysqlSort | null = selectedSort?.column !== column ? { column, direction: "desc" } : selectedSort.direction === "desc" ? { column, direction: "asc" } : null
     if (onSort) onSort(next)
     else changeView({ sort: next, page: 0, selectedRow: null })
   }
@@ -180,7 +180,7 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
                     <th className="sticky top-0 z-10 h-8 border-b border-r bg-surface-inset px-3 text-right font-normal text-text-faint" scope="col"><span className="sr-only">行号</span>#</th>
                     {result.columns.map((column) => (
                       <th aria-sort={selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "ascending" : "descending" : "none"} className="sticky top-0 z-10 h-8 border-b bg-surface-inset px-3 text-left font-mono text-[11px] font-normal text-muted-foreground" key={column.name} scope="col" title={column.table ? `${column.table}.${column.name}` : column.name}>
-                        <button aria-label={`按 ${column.name} 排序`} draggable={Boolean(columnDragScope)} onDragStart={event => { if (columnDragScope) { event.dataTransfer.effectAllowed = "copy"; event.dataTransfer.setData("application/x-runbook-mysql-column", JSON.stringify({ ...columnDragScope, column: column.name })) } }} className="mysql-column-sort" data-column={column.name} data-testid={`${prefix}-sort`} onClick={() => sortColumn(column.name)} title={onSort ? "在数据库中排序：升序 / 降序 / 默认" : "当前返回结果排序：升序 / 降序 / 默认"} type="button"><span>{column.name}</span><span aria-hidden="true">{selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "↑" : "↓" : "↕"}</span></button>
+                        <button aria-label={`按 ${column.name} 排序`} draggable={Boolean(columnDragScope)} onDragStart={event => { if (columnDragScope) { event.dataTransfer.effectAllowed = "copy"; event.dataTransfer.setData("application/x-runbook-mysql-column", JSON.stringify({ ...columnDragScope, column: column.name })) } }} className="mysql-column-sort" data-column={column.name} data-testid={`${prefix}-sort`} onClick={() => sortColumn(column.name)} title={onSort ? "在数据库中排序：降序 / 升序 / 默认" : "当前返回结果排序：降序 / 升序 / 默认"} type="button"><span>{column.name}</span><span aria-hidden="true">{selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "↑" : "↓" : "↕"}</span></button>
                       </th>
                     ))}
                   </tr>
