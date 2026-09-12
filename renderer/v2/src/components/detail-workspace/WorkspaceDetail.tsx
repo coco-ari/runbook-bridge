@@ -4,6 +4,7 @@ import {
   CaretRight,
   ChatsCircle,
   ClockCounterClockwise,
+  Database,
   DotsThree,
   FolderOpen,
   GearSix,
@@ -49,6 +50,7 @@ import { AuditFeature } from "@/features/audit/AuditFeature"
 import { ConfirmationsFeature, type ConfirmationScope } from "@/features/confirmations/ConfirmationsFeature"
 import { PluginConnectionPanel } from "@/features/connections/PluginConnectionPanel"
 import { EnvironmentConnectionPanel } from "@/features/connections/EnvironmentConnectionPanel"
+import { MysqlDatabaseWorkspace } from "@/features/database/MysqlDatabaseWorkspace"
 import { EnvironmentOverview } from "@/features/environments/EnvironmentOverview"
 import { PluginAgentAccess } from "@/features/plugins/PluginAgentAccess"
 import { PluginOverview } from "@/features/plugins/PluginOverview"
@@ -153,6 +155,7 @@ function CollapsedDetail({ onToggle }: { readonly onToggle: () => void }) {
 
 function DetailTabIcon({ value }: { readonly value: string }) {
   const iconProps = { "aria-hidden": true, size: 15, weight: "bold" as const }
+  if (value === "database") return <Database {...iconProps} />
   if (value === "agent") return <ShieldCheck {...iconProps} />
   if (value === "runbook") return <BookOpenText {...iconProps} />
   if (value === "questions") return <ChatsCircle {...iconProps} />
@@ -556,7 +559,18 @@ export function WorkspaceDetail({
               )}
             </PersistentTabsContent>
 
-            {selectionKind === "plugin" ? (
+            {supportedPlugin?.pluginType === "mysql" && project && environment ? (
+              <PersistentTabsContent activeValue={activeTab} value="database">
+                <MysqlDatabaseWorkspace
+                  api={api}
+                  connected={selectedPluginRuntime?.status === "connected"}
+                  plugin={supportedPlugin}
+                  scope={{ projectId: project.projectId, environmentId: environment.environmentId, pluginInstanceId: supportedPlugin.pluginInstanceId }}
+                />
+              </PersistentTabsContent>
+            ) : null}
+
+            {selectionKind === "plugin" || selectionKind === "mysql-plugin" ? (
               <PersistentTabsContent activeValue={activeTab} value="agent">
                 {supportedPlugin ? (
                   <PluginAgentAccess api={api} onDirtyChange={onAgentAccessDirtyChange} onSavingChange={onAgentAccessSavingChange} onUpdated={onPluginUpdated} plugin={supportedPlugin} />

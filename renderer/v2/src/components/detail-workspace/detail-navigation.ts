@@ -1,5 +1,6 @@
 export type DetailTabId =
   | "overview"
+  | "database"
   | "agent"
   | "runbook"
   | "questions"
@@ -10,6 +11,7 @@ export type DetailSelectionKind =
   | "project"
   | "environment"
   | "plugin"
+  | "mysql-plugin"
   | "unknown-plugin"
 
 export interface DetailTabDescriptor {
@@ -42,10 +44,17 @@ const UNKNOWN_PLUGIN_TABS: readonly DetailTabDescriptor[] = [
   { value: "confirmations", label: "操作确认" },
 ]
 
+const MYSQL_PLUGIN_TABS: readonly DetailTabDescriptor[] = [
+  { value: "overview", label: "插件详情" },
+  { value: "database", label: "数据库" },
+  ...PLUGIN_TABS.slice(1),
+]
+
 export function detailTabsForSelection(
   kind: DetailSelectionKind,
 ): readonly DetailTabDescriptor[] {
   if (kind === "environment") return ENVIRONMENT_TABS
+  if (kind === "mysql-plugin") return MYSQL_PLUGIN_TABS
   if (kind === "plugin") return PLUGIN_TABS
   if (kind === "unknown-plugin") return UNKNOWN_PLUGIN_TABS
   return PROJECT_TABS
@@ -63,6 +72,7 @@ export function detailSelectionKind(
   pluginType: string | null,
 ): DetailSelectionKind {
   if (pluginType === "unknown") return "unknown-plugin"
+  if (pluginType === "mysql") return "mysql-plugin"
   if (pluginType) return "plugin"
   return hasEnvironment ? "environment" : "project"
 }

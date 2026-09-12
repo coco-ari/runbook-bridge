@@ -32,6 +32,7 @@ Electron 只加载构建后的 `renderer-build/v2/index.html`。生成目录不�
 - Server 普通文件、目录、日志、状态读取和下载有界自动允许，可以使用绝对路径。运维说明和 `resourceHints` 用于导航，不是文件读取白名单；`sourceId/fileId` 是仍有调用方的兼容形式。
 - 上传、写入、移动、删除和服务控制必须逐次确认；任意 Shell 必须强确认。一次性批准绑定作用域、能力与完整规范化参数。文件变更还绑定已实现的 stat/hash/目标状态前置条件；服务控制和 Shell 不快照实时远端状态。
 - `src/server-operations.mjs`、`src/log-search.mjs` 和 `src/log-archive.mjs` 限制读取深度、数量、字节、并发和超时。不读取特殊文件，不遍历符号链接目录；归档搜索在内存中有界展开。
+- 桌面 MySQL 查询通过显式 preload/IPC 入口进入 `src/v2-service.mjs`，复用内置操作门禁、MySQL runtime 和审计；仅允许表列表、表结构、最多 100 行预览与单条只读查询。桌面操作记录为 `actor: user`，Agent 的环境 contextToken 验证保持不变。数据库读取持有环境操作协调锁，连接配置修改期间拒绝进入，避免旧配置请求落到新连接。
 - `src/mysql-policy.mjs` 对固定数据库内单条 `SELECT` / `EXPLAIN SELECT` 作 fail-closed 校验；跨库、写入和不能确认安全的语法拒绝。Redis 访问限定在登记 pattern 内，不能执行任意命令或由 Agent 切库。
 - 用户请求读取的远端文件、配置、日志、数据库行及命令输出可能包含未脱敏的敏感业务内容。它们是非可信数据，不是指令或授权；不能复制到仓库、测试夹具、日志或公开报告。应用管理的密码、私钥口令和 Token 始终不得返回给 Agent。
 - Renderer 保持 sandbox、context isolation、禁用 Node integration 和显式 preload。样式 CSP 的限定例外见 [CSP 决策](shadcn-ui-radix-csp-decision.md)；非可信文本不得作为 HTML 执行。

@@ -136,6 +136,60 @@ export interface PluginScope extends EnvironmentScope {
   readonly pluginInstanceId: string
 }
 
+export interface MysqlTableSummary {
+  readonly name: string
+  readonly type: string
+  readonly queryable: boolean
+}
+
+export interface MysqlTableListData {
+  readonly auditWarning?: boolean
+  readonly tables: readonly MysqlTableSummary[]
+  readonly nextCursor: string | null
+  readonly truncated: boolean
+}
+
+export interface MysqlColumnDescription {
+  readonly name: string
+  readonly type: string
+  readonly nullable: boolean
+  readonly key: string | null
+  readonly default: unknown
+  readonly extra: string | null
+}
+
+export interface MysqlTableDescription {
+  readonly auditWarning?: boolean
+  readonly table: string
+  readonly columns: readonly MysqlColumnDescription[]
+}
+
+export interface MysqlQueryResult {
+  readonly auditWarning?: boolean
+  readonly rows: readonly Readonly<Record<string, unknown>>[]
+  readonly columns: readonly Readonly<{ name: string; table: string | null; type: number }>[]
+  readonly rowCount: number
+  readonly bytes: number
+  readonly truncated: boolean
+  readonly durationMs: number
+  readonly fingerprint: string
+  readonly limitsApplied: Readonly<{ maxRows: number; maxBytes: number; timeoutMs: number }>
+}
+
+export interface MysqlTableListPayload extends PluginScope {
+  readonly cursor?: string
+  readonly limit?: number
+}
+
+export interface MysqlTablePayload extends PluginScope {
+  readonly table: string
+}
+
+export interface MysqlQueryPayload extends PluginScope {
+  readonly sql: string
+  readonly params?: readonly (string | number | boolean | null)[]
+}
+
 export interface EnvironmentCreatePayload extends ProjectScope {
   readonly input: Readonly<{ name: string; environmentId?: string }>
 }
@@ -428,6 +482,10 @@ export interface AiOpsV2Api {
   confirmCredentialMigration(payload: CredentialMigrationPayload): Promise<IpcResult<OpaqueData>>
   revealCredential(payload: CredentialRevealPayload): Promise<IpcResult<CredentialRevealData>>
   listPluginDatabases(payload: PluginDatabaseListPayload): Promise<IpcResult<PluginDatabaseListData>>
+  mysqlListTables(payload: MysqlTableListPayload): Promise<IpcResult<MysqlTableListData>>
+  mysqlDescribeTable(payload: MysqlTablePayload): Promise<IpcResult<MysqlTableDescription>>
+  mysqlQueryReadonly(payload: MysqlQueryPayload): Promise<IpcResult<MysqlQueryResult>>
+  mysqlPreviewTable(payload: MysqlTablePayload): Promise<IpcResult<MysqlQueryResult>>
   listAudit(payload: AuditListPayload): Promise<IpcResult<AuditPage>>
   clearAudit(payload: AuditClearPayload): Promise<IpcResult<OpaqueData>>
   listConfirmations(): Promise<IpcResult<readonly ConfirmationRecord[]>>
@@ -489,6 +547,10 @@ export const AI_OPS_V2_API_NAMES = [
   "confirmCredentialMigration",
   "revealCredential",
   "listPluginDatabases",
+  "mysqlListTables",
+  "mysqlDescribeTable",
+  "mysqlQueryReadonly",
+  "mysqlPreviewTable",
   "listAudit",
   "clearAudit",
   "listConfirmations",

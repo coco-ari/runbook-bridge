@@ -84,6 +84,19 @@ async function startLoopbackFixtures() {
           client.writeTextResult([{ai_ops_health:'1'}], [column('ai_ops_health')]);
         } else if (query === 'SHOW DATABASES') {
           client.writeTextResult([{Database:'app'}, {Database:'archive'}], [column('Database')]);
+        } else if (/^SELECT TABLE_NAME, TABLE_TYPE FROM information_schema\.TABLES WHERE TABLE_SCHEMA = /u.test(query)
+          && query.includes("TABLE_SCHEMA = '" + client.clientHelloReply.database + "'")) {
+          client.writeTextResult([{TABLE_NAME:'records',TABLE_TYPE:'BASE TABLE'}], [column('TABLE_NAME'),column('TABLE_TYPE')]);
+        } else if (/^SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA FROM information_schema\.COLUMNS/u.test(query)
+          && query.includes("TABLE_SCHEMA = '" + client.clientHelloReply.database + "'") && query.includes("TABLE_NAME = 'records'")) {
+          const names = ['COLUMN_NAME','COLUMN_TYPE','IS_NULLABLE','COLUMN_KEY','COLUMN_DEFAULT','EXTRA'];
+          client.writeTextResult([
+            {COLUMN_NAME:'id',COLUMN_TYPE:'int',IS_NULLABLE:'NO',COLUMN_KEY:'PRI',COLUMN_DEFAULT:null,EXTRA:''},
+            {COLUMN_NAME:'label',COLUMN_TYPE:'varchar(64)',IS_NULLABLE:'YES',COLUMN_KEY:'',COLUMN_DEFAULT:null,EXTRA:''},
+          ], names.map(column));
+        } else if (/^SELECT (?:\*|`id`, `label`) FROM `records` LIMIT \d+$/u.test(query)) {
+          const limit = Math.min(103, Number(query.match(/LIMIT (\d+)$/u)[1]));
+          client.writeTextResult(Array.from({length:limit}, (_, index) => ({id:String(index + 1),label:'fixture-row'})), [column('id'),column('label')]);
         } else client.writeError({code:1064,message:'Query outside bounded fixture contract'});
         client.sequenceId = 0;
       });
@@ -191,6 +204,34 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
       let plugin = await success('createPlugin', {...scope,input,secrets:{password:fixture.password}});
       const connected = await success('connectPlugin', {...scope,pluginInstanceId:plugin.pluginInstanceId});
       assert.equal(connected.plugins[plugin.pluginInstanceId].phase, 'connected');
+      if (pluginType === 'mysql') {
+        const databaseScope = {...scope,pluginInstanceId:plugin.pluginInstanceId};
+        const tables = await success('mysqlListTables', {...databaseScope,limit:20});
+        assert.deepEqual(tables.tables, [{name:'records',type:'BASE TABLE',queryable:true}]);
+        const structure = await success('mysqlDescribeTable', {...databaseScope,table:'records'});
+        assert.deepEqual(structure.columns.map((item) => item.name), ['id','label']);
+        const preview = await success('mysqlPreviewTable', {...databaseScope,table:'records'});
+        assert.equal(preview.rowCount, 100);
+        assert.equal(preview.truncated, true);
+        assert.equal(preview.limitsApplied.maxRows, 100);
+        const rows = await success('mysqlQueryReadonly', {...databaseScope,sql:'SELECT id, label FROM records LIMIT 2'});
+        assert.equal(rows.rowCount, 2);
+        assert.deepEqual(rows.columns.map((item) => item.name), ['id','label']);
+        const beforeRejectedQuery = fixture.counts.mysqlQueries;
+        for (const sql of ['DELETE FROM records','SELECT * FROM archive.records','SELECT 1; SELECT 2']) {
+          const rejected = await invoke('mysqlQueryReadonly', {...databaseScope,sql});
+          assert.equal(rejected.ok, false);
+          assert.equal(rejected.error.code, 'HARD_POLICY_DENIED');
+        }
+        assert.equal(fixture.counts.mysqlQueries, beforeRejectedQuery, '被拒绝的 SQL 不得进入数据库连接');
+        await success('disconnectPlugin', databaseScope);
+        const beforeDisconnectedQuery = fixture.counts.mysqlQueries;
+        const disconnected = await invoke('mysqlListTables', databaseScope);
+        assert.equal(disconnected.ok, false);
+        assert.ok(['PLUGIN_NOT_CONNECTED','PLUGIN_RESOURCE_VALIDATION_REQUIRED'].includes(disconnected.error.code));
+        assert.equal(fixture.counts.mysqlQueries, beforeDisconnectedQuery, '断连请求不得进入数据库连接');
+        await success('connectPlugin', databaseScope);
+      }
       const session = await begin(plugin);
       const validation = await success('validatePluginDraft', {
         editSessionId:session.editSessionId,requestId:crypto.randomUUID(),draftGeneration:1,purpose,

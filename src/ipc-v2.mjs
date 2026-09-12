@@ -1061,6 +1061,14 @@ export function registerV2Ipc(ipcMain, services) {
       return mysqlRuntime.listDatabases(transient,resolved.secrets);
     })
   ));
+  for (const [channel, operation] of [
+    ['mysql-list-tables', 'listTables'],
+    ['mysql-describe-table', 'describeTable'],
+    ['mysql-preview-table', 'previewTable'],
+    ['mysql-query-readonly', 'queryReadonly'],
+  ]) {
+    handle(channel, (payload) => services.v2Service.invokeDesktopMysql(payload, operation));
+  }
   handle('audit-list', ({ projectId, ...filters }) => store.listAudit(projectId, filters));
   handle('audit-clear', ({ projectId, environmentId, pluginInstanceId = null }) => store.clearAudit(projectId, { environmentId, pluginInstanceId }));
   handle('confirmation-list', () => confirmationManager.list());
