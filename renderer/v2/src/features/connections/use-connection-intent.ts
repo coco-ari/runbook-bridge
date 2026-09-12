@@ -15,6 +15,7 @@ import {
   connectionPhaseFromRuntime,
   connectionResultMatches,
   initialConnectionState,
+  pluginConnectionError,
   runtimeHostKeyChallenge,
   runtimeMatchesEnvironmentScope,
   supersedeWithConnectionCancel,
@@ -115,6 +116,7 @@ export function useConnectionIntentController({
   const [state, setState] = useState<ConnectionState>(() => ({
     ...initialConnectionState(ownerKey),
     runtime: initialRuntime,
+    error: pluginConnectionError(initialRuntime, scope, pluginInstanceId),
     phase: connectionPhaseFromRuntime(initialRuntime, pluginInstanceId),
   }))
   const ownerRef = useRef(ownerKey)
@@ -138,7 +140,7 @@ export function useConnectionIntentController({
     setState((current) => ({
       ...current,
       runtime,
-      error: null,
+      error: operationRef.current ? null : pluginConnectionError(runtime, scope, pluginInstanceId),
       phase: operationRef.current
         ? current.phase
         : connectionPhaseFromRuntime(runtime, pluginInstanceId),
@@ -154,7 +156,7 @@ export function useConnectionIntentController({
     setState((current) => ({
       ...current,
       runtime: nextRuntime,
-      error: null,
+      error: operationRef.current ? null : pluginConnectionError(nextRuntime, expectedScope, pluginInstanceId),
       phase: operationRef.current
         ? current.phase
         : connectionPhaseFromRuntime(nextRuntime, pluginInstanceId),
@@ -207,7 +209,7 @@ export function useConnectionIntentController({
       operation: null,
       actions: accepted ? result.actions : [],
       challenge,
-      error: null,
+      error: pluginConnectionError(nextRuntime, expectedScope, pluginInstanceId),
     }))
     if (accepted) onRuntime?.(result.snapshot)
     return true
@@ -359,7 +361,7 @@ export function useConnectionIntentController({
           operation: null,
           actions: accepted ? connectionPlan.actions : [],
           challenge: accepted ? runtimeHostKeyChallenge(connectionPlan, pluginInstanceId) : null,
-          error: null,
+          error: pluginConnectionError(nextRuntime, { projectId, environmentId }, pluginInstanceId),
         }))
         if (accepted) onRuntime?.(connectionPlan.snapshot)
         return

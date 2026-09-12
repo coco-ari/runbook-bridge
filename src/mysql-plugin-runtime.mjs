@@ -1,4 +1,4 @@
-import mysql from 'mysql2/promise';
+import { createMysqlConnection, guardMysqlConnection, destroyMysqlConnection, endMysqlConnection } from './mysql-connection.mjs';
 import { EventEmitter } from 'node:events';
 import { AppError } from './errors.mjs';
 import { validateMysqlSelect, validateMysqlExplain, applyMysqlRowLimit } from './mysql-policy.mjs';
@@ -9,6 +9,7 @@ const MYSQL_TIMEOUT_CODES = new Set(['PROTOCOL_SEQUENCE_TIMEOUT', 'ETIMEDOUT', '
 const MYSQL_CONNECTION_CODES = new Set([
   'PROTOCOL_CONNECTION_LOST', 'PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR', 'PROTOCOL_ENQUEUE_AFTER_QUIT',
   'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH',
+  'ERR_STREAM_DESTROYED', 'ERR_STREAM_PREMATURE_CLOSE',
 ]);
 const MYSQL_TLS_CODES = new Set(['CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID']);
 const MYSQL_DATABASE_LIST_DENIED_CODES = new Set([
@@ -18,6 +19,10 @@ const MYSQL_DATABASE_LIST_DENIED_CODES = new Set([
   'ER_ACCESS_DENIED_ERROR',
 ]);
 const MYSQL_SYNTAX_CODES = new Set(['ER_PARSE_ERROR', 'ER_SYNTAX_ERROR']);
+
+function isSocketShutdownError(error) {
+  return error?.code === 'EINVAL' && (error.syscall === 'shutdown' || /^shutdown EINVAL\b/.test(String(error.message ?? '')));
+}
 
 function mysqlError(error, fallbackMessage = 'MySQL 操作失败。') {
   if (error instanceof AppError) return error;
@@ -37,7 +42,7 @@ function mysqlError(error, fallbackMessage = 'MySQL 操作失败。') {
   if (MYSQL_TIMEOUT_CODES.has(code) || /(?:query|operation|socket).*tim(?:e|ed) ?out/i.test(message)) {
     return new AppError('DATABASE_QUERY_TIMEOUT', 'MySQL 操作超时，当前连接已关闭并将按环境策略重新建立。');
   }
-  if (MYSQL_CONNECTION_CODES.has(code) || /connection.*(?:closed|lost|reset)|socket.*(?:closed|ended)/i.test(message)) {
+  if (MYSQL_CONNECTION_CODES.has(code) || isSocketShutdownError(error) || /connection.*(?:closed|lost|reset)|socket.*(?:closed|ended)/i.test(message)) {
     return new AppError('ROUTE_UNAVAILABLE', 'MySQL 连接已经中断，将按环境连接策略重试。');
   }
   return new AppError('DATABASE_OPERATION_FAILED', fallbackMessage);
@@ -83,6 +88,7 @@ function invalidatesSession(error) {
   const code = String(error.code ?? '');
   return MYSQL_TIMEOUT_CODES.has(code)
     || MYSQL_CONNECTION_CODES.has(code)
+    || isSocketShutdownError(error)
     || error.fatal === true
     || /(?:query|operation|socket).*tim(?:e|ed) ?out|connection.*(?:closed|lost|reset)|socket.*(?:closed|ended)/i.test(String(error.message ?? ''));
 }
@@ -187,7 +193,7 @@ function capRows(rows, maxRows, maxBytes) {
 }
 
 export class MysqlPluginRuntime extends EventEmitter {
-  constructor(routeManager, credentialVault, { client = mysql } = {}) {
+  constructor(routeManager, credentialVault, { client = {createConnection:createMysqlConnection} } = {}) {
     super();
     this.routeManager = routeManager;
     this.credentialVault = credentialVault;
@@ -212,13 +218,8 @@ export class MysqlPluginRuntime extends EventEmitter {
     session.closing = true;
     this.sessions.delete(key(plugin));
     if (this.connectAttempts.get(key(plugin)) === session.attemptToken) this.connectAttempts.delete(key(plugin));
-    const raw = session.connection?.connection ?? session.connection;
-    try {
-      raw?.destroy?.();
-    } catch {
-      // The socket may already have been closed by mysql2.
-    }
-    await this.routeManager.closeRelay(plugin, session.routeGeneration).catch(() => undefined);
+    destroyMysqlConnection(session.connection);
+    // 先发布失效，再等待旧路由清理，避免迟到通知覆盖新连接状态。
     this.emit('lifecycle', {
       type: 'lost',
       projectId: plugin.projectId,
@@ -226,6 +227,7 @@ export class MysqlPluginRuntime extends EventEmitter {
       pluginInstanceId: plugin.pluginInstanceId,
       error,
     });
+    await this.routeManager.closeRelay(plugin, session.routeGeneration).catch(() => undefined);
   }
 
   async querySession(plugin, request, { invalidateOnAnyError = false, fallbackMessage } = {}) {
@@ -251,8 +253,10 @@ export class MysqlPluginRuntime extends EventEmitter {
     let connected = false;
     let relay;
     let connection;
+    let guard;
     const assertOwned = () => {
       if (signal?.aborted || this.connectAttempts.get(resource) !== owner) throw new AppError('CONNECT_CANCELLED', '连接已被更新的尝试取代。');
+      guard?.assertOpen();
     };
     const abort = () => {
       if (this.connectAttempts.get(resource) !== owner) return;
@@ -260,12 +264,10 @@ export class MysqlPluginRuntime extends EventEmitter {
       if (managed) {
         this.sessions.delete(resource);
         managed.closing = true;
-        const managedRaw = managed.connection?.connection ?? managed.connection;
-        try { managedRaw?.destroy?.(); } catch { /* Driver may already be closed. */ }
+        destroyMysqlConnection(managed.connection);
         void this.routeManager.closeRelay(plugin, managed.routeGeneration).catch(() => undefined);
       }
-      const raw = connection?.connection ?? connection;
-      try { raw?.destroy?.(); } catch { /* Driver may already be closed. */ }
+      destroyMysqlConnection(connection);
       if (relay?.generation !== undefined) void this.routeManager.closeRelay(plugin, relay.generation).catch(() => undefined);
     };
     signal?.addEventListener('abort', abort, {once:true});
@@ -286,6 +288,7 @@ export class MysqlPluginRuntime extends EventEmitter {
       relay = await createMysqlRoute(this.routeManager, plugin, {signal});
       assertOwned();
       connection = await this.client.createConnection(mysqlConnectionOptions(plugin, secrets, relay,{includeDatabase:includeResource}));
+      guard = guardMysqlConnection(connection);
       assertOwned();
       if (includeResource) {
         const [selectedRows] = await connection.query({
@@ -305,20 +308,18 @@ export class MysqlPluginRuntime extends EventEmitter {
       assertOwned();
       const session = { connection, connectedAt: new Date().toISOString(), routeGeneration: relay.generation, bindingHash: plugin.revision, closing:false, attemptToken:owner };
       this.sessions.set(key(plugin), session);
-      const raw = connection.connection ?? connection;
       const lost = (error) => {
         if (session.closing || this.sessions.get(key(plugin)) !== session) return;
         void this.invalidateSession(plugin, session, mysqlError(error, 'MySQL 连接已经中断。'));
       };
-      raw.on?.('error', (error) => { if (invalidatesSession(error)) lost(error); });
-      raw.on?.('end', () => lost(new AppError('ROUTE_UNAVAILABLE', 'MySQL 连接已中断。')));
+      guard.onLost = lost;
       connected = true;
       return { connected: true, connectedAt: this.sessions.get(key(plugin)).connectedAt, routeGeneration: relay.generation };
     } catch (error) {
-      try { await connection?.end?.(); } catch { /* Preserve the original connection error. */ }
+      await endMysqlConnection(connection);
       if (relay?.generation !== undefined) await this.routeManager.closeRelay(plugin, relay.generation).catch(() => undefined);
       throw mysqlConnectError(error,plugin,'MySQL 连接初始化失败。');
-    } finally {}
+    }
     } finally {
       signal?.removeEventListener('abort', abort);
       if (!connected && this.connectAttempts.get(resource) === owner) this.connectAttempts.delete(resource);
@@ -335,13 +336,14 @@ export class MysqlPluginRuntime extends EventEmitter {
     const relay = await createMysqlRoute(this.routeManager, plugin, {signal});
     let connection;
     const abort = () => {
-      const raw = connection?.connection ?? connection;
-      try { raw?.destroy?.(); } catch { /* Driver may already be closed. */ }
+      destroyMysqlConnection(connection);
     };
     signal?.addEventListener('abort',abort,{once:true});
     try {
       connection = await this.client.createConnection(mysqlConnectionOptions(plugin, secrets, relay));
+      const guard = guardMysqlConnection(connection);
       if (signal?.aborted) throw new AppError('PLUGIN_VALIDATION_CANCELLED','数据库发现已取消。');
+      guard.assertOpen();
       let rows;
       try {
         [rows] = await connection.query({ sql: 'SHOW DATABASES', timeout: plugin.limits.timeoutMs });
@@ -356,6 +358,7 @@ export class MysqlPluginRuntime extends EventEmitter {
         throw error;
       }
       if (signal?.aborted) throw new AppError('PLUGIN_VALIDATION_CANCELLED','数据库发现已取消。');
+      guard.assertOpen();
       const visible = [...new Set(rows
         .flatMap((row) => Object.values(row).slice(0, 1))
         .map((value) => String(value ?? '').trim())
@@ -366,7 +369,7 @@ export class MysqlPluginRuntime extends EventEmitter {
       throw mysqlConnectError(error,plugin,'无法连接 MySQL 并查询数据库列表。');
     } finally {
       signal?.removeEventListener('abort',abort);
-      await connection?.end().catch(() => undefined);
+      await endMysqlConnection(connection);
       await this.routeManager.closeRelay(plugin, relay.generation);
     }
   }
@@ -376,7 +379,7 @@ export class MysqlPluginRuntime extends EventEmitter {
     const session = this.sessions.get(key(plugin));
     if (session) session.closing = true;
     try {
-      await session?.connection?.end().catch(() => undefined);
+      await endMysqlConnection(session?.connection);
     } finally {
       if (this.sessions.get(key(plugin)) === session) this.sessions.delete(key(plugin));
       await this.routeManager.closeRelay(plugin, session?.routeGeneration ?? null);
@@ -390,8 +393,7 @@ export class MysqlPluginRuntime extends EventEmitter {
     this.sessions.delete(key(plugin));
     if (attemptToken === null || this.connectAttempts.get(key(plugin)) === attemptToken) this.connectAttempts.delete(key(plugin));
     if (session) session.closing = true;
-    const raw = session?.connection?.connection ?? session?.connection;
-    try { raw?.destroy?.(); } catch { /* Driver may already be closed. */ }
+    destroyMysqlConnection(session?.connection);
     if (session?.routeGeneration !== undefined) await this.routeManager.closeRelay(plugin, session.routeGeneration).catch(() => undefined);
     return { connected:false, forced:true };
   }
@@ -539,7 +541,7 @@ export class MysqlPluginRuntime extends EventEmitter {
   async closeAll() {
     const entries = [...this.sessions.entries()];
     this.sessions.clear();
-    await Promise.all(entries.map(async ([, session]) => { session.closing = true; await session.connection.end().catch(() => undefined); }));
+    await Promise.all(entries.map(async ([, session]) => { session.closing = true; await endMysqlConnection(session.connection); }));
   }
 }
 

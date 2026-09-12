@@ -108,7 +108,7 @@ function connectionGuidance(phase: ConnectionPhase, configReady: boolean) {
     return { title: "连接被阻止", description: "请检查凭据、上游 Server 或网络路径；依赖不会被自动绕过。" }
   }
   if (phase === "error") {
-    return { title: "连接失败，需要处理", description: "请查看失败原因后重试。失败不会触发自动重连或配置变更。" }
+    return { title: "连接失败，需要处理", description: "请查看失败原因；若连接未恢复，可点击重试。" }
   }
   if (phase === "unknown") {
     return { title: "连接状态尚未确认", description: "当前没有可用的连接状态，请刷新后核对；打开页面不会自动连接。" }
@@ -261,7 +261,7 @@ export function PluginConnectionPanel({
           {connection.state.error && !connection.state.challenge ? (
             <Alert variant="destructive">
               <XCircle aria-hidden="true" weight="fill" />
-              <AlertTitle>连接操作失败</AlertTitle>
+              <AlertTitle>连接异常</AlertTitle>
               <AlertDescription>{connection.state.error.message}</AlertDescription>
             </Alert>
           ) : null}

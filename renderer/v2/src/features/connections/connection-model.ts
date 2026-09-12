@@ -175,6 +175,24 @@ export function connectionPhaseFromRuntime(
     : environmentPhaseFromRuntime(runtime)
 }
 
+export function pluginConnectionError(
+  runtime: EnvironmentRuntime | null,
+  scope: ConnectionScope,
+  pluginInstanceId?: string,
+): PublicError | null {
+  if (!pluginInstanceId || !runtimeMatchesEnvironmentScope(runtime, scope)) return null
+  const plugin = pluginRuntime(runtime, pluginInstanceId)
+  if (normalizeConnectionPhase(plugin.phase) !== "error"
+    || (plugin.pluginInstanceId !== undefined && plugin.pluginInstanceId !== pluginInstanceId)
+    || (plugin.projectId !== undefined && plugin.projectId !== scope.projectId)
+    || (plugin.environmentId !== undefined && plugin.environmentId !== scope.environmentId)) return null
+  const error = asRecord(plugin.error)
+  const code = readString(error, "code")
+  const message = readString(error, "message")
+  // 仅展示后端公共错误，不将诊断详情或原始运行时字段带入提示。
+  return code && message ? { code, message } : null
+}
+
 export function runtimeConnectionOwner(
   runtime: EnvironmentRuntime | null,
   scope: ConnectionScope,

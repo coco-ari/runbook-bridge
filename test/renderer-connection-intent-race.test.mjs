@@ -198,3 +198,61 @@ test('scope switches fence delayed reads and connection operations',async () => 
   assert.equal(h.current.state.phase,'disconnected');
   assert.deepEqual(published,[]);
 });
+
+test('被动 MySQL 断线显示公共错误，恢复和重连状态清除旧提示',async () => {
+  const error = {code:'ROUTE_UNAVAILABLE',message:'MySQL 连接已经中断，将按环境连接策略重试。'};
+  const failed = sequence => runtime(sequence,'failed',{plugins:{mysql:{
+    pluginInstanceId:'mysql',phase:'error',error:{...error,details:{diagnostic:'不应进入提示'},stack:'不应展示的错误堆栈'},
+    stack:'驱动诊断堆栈',
+  }}});
+  const h = await harness({pluginInstanceId:'mysql',runtime:failed(2)});
+  assert.deepEqual(h.current.state.error,error);
+  assert.equal(h.current.state.phase,'error');
+  h.update({runtime:runtime(3,'reconnecting',{plugins:{mysql:{phase:'reconnecting',error}}})});
+  assert.equal(h.current.state.phase,'connecting');
+  assert.equal(h.current.state.error,null);
+  h.update({runtime:failed(4)});
+  assert.deepEqual(h.current.state.error,error);
+  h.update({runtime:runtime(5,'connected',{plugins:{mysql:{phase:'connected',error}}})});
+  assert.equal(h.current.state.error,null);
+  h.update({runtime:failed(4)});
+  assert.equal(h.current.state.phase,'connected');
+  assert.equal(h.current.state.error,null,'过期的断线通知不能覆盖已经恢复的连接');
+});
+
+test('手动重试期间不显示旧断线提示，重试失败后显示最新公共错误',async () => {
+  const error = {code:'ROUTE_UNAVAILABLE',message:'MySQL 连接已经中断，将按环境连接策略重试。'};
+  const failed = sequence => runtime(sequence,'failed',{plugins:{mysql:{phase:'error',error}}});
+  const request = deferred();
+  let payload;
+  const h = await harness({pluginInstanceId:'mysql',runtime:failed(2),api:{
+    requestConnectionIntent:value => { payload = value; return request.promise; },
+  }});
+  const retry = h.current.retry();
+  h.update({runtime:failed(3)});
+  assert.equal(h.current.state.phase,'connecting');
+  assert.equal(h.current.state.error,null);
+  assert.equal(h.current.state.operation.intent,'retry');
+  request.resolve(ok(result(payload,failed(4))));
+  await retry;
+  assert.equal(h.current.state.operation,null);
+  assert.equal(h.current.state.phase,'error');
+  assert.deepEqual(h.current.state.error,error);
+});
+
+test('状态刷新保留当前插件公共错误且拒绝其它范围或无效错误',async () => {
+  const error = {code:'DATABASE_QUERY_TIMEOUT',message:'MySQL 操作超时，当前连接已关闭。'};
+  let snapshot = runtime(3,'failed',{plugins:{mysql:{phase:'error',error}}});
+  const h = await harness({pluginInstanceId:'mysql',api:{environmentStatus:async () => ok(snapshot)}});
+  await h.current.refresh();
+  assert.deepEqual(h.current.state.error,error);
+  snapshot = runtime(4,'failed',{plugins:{mysql:{pluginInstanceId:'another-plugin',phase:'error',error}}});
+  await h.current.refresh();
+  assert.equal(h.current.state.error,null);
+  h.update({runtime:runtime(5,'failed',{plugins:{mysql:{environmentId:'another-environment',phase:'error',error}}})});
+  assert.equal(h.current.state.error,null);
+  h.update({runtime:runtime(6,'failed',{plugins:{mysql:{phase:'error',error:{code:'ROUTE_UNAVAILABLE',details:{message:'原始诊断'}}}}})});
+  assert.equal(h.current.state.error,null,'无公共 message 时不能从诊断详情拼接提示');
+  h.update({pluginInstanceId:undefined,runtime:runtime(7,'failed',{plugins:{mysql:{phase:'error',error}}})});
+  assert.equal(h.current.state.error,null,'环境面板不能借用任意插件的错误作为环境错误');
+});
