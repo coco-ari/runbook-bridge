@@ -55,9 +55,11 @@ corepack pnpm run test:ui:all
 | `corepack pnpm run test:ui` | 正式 React 壳层、只读数据、导航、主题、布局持久化、键盘、可访问性、CSP |
 | `corepack pnpm run test:ui:business` | 项目、环境、运维说明和快捷提问变更，失败重试与编辑保护 |
 | `corepack pnpm run test:ui:plugins` | 插件新增、编辑、连接、Host Key、安全确认及取消流程 |
+| `corepack pnpm run test:ui:server-workspace` | 服务器终端、文件浏览与传输，以及服务器、数据库、Redis 之间的工作区往返 |
+| `corepack pnpm run test:ui:database` | MySQL 表浏览、结构、只读预览/SQL、结果边界、断连与迟到响应隔离 |
 | `corepack pnpm run test:ui:plugin-matrix` | 插件表单与真实探针、编辑会话、凭据解析器的组合，取消、重试和删除重建 |
 
-`test:ui:all` 串行执行上表四组；这些入口均先构建 Renderer。不要修改生产策略来迁就 smoke，也不要用无条件成功的 mock 或源码正则替代实际行为检查。
+`test:ui:all` 串行执行上表六组；这些入口均先构建 Renderer。不要修改生产策略来迁就 smoke，也不要用无条件成功的 mock 或源码正则替代实际行为检查。
 
 ## 构建与包验证
 

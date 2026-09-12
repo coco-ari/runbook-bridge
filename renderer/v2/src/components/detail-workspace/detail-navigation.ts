@@ -10,6 +10,7 @@ export type DetailSelectionKind =
   | "project"
   | "environment"
   | "plugin"
+  | "mysql-plugin"
   | "unknown-plugin"
 
 export interface DetailTabDescriptor {
@@ -46,6 +47,7 @@ export function detailTabsForSelection(
   kind: DetailSelectionKind,
 ): readonly DetailTabDescriptor[] {
   if (kind === "environment") return ENVIRONMENT_TABS
+  if (kind === "mysql-plugin") return PLUGIN_TABS
   if (kind === "plugin") return PLUGIN_TABS
   if (kind === "unknown-plugin") return UNKNOWN_PLUGIN_TABS
   return PROJECT_TABS
@@ -63,6 +65,7 @@ export function detailSelectionKind(
   pluginType: string | null,
 ): DetailSelectionKind {
   if (pluginType === "unknown") return "unknown-plugin"
+  if (pluginType === "mysql") return "mysql-plugin"
   if (pluginType) return "plugin"
   return hasEnvironment ? "environment" : "project"
 }

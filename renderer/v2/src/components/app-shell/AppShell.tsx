@@ -9,6 +9,9 @@ import {
 } from "@/bridge/ai-ops-v2"
 import type { ServerWorkspaceEntry } from "@/features/server-workspace/ServerWorkspace"
 import { serverWorkspaceKey } from "@/features/server-workspace/workspace-model"
+import { MysqlDatabaseWorkspace } from "@/features/database/MysqlDatabaseWorkspace"
+import { mysqlDatabaseName, mysqlWorkspaceMatchesScope, mysqlWorkspaceSessionKey } from "@/features/database/mysql-workspace-model"
+import { normalizeEnvironmentRuntime } from "@/features/workspace/workspace-read-model"
 import { GlobalCommand } from "@/components/app-shell/GlobalCommand"
 import { WorkspaceDetail, type WorkspaceDetailAction } from "@/components/detail-workspace/WorkspaceDetail"
 import {
@@ -152,6 +155,7 @@ export function AppShell() {
     if (["project-deleted", "environment-deleted", "plugin-deleted"].includes(change.type) && change.projectId) removeServerWorkspaces({ projectId: change.projectId, ...(change.environmentId ? { environmentId: change.environmentId } : {}), ...(change.pluginInstanceId ? { pluginInstanceId: change.pluginInstanceId } : {}) })
   }), [api, removeServerWorkspaces])
   const [commandOpen, setCommandOpen] = useState(false)
+  const [databaseSession, setDatabaseSession] = useState<{ key: string; visible: boolean } | null>(null)
   const [detailTab, setDetailTab] = useState("overview")
   const [notice, setNotice] = useState("")
   const [runbookDirty, setRunbookDirty] = useState(false)
@@ -335,6 +339,55 @@ export function AppShell() {
       (plugin) => plugin.pluginInstanceId === selection.pluginInstanceId,
     ) ?? null,
   )
+  const databaseScope = selectedProject && selectedEnvironment && selectedPluginRecord?.pluginType === "mysql"
+    ? { projectId: selectedProject.projectId, environmentId: selectedEnvironment.environmentId, pluginInstanceId: selectedPluginRecord.pluginInstanceId }
+    : null
+  const databaseConnected = Boolean(databaseScope && !environmentStatus.error
+    && scopedRuntime?.plugins.find((plugin) => plugin.pluginInstanceId === databaseScope.pluginInstanceId)?.status === "connected")
+  const databaseSessionKey = databaseScope && selectedPluginRecord && databaseConnected
+    && mysqlDatabaseName(selectedPluginRecord) && mysqlWorkspaceMatchesScope(databaseScope, selectedPluginRecord)
+    ? mysqlWorkspaceSessionKey(databaseScope, selectedPluginRecord) : null
+  const databaseWorkspaceRetained = Boolean(databaseSession && databaseSession.key === databaseSessionKey)
+  const databaseWorkspaceVisible = databaseWorkspaceRetained && Boolean(databaseSession?.visible) && !activeServerWorkspace
+  const workspaceVisible = Boolean(activeServerWorkspace) || databaseWorkspaceVisible
+  useEffect(() => {
+    if (databaseSession && databaseSession.key !== databaseSessionKey) setDatabaseSession(null)
+  }, [databaseSession, databaseSessionKey])
+  useEffect(() => {
+    if (!databaseSessionKey || !databaseScope) return
+    let latestSequence = rawRuntime?.sequence ?? -1
+    return api.onEnvironmentStatus((event) => {
+      const normalized = normalizeEnvironmentRuntime(event, databaseScope)
+      if (!normalized || normalized.sequence <= latestSequence) return
+      latestSequence = normalized.sequence
+      // 即使断连和重连在同一批渲染中到达，也必须清除旧查询会话。
+      const plugin = normalized.plugins.find((item) => item.pluginInstanceId === databaseScope.pluginInstanceId)
+      if (plugin ? plugin.status !== "connected" : !normalized.pluginsPartial) setDatabaseSession(null)
+    })
+    // 会话键包含完整作用域；序号在订阅内持续更新，避免每次事件重订阅。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, databaseSessionKey])
+  const previousDatabaseVisible = useRef(false)
+  useEffect(() => {
+    const restoreFocus = databaseWorkspaceVisible || previousDatabaseVisible.current
+    previousDatabaseVisible.current = databaseWorkspaceVisible
+    if (!restoreFocus) return
+    if (databaseWorkspaceVisible) setCommandOpen(false)
+    // 等待分栏子组件完成可见性提交后恢复焦点；新切换或弹窗会取消旧请求。
+    const timer = window.setTimeout(() => {
+      const testId = databaseWorkspaceVisible ? "mysql-workspace-back" : "plugin-workspace-open"
+      focusWorkspaceElement(document.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`))
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [databaseWorkspaceVisible])
+  const openDatabaseWorkspace = () => {
+    if (!databaseSessionKey) return
+    setActiveServerWorkspace(null)
+    setDatabaseSession({ key: databaseSessionKey, visible: true })
+  }
+  const closeDatabaseWorkspace = () => {
+    setDatabaseSession((current) => current ? { ...current, visible: false } : null)
+  }
   const pluginsByEnvironment = useMemo(() => {
     const result = new Map<string, readonly WorkspacePluginReadModel[]>()
     if (selectedEnvironment && scopedPlugins) {
@@ -927,6 +980,7 @@ export function AppShell() {
       if (!retained && serverWorkspaces.length >= 8) { toast.error("最多保留 8 个服务器工作区，请先关闭一个工作区。"); return }
       const nextEntry = { plugin: action.plugin, projectName: selectedProject?.name ?? "", environmentName: selectedEnvironment?.name ?? "", runtime: rawRuntime }
       setServerWorkspaces((current) => retained ? current.map((entry) => serverWorkspaceKey(entry.plugin) === key ? nextEntry : entry) : [...current, nextEntry])
+      setDatabaseSession((current) => current ? { ...current, visible: false } : null)
       setActiveServerWorkspace(key)
       setCommandOpen(false)
     } else if (action.type === "create-project") requestNavigation(() => setProjectSurface({ kind: "create" }))
@@ -1042,9 +1096,9 @@ export function AppShell() {
 
   return (
     <div className="h-full max-h-full min-h-0 relative w-full min-w-0 overflow-hidden bg-background text-foreground" data-shell-ready="true" data-testid="react-app-shell">
-      <div inert={Boolean(activeServerWorkspace)} aria-hidden={Boolean(activeServerWorkspace)} style={{ visibility: activeServerWorkspace ? "hidden" : "visible", height: "100%", width: "100%" }}>
       <a
         className="fixed left-3 top-2 z-[70] -translate-y-14 rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground shadow-sm outline-none transition-transform focus:translate-y-0 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background"
+        hidden={workspaceVisible}
         href="#detail-main"
         onClick={(event) => {
           event.preventDefault()
@@ -1059,9 +1113,10 @@ export function AppShell() {
       <ProjectOrderAnnouncement announcement={projectOrder.announcement} />
       <EnvironmentOrderAnnouncement announcement={environmentOrder.announcement} />
 
-      <ResizablePanelGroup aria-label="三栏工作台" className="app-shell-grid" defaultLayout={layoutState.layout} elementRef={panelGroupElementRef} groupRef={panelGroupRef} id="app-shell-panels" onLayoutChanged={handleLayoutChanged} orientation="horizontal">
+      <ResizablePanelGroup inert={workspaceVisible} aria-label="三栏工作台" className="app-shell-grid" defaultLayout={layoutState.layout} elementRef={panelGroupElementRef} groupRef={panelGroupRef} id="app-shell-panels" onLayoutChanged={handleLayoutChanged} orientation="horizontal">
         <ResizablePanel collapsedSize={PROJECT_RAIL_COLLAPSED_SIZE} collapsible defaultSize="224px" groupResizeBehavior="preserve-pixel-size" id={APP_SHELL_PANEL_IDS.project} maxSize={viewportWidth < 720 ? PROJECT_RAIL_COLLAPSED_SIZE : "300px"} minSize={viewportWidth < 720 ? PROJECT_RAIL_COLLAPSED_SIZE : "176px"} onResize={syncProjectSize} panelRef={projectPanelRef}>
           <ProjectRail
+            shortcutsDisabled={workspaceVisible}
             collapsed={compactProjectRail}
             expandDisabled={viewportWidth < 720}
             error={workspace.error}
@@ -1132,6 +1187,8 @@ export function AppShell() {
               scope={pluginWorkMode.scope}
             />
           ) : <WorkspaceDetail
+            onOpenDatabaseWorkspace={openDatabaseWorkspace}
+            databaseWorkspaceRetained={databaseWorkspaceRetained}
             activeTab={detailTab}
             api={api}
             collapsed={layoutState.detailCollapsed}
@@ -1170,15 +1227,34 @@ export function AppShell() {
           />}
         </ResizablePanel>
       </ResizablePanelGroup>
-      </div>
       {serverWorkspaces.map((entry) => {
         const key = serverWorkspaceKey(entry.plugin)
         const back = () => { setActiveServerWorkspace(null); scheduleWorkspaceFocus(() => document.querySelector<HTMLElement>('[data-testid="plugin-open-workspace"]')) }
         return <Suspense key={key} fallback={key === activeServerWorkspace ? <div className="absolute inset-0 z-30 grid place-items-center bg-background text-sm text-muted-foreground">正在打开服务器工作区…</div> : null}><ServerWorkspace api={api} entry={entry} visible={key === activeServerWorkspace} onBack={back} onClose={() => { setServerWorkspaces((current) => current.filter((item) => serverWorkspaceKey(item.plugin) !== key)); back() }} /></Suspense>
       })}
 
+      {databaseWorkspaceRetained && databaseScope && selectedPluginRecord && selectedProject && selectedEnvironment ? (
+        <div
+          className="absolute inset-0 z-40 min-h-0 min-w-0 bg-background"
+          data-testid="mysql-full-window-workspace"
+          hidden={!databaseWorkspaceVisible}
+          inert={!databaseWorkspaceVisible}
+        >
+          <MysqlDatabaseWorkspace
+            api={api}
+            connected={databaseConnected}
+            environmentName={selectedEnvironment.name}
+            key={databaseSessionKey}
+            onBack={closeDatabaseWorkspace}
+            plugin={selectedPluginRecord}
+            projectName={selectedProject.name}
+            scope={databaseScope}
+          />
+        </div>
+      ) : null}
+
       <GlobalCommand
-        disabled={Boolean(activeServerWorkspace)}
+        disabled={workspaceVisible}
         onCreateEnvironment={selectedProject ? () => {
           rememberFocus()
           requestNavigation(() => setEnvironmentSurface({ kind: "create", project: selectedProject }))

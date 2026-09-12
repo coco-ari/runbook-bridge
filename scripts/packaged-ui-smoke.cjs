@@ -743,7 +743,7 @@ async function main() {
     assert.equal(inspection.noPageOverflow, true);
     assert.equal(inspection.overviewOk, true);
     assert.equal(inspection.projectCount, 0);
-    assert.equal(inspection.apiCount, 69);
+    assert.equal(inspection.apiCount, 73);
     // 在隔离的空工作区验证标签参数，不连接任何服务器。
     const terminalContract = await running.cdp.evaluate("(async () => { const scope = { projectId:'packaged-tab-probe', environmentId:'probe', pluginInstanceId:'probe', cols:80, rows:24 }; return { valid:await window.aiOps.v2.serverTerminalOpen({...scope, tabId:'valid-tab', defaultColors:false}), invalidColors:await window.aiOps.v2.serverTerminalOpen({...scope,defaultColors:'yes'}), invalid:await window.aiOps.v2.serverTerminalOpen({...scope, tabId:'../invalid'}) }; })()");
     assert.equal(terminalContract.valid.ok, false);
@@ -805,7 +805,7 @@ async function main() {
       return {ok: overview?.ok === true, projectCount: Array.isArray(overview?.data) ? overview.data.length : -1,
         apiCount: Object.keys(window.aiOps.v2).length};
     })()`);
-    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 69});
+    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 73});
     assert.deepEqual(running.httpRequests, []);
     await selectThemePreference(running.cdp, 'system');
     await emulateSystemTheme(running.cdp, 'dark');
@@ -825,7 +825,7 @@ async function main() {
         availableWidth: compactSearch.availableWidth, nativeTextBox: compactSearch.nativeBox?.source ?? 'conservative-cancel-budget'},
     })}\n`);
     process.stdout.write(
-      `Packaged React UI smoke passed (69 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
+      `Packaged React UI smoke passed (73 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
     );
   } catch (error) {
     if (running) {

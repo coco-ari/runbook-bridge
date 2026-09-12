@@ -32,6 +32,11 @@ test('detail navigation follows the selected business scope', async () => {
   assert.equal(navigation.isDetailTabAllowed('plugin','runbook'),false);
   assert.equal(navigation.isDetailTabAllowed('environment','agent'),false);
   assert.equal(navigation.detailSelectionKind(true,'server'),'plugin');
+  assert.equal(navigation.detailSelectionKind(true,'mysql'),'mysql-plugin');
+  assert.deepEqual(values('mysql-plugin'),['overview','agent','audit','confirmations']);
+  assert.equal(navigation.isDetailTabAllowed('mysql-plugin','database'),false);
+  assert.equal(navigation.isDetailTabAllowed('plugin','database'),false);
+  assert.equal(navigation.isDetailTabAllowed('environment','database'),false);
   assert.equal(navigation.detailSelectionKind(true,'unknown'),'unknown-plugin');
   assert.equal(navigation.detailSelectionKind(true,null),'environment');
   assert.equal(navigation.detailSelectionKind(false,null),'project');

@@ -63,6 +63,10 @@ const EXPECTED_API_NAMES = [
   'confirmCredentialMigration',
   'revealCredential',
   'listPluginDatabases',
+  'mysqlListTables',
+  'mysqlDescribeTable',
+  'mysqlQueryReadonly',
+  'mysqlPreviewTable',
   'listAudit',
   'clearAudit',
   'listConfirmations',
@@ -99,14 +103,14 @@ function runtimeApiNames(source) {
     .map((entry) => entry[1]);
 }
 
-test('React bridge freezes all 69 preload API names and strict signatures', async () => {
+test('React bridge freezes all 73 preload API names and strict signatures', async () => {
   const [preload,bridge,globalTypes] = await Promise.all([
     fs.readFile('src/preload.cjs','utf8'),
     fs.readFile('renderer/v2/src/bridge/ai-ops-v2.ts','utf8'),
     fs.readFile('renderer/v2/src/types/global.d.ts','utf8'),
   ]);
 
-  assert.equal(EXPECTED_API_NAMES.length,69);
+  assert.equal(EXPECTED_API_NAMES.length,73);
   assert.deepEqual(sorted(preloadApiNames(preload)),sorted(EXPECTED_API_NAMES));
   assert.deepEqual(sorted(interfaceApiNames(bridge)),sorted(EXPECTED_API_NAMES));
   assert.deepEqual(sorted(runtimeApiNames(bridge)),sorted(EXPECTED_API_NAMES));

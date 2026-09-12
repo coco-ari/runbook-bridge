@@ -99,6 +99,7 @@ export type ProjectRailAction =
   | Readonly<{ type: "open-confirmations" }>
 
 interface ProjectRailProps {
+  readonly shortcutsDisabled?: boolean
   readonly collapsed: boolean
   readonly expandDisabled?: boolean
   readonly error?: WorkspaceReadError | null
@@ -205,6 +206,7 @@ function ProjectActionsMenu({ project, onAction, selectedProjectId }: {
 }
 
 export function ProjectRail({
+  shortcutsDisabled = false,
   collapsed,
   expandDisabled = false,
   error = null,
@@ -231,7 +233,8 @@ export function ProjectRail({
   const toggleDisabled = collapsed && expandDisabled
 
   useEffect(() => {
-    // This desktop rail is resized in place, never replaced by a mobile Sheet.
+    if (shortcutsDisabled) return
+    // 此导航栏只在主工作台中响应快捷键。
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.shiftKey) return
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "b") return
@@ -247,7 +250,7 @@ export function ProjectRail({
     }
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [onToggleCollapsed, toggleDisabled])
+  }, [onToggleCollapsed, toggleDisabled, shortcutsDisabled])
   const normalizedProjectQuery = normalizeProjectQuery(projectQuery)
   const visibleProjects = useMemo(() => {
     if (!normalizedProjectQuery) return projects

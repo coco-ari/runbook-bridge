@@ -13,6 +13,11 @@ app.setPath('userData', temporaryRoot);
 nativeTheme.themeSource = 'dark';
 const scope = { projectId: 'project-workspace-smoke', environmentId: 'env-workspace-smoke', pluginInstanceId: 'server-workspace-smoke' };
 const plugin = { ...scope, pluginType: 'server', displayName: '工作区验证服务器', revision: 1, configState: 'ready', target: { host: 'server.example.invalid', port: 22 }, auth: { username: 'operator', type: 'agent' }, uplink: { type: 'direct' }, sources: [], assessment: { phase: 'connected', primaryStatus: { kind: 'connected', label: '已连接' } } };
+const mysqlScope = { ...scope, pluginInstanceId: 'mysql-workspace-coexistence' };
+const mysqlPlugin = { ...mysqlScope, pluginType: 'mysql', displayName: '并存验证数据库', revision: 1, configState: 'ready', target: { host: 'database.example.invalid', port: 3306, database: 'workspace_fixture' }, auth: { username: 'readonly' }, transport: { kind: 'direct' }, tls: { mode: 'required' }, limits: { maxRows: 100, maxBytes: 65536, timeoutMs: 2500 }, assessment: plugin.assessment };
+const redisPlugin = { ...mysqlPlugin, pluginInstanceId: 'redis-workspace-coexistence', pluginType: 'redis', displayName: '并存验证缓存', target: { host: 'cache.example.invalid', port: 6379, db: 0 }, keyPatterns: ['fixture:*'] };
+const plugins = [plugin, mysqlPlugin, redisPlugin];
+const mysqlCalls = [];
 let sequence = 1;
 let connected = true;
 let win;
@@ -35,8 +40,8 @@ let completed = false;
 let workspaceFiles;
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const ok = (data) => ({ ok: true, data });
-const runtime = () => ({ projectId: scope.projectId, environmentId: scope.environmentId, phase: connected ? 'connected' : 'disconnected', sequence, eligibleCount: 1, connectedCount: connected ? 1 : 0, errorCount: 0, blockedCount: 0, pluginsPartial: false, plugins: { [scope.pluginInstanceId]: { pluginInstanceId: scope.pluginInstanceId, phase: connected ? 'connected' : 'disconnected', assessment: { phase: connected ? 'connected' : 'disconnected' } } } });
-const project = () => ({ schemaVersion: 2, projectId: scope.projectId, name: '服务器工作区演示', revision: 1, environmentCount: 1, pluginCount: 1, environments: [{ projectId: scope.projectId, environmentId: scope.environmentId, name: '测试环境', revision: 1, pluginCount: 1, readyPluginCount: 1, resourcePreview: [plugin], resourcePreviewTruncated: false, runtime: runtime() }] });
+const runtime = () => ({ projectId: scope.projectId, environmentId: scope.environmentId, phase: connected ? 'connected' : 'partial', sequence, eligibleCount: plugins.length, connectedCount: connected ? plugins.length : plugins.length - 1, errorCount: 0, blockedCount: 0, pluginsPartial: false, plugins: Object.fromEntries(plugins.map(item => { const phase = item.pluginType !== 'server' || connected ? 'connected' : 'disconnected'; return [item.pluginInstanceId, { pluginInstanceId: item.pluginInstanceId, phase, assessment: { phase } }]; })) });
+const project = () => ({ schemaVersion: 2, projectId: scope.projectId, name: '服务器工作区演示', revision: 1, environmentCount: 1, pluginCount: plugins.length, environments: [{ projectId: scope.projectId, environmentId: scope.environmentId, name: '测试环境', revision: 1, pluginCount: plugins.length, readyPluginCount: plugins.length, resourcePreview: plugins, resourcePreviewTruncated: false, runtime: runtime() }] });
 function handle(channel, handler) { ipcMain.handle('v2:' + channel, async (_event, input) => { try { return ok(await handler(input)); } catch (error) { return { ok: false, error: { code: error.code ?? 'INTERNAL_ERROR', message: error.message } }; } }); }
 function scoped(input) { assert.equal(input.projectId, scope.projectId); assert.equal(input.environmentId, scope.environmentId); assert.equal(input.pluginInstanceId, scope.pluginInstanceId); }
 function canonicalFixturePath(value) {
@@ -58,7 +63,9 @@ function register() {
   handle('project-list', () => [project()]);
   handle('environment-list', () => project().environments);
   handle('environment-status', () => runtime());
-  handle('plugin-list', () => [plugin]);
+  handle('plugin-list', () => plugins);
+  handle('mysql-list-tables', input => { assert.deepEqual(input, { ...mysqlScope, limit: 100 }); mysqlCalls.push(input); return { tables: [{ name: 'records', type: 'BASE TABLE', queryable: true }], nextCursor: null, truncated: false }; });
+  handle('mysql-query-readonly', input => { assert.equal(input.projectId, mysqlScope.projectId); assert.equal(input.environmentId, mysqlScope.environmentId); assert.equal(input.pluginInstanceId, mysqlScope.pluginInstanceId); assert.equal(input.sql, 'SELECT 1 AS integration_probe'); mysqlCalls.push(input); return { rows: [{ integration_probe: 1 }], rowCount: 1, bytes: 25, truncated: false, columns: [{ name: 'integration_probe', table: null, type: 3 }], durationMs: 1, fingerprint: 'integration-fixture', limitsApplied: mysqlPlugin.limits }; });
   handle('confirmation-list', () => []);
   handle('audit-list', () => ({ entries: [], nextCursor: null }));
   handle('plugin-assess', () => plugin.assessment);
@@ -136,6 +143,41 @@ async function snapshot(name) {
   await wait(180);
   await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   fs.writeFileSync(path.join(absolute, name), (await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());
+}
+
+async function assertWorkspaceCoexistence() {
+  const terminalId = opened[0];
+  const closedBefore = closed.length;
+  const writesBefore = writes.length;
+  const railWidth = await evaluate('document.querySelector("[data-testid=project-rail]").getBoundingClientRect().width');
+  await click('[data-testid="plugin-trigger-mysql-workspace-coexistence"]');
+  await until('document.querySelector("[data-testid=plugin-workspace-open]")?.disabled === false', '数据库详情入口');
+  assert.equal(mysqlCalls.length, 0, '切换到数据库详情不读取数据库');
+  assert.equal(await evaluate('document.querySelector("[data-testid=plugin-open-workspace]") === null'), true, '数据库详情不显示服务器入口');
+  await click('[data-testid="plugin-workspace-open"]');
+  await until('document.querySelector("[data-testid=mysql-table-item]")?.textContent.includes("records")', '数据库表列表');
+  assert.ok(await evaluate('document.querySelector("[data-testid=server-workspace]").hidden'), '数据库前台保留隐藏的服务器工作区');
+  await evaluate("(() => { const editor = document.querySelector('[data-testid=mysql-sql-editor]'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(editor, 'SELECT 1 AS integration_probe'); editor.dispatchEvent(new Event('input', { bubbles: true })); })()");
+  await click('[data-testid="mysql-query-run"]');
+  await until('document.querySelector("[data-testid=mysql-query-result]")?.textContent.includes("integration_probe")', '数据库结果');
+  await evaluate("(() => { document.activeElement?.blur(); for (const key of ['k', 'n', 'b']) document.body.dispatchEvent(new KeyboardEvent('keydown', { key, ctrlKey: true, bubbles: true, cancelable: true })); })()");
+  assert.equal(await evaluate('document.querySelector("[role=dialog]") === null'), true, '数据库工作区不触发后台命令或创建弹窗');
+  assert.equal(await evaluate('document.querySelector("[data-testid=project-rail]").getBoundingClientRect().width'), railWidth, '数据库快捷键不改变主工作台分栏');
+  assert.equal(writes.length, writesBefore, 'SQL 输入和查询不会发送给隐藏终端');
+  assert.equal(closed.length, closedBefore, '数据库查询不会关闭服务器会话');
+  assert.equal(terminalSessions.get(terminalId).status, 'open');
+  await click('[data-testid="mysql-workspace-back"]');
+  await until('document.activeElement?.dataset.testid === "plugin-workspace-open"', '数据库返回焦点');
+  await click('[data-testid="plugin-workspace-open"]');
+  assert.equal(mysqlCalls.length, 2, '继续数据库工作区不重复查询');
+  assert.ok(await evaluate('document.querySelector("[data-testid=mysql-query-result]")?.textContent.includes("integration_probe")'), '继续时保留数据库结果');
+  await click('[data-testid="mysql-workspace-back"]');
+  await click('[data-testid="plugin-trigger-redis-workspace-coexistence"]');
+  await until('document.querySelector("[data-testid=detail-workspace] h1")?.textContent.includes("并存验证缓存")', 'Redis 详情');
+  assert.ok(await evaluate('document.querySelector("[data-testid=plugin-open-workspace], [data-testid=plugin-workspace-open]") === null'), 'Redis 详情没有无效工作区入口');
+  assert.ok(await evaluate('document.querySelector("[data-testid=mysql-full-window-workspace]") === null'), '切换插件清除数据库旧结果');
+  await click('[data-testid="plugin-trigger-server-workspace-smoke"]');
+  await until('document.querySelector("[data-testid=plugin-open-workspace]")?.textContent.includes("继续工作区")', '继续服务器工作区');
 }
 
 async function run() {
@@ -322,6 +364,7 @@ async function run() {
   await until(`document.querySelector('.server-terminal-pane [role="alert"]')?.textContent.includes('64 KB')`, '中文超限提示');
   await click('[aria-label="收起终端提示"]');
   await click('[data-testid="server-workspace-back"]');
+  await assertWorkspaceCoexistence();
   await click('[data-testid="plugin-open-workspace"]');
   assert.equal(opened.length, 1, '返回重开保留同一终端');
   assert.ok(await evaluate(`document.querySelector('.server-preview-tab-panel:not([hidden]) .server-preview-content')?.textContent.includes('server_name')`), '返回保留预览');
@@ -333,7 +376,9 @@ async function run() {
   assert.equal(uploads[0].path, '/srv/release.tar', '确认锁定目录');
   const progressBefore = uploads[0].transferred;
   await click('[data-testid="server-workspace-back"]');
-  await wait(1800);
+  // 工作区隐藏时空闲轮询最长为 4 秒，等待实际进度避免依赖固定时序。
+  const transferDeadline = Date.now() + 8000;
+  while (uploads[0].transferred <= progressBefore && Date.now() < transferDeadline) await wait(50);
   assert.ok(uploads[0].transferred > progressBefore, '返回详情后任务继续');
   await click('[data-testid="plugin-open-workspace"]');
   await clickText('舒适密度').catch(async () => clickText('紧凑密度'));

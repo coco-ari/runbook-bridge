@@ -6,6 +6,7 @@ import { assessEnvironmentSnapshot, publicPluginAssessment } from './plugin-read
 import { pluginWithRunbookSources, resourceHintsFromRunbook } from './runbook-sources.mjs';
 import { workspaceInternals } from './workspace-store.mjs';
 import { isolateNewPluginIdentity } from './plugin-creation-identity.mjs';
+import { prepareDesktopMysqlOperation } from './desktop-mysql-operation.mjs';
 
 const MAX_RUNBOOK_BYTES = 64 * 1024;
 const AGENT_PLUGIN_FIELDS = {
@@ -279,6 +280,11 @@ export class V2Service {
   async requireCallable(params) {
     const scope = scopeOf(params);
     const verified = await this.contextManager.verify(scope.projectId, scope.environmentId, scope.pluginInstanceId, params.contextToken, scope.clientInstanceId);
+    this.assertPluginConnected(scope, verified.plugin);
+    return { plugin:pluginWithRunbookSources(verified.plugin, verified.runbook.content), environment:verified.environment };
+  }
+
+  assertPluginConnected(scope, plugin) {
     const runtime = this.connectionManager.snapshot(scope.projectId, scope.environmentId).plugins[scope.pluginInstanceId];
     if (runtime?.phase !== 'connected') {
       const assessment = runtime?.assessment ?? {};
@@ -295,7 +301,7 @@ export class V2Service {
               : runtime?.phase === 'reconnecting'
                 ? 'PLUGIN_RECONNECTING'
                 : 'PLUGIN_NOT_CONNECTED';
-      throw new AppError(code, runtime?.error?.message ?? `${verified.plugin.displayName ?? '目标插件'}尚未连接，请在桌面端选择“连接并继续”。`, {
+      throw new AppError(code, runtime?.error?.message ?? `${plugin.displayName ?? '目标插件'}尚未连接，请在桌面端选择“连接并继续”。`, {
         phase:runtime?.phase ?? 'disconnected',
         reason:runtime?.reason ?? null,
         action:'connect-and-continue',
@@ -304,7 +310,28 @@ export class V2Service {
         contextRefreshRequired:true,
       });
     }
-    return { plugin:pluginWithRunbookSources(verified.plugin, verified.runbook.content), environment:verified.environment };
+  }
+
+  async invokeDesktopMysql(payload, operation) {
+    const {scope, capability, args, preview} = prepareDesktopMysqlOperation(payload, operation);
+    const execute = async () => {
+      this.connectionManager.assertConfigurationStable?.(scope.projectId, scope.environmentId);
+      return this.#invokeWithCallable(scope, capability, args, async () => {
+        const plugin = await this.workspaceStore.getPlugin(scope.projectId, scope.environmentId, scope.pluginInstanceId);
+        if (plugin.pluginType !== 'mysql') throw new AppError('PLUGIN_TYPE_MISMATCH', '目标不是 MySQL 插件。');
+        if (plugin.projectId !== scope.projectId || plugin.environmentId !== scope.environmentId || plugin.pluginInstanceId !== scope.pluginInstanceId) {
+          throw new AppError('SCOPE_MISMATCH', '数据库插件不属于当前项目和环境。');
+        }
+        assertPluginConfigurationReady(plugin);
+        this.assertPluginConnected(scope, plugin);
+        return {
+          plugin: preview ? {...plugin, limits:{...plugin.limits, maxRows:Math.min(plugin.limits.maxRows, 100)}} : plugin,
+        };
+      }, 'user');
+    };
+    return this.mutationCoordinator
+      ? this.mutationCoordinator.runEnvironmentOperation(scope.projectId, scope.environmentId, execute)
+      : execute();
   }
 
   async invoke(params, capability, args = {}) {
@@ -318,12 +345,16 @@ export class V2Service {
   }
 
   async invokeUnlocked(params, capability, args = {}) {
+    return this.#invokeWithCallable(params, capability, args, () => this.requireCallable(params), 'agent');
+  }
+
+  async #invokeWithCallable(params, capability, args, resolveCallable, actor) {
     const requestId = String(params.requestId ?? crypto.randomUUID()).slice(0, 128);
     let plugin;
     let operationArgs = args;
     let confirmationId = null;
     try {
-      const callable = await this.requireCallable(params);
+      const callable = await resolveCallable();
       plugin = callable.plugin;
       if (plugin.pluginType === 'server' && capabilityRule('server', capability).decision === 'confirm') {
         operationArgs = await this.serverOperations.prepareMutation(plugin, capability, args);
@@ -352,7 +383,7 @@ export class V2Service {
         await this.workspaceStore.appendAudit(params.projectId, {
           type:'plugin-operation-decision', requestId, environmentId:params.environmentId,
           pluginInstanceId:params.pluginInstanceId, pluginType:attempted?.pluginType,
-          pluginNameSnapshot:attempted?.displayName, actor:'agent', capability,
+          pluginNameSnapshot:attempted?.displayName, actor, capability,
           operationSummary:attempted ? auditSummary(attempted, capability, operationArgs) : String(capability),
           result:value.code === 'CONFIRMATION_REQUIRED' ? 'pending-confirmation' : 'blocked', errorCode:value.code,
           confirmationId:value.code === 'CONFIRMATION_REQUIRED' ? value.details?.requestId ?? null : null,
@@ -364,7 +395,7 @@ export class V2Service {
     await this.workspaceStore.appendAudit(plugin.projectId, {
       type: 'plugin-operation-started', requestId, environmentId: plugin.environmentId,
       pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, capability,
-      pluginNameSnapshot: plugin.displayName, actor: 'agent', operationSummary: auditSummary(plugin, capability, operationArgs), result: 'started', confirmationId,
+      pluginNameSnapshot: plugin.displayName, actor, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'started', confirmationId,
     });
     if (confirmationId) this.workspaceChanged?.({ type:'confirmation-execution', status:'running', confirmationId, projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId });
     try {
@@ -372,13 +403,13 @@ export class V2Service {
       if (plugin.pluginType === 'server') result = await this.invokeServer(plugin, capability, operationArgs);
       else result = await this.pluginManager.invoke(plugin, capability, { ...operationArgs, policyApproved: true });
       const durationMs = Date.now() - started;
-      const auditFailed = await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor: 'agent', capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'success', durationMs, confirmationId }).then(() => false, () => true);
+      const auditFailed = await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor, capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'success', durationMs, confirmationId }).then(() => false, () => true);
       if (confirmationId) this.workspaceChanged?.({ type:'confirmation-execution', status:'success', confirmationId, projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, durationMs });
       return auditFailed && result && typeof result === 'object' ? { ...result, auditWarning:true } : result;
     } catch (error) {
       const durationMs = Date.now() - started;
       const errorCode = toPublicError(error).code;
-      await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor: 'agent', capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'error', errorCode, durationMs, confirmationId }).catch(() => undefined);
+      await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor, capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'error', errorCode, durationMs, confirmationId }).catch(() => undefined);
       if (confirmationId) this.workspaceChanged?.({ type:'confirmation-execution', status:'error', confirmationId, projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, durationMs, errorCode });
       throw error;
     }

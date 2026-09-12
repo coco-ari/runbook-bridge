@@ -79,6 +79,8 @@ export type WorkspaceDetailAction =
 
 export interface WorkspaceDetailProps {
   readonly serverWorkspaceRetained?: boolean
+  readonly onOpenDatabaseWorkspace: () => void
+  readonly databaseWorkspaceRetained: boolean
   readonly activeTab: string
   readonly api: AiOpsV2Api
   readonly collapsed: boolean
@@ -221,6 +223,8 @@ function SelectionActions({
 
 export function WorkspaceDetail({
   serverWorkspaceRetained = false,
+  onOpenDatabaseWorkspace,
+  databaseWorkspaceRetained,
   api,
   activeTab,
   collapsed,
@@ -534,7 +538,17 @@ export function WorkspaceDetail({
                   onReload={onReloadEnvironment}
                   plugin={plugin}
                   connectionPanel={supportedPlugin ? (
-                    <PluginConnectionPanel api={api} onOpenWorkspace={() => onAction({ type: "open-server-workspace", plugin: supportedPlugin })} workspaceRetained={serverWorkspaceRetained} onEdit={() => onAction({ type: "edit-plugin", plugin: supportedPlugin, returnFocus: "plugin-action-edit" })} onRuntime={onReloadEnvironment} plugin={supportedPlugin} runtime={rawRuntime} />
+                    <PluginConnectionPanel
+                      api={api}
+                      onOpenWorkspace={supportedPlugin.pluginType === "server"
+                        ? () => onAction({ type: "open-server-workspace", plugin: supportedPlugin })
+                        : supportedPlugin.pluginType === "mysql" ? onOpenDatabaseWorkspace : undefined}
+                      workspaceRetained={supportedPlugin.pluginType === "server" ? serverWorkspaceRetained : databaseWorkspaceRetained}
+                      onEdit={() => onAction({ type: "edit-plugin", plugin: supportedPlugin, returnFocus: "plugin-action-edit" })}
+                      onRuntime={onReloadEnvironment}
+                      plugin={supportedPlugin}
+                      runtime={rawRuntime}
+                    />
                   ) : null}
                 />
               ) : environment ? (
@@ -559,7 +573,7 @@ export function WorkspaceDetail({
               )}
             </PersistentTabsContent>
 
-            {selectionKind === "plugin" ? (
+            {selectionKind === "plugin" || selectionKind === "mysql-plugin" ? (
               <PersistentTabsContent activeValue={activeTab} value="agent">
                 {supportedPlugin ? (
                   <PluginAgentAccess api={api} onDirtyChange={onAgentAccessDirtyChange} onSavingChange={onAgentAccessSavingChange} onUpdated={onPluginUpdated} plugin={supportedPlugin} />
