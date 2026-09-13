@@ -90,7 +90,7 @@ corepack pnpm start
 
 ### macOS 源码构建与 MCP
 
-macOS 适配在 `codex/macos-support` 分支开发，目标与 Windows 功能、内容区界面一致。上面的已发布下载链接仍是 Windows 安装包；新增构建流程及测试入口不代表 Mac 实机验收已经完成，进度见 [macOS 适配方案](docs/macos-adaptation.md)。
+macOS 适配位于 `codex/macos-support` 分支，Apple Silicon 与 Intel 已在 GitHub Actions 的 macOS 15 Runner 上通过完整 UI、包内功能及隔离安装/覆盖升级回归，与 Windows 共用业务和界面代码。上面的已发布下载链接仍是 Windows 安装包；Mac 当前为源码开发测试版，正式签名和分发尚未完成，验证结果及系统验收边界见 [macOS 适配方案](docs/macos-adaptation.md)。
 
 在 Mac 安装 Node.js 22+、Corepack 和 Xcode Command Line Tools 后，使用仓库锁定依赖构建：
 
