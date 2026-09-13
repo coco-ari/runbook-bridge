@@ -566,7 +566,7 @@ async function run() {
   });
   session.defaultSession.setPermissionRequestHandler((_contents,_permission,callback) => callback(false));
   const win = new BrowserWindow({ enableLargerThanScreen:true,
-    show:false,useContentSize:true,width:1600,height:1000,
+    show:process.platform === 'darwin',useContentSize:true,width:1600,height:1000,
     webPreferences:{preload:path.join(root,'src','preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false},
   });
   win.webContents.setWindowOpenHandler(() => ({action:'deny'}));

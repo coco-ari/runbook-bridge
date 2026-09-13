@@ -248,7 +248,7 @@ async function run() {
   const { ServerWorkspaceFiles } = await import('../src/server-workspace-files.mjs');
   workspaceFiles = new ServerWorkspaceFiles({ workspaceStore: { getPlugin: async () => plugin }, serverRuntime: { status: () => ({ connected, generation: 1 }), statRemotePath: async (_plugin, target) => fixtureStat(target) }, serverOperations: {} });
   register();
-  win = new BrowserWindow({ enableLargerThanScreen:true, width: 1440, height: 920, show: false, webPreferences: { preload: path.join(root, 'src/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
+  win = new BrowserWindow({ enableLargerThanScreen:true, width: 1440, height: 920, show: process.platform === 'darwin', webPreferences: { preload: path.join(root, 'src/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
   win.webContents.session.webRequest.onBeforeRequest((details, callback) => { if (/^https?:/u.test(details.url)) { externalRequests.push(details.url); callback({ cancel: true }); } else callback({}); });
   win.webContents.on('console-message', (_event, details) => { if (details.level === 'error') errors.push(details.message); });
   await win.loadFile(path.join(root, 'renderer-build/v2/index.html'));

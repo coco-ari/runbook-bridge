@@ -28,6 +28,18 @@ test('macOS 按解析后的地址族查询实际选路并绑定指定网卡', as
   }
 });
 
+test('macOS IPv6 绑定匹配的地址范围，链路本地地址携带网卡区域', async () => {
+  const link = {address:'fe80::10',family:'IPv6',internal:false,scopeid:9};
+  let calls = 0;
+  const guard = new SystemVpnGuard({platform:'darwin',networkInterfaces:() => ({utun9:[link,...networkInterfaces().utun9]}),
+    exec:async () => { calls++; return {stdout:output()}; }});
+  assert.equal((await guard.assertRoute('2001:db8::20',6,'utun9')).localAddress,'2001:db8::10');
+  assert.equal((await guard.assertRoute('fe80::20%utun9',6,'utun9')).localAddress,'fe80::10%utun9');
+  guard.networkInterfaces = () => ({utun9:[link]});
+  await assert.rejects(guard.assertRoute('2001:db8::20',6,'utun9'),vpnRequired);
+  assert.equal(calls,2,'没有合适源地址时拒绝连接，不执行路由命令');
+});
+
 test('macOS 拒绝错误出口、重复或缺失字段、黑洞和关闭的路由', async () => {
   for (const stdout of [output('en0'), output('UTUN9'), '', 'interface: utun9', output() + 'interface: utun9\n',
     output('utun9','UP,BLACKHOLE'), output('utun9','UP,REJECT'), output('utun9','GATEWAY')]) {

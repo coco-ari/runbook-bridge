@@ -2223,7 +2223,7 @@ async function run() {
   });
 
   const win = new BrowserWindow({ enableLargerThanScreen:true,
-    show:false,
+    show:process.platform === 'darwin',
     useContentSize:true,
     width:960,
     height:640,

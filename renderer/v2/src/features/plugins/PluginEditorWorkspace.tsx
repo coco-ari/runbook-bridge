@@ -864,10 +864,8 @@ export function PluginEditorWorkspace({
           data-testid="plugin-unsaved-changes-confirmation"
           onCloseAutoFocus={(event) => {
             event.preventDefault()
-            if (discardAllowedRef.current) {
-              requestAnimationFrame(() => focusWorkspaceElement(document.getElementById("detail-main")))
-              return
-            }
+            // 已获准退出时由父工作区恢复入口焦点，避免确认框延迟关闭后再次抢走焦点。
+            if (discardAllowedRef.current) return
             requestAnimationFrame(() => {
               if (!focusWorkspaceElement(lastEditorFocusRef.current)) focusWorkspaceElement(workspaceRef.current)
             })

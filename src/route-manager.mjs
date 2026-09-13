@@ -125,7 +125,11 @@ export class SystemVpnGuard {
     if (!['win32', 'darwin'].includes(this.platform)) throw new AppError('VPN_REQUIRED', '当前系统不支持 VPN 路由验证。');
     const interfaces = this.networkInterfaces();
     const addresses = interfaces[interfaceAlias] ?? [];
-    const local = addresses.find((item) => !item.internal && (family === 4 ? item.family === 'IPv4' || item.family === 4 : item.family === 'IPv6' || item.family === 6));
+    const linkLocal = (ip) => /^fe[89ab][0-9a-f]:/iu.test(ip);
+    const local = addresses.find((item) => !item.internal
+      && (family === 4 ? item.family === 'IPv4' || item.family === 4 : item.family === 'IPv6' || item.family === 6)
+      // Mac 网卡可能先列出链路本地地址，该地址不能作为非链路本地 IPv6 目标的源地址。
+      && (this.platform !== 'darwin' || family !== 6 || linkLocal(item.address) === linkLocal(address)));
     if (!local) throw new AppError('VPN_REQUIRED', '指定 VPN 网卡未连接或没有匹配地址族的地址。');
     if (this.platform === 'darwin') {
       try {
@@ -142,7 +146,9 @@ export class SystemVpnGuard {
       } catch {
         throw new AppError('VPN_REQUIRED', '无法验证目标的系统 VPN 路由。');
       }
-      return { localAddress:local.address, interfaceAlias, verified:true };
+      const localAddress = family === 6 && linkLocal(local.address) && !local.address.includes('%')
+        ? local.address + '%' + interfaceAlias : local.address;
+      return { localAddress, interfaceAlias, verified:true };
     }
     const escaped = address.replace(/'/g, "''");
     const script = `$r=Find-NetRoute -RemoteIPAddress '${escaped}' -ErrorAction Stop | Select-Object -First 1; [Console]::Out.Write([string]$r.InterfaceAlias)`;

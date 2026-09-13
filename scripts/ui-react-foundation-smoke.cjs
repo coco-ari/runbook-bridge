@@ -2825,6 +2825,9 @@ async function assertCreatePluginWorkspace(win,theme) {
   await waitFor(win,
     `document.activeElement?.matches('[data-testid="add-plugin-env-production-east"]') === true`,
     'plugin-editor-cancel restores the original create trigger');
+  await wait(250);
+  assert.equal(await win.webContents.executeJavaScript(`document.activeElement?.matches('[data-testid="add-plugin-env-production-east"]') === true`,true),true,
+    '确认框完全关闭后仍保留创建入口焦点');
   assert.deepEqual(mutationCalls,[],'discarding an unsubmitted create-plugin draft must not call edit-session APIs');
 }
 
@@ -3565,7 +3568,7 @@ async function run() {
   });
 
   const win = new BrowserWindow({ enableLargerThanScreen:true,
-    show:false,
+    show:process.platform === 'darwin',
     useContentSize:true,
     width:960,
     height:640,

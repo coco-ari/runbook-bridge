@@ -386,6 +386,7 @@ async function waitFor(win,evaluate,label,timeoutMs = 10000) {
 }
 
 async function focusRenderer(win) {
+  if (process.platform === 'darwin') { win.show(); win.focus(); }
   win.webContents.focus();
   await waitFor(win,'document.hasFocus() === true','real business renderer keyboard focus');
 }
@@ -481,9 +482,13 @@ async function openMenu(win,selector,label) {
     if (!(target instanceof HTMLElement) || target.getClientRects().length === 0) return null;
     target.focus();
     const rect = target.getBoundingClientRect();
-    return {x:Math.round(rect.left + rect.width / 2),y:Math.round(rect.top + rect.height / 2)};
+    const x = Math.round(rect.left + rect.width / 2), y = Math.round(rect.top + rect.height / 2);
+    const hit = document.elementFromPoint(x,y);
+    return {x,y,hit:target.contains(hit),interceptor:hit?.getAttribute('data-testid') ?? hit?.tagName,
+      viewport:[window.innerWidth,window.innerHeight],bodyPointerEvents:getComputedStyle(document.body).pointerEvents};
   })()`,true);
   assert.ok(point,`${label} is not visible`);
+  assert.equal(point.hit,true,`${label} 按钮中心未命中：${JSON.stringify(point)}`);
   win.webContents.sendInputEvent({type:'mouseMove',x:point.x,y:point.y});
   win.webContents.sendInputEvent({type:'mouseDown',x:point.x,y:point.y,button:'left',clickCount:1});
   win.webContents.sendInputEvent({type:'mouseUp',x:point.x,y:point.y,button:'left',clickCount:1});
@@ -1745,7 +1750,7 @@ async function run() {
   });
 
   const win = new BrowserWindow({ enableLargerThanScreen:true,
-    show:false,
+    show:process.platform === 'darwin',
     useContentSize:true,
     width:960,
     height:640,
