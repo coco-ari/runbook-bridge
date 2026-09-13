@@ -384,9 +384,10 @@ async function exerciseProjectSearchInput(cdp) {
   await waitForProjectRail(cdp, true, 'Ctrl+B in the search input does not resize the rail');
   for (const type of ['keyDown','keyUp']) await cdp.call('Input.dispatchKeyEvent', {
     type, key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: PRIMARY_MODIFIER,
+    ...(process.platform === 'darwin' && type === 'keyDown' ? {commands:['selectAll']} : {}),
   });
   for (const type of ['keyDown','keyUp']) await cdp.call('Input.dispatchKeyEvent', {
-    type, key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
+    type, key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8,
   });
   const cleared = await assertProjectSearch(cdp, 'clearing the 128px project search');
   assert.ok(cleared.trustedInputEvents > typed.trustedInputEvents, 'native clearing sends another trusted input event');

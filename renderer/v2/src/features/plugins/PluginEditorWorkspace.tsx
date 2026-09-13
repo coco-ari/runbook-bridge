@@ -1,3 +1,4 @@
+import { privateKeyPathExample } from "@/lib/platform"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowLeft,
@@ -522,7 +523,7 @@ export function PluginEditorWorkspace({
                           aria-invalid={Boolean(fieldErrors.privateKeyPath)}
                           id="plugin-private-key"
                           onChange={(event) => updateAuth("privateKeyPath", event.target.value)}
-                          placeholder="C:\\Users\\name\\.ssh\\id_ed25519"
+                          placeholder={privateKeyPathExample()}
                           value={draft.auth.privateKeyPath ?? ""}
                         />
                         <FieldError id="plugin-private-key-error">

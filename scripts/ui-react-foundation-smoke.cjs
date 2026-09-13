@@ -334,8 +334,21 @@ async function collectWindowErrorDiagnostics(win) {
 
 async function pressKey(win,keyCode,modifiers = []) {
   if (process.platform === 'darwin') modifiers = modifiers.map(value => value === 'control' ? 'meta' : value);
-  win.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});
-  win.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers});
+  if (process.platform === 'darwin' && keyCode.toLowerCase() === 'a' && modifiers.length === 1 && modifiers[0] === 'meta') {
+    // Mac 的自动化按键需同时携带编辑命令，才能经过浏览器默认编辑路径完成全选。
+    const driver = win.webContents.debugger;
+    const attached = driver.isAttached();
+    if (!attached) driver.attach('1.3');
+    try {
+      await driver.sendCommand('Input.dispatchKeyEvent',{type:'rawKeyDown',key:'a',code:'KeyA',windowsVirtualKeyCode:65,modifiers:4,commands:['selectAll']});
+      await driver.sendCommand('Input.dispatchKeyEvent',{type:'keyUp',key:'a',code:'KeyA',windowsVirtualKeyCode:65,modifiers:4});
+    } finally {
+      if (!attached) driver.detach();
+    }
+  } else {
+    win.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});
+    win.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers});
+  }
   await wait(100);
 }
 
@@ -853,7 +866,15 @@ async function assertManualThemePreferences(win) {
   assert.deepEqual(preserved,{sameSearch:true,value:'海隅',sameDetail:true,sameSelection:true,sameTab:true},
     'theme changes preserve the live unsaved search input, selected scope and detail tab without remounting the workspace');
   await clickThemeControl(win,'project-search');
+  await win.webContents.executeJavaScript(`document.querySelector('[data-testid="project-search"]').addEventListener('keydown',event => {
+    window.__selectAllKey = {trusted:event.isTrusted,key:event.key.toLowerCase(),primary:${process.platform === 'darwin' ? 'event.metaKey' : 'event.ctrlKey'}};
+  },{once:true})`,true);
   await pressKey(win,'a',['control']);
+  const selection = await win.webContents.executeJavaScript(`(() => {
+    const input = document.querySelector('[data-testid="project-search"]');
+    return {key:window.__selectAllKey,selected:input.selectionStart === 0 && input.selectionEnd === input.value.length};
+  })()`,true);
+  assert.deepEqual(selection,{key:{trusted:true,key:'a',primary:true},selected:true},'系统快捷键通过可信按键事件全选搜索文本');
   await pressKey(win,'BACKSPACE');
   await waitFor(win,`document.querySelector('[data-testid="project-search"]')?.value === ''`,'clear the theme regression search through native input');
   await win.webContents.executeJavaScript('delete window.__themeWorkspaceProbe',true);

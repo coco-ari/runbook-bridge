@@ -3,7 +3,7 @@ import test from 'node:test';
 import { defaultDataRoot, brokerEndpoint } from '../src/paths.mjs';
 import { packagedPaths } from '../scripts/packaged-paths.cjs';
 import { desktopMenuTemplate } from '../src/desktop-menu.mjs';
-import { shortcutLabel } from '../renderer/v2/src/lib/platform.ts';
+import { shortcutLabel, privateKeyPathExample } from '../renderer/v2/src/lib/platform.ts';
 
 test('平台默认数据目录保持兼容且桌面和 MCP 使用相同覆盖规则', () => {
   assert.equal(defaultDataRoot({platform:'win32',env:{LOCALAPPDATA:'C:\\Users\\mock\\AppData\\Local'},home:'C:\\Users\\mock'}),'C:\\Users\\mock\\AppData\\Local\\AIOpsTool');
@@ -52,4 +52,6 @@ test('Mac 菜单与快捷键提示不占用项目新建和命令面板快捷键'
   assert.equal(shortcutLabel('N','MacIntel'),'⌘ N');
   assert.equal(shortcutLabel('↵','MacIntel'),'⌘ ↵');
   assert.equal(shortcutLabel('N','Win32'),'Ctrl N');
+  assert.equal(privateKeyPathExample('MacIntel'),'/Users/name/.ssh/id_ed25519');
+  assert.equal(privateKeyPathExample('Win32'),'C:\\Users\\name\\.ssh\\id_ed25519');
 });

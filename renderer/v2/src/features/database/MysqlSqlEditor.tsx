@@ -77,7 +77,7 @@ export function MysqlSqlEditor({ active = true, value, loading, collapsed, onCha
         if (cancelled) return
         setChoices(description.columns.filter(column => matches(column.name)).slice(0, 30).map(column => ({ name: column.name, type: column.type })))
         if (description.auditWarning) setAssistNotice("字段已读取，但操作记录未能保存。")
-      }).catch(() => { if (!cancelled) setAssistNotice(`字段读取失败，按 ${shortcutLabel("Space")} 重试。`) })
+      }).catch(() => { if (!cancelled) setAssistNotice("字段读取失败，按 Ctrl+Space 重试。") })
     }
     return () => { cancelled = true }
   }, [context, focused, active, composing, loading, getSchema, tables, retry])
