@@ -271,6 +271,10 @@ export class ServerPluginRuntime extends EventEmitter {
     return this.broker.listRemoteDirectory(this.key(plugin), remotePath, options);
   }
 
+  withWorkspaceReadSession(plugin, operation, options = {}) {
+    return this.broker.withRemoteReadSession(this.key(plugin), operation, options);
+  }
+
   withRemoteReadSession(plugin, operation) {
     return this.broker.withRemoteReadSession(this.key(plugin), operation);
   }

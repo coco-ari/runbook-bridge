@@ -434,3 +434,117 @@ test('目录树省略 SFTP 自身和父目录条目，不产生重复路径或�
   assert.deepEqual(page.entries.map(entry=>entry.path), ['/srv/child']);
   assert.equal(page.nextCursor,'200');
 });
+
+function cachedHarness() {
+  const h = harness();
+  const calls = { sessions: 0, scans: 0, stats: [], active: 0, peak: 0, cancelled: 0 };
+  let entries = Array.from({ length: 450 }, (_, index) => ({ name: String(index).padStart(4, '0'), type: index < 200 ? 'symlink' : 'file', size: 1, mode: 0o644, mtime: 1 }));
+  let beforeStat = async () => {};
+  let beforeScan = async () => {};
+  let canonical = '/srv/example';
+  h.runtime.withWorkspaceReadSession = async (_plugin, operation, { signal }) => {
+    calls.sessions += 1;
+    const aborted = () => { calls.cancelled += 1; };
+    signal.addEventListener('abort', aborted, { once: true });
+    try {
+      return await operation({
+        listDirectoryEntries: async () => { calls.scans += 1; await beforeScan(); return { entries, truncated: false }; },
+        statPath: async (target) => {
+          calls.stats.push(target);
+          if (target === '/srv/example' || target === canonical) return { type: 'directory', canonicalPath: canonical };
+          calls.active += 1; calls.peak = Math.max(calls.peak, calls.active);
+          try { await beforeStat(target); return { type: 'file', canonicalPath: target }; } finally { calls.active -= 1; }
+        },
+      });
+    } finally { signal.removeEventListener('abort', aborted); }
+  };
+  const input = { ...scope, path: '/srv/example', deferLinks: true };
+  return { ...h, calls, input, setEntries: (value) => { entries = value; }, setStat: (value) => { beforeStat = value; }, setScan: (value) => { beforeScan = value; }, setCanonical: (value) => { canonical = value; } };
+}
+
+test('目录首屏不等待链接查询，分页复用一次扫描且后台链接并发有界', async (t) => {
+  const h = cachedHarness(); t.after(() => h.files.dispose());
+  let release; const gate = new Promise((resolve) => { release = resolve; });
+  h.setStat(() => gate);
+  const first = await h.files.listDirectory(owner, h.input);
+  assert.equal(first.entries.length, 200);
+  assert.equal(first.metadataPending, true);
+  assert.equal(h.calls.sessions, 1);
+  assert.deepEqual(h.calls.stats, ['/srv/example', '/srv/example']);
+  const metadata = h.files.listDirectory(owner, { ...h.input, snapshotId: first.snapshotId, resolveLinks: true });
+  await flush();
+  assert.equal(h.calls.peak, 8);
+  const second = await h.files.listDirectory(owner, { ...h.input, snapshotId: first.snapshotId, cursor: first.nextCursor });
+  assert.equal(second.entries[0].name, '0200');
+  assert.equal(second.metadataPending, false);
+  assert.equal(h.calls.scans, 1);
+  release();
+  assert.equal((await metadata).metadataPending, false);
+  const again = await h.files.listDirectory(owner, { ...h.input, snapshotId: first.snapshotId, resolveLinks: true });
+  assert.ok(again.entries.every((entry) => entry.linkTargetType === 'file'));
+  assert.equal(h.calls.stats.filter((value) => value !== h.input.path).length, 200, '每个链接只解析一次，普通文件不额外查属性');
+  assert.equal(h.calls.scans, 1);
+});
+
+test('目录快照绑定窗口、路径、配置和连接代次，刷新替换旧快照', async (t) => {
+  const h = cachedHarness(); t.after(() => h.files.dispose());
+  const first = await h.files.listDirectory(owner, h.input);
+  const request = { ...h.input, snapshotId: first.snapshotId, cursor: '200' };
+  await assert.rejects(h.files.listDirectory('renderer:2', request), { code: 'WORKSPACE_DIRECTORY_EXPIRED' });
+  await assert.rejects(h.files.listDirectory(owner, { ...request, path: '/other' }), { code: 'WORKSPACE_DIRECTORY_EXPIRED' });
+  h.plugin.revision += 1;
+  await assert.rejects(h.files.listDirectory(owner, request), { code: 'WORKSPACE_DIRECTORY_EXPIRED' });
+  h.plugin.revision -= 1;
+  h.reconnect();
+  await assert.rejects(h.files.listDirectory(owner, request), { code: 'WORKSPACE_DIRECTORY_EXPIRED' });
+  const fresh = await h.files.listDirectory(owner, h.input);
+  const refreshed = await h.files.listDirectory(owner, h.input);
+  assert.notEqual(fresh.snapshotId, refreshed.snapshotId);
+  await assert.rejects(h.files.listDirectory(owner, { ...h.input, snapshotId: fresh.snapshotId }), { code: 'WORKSPACE_DIRECTORY_EXPIRED' });
+  h.setCanonical('/srv/changed');
+  await assert.rejects(h.files.listDirectory(owner, { ...h.input, snapshotId: refreshed.snapshotId, cursor: '200' }), { code: 'WORKSPACE_PATH_CHANGED' });
+});
+
+test('并发首次读取合并扫描，窗口关闭中止读取且迟到响应不能重建缓存', async (t) => {
+  const h = cachedHarness(); t.after(() => h.files.dispose());
+  let release; h.setScan(() => new Promise((resolve) => { release = resolve; }));
+  const reads = Promise.allSettled([h.files.listDirectory(owner, h.input), h.files.listDirectory(owner, h.input)]);
+  await flush();
+  assert.equal(h.calls.scans, 1);
+  h.files.closeOwner(owner);
+  assert.equal(h.calls.cancelled, 1);
+  release();
+  assert.ok((await reads).every((result) => result.status === 'rejected'));
+  assert.equal(h.files.directoryCache.snapshots.size, 0);
+});
+
+test('后台链接请求合并且刷新后旧链接响应失效，不把传输错误标记为断链', async (t) => {
+  const h = cachedHarness(); t.after(() => h.files.dispose());
+  h.setEntries([{ name: 'shortcut', type: 'symlink' }]);
+  const first = await h.files.listDirectory(owner, h.input);
+  h.setStat(async () => { throw Object.assign(new Error('fixture timeout'), { code: 'SFTP_OPERATION_TIMEOUT' }); });
+  await assert.rejects(h.files.listDirectory(owner, { ...h.input, snapshotId: first.snapshotId, resolveLinks: true }), { code: 'SFTP_OPERATION_TIMEOUT' });
+  const stillPending = await h.files.listDirectory(owner, { ...h.input, snapshotId: first.snapshotId });
+  assert.equal(stillPending.entries[0].linkTargetType, undefined);
+  let release; h.setStat(() => new Promise((resolve) => { release = resolve; }));
+  const before = h.calls.sessions;
+  const reads = Promise.allSettled([1, 2].map(() => h.files.listDirectory(owner, { ...h.input, snapshotId: first.snapshotId, resolveLinks: true })));
+  await flush(); assert.equal(h.calls.sessions, before + 1);
+  const fresh = await h.files.listDirectory(owner, h.input);
+  release();
+  assert.ok((await reads).every((value) => value.status === 'rejected'));
+  assert.equal(fresh.entries[0].linkTargetType, undefined);
+  assert.equal(h.files.directoryCache.snapshots.has(first.snapshotId), false);
+});
+
+test('目录缓存限制目录数和总条目，断连清除作用域缓存', async (t) => {
+  const h = cachedHarness(); t.after(() => h.files.dispose());
+  h.setEntries([{ name: 'file', type: 'file' }]);
+  for (let index = 0; index < 40; index += 1) { h.setCanonical('/srv/example' + index); await h.files.listDirectory(owner, { ...h.input, path: '/srv/example' + index }); }
+  assert.equal(h.files.directoryCache.snapshots.size, 32);
+  h.setEntries(Array.from({ length: 10_000 }, (_, index) => ({ name: String(index), type: 'file' })));
+  for (let index = 0; index < 3; index += 1) { h.setCanonical('/large' + index); await h.files.listDirectory(owner, { ...h.input, path: '/large' + index }); }
+  assert.equal([...h.files.directoryCache.snapshots.values()].reduce((sum, item) => sum + item.entries.length, 0), 20_000);
+  h.disconnect();
+  assert.equal(h.files.directoryCache.snapshots.size, 0);
+});

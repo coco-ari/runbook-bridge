@@ -161,6 +161,7 @@ test('真实 SFTP 解析相对目录链接和文件链接，拒绝失效循环�
   const attrs = (value) => ({ mode: ({ directory: 0o040755, file: 0o100644, symlink: 0o120777, special: 0o020666 })[nodes.get(value).type], size: nodes.get(value).type === 'file' ? content.length : 0, uid: 1, gid: 1, atime: 1, mtime: 1 });
   const clients = new Set();
   const openedFiles = [];
+  const directoryCalls = { sessions: 0, opens: 0, reads: 0, active: 0, peak: 0, linkStats: 0 };
   const server = new ssh2.Server({ hostKeys: [key] }, (client) => {
     clients.add(client); client.on('close', () => clients.delete(client)); client.on('error', () => undefined);
     client.on('authentication', ctx => ctx.method === 'password' && ctx.username === 'fixture' && ctx.password === 'fixture-password' ? ctx.accept() : ctx.reject());
@@ -168,14 +169,23 @@ test('真实 SFTP 解析相对目录链接和文件链接，拒绝失效循环�
       const session = accept();
       session.on('sftp', approve => {
         const sftp = approve(); const handles = new Map(); let sequence = 0;
+        directoryCalls.sessions += 1;
         sftp.on('error', () => undefined);
         const action = (id, fn) => { try { fn(); } catch { sftp.status(id, 2); } };
         sftp.on('REALPATH', (id, value) => action(id, () => { const target = resolve(value); sftp.name(id, [{ filename: target, longname: target, attrs: attrs(target) }]); }));
-        sftp.on('LSTAT', (id, value) => action(id, () => sftp.attrs(id, attrs(resolve(value, false)))));
+        sftp.on('LSTAT', (id, value) => action(id, () => { if (nodes.get(value)?.type === 'symlink') directoryCalls.linkStats += 1; sftp.attrs(id, attrs(resolve(value, false))); }));
         sftp.on('STAT', (id, value) => action(id, () => sftp.attrs(id, attrs(resolve(value)))));
-        sftp.on('OPENDIR', (id, value) => action(id, () => { const handle = Buffer.from(String(++sequence)); handles.set(handle.toString(), { path: resolve(value), read: false }); sftp.handle(id, handle); }));
+        sftp.on('OPENDIR', (id, value) => action(id, () => { directoryCalls.opens += 1; const handle = Buffer.from(String(++sequence)); handles.set(handle.toString(), { path: resolve(value), read: false, offset: 0 }); sftp.handle(id, handle); }));
         sftp.on('READDIR', (id, handle) => action(id, () => {
           const state = handles.get(handle.toString());
+          directoryCalls.reads += 1;
+          if (state.path === '/large') {
+            const entries = [...nodes.keys()].filter(value => path.posix.dirname(value) === state.path).slice(state.offset, state.offset + 50).map(value => ({ filename: path.posix.basename(value), longname: path.posix.basename(value), attrs: attrs(value) }));
+            state.offset += entries.length;
+            directoryCalls.active += 1; directoryCalls.peak = Math.max(directoryCalls.peak, directoryCalls.active);
+            setTimeout(() => { directoryCalls.active -= 1; if (entries.length) sftp.name(id, entries); else sftp.status(id, 1); }, 15);
+            return;
+          }
           if (state.read) return sftp.status(id, 1);
           state.read = true;
           const entries = [...nodes.keys()].filter(value => value !== '/' && path.posix.dirname(value) === state.path).map(value => ({ filename: path.posix.basename(value), longname: path.posix.basename(value), attrs: attrs(value) }));
@@ -220,4 +230,49 @@ test('真实 SFTP 解析相对目录链接和文件链接，拒绝失效循环�
   await assert.rejects(files.readFile('renderer:1', { ...scope, path: '/special' }), { code: 'PATH_INVALID' });
   await assert.rejects(files.listDirectory('renderer:1', { ...scope, path: '/loop' }), { code: 'PATH_INVALID' });
   assert.deepEqual(openedFiles, ['/usr/bin/tool.conf']);
+
+  runtime.withWorkspaceReadSession = (_plugin, fn, options) => broker.withRemoteReadSession('fixture', fn, options);
+  const before = { ...directoryCalls };
+  const fastRoot = await files.listDirectory('renderer:1', { ...scope, path: '/', deferLinks: true });
+  assert.equal(directoryCalls.sessions - before.sessions, 1, '基础列表只建立一个 SFTP 通道');
+  assert.equal(directoryCalls.linkStats, before.linkStats, '首屏不请求任何链接属性');
+  assert.equal(fastRoot.entries.find(entry => entry.name === 'bin').linkTargetType, undefined);
+  const detailed = await files.listDirectory('renderer:1', { ...scope, path: '/', snapshotId: fastRoot.snapshotId, resolveLinks: true });
+  assert.equal(detailed.entries.find(entry => entry.name === 'bin').linkTargetType, 'directory');
+  assert.equal(detailed.entries.find(entry => entry.name === 'current.conf').linkTargetType, 'file');
+  assert.equal(detailed.entries.find(entry => entry.name === 'special').linkTargetType, 'special');
+  assert.equal(detailed.entries.find(entry => entry.name === 'broken').linkTargetType, 'unavailable');
+  assert.equal(detailed.entries.find(entry => entry.name === 'loop').linkTargetType, 'unavailable');
+  const linkedPage = await files.listDirectory('renderer:1', { ...scope, path: '/bin', deferLinks: true });
+  assert.equal(linkedPage.canonicalPath, '/usr/bin');
+  assert.equal(linkedPage.entries.find(entry => entry.name === 'tool.conf').path, '/bin/tool.conf');
+
+  nodes.set('/large', { type: 'directory' });
+  for (let index = 0; index < 650; index += 1) nodes.set('/large/file-' + String(index).padStart(4, '0'), { type: 'file' });
+  const legacyStart = performance.now();
+  let legacyCursor;
+  let legacyFirstMs;
+  do {
+    const page = await files.serverOperations.listDirectory(plugin, { path: '/large', cursor: legacyCursor, limit: 200 });
+    legacyFirstMs ??= performance.now() - legacyStart;
+    legacyCursor = page.nextCursor;
+  } while (legacyCursor);
+  const legacyTotalMs = performance.now() - legacyStart;
+  const optimizedStart = performance.now();
+  const first = await files.listDirectory('renderer:1', { ...scope, path: '/large', deferLinks: true });
+  const optimizedFirstMs = performance.now() - optimizedStart;
+  const scanCount = directoryCalls.opens;
+  assert.equal(directoryCalls.peak, 4, '真实 SFTP 在途目录读取上限为四个');
+  const names = first.entries.map(entry => entry.name);
+  let cursor = first.nextCursor;
+  while (cursor) {
+    const page = await files.listDirectory('renderer:1', { ...scope, path: '/large', deferLinks: true, snapshotId: first.snapshotId, cursor });
+    names.push(...page.entries.map(entry => entry.name)); cursor = page.nextCursor;
+  }
+  assert.equal(names.length, 650);
+  assert.equal(new Set(names).size, 650, '流水线与缓存分页没有丢失或重复条目');
+  assert.deepEqual(names, [...names].sort());
+  assert.equal(directoryCalls.opens, scanCount, '后续页不重新打开目录句柄');
+  assert.equal(directoryCalls.active, 0, 'EOF 后没有悬挂目录请求');
+  t.diagnostic(JSON.stringify({ fixture: '650 条目，每个 READDIR 响应延迟 15 ms，共四页', legacyFirstMs: Math.round(legacyFirstMs), optimizedFirstMs: Math.round(optimizedFirstMs), legacyTotalMs: Math.round(legacyTotalMs), optimizedTotalMs: Math.round(performance.now() - optimizedStart) }));
 });

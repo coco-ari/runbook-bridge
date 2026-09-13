@@ -7,7 +7,7 @@ const CALLS = [
   ['server-terminal-write', 'serverWorkspaceManager', 'writeTerminal', ['sessionId', 'data', 'encoding']],
   ['server-terminal-resize', 'serverWorkspaceManager', 'resizeTerminal', ['sessionId', 'cols', 'rows']],
   ['server-terminal-close', 'serverWorkspaceManager', 'closeTerminal', ['sessionId']],
-  ['server-workspace-list-directory', 'serverWorkspaceFiles', 'listDirectory', ['path', 'cursor']],
+  ['server-workspace-list-directory', 'serverWorkspaceFiles', 'listDirectory', ['path', 'cursor', 'snapshotId', 'deferLinks', 'resolveLinks']],
   ['server-workspace-read-file', 'serverWorkspaceFiles', 'readFile', ['path']],
   ['server-workspace-confirm-upload', 'serverWorkspaceFiles', 'confirmUpload', ['preparationId', 'overwrite']],
   ['server-workspace-cancel-upload', 'serverWorkspaceFiles', 'cancelUpload', ['jobId']],

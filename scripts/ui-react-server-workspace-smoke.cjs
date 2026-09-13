@@ -38,6 +38,9 @@ let uploads = [];
 let preparationPath;
 let completed = false;
 let workspaceFiles;
+let stagedRoot;
+let releaseRootMetadata;
+const rootMetadataReady = new Promise(resolve => { releaseRootMetadata = resolve; });
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const ok = (data) => ({ ok: true, data });
 const runtime = () => ({ projectId: scope.projectId, environmentId: scope.environmentId, phase: connected ? 'connected' : 'partial', sequence, eligibleCount: plugins.length, connectedCount: connected ? plugins.length : plugins.length - 1, errorCount: 0, blockedCount: 0, pluginsPartial: false, plugins: Object.fromEntries(plugins.map(item => { const phase = item.pluginType !== 'server' || connected ? 'connected' : 'disconnected'; return [item.pluginInstanceId, { pluginInstanceId: item.pluginInstanceId, phase, assessment: { phase } }]; })) });
@@ -113,7 +116,15 @@ function register() {
     return { path: input.path, entries: entries.filter(item => !removedPaths.has(item.path)).slice(offset, offset + 200), nextCursor: entries.length > offset + 200 ? String(offset + 200) : null, truncated: entries.length > offset + 200 };
   };
   workspaceFiles.serverOperations.listDirectory = async (_plugin, input) => { if (input.path !== '/') await wait(120); return listDirectory({ ...scope, ...input }); };
-  handle('server-workspace-list-directory', (input) => workspaceFiles.listDirectory('renderer:1', input));
+  handle('server-workspace-list-directory', async (input) => {
+    if (input.resolveLinks && input.snapshotId === stagedRoot?.snapshotId) { await rootMetadataReady; return stagedRoot; }
+    const page = await workspaceFiles.listDirectory('renderer:1', input);
+    if (input.path === '/' && input.deferLinks && !input.cursor && !stagedRoot) {
+      stagedRoot = { ...page, snapshotId: require('node:crypto').randomUUID(), metadataPending: false };
+      return { ...stagedRoot, metadataPending: true, entries: page.entries.map(entry => { const { linkTarget, linkTargetType, ...basic } = entry; return basic; }) };
+    }
+    return page;
+  });
   workspaceFiles.serverOperations.readFile = async (_plugin, input) => { previewReads.push(input.path); if (previewDelay) await wait(previewDelay); return { path: input.path, content: '# 示例配置\nsource = ' + input.path + '\nserver_name = demo\nport = 8080\n' + (input.path.endsWith('.log') ? '日志示例\n'.repeat(200) : ''), size: 52, startByte: 0, endByte: 52, mtime: 1, truncated: false, nextCursor: null }; };
   handle('server-workspace-read-file', (input) => { scoped(input); if (previewFailure) throw Object.assign(new Error('没有文件读取权限。'), { code: previewFailure }); return workspaceFiles.readFile('renderer:1', input); });
   handle('server-workspace-pick-upload', (input) => { scoped(input); preparationPath = canonicalFixturePath(input.path); return { preparationId: 'upload-prep', path: preparationPath, sourcePath: input.path, files: [{ name: 'release.tar', bytes: 1000000, remotePath: preparationPath + '/release.tar', exists: true }], expiresAt: Date.now() + 60000 }; });
@@ -206,6 +217,15 @@ async function run() {
   assert.ok(await evaluate(`document.querySelector('[aria-label="三栏工作台"]').closest('[inert]') !== null`), '工作区禁用背景导航');
   await until(`document.querySelector('[role="treeitem"][title="/srv"]')`, '文件目录');
   assert.ok(await evaluate(`document.querySelectorAll('.server-workspace [role="treeitem"]').length < 60`), '200条目录采用虚拟列表');
+  assert.ok(await evaluate("document.querySelector('[role=treeitem][title^=\"/bin\"]')?.textContent.includes('读取中')"), '链接信息延迟时先展示基本列表，不误报断链');
+  const beforeMetadata = await evaluate("[...document.querySelectorAll('[role=treeitem]')].map(row => ({ path:row.title.split('（')[0], top:row.getBoundingClientRect().top }))");
+  await click('[role="treeitem"][title^="/bin"]');
+  releaseRootMetadata();
+  await until("document.querySelector('[role=treeitem][title^=\"/bin →\"] .server-icon-folder')", '后台补齐目录链接类型');
+  await until("document.querySelector('[role=treeitem][title=\"/bin/apt\"]')", '等待中的链接点击在解析后自动展开');
+  await click('[role="treeitem"][title^="/bin →"]');
+  const afterMetadata = await evaluate("[...document.querySelectorAll('[role=treeitem]')].map(row => ({ path:row.title.split(' →')[0].split('（')[0], top:row.getBoundingClientRect().top }))");
+  assert.deepEqual(afterMetadata, beforeMetadata, '补齐元数据不重排条目或改变行高');
   assert.ok(await evaluate(`[...document.querySelectorAll('.server-tree-link')].some(row => row.textContent.includes('bin') && row.textContent.includes('→ /usr/bin'))`), '软链接展示真实目标且名称清晰可读');
   await snapshot('server-files-reference.png');
   assert.ok(await evaluate(`document.querySelector('[role="treeitem"][title^="/bin →"] .server-icon-folder') !== null`), '目录链接显示文件夹图标');

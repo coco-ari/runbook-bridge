@@ -464,6 +464,8 @@ export interface ServerDirectoryEntry {
 }
 
 export interface ServerDirectoryPage {
+  readonly snapshotId?: string
+  readonly metadataPending?: boolean
   readonly canonicalPath?: string
   readonly path: string
   readonly entries: readonly ServerDirectoryEntry[]
@@ -507,7 +509,7 @@ export interface AiOpsV2Api {
   serverTerminalWrite(payload: PluginScope & { sessionId: string; data: string; encoding?: "utf8" | "binary" }): Promise<IpcResult<OpaqueData>>
   serverTerminalResize(payload: PluginScope & { sessionId: string; cols: number; rows: number }): Promise<IpcResult<OpaqueData>>
   serverTerminalClose(payload: PluginScope & { sessionId: string }): Promise<IpcResult<OpaqueData>>
-  serverWorkspaceListDirectory(payload: PluginScope & { path: string; cursor?: string | null }): Promise<IpcResult<ServerDirectoryPage>>
+  serverWorkspaceListDirectory(payload: PluginScope & { path: string; cursor?: string | null; snapshotId?: string; deferLinks?: boolean; resolveLinks?: boolean }): Promise<IpcResult<ServerDirectoryPage>>
   serverWorkspaceReadFile(payload: PluginScope & { path: string }): Promise<IpcResult<ServerFilePreview>>
   serverWorkspacePickUpload(payload: PluginScope & { path: string }): Promise<IpcResult<ServerUploadPreparation | null>>
   serverWorkspaceConfirmUpload(payload: PluginScope & { preparationId: string; overwrite: boolean }): Promise<IpcResult<{ jobs: readonly ServerUploadJob[] }>>

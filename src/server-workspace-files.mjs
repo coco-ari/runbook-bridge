@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { AppError, toPublicError } from './errors.mjs';
+import { ServerWorkspaceDirectoryCache } from './server-workspace-directory-cache.mjs';
 
 const PREPARATION_TTL = 5 * 60 * 1000;
 const ACTIVE = new Set(['queued', 'running', 'verifying']);
@@ -28,6 +29,7 @@ function publicJob(job) {
 export class ServerWorkspaceFiles {
   constructor({ workspaceStore, serverRuntime, serverOperations, now = Date.now }) {
     Object.assign(this, { workspaceStore, serverRuntime, serverOperations, now });
+    this.directoryCache = new ServerWorkspaceDirectoryCache(this);
     this.preparations = new Map();
     this.jobs = new Map();
     this.ownerEpochs = new Map();
@@ -66,7 +68,7 @@ export class ServerWorkspaceFiles {
     this.readCounts.set(ownerId, count + 1);
     try {
       const binding = await this.requirePlugin(ownerId, payload);
-      const value = await operation(binding.plugin);
+      const value = await operation(binding.plugin, binding);
       await this.requirePlugin(ownerId, payload, binding);
       return value;
     } finally {
@@ -95,6 +97,8 @@ export class ServerWorkspaceFiles {
   listDirectory(ownerId, payload) {
     const selectedPath = remotePath(payload.path);
     if (payload.cursor != null && !/^\d{1,7}$/u.test(String(payload.cursor))) throw new AppError('INVALID_ARGUMENT', '目录分页位置无效。');
+    if ((payload.deferLinks !== undefined && typeof payload.deferLinks !== 'boolean') || (payload.resolveLinks !== undefined && typeof payload.resolveLinks !== 'boolean') || (payload.snapshotId !== undefined && (typeof payload.snapshotId !== 'string' || !/^[a-f0-9-]{36}$/u.test(payload.snapshotId))) || (payload.resolveLinks && !payload.snapshotId)) throw new AppError('INVALID_ARGUMENT', '目录缓存参数无效。');
+    if (this.serverRuntime.withWorkspaceReadSession) return this.read(ownerId, payload, (plugin, binding) => this.directoryCache.list(ownerId, { ...payload, path: selectedPath }, plugin, binding));
     return this.read(ownerId, payload, (plugin) => this.withPathReader(plugin, async (stat) => {
       const resolved = await this.resolvePath(plugin, selectedPath, 'directory', stat);
       const page = await this.serverOperations.listDirectory(plugin, { path: resolved.canonicalPath, cursor: payload.cursor, limit: 200 });
@@ -298,11 +302,13 @@ export class ServerWorkspaceFiles {
   }
 
   closeScope(scope, reason = '服务器配置或连接已经变化。') {
+    this.directoryCache.clear((item) => includesScope(item.binding.scope, scope));
     for (const [id, preparation] of this.preparations) if (includesScope(preparation.scope, scope)) this.preparations.delete(id);
     for (const job of this.jobs.values()) if (includesScope(job.scope, scope)) this.stopJob(job, 'error', reason);
   }
 
   closeOwner(ownerId) {
+    this.directoryCache.clear((item) => item.ownerId === ownerId);
     this.ownerEpochs.set(ownerId, (this.ownerEpochs.get(ownerId) ?? 0) + 1);
     for (const [id, preparation] of this.preparations) if (preparation.ownerId === ownerId) this.preparations.delete(id);
     for (const [id, job] of this.jobs) if (job.ownerId === ownerId) {
@@ -312,6 +318,7 @@ export class ServerWorkspaceFiles {
   }
 
   dispose() {
+    this.directoryCache.clear(() => true);
     this.disposed = true;
     this.serverRuntime.off?.('lifecycle', this.onLifecycle);
     for (const ownerId of new Set([...this.jobs.values(), ...this.preparations.values()].map((item) => item.ownerId))) this.closeOwner(ownerId);

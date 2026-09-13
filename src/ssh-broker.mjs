@@ -298,6 +298,29 @@ function sftpCloseHandle(sftp, handle) {
   });
 }
 
+// 人工工作区对同一目录句柄流水线读取，按请求顺序合并，减少大目录的往返等待。
+async function sftpReadWorkspaceDirectory(sftp, remotePath, maxEntries, lifecycle) {
+  const handle = await sftpOpenDirectory(sftp, remotePath);
+  const entries = [];
+  let primaryError = null;
+  try {
+    let done = false;
+    while (!done && entries.length < maxEntries) {
+      throwIfAborted(lifecycle.signal);
+      const results = await Promise.allSettled(Array.from({ length: entries.length ? 4 : 1 }, () => sftpReadDirectory(sftp, handle)));
+      for (const result of results) {
+        if (result.status === 'rejected') throw result.reason;
+        if (!result.value?.length) { done = true; continue; }
+        entries.push(...result.value.slice(0, maxEntries - entries.length));
+      }
+    }
+  } catch (error) { primaryError = error; }
+  // 所有在途 READDIR 已结束，之后才关闭句柄，避免失败或 EOF 时留下悬挂请求。
+  try { await sftpCloseHandle(sftp, handle); } catch (error) { primaryError ??= error; }
+  if (primaryError) throw primaryError;
+  return entries;
+}
+
 async function sftpReadDirectoryBounded(sftp, remotePath, maxEntries) {
   const handle = await sftpOpenDirectory(sftp, remotePath);
   const entries = [];
@@ -1117,16 +1140,32 @@ export class SshBroker {
     );
   }
 
-  async withRemoteReadSession(projectId, operation) {
+  async withRemoteReadSession(projectId, operation, { signal = null } = {}) {
     if (typeof operation !== 'function') throw new AppError('INVALID_ARGUMENT', '服务器只读会话操作无效。');
     return this.withInternalSftp(projectId, async (sftp, session, lifecycle) => operation({
       generation: session.generation,
       statPath: (remotePath) => statRemotePathOnSftp(sftp, remotePath),
       listDirectory: (remotePath) => listRemoteDirectoryOnSftp(sftp, remotePath),
+      // 人工目录树直接使用 READDIR 属性，链接目标由后续批次查询。
+      listDirectoryEntries: async (remotePath) => {
+        const entries = await sftpReadWorkspaceDirectory(sftp, normalizeAbsoluteRemotePath(remotePath), 10_003, lifecycle);
+        const valid = entries.filter((entry) => entry.filename !== '.' && entry.filename !== '..');
+        return {
+          truncated: valid.length > 10_000,
+          entries: valid.slice(0, 10_000).map((entry) => ({
+            name: entry.filename,
+            size: Number(entry.attrs?.size ?? 0),
+            mtime: Number(entry.attrs?.mtime ?? 0),
+            mode: Number(entry.attrs?.mode ?? 0),
+            type: entry.attrs?.isSymbolicLink?.() ? 'symlink' : entry.attrs?.isDirectory?.() ? 'directory' : entry.attrs?.isFile?.() ? 'file' : 'special',
+          })),
+        };
+      },
       readRange: (remotePath, start, maxBytes) => readRemoteRangeOnSftp(sftp, remotePath, start, maxBytes, lifecycle),
       readBuffer: (remotePath, start, maxBytes) => readRemoteBufferOnSftp(sftp, remotePath, start, maxBytes, lifecycle),
     }), {
       timeoutMs: SFTP_READ_SESSION_TIMEOUT_MS,
+      signal,
     });
   }
 

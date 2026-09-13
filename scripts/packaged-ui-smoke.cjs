@@ -750,6 +750,12 @@ async function main() {
     assert.ok(['PROJECT_NOT_FOUND', 'ENVIRONMENT_NOT_FOUND', 'PLUGIN_NOT_FOUND'].includes(terminalContract.valid.error.code));
     assert.equal(terminalContract.invalid.error.code, 'INVALID_ARGUMENT');
     assert.equal(terminalContract.invalidColors.error.code, 'INVALID_ARGUMENT');
+    // 正式 preload 透传目录快照字段；空项目只校验协议，不建立远程连接。
+    const directoryContract = await running.cdp.evaluate("(async () => { const scope = { projectId:'packaged-directory-probe', environmentId:'probe', pluginInstanceId:'probe', path:'/' }; return { valid:await window.aiOps.v2.serverWorkspaceListDirectory({...scope, deferLinks:true, resolveLinks:true, cursor:'200', snapshotId:'00000000-0000-4000-8000-000000000000'}), invalid:await window.aiOps.v2.serverWorkspaceListDirectory({...scope, deferLinks:'yes'}), missing:await window.aiOps.v2.serverWorkspaceListDirectory({...scope, resolveLinks:true}) }; })()");
+    assert.equal(directoryContract.valid.ok, false);
+    assert.ok(['PROJECT_NOT_FOUND', 'ENVIRONMENT_NOT_FOUND', 'PLUGIN_NOT_FOUND'].includes(directoryContract.valid.error.code));
+    assert.equal(directoryContract.invalid.error.code, 'INVALID_ARGUMENT');
+    assert.equal(directoryContract.missing.error.code, 'INVALID_ARGUMENT');
     assert.equal(inspection.nodeRequireType, 'undefined');
     assert.equal(inspection.nodeProcessType, 'undefined');
     assert.match(inspection.href, /app\.asar\/renderer-build\/v2\/index\.html/iu);
