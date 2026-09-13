@@ -19,11 +19,12 @@ interface ServerFileTreeProps {
   readonly onUpload: () => void
   readonly onInsertPath: (path: string) => void
   readonly invalidatedPath: Readonly<{ path: string; id: number }> | null
+  readonly locateFile?: Readonly<{ path: string; id: number }> | null
   readonly refreshEpoch: number
   readonly refreshPaths: readonly string[]
 }
 
-export function ServerFileTree({ api, scope, connected, path, onPath, onPreview, onUpload, onInsertPath, refreshEpoch, refreshPaths, invalidatedPath }: ServerFileTreeProps) {
+export function ServerFileTree({ api, scope, connected, path, onPath, onPreview, onUpload, onInsertPath, refreshEpoch, refreshPaths, invalidatedPath, locateFile }: ServerFileTreeProps) {
   const [root, setRoot] = useState("/")
   const [draft, setDraft] = useState("/")
   const [editingPath, setEditingPath] = useState(false)
@@ -209,6 +210,16 @@ export function ServerFileTree({ api, scope, connected, path, onPath, onPreview,
     } else if (serverEntryType(entry) === "file") onPreview(entry)
   }
 
+  useEffect(() => {
+    if (!locateFile || !connected) return
+    const directory = parentRemotePath(locateFile.path)
+    navigate(directory)
+    setSelected(locateFile.path)
+    if (locateFile.path.split("/").some((part) => part.startsWith("."))) setShowHidden(true)
+    setReveal({ path: locateFile.path, id: ++revealSequenceRef.current })
+    void load(directory)
+  }, [locateFile])
+
   const revealDirectory = (target: string) => {
     if (!connected) return
     if (target === "/") { navigate("/"); pendingScrollRef.current = 0; return }
@@ -297,9 +308,9 @@ export function ServerFileTree({ api, scope, connected, path, onPath, onPreview,
       if (seen.has(canonical)) { setRevealError("循环链接，无法继续定位。"); setReveal(null); return }
       seen.add(canonical)
       const child = chain[index + 1] ?? reveal.path
-      if (state.page.entries.some((entry) => entry.path === child && serverEntryType(entry) === "directory")) continue
+      if (state.page.entries.some((entry) => entry.path === child && (serverEntryType(entry) === "directory" || child === reveal.path))) continue
       if (state.page.nextCursor) { void load(directory, state.page.nextCursor, state.page.entries.length >= 2000); return }
-      setRevealError("当前目录列表中未找到该目录，请刷新后重试。")
+      setRevealError("当前目录列表中未找到该项，请刷新后重试。")
       setReveal(null)
       return
     }

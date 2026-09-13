@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('aiOps', {
     serverWorkspaceListDirectory: (payload) => ipcRenderer.invoke('v2:server-workspace-list-directory', payload),
     serverWorkspaceReadFile: (payload) => ipcRenderer.invoke('v2:server-workspace-read-file', payload),
     serverWorkspacePickUpload: (payload) => ipcRenderer.invoke('v2:server-workspace-pick-upload', payload),
+    serverWorkspaceReviseUpload: (payload) => ipcRenderer.invoke('v2:server-workspace-revise-upload', payload),
     serverWorkspaceConfirmUpload: (payload) => ipcRenderer.invoke('v2:server-workspace-confirm-upload', payload),
     serverWorkspaceCancelUpload: (payload) => ipcRenderer.invoke('v2:server-workspace-cancel-upload', payload),
     serverWorkspaceUploads: (payload) => ipcRenderer.invoke('v2:server-workspace-uploads', payload),

@@ -36,6 +36,15 @@ const errors = [];
 const externalRequests = [];
 let uploads = [];
 let preparationPath;
+let uploadSelection = ['release.tar'];
+let uploadPreparation;
+let revisionFailure = false;
+const uploadRevisions = [];
+const makePreparation = (target, names) => {
+  preparationPath = canonicalFixturePath(target);
+  uploadPreparation = { preparationId: require('node:crypto').randomUUID(), path: preparationPath, sourcePath: target, files: names.map(name => ({ name, bytes: 1000000, remotePath: path.posix.join(preparationPath, name), exists: name === 'release.tar' })), expiresAt: Date.now() + 60000 };
+  return uploadPreparation;
+};
 let completed = false;
 let workspaceFiles;
 let stagedRoot;
@@ -112,6 +121,7 @@ function register() {
     const entry = (name, type = 'file') => ({ name, path: (input.path === '/' ? '' : input.path) + '/' + name, type, size: 256, mtime: 1, mode: 0o644 });
     const roots = [entry('.env.example'), entry('app', 'directory'), { ...entry('bin', 'symlink'), path: '/usr/bin' }, entry('boot', 'directory'), { ...entry('current.conf', 'symlink'), path: '/srv/example.conf' }, { ...entry('default.conf', 'symlink'), path: '/srv/example.conf' }, entry('dev', 'directory'), entry('etc', 'directory'), entry('home', 'directory'), { ...entry('lib', 'symlink'), path: '/usr/lib' }, ...['media', 'mnt', 'opt', 'proc', 'root', 'run', 'srv', 'sys', 'tmp', 'usr', 'var'].map(name => entry(name, 'directory')), entry('welcome.txt'), entry('missing-link', 'symlink')];
     const entries = input.path === '/' ? [...roots, ...Array.from({ length: 2300 - roots.length }, (_, index) => entry('file-' + String(index).padStart(3, '0') + '.txt'))] : input.path === '/usr/bin' ? [{ ...entry('X11', 'symlink'), path: '/usr/bin' }, entry('apt'), entry('tool.conf')] : [entry('config', 'directory'), entry('example.conf'), entry('example.log'), entry('loading')];
+    entries.push(...uploads.filter(job => job.status === 'completed' && path.posix.dirname(job.path) === input.path).map(job => entry(job.name)));
     const offset = Number(input.cursor ?? 0);
     return { path: input.path, entries: entries.filter(item => !removedPaths.has(item.path)).slice(offset, offset + 200), nextCursor: entries.length > offset + 200 ? String(offset + 200) : null, truncated: entries.length > offset + 200 };
   };
@@ -127,8 +137,14 @@ function register() {
   });
   workspaceFiles.serverOperations.readFile = async (_plugin, input) => { previewReads.push(input.path); if (previewDelay) await wait(previewDelay); return { path: input.path, content: '# 示例配置\nsource = ' + input.path + '\nserver_name = demo\nport = 8080\n' + (input.path.endsWith('.log') ? '日志示例\n'.repeat(200) : ''), size: 52, startByte: 0, endByte: 52, mtime: 1, truncated: false, nextCursor: null }; };
   handle('server-workspace-read-file', (input) => { scoped(input); if (previewFailure) throw Object.assign(new Error('没有文件读取权限。'), { code: previewFailure }); return workspaceFiles.readFile('renderer:1', input); });
-  handle('server-workspace-pick-upload', (input) => { scoped(input); preparationPath = canonicalFixturePath(input.path); return { preparationId: 'upload-prep', path: preparationPath, sourcePath: input.path, files: [{ name: 'release.tar', bytes: 1000000, remotePath: preparationPath + '/release.tar', exists: true }], expiresAt: Date.now() + 60000 }; });
-  handle('server-workspace-confirm-upload', (input) => { scoped(input); assert.equal(input.overwrite, true); uploads = [{ jobId: 'upload-job', name: 'release.tar', path: preparationPath + '/release.tar', bytes: 1000000, transferred: 0, status: 'running' }]; return { jobs: uploads }; });
+  handle('server-workspace-pick-upload', input => { scoped(input); return makePreparation(input.path, uploadSelection); });
+  handle('server-workspace-revise-upload', async input => {
+    scoped(input); assert.equal(input.preparationId, uploadPreparation.preparationId); assert.ok(input.fileNames.every(name => uploadPreparation.files.some(file => file.name === name)));
+    uploadRevisions.push(input); await wait(180);
+    if (revisionFailure) throw Object.assign(new Error('目标目录暂时不可写，请重新检查。'), { code: 'PERMISSION_DENIED' });
+    return input.fileNames.length ? makePreparation(input.path, input.fileNames) : null;
+  });
+  handle('server-workspace-confirm-upload', input => { scoped(input); assert.equal(input.preparationId, uploadPreparation.preparationId); assert.equal(input.overwrite, true); uploads = uploadPreparation.files.map((file, index) => ({ jobId: 'upload-job-' + index, name: file.name, path: file.remotePath, bytes: file.bytes, transferred: 0, status: 'running' })); return { jobs: uploads }; });
   handle('server-workspace-uploads', (input) => { scoped(input); uploads = uploads.map((job) => { if (job.status !== 'running') return job; const transferred = Math.min(job.bytes, job.transferred + 80000); return { ...job, transferred, status: transferred === job.bytes ? 'completed' : 'running' }; }); return { jobs: uploads }; });
   handle('server-workspace-cancel-upload', (input) => { scoped(input); uploads = uploads.map((job) => ({ ...job, status: 'cancelled' })); return uploads[0]; });
 }
@@ -154,6 +170,42 @@ async function snapshot(name) {
   await wait(180);
   await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   fs.writeFileSync(path.join(absolute, name), (await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());
+}
+
+async function exerciseUploadReview() {
+  const buttonDisabled = "[...document.querySelectorAll('[role=dialog] button')].find(item => item.textContent.includes('开始上传')).disabled";
+  const changePath = async target => {
+    await until("document.querySelector('[aria-label=上传目标目录路径]')?.disabled === false", '目录加载完成');
+    await evaluate("(() => {const input=document.querySelector('[aria-label=上传目标目录路径]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input," + JSON.stringify(target) + ");input.dispatchEvent(new Event('input',{bubbles:true}));})()");
+    await clickText('转到');
+    await until("[...document.querySelectorAll('[role=dialog] button')].some(item=>item.textContent.includes('使用此目录')&&!item.disabled)", '目录可确认');
+  };
+  assert.equal(await evaluate("document.querySelectorAll('[data-testid=upload-file-row]').length"), 2);
+  assert.ok(await evaluate("document.querySelector('[aria-label=上传方向]').textContent.includes('本机')"));
+  assert.equal(await evaluate("document.querySelector('[data-testid=upload-destination-path]').textContent"), '/srv');
+  await snapshot('upload-confirm-dark.png');
+  await click('[role=dialog] input[type=checkbox]');
+  await clickText('更换目录');
+  await changePath('/srv/config');
+  await snapshot('upload-choose-directory.png');
+  revisionFailure = true;
+  await clickText('使用此目录');
+  await until("document.querySelector('.server-upload-review-error')?.textContent.includes('暂时不可写')", '目标检查失败可恢复');
+  assert.ok(await evaluate(buttonDisabled), '失败后禁止旧目标上传');
+  assert.equal(await evaluate("document.querySelector('[role=dialog] input[type=checkbox]').checked"), false, '更换目标清除覆盖选择');
+  revisionFailure = false;
+  await clickText('使用此目录');
+  await until("document.querySelector('[data-testid=upload-destination-path]')?.textContent==='/srv/config'", '新目标检查完成');
+  assert.ok(await evaluate("[...document.querySelectorAll('.server-upload-final-path code')].every(item=>item.textContent.startsWith('/srv/config/'))"), '逐文件更新最终路径');
+  await click('[role=dialog] input[type=checkbox]');
+  await click('[aria-label="移除 deployment-report.xlsx"]');
+  await until("document.querySelectorAll('[data-testid=upload-file-row]').length===1", '移除文件重新检查');
+  assert.ok(await evaluate(buttonDisabled), '移除文件后再次确认覆盖');
+  await clickText('更换目录');
+  await changePath('/srv');
+  await clickText('使用此目录');
+  await until("document.querySelector('[data-testid=upload-destination-path]')?.textContent==='/srv' && !document.querySelector('.server-upload-directory-picker')", '恢复目标');
+  assert.ok(uploadRevisions.length >= 4);
 }
 
 async function assertWorkspaceCoexistence() {
@@ -390,11 +442,13 @@ async function run() {
   await click('[data-testid="plugin-open-workspace"]');
   assert.equal(opened.length, 1, '返回重开保留同一终端');
   assert.ok(await evaluate(`document.querySelector('.server-preview-tab-panel:not([hidden]) .server-preview-content')?.textContent.includes('server_name')`), '返回保留预览');
+  uploadSelection = ['release.tar', 'deployment-report.xlsx'];
   await clickText('上传文件');
   await until(`document.querySelector('[role="dialog"]')?.textContent.includes('release.tar')`, '上传文件确认');
-  assert.ok(await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(item => item.textContent.includes('确认上传')).disabled`), '覆盖必须明确选择');
+  await exerciseUploadReview();
+  assert.ok(await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(item => item.textContent.includes('开始上传')).disabled`), '覆盖必须明确选择');
   await click('[role="dialog"] input[type="checkbox"]');
-  await clickText('确认上传');
+  await clickText('开始上传 1 个文件');
   assert.equal(uploads[0].path, '/srv/release.tar', '确认锁定目录');
   const progressBefore = uploads[0].transferred;
   await click('[data-testid="server-workspace-back"]');
@@ -405,6 +459,12 @@ async function run() {
   await click('[data-testid="plugin-open-workspace"]');
   assert.equal(await evaluate("document.querySelector('.server-workspace-density')"),null,'服务器工作区固定紧凑布局，不提供密度切换');
   await snapshot('server-workspace-dark.png');
+  uploads = uploads.map(job => ({...job, transferred:job.bytes, status:'completed'}));
+  await until("document.querySelector('[aria-label=\"定位到 release.tar\"]')", '上传完成可定位');
+  await click('[aria-label="定位到 release.tar"]');
+  await until("document.querySelector('[role=treeitem][aria-selected=true]')?.getAttribute('title')==='/srv/release.tar'", '定位上传文件并高亮');
+  assert.ok(await evaluate("document.querySelector('.server-upload-task-target code').textContent==='/srv/release.tar'"), '任务持续展示固定目标');
+  await snapshot('upload-task-completed.png');
   await click('[aria-label="最大化终端"]');
   await wait(150);
   assert.ok(await evaluate(`document.querySelector('.server-terminal-container').getBoundingClientRect().width > window.innerWidth - 60`), '最大化终端获得完整宽度');
@@ -457,6 +517,18 @@ async function run() {
   assert.equal(lightColors.actual, lightColors.expected, '浅色标题使用当前前景色');
   assert.equal(lightColors.tree, lightColors.expected, '浅色树使用当前前景色');
   await snapshot('server-workspace-light.png');
+  uploadSelection = ['release.tar', ...Array.from({length:19}, (_, index) => 'deployment-report-with-long-name-' + index + '.xlsx')];
+  await clickText('上传文件');
+  await until("document.querySelectorAll('[data-testid=upload-file-row]').length===20", '多文件滚动列表');
+  assert.ok(await evaluate("(() => {const el=document.querySelector('.server-upload-confirm-files'); return el.scrollHeight>el.clientHeight && document.documentElement.scrollWidth<=window.innerWidth;})()"), '文件列表有界滚动且页面不溢出');
+  assert.ok(await evaluate("(() => {const r=document.querySelector('.server-upload-confirm-footer').getBoundingClientRect();return r.top>=0 && r.bottom<=innerHeight;})()"), '多文件时操作栏始终可见');
+  await snapshot('upload-confirm-light-many.png');
+  win.setSize(650, 750); await wait(250);
+  assert.ok(await evaluate("(() => {const el=document.querySelector('[role=dialog]');const rect=el.getBoundingClientRect();return rect.left>=0 && rect.right<=innerWidth && rect.height<=innerHeight && el.scrollWidth<=el.clientWidth+1;})()"), '窄窗口长文件名不溢出弹窗');
+  assert.ok(await evaluate("(() => {const r=document.querySelector('.server-upload-confirm-footer').getBoundingClientRect();return r.top>=0 && r.bottom<=innerHeight;})()"), '窄窗口操作栏始终可见');
+  await snapshot('upload-confirm-narrow.png');
+  await clickText('取消');
+  win.setSize(1000, 750); await wait(150);
   await clickText('结束会话');
   assert.ok(closed.length > 0, '结束终端关闭对应会话');
   assert.equal(connected, true, '结束终端保持服务器连接');

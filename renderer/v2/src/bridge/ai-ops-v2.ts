@@ -512,6 +512,7 @@ export interface AiOpsV2Api {
   serverWorkspaceListDirectory(payload: PluginScope & { path: string; cursor?: string | null; snapshotId?: string; deferLinks?: boolean; resolveLinks?: boolean }): Promise<IpcResult<ServerDirectoryPage>>
   serverWorkspaceReadFile(payload: PluginScope & { path: string }): Promise<IpcResult<ServerFilePreview>>
   serverWorkspacePickUpload(payload: PluginScope & { path: string }): Promise<IpcResult<ServerUploadPreparation | null>>
+  serverWorkspaceReviseUpload(payload: PluginScope & { preparationId: string; path: string; fileNames: readonly string[] }): Promise<IpcResult<ServerUploadPreparation | null>>
   serverWorkspaceConfirmUpload(payload: PluginScope & { preparationId: string; overwrite: boolean }): Promise<IpcResult<{ jobs: readonly ServerUploadJob[] }>>
   serverWorkspaceCancelUpload(payload: PluginScope & { jobId: string }): Promise<IpcResult<ServerUploadJob>>
   serverWorkspaceUploads(payload: PluginScope): Promise<IpcResult<{ jobs: readonly ServerUploadJob[] }>>
@@ -588,6 +589,7 @@ export const AI_OPS_V2_API_NAMES = [
   "serverWorkspaceListDirectory",
   "serverWorkspaceReadFile",
   "serverWorkspacePickUpload",
+  "serverWorkspaceReviseUpload",
   "serverWorkspaceConfirmUpload",
   "serverWorkspaceCancelUpload",
   "serverWorkspaceUploads",

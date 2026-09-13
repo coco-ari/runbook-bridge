@@ -743,7 +743,7 @@ async function main() {
     assert.equal(inspection.noPageOverflow, true);
     assert.equal(inspection.overviewOk, true);
     assert.equal(inspection.projectCount, 0);
-    assert.equal(inspection.apiCount, 73);
+    assert.equal(inspection.apiCount, 74);
     // 在隔离的空工作区验证标签参数，不连接任何服务器。
     const terminalContract = await running.cdp.evaluate("(async () => { const scope = { projectId:'packaged-tab-probe', environmentId:'probe', pluginInstanceId:'probe', cols:80, rows:24 }; return { valid:await window.aiOps.v2.serverTerminalOpen({...scope, tabId:'valid-tab', defaultColors:false}), invalidColors:await window.aiOps.v2.serverTerminalOpen({...scope,defaultColors:'yes'}), invalid:await window.aiOps.v2.serverTerminalOpen({...scope, tabId:'../invalid'}) }; })()");
     assert.equal(terminalContract.valid.ok, false);
@@ -756,6 +756,11 @@ async function main() {
     assert.ok(['PROJECT_NOT_FOUND', 'ENVIRONMENT_NOT_FOUND', 'PLUGIN_NOT_FOUND'].includes(directoryContract.valid.error.code));
     assert.equal(directoryContract.invalid.error.code, 'INVALID_ARGUMENT');
     assert.equal(directoryContract.missing.error.code, 'INVALID_ARGUMENT');
+    // 正式接口只能修改原先已选文件，不能由页面提交本地路径。
+    const uploadContract = await running.cdp.evaluate("(async () => { const scope = {projectId:'upload-probe',environmentId:'probe',pluginInstanceId:'probe',preparationId:'missing',path:'/srv',fileNames:['release.tar']}; return {valid:await window.aiOps.v2.serverWorkspaceReviseUpload(scope),invalid:await window.aiOps.v2.serverWorkspaceReviseUpload({...scope,localPath:'/arbitrary'})}; })()");
+    assert.equal(uploadContract.valid.ok, false);
+    assert.equal(uploadContract.valid.error.code, 'UPLOAD_CONFIRMATION_INVALID');
+    assert.equal(uploadContract.invalid.error.code, 'INVALID_ARGUMENT');
     assert.equal(inspection.nodeRequireType, 'undefined');
     assert.equal(inspection.nodeProcessType, 'undefined');
     assert.match(inspection.href, /app\.asar\/renderer-build\/v2\/index\.html/iu);
@@ -811,7 +816,7 @@ async function main() {
       return {ok: overview?.ok === true, projectCount: Array.isArray(overview?.data) ? overview.data.length : -1,
         apiCount: Object.keys(window.aiOps.v2).length};
     })()`);
-    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 73});
+    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 74});
     assert.deepEqual(running.httpRequests, []);
     await selectThemePreference(running.cdp, 'system');
     await emulateSystemTheme(running.cdp, 'dark');
@@ -831,7 +836,7 @@ async function main() {
         availableWidth: compactSearch.availableWidth, nativeTextBox: compactSearch.nativeBox?.source ?? 'conservative-cancel-budget'},
     })}\n`);
     process.stdout.write(
-      `Packaged React UI smoke passed (73 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
+      `Packaged React UI smoke passed (74 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
     );
   } catch (error) {
     if (running) {

@@ -1,6 +1,6 @@
 import { WorkspaceBackButton, WorkspaceHeaderActions } from "@/components/workspace/WorkspaceControls"
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
-import { CaretDown, CaretUp, CheckCircle, FileText, SpinnerGap, TerminalWindow, UploadSimple, X } from "@phosphor-icons/react"
+import { CaretDown, CaretUp, CheckCircle, MapPin, SpinnerGap, TerminalWindow, UploadSimple, X } from "@phosphor-icons/react"
 import { usePanelRef } from "react-resizable-panels"
 import type { AiOpsV2Api, EnvironmentRuntime, PluginScope, ServerDirectoryEntry, ServerUploadJob, ServerUploadPreparation } from "@/bridge/ai-ops-v2"
 import { Badge } from "@/components/ui/badge"
@@ -10,6 +10,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { usePluginConnection } from "@/features/connections/use-plugin-connection"
 import { pluginDraftFromRecord, type PluginConfigurationRecord } from "@/features/plugins/plugin-types"
 import { ServerFileTree } from "./ServerFileTree"
+import { CopyUploadPath, ServerUploadDialog, UploadFileIcon } from "./ServerUploadDialog"
 import { ServerTerminalTabs } from "./ServerTerminalTabs"
 import { ServerFilePreviews } from "./ServerFilePreviews"
 import { formatTransferBytes, parentRemotePath, quoteRemotePath, serverEntryType, serverWorkspaceKey, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
@@ -52,6 +53,10 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
   const [preparation, setPreparation] = useState<ServerUploadPreparation | null>(null)
   const [overwrite, setOverwrite] = useState(false)
   const [uploadConfirming, setUploadConfirming] = useState(false)
+  const [uploadRevising, setUploadRevising] = useState(false)
+  const [uploadNeedsReview, setUploadNeedsReview] = useState(false)
+  const uploadActionRef = useRef(false)
+  const [fileLocation, setFileLocation] = useState<Readonly<{ path: string; id: number }> | null>(null)
   const [uploadError, setUploadError] = useState("")
   const [invalidatedPath, setInvalidatedPath] = useState<Readonly<{ path: string; id: number }> | null>(null)
   const [refreshEpoch, setRefreshEpoch] = useState(0)
@@ -119,19 +124,38 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
   }, [connected])
   const invalidatePreviewPath = useCallback((path: string) => setInvalidatedPath({ path, id: ++previewGenerationRef.current }), [])
 
-  const pickUpload = useCallback(async () => {
+  const pickUpload = useCallback(async (targetPath = path) => {
     if (!connected || uploadPreparing) return
     setUploadPreparing(true)
     setUploadError("")
     try {
-      const result = unwrapWorkspaceResult(await api.serverWorkspacePickUpload({ ...scope, path }))
-      if (mountedRef.current && result) { setPreparation(result); setOverwrite(false) }
+      const result = unwrapWorkspaceResult(await api.serverWorkspacePickUpload({ ...scope, path: targetPath }))
+      if (mountedRef.current && result) { setPreparation(result); setOverwrite(false); setUploadNeedsReview(false) }
     } catch (failure) { if (mountedRef.current) setUploadError(workspaceErrorMessage(failure)) }
     finally { if (mountedRef.current) setUploadPreparing(false) }
   }, [api, connected, path, scope, uploadPreparing])
 
+  const reviseUpload = async (target: string, names: readonly string[]) => {
+    if (!preparation || uploadActionRef.current) return false
+    uploadActionRef.current = true
+    setUploadRevising(true); setUploadNeedsReview(true); setOverwrite(false); setUploadError("")
+    try {
+      const result = unwrapWorkspaceResult(await api.serverWorkspaceReviseUpload({ ...scope, preparationId: preparation.preparationId, path: target, fileNames: names }))
+      if (!mountedRef.current) return false
+      setPreparation(result); setUploadNeedsReview(false)
+      return true
+    } catch (failure) {
+      if (mountedRef.current) setUploadError(workspaceErrorMessage(failure))
+      return false
+    } finally {
+      uploadActionRef.current = false
+      if (mountedRef.current) setUploadRevising(false)
+    }
+  }
+
   const confirmUpload = async () => {
-    if (!preparation || uploadConfirming) return
+    if (!preparation || uploadActionRef.current || uploadNeedsReview) return
+    uploadActionRef.current = true
     setUploadConfirming(true)
     setUploadError("")
     try {
@@ -140,8 +164,8 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
       setJobs((current) => [...current.filter((job) => !result.jobs.some((next) => next.jobId === job.jobId)), ...result.jobs])
       setPreparation(null)
       setTrayOpen(true)
-    } catch (failure) { if (mountedRef.current) setUploadError(workspaceErrorMessage(failure)) }
-    finally { if (mountedRef.current) setUploadConfirming(false) }
+    } catch (failure) { if (mountedRef.current) { setUploadError(workspaceErrorMessage(failure)); setUploadNeedsReview(true); setOverwrite(false) } }
+    finally { uploadActionRef.current = false; if (mountedRef.current) setUploadConfirming(false) }
   }
 
   const cancelUpload = async (jobId: string) => {
@@ -164,7 +188,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
     <div className="server-workspace-body">
       <ResizablePanelGroup orientation="horizontal" id={`${panelId}-panels`}>
         <ResizablePanel id={`${panelId}-files`} defaultSize="320px" minSize="240px" maxSize="50%" collapsible collapsedSize={0} panelRef={treePanelRef}>
-          <ServerFileTree api={api} scope={scope} connected={connected} path={path} onPath={setPath} onPreview={(file) => { void openPreview(file) }} onUpload={() => { void pickUpload() }} onInsertPath={(value) => setInsertion({ text: quoteRemotePath(value), id: Date.now() })} refreshEpoch={refreshEpoch} refreshPaths={refreshPaths} invalidatedPath={invalidatedPath} />
+          <ServerFileTree api={api} scope={scope} connected={connected} path={path} onPath={setPath} onPreview={(file) => { void openPreview(file) }} onUpload={() => { void pickUpload() }} onInsertPath={(value) => setInsertion({ text: quoteRemotePath(value), id: Date.now() })} refreshEpoch={refreshEpoch} refreshPaths={refreshPaths} invalidatedPath={invalidatedPath} locateFile={fileLocation} />
         </ResizablePanel>
         <ResizableHandle className={maximized ? "hidden" : ""} aria-label="调整文件树宽度" />
         <ResizablePanel id={`${panelId}-console`} minSize="280px">
@@ -181,19 +205,17 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
       </ResizablePanelGroup>
     </div>
     <section className="server-upload-tray" aria-label="文件上传任务">
-      <div className="server-upload-tray-header"><button className="flex min-w-0 flex-1 items-center gap-2 text-xs" type="button" onClick={() => setTrayOpen((value) => !value)} aria-expanded={trayOpen}><UploadSimple size={15} />文件传输<span className={failedJobs.length ? "text-danger" : "text-muted-foreground"}>{activeJobs.length ? `${activeJobs.length} 项进行中` : jobs.length ? `${completedJobs.length} 项完成${failedJobs.length ? ` · ${failedJobs.length} 项失败` : ""}` : "暂无任务"}</span>{trayOpen ? <CaretDown size={12} /> : <CaretUp size={12} />}</button><span className="server-upload-target truncate text-[11px] text-muted-foreground" title={path}>上传到 {path}</span><Button size="sm" variant="ghost" disabled={!connected || uploadPreparing} onClick={() => { void pickUpload() }}>{uploadPreparing ? <SpinnerGap className="animate-spin" /> : <UploadSimple />}上传文件</Button></div>
-      {trayOpen ? <div className="server-upload-list">{jobs.length ? jobs.map((job) => <div className="server-upload-row" key={job.jobId}><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><span className="truncate text-xs font-medium" title={job.name}>{job.name}</span>{job.status === "completed" ? <CheckCircle className="text-success" size={13} /> : null}<span className={`shrink-0 text-[11px] ${job.status === "error" ? "text-danger" : "text-muted-foreground"}`}>{UPLOAD_STATUS_LABELS[job.status]}</span></div><p className="truncate text-[11px] text-muted-foreground" title={job.path}>{job.path}</p>{job.message ? <p className="text-xs text-danger">{job.message}</p> : null}</div><div className="server-upload-progress"><progress aria-label={`${job.name} 上传进度`} value={job.transferred} max={job.bytes || 1} /><span>{formatTransferBytes(job.transferred)} / {formatTransferBytes(job.bytes)}</span></div>{ACTIVE_UPLOAD_STATUSES.has(job.status) ? <Button size="icon-sm" variant="ghost" aria-label={`取消上传 ${job.name}`} onClick={() => { void cancelUpload(job.jobId) }}><X /></Button> : <span className="w-7 shrink-0" />}</div>) : <div className="px-4 py-6 text-center text-xs text-muted-foreground">选择目录后点击「上传文件」。上传进度会保留在这里。</div>}</div> : null}
+      <div className="server-upload-tray-header"><button className="flex min-w-0 flex-1 items-center gap-2 text-xs" type="button" onClick={() => setTrayOpen((value) => !value)} aria-expanded={trayOpen}><UploadSimple size={15} />文件传输<span className={failedJobs.length ? "text-danger" : "text-muted-foreground"}>{activeJobs.length ? `${activeJobs.length} 项进行中` : jobs.length ? `${completedJobs.length} 项完成${failedJobs.length ? ` · ${failedJobs.length} 项失败` : ""}` : "暂无任务"}</span>{trayOpen ? <CaretDown size={12} /> : <CaretUp size={12} />}</button><span className="server-upload-target truncate text-[11px] text-muted-foreground" title={`新上传目标：${path}`}>新上传目标 {path}</span><Button size="sm" variant="ghost" disabled={!connected || uploadPreparing} onClick={() => { void pickUpload() }}>{uploadPreparing ? <SpinnerGap className="animate-spin" /> : <UploadSimple />}上传文件</Button></div>
+      {trayOpen ? <div className="server-upload-list">{jobs.length ? jobs.map((job) => <div className="server-upload-row" key={job.jobId}>
+        <div className="server-upload-task-icon"><UploadFileIcon name={job.name} /></div>
+        <div className="min-w-0 flex-1"><div className="server-upload-task-heading"><strong title={job.name}>{job.name}</strong>{job.status === "completed" ? <CheckCircle className="text-success" size={14} /> : null}<span className={job.status === "error" ? "text-danger" : "text-muted-foreground"}>{UPLOAD_STATUS_LABELS[job.status]}</span></div><div className="server-upload-task-target"><span>上传到</span><code title={job.path}>{job.path}</code><CopyUploadPath path={job.path} label={`复制 ${job.name} 的上传路径`} /></div>{job.message ? <p className="text-xs text-danger">{job.message}</p> : null}</div>
+        <div className="server-upload-progress"><div className="flex w-full justify-between gap-2"><span>{job.status === "verifying" ? "正在校验文件" : job.status === "completed" ? "上传完成" : job.status === "queued" ? "排队中" : job.status === "running" ? "正在传输" : "已停止"}</span><strong>{job.status === "completed" ? 100 : Math.min(100, Math.round(job.transferred / (job.bytes || 1) * 100))}%</strong></div><progress aria-label={`${job.name} 上传进度`} value={job.status === "completed" ? job.bytes || 1 : job.transferred} max={job.bytes || 1} /><span>{formatTransferBytes(job.transferred)} / {formatTransferBytes(job.bytes)}</span></div>
+        <div className="server-upload-task-action">{ACTIVE_UPLOAD_STATUSES.has(job.status) ? <Button size="icon-sm" variant="ghost" aria-label={`取消上传 ${job.name}`} onClick={() => { void cancelUpload(job.jobId) }}><X /></Button> : job.status === "completed" ? <Button size="sm" variant="ghost" disabled={!connected} aria-label={`定位到 ${job.name}`} onClick={() => { setMaximized(false); setFileLocation({ path: job.path, id: Date.now() }) }}><MapPin size={14} />定位文件</Button> : null}</div>
+      </div>) : <div className="px-4 py-6 text-center text-xs text-muted-foreground">选择目标目录，再上传本机文件。每项任务会保留自己的上传位置。</div>}</div> : null}
     </section>
     <footer className="server-workspace-footer"><span className="flex items-center gap-1.5"><TerminalWindow size={12} />SSH / SFTP</span><span>返回详情不会结束会话或上传</span></footer>
-    <Dialog open={Boolean(preparation)} onOpenChange={(value) => { if (!value && !uploadConfirming) setPreparation(null) }}>
-      <DialogContent className="sm:max-w-xl" showCloseButton={!uploadConfirming} onInteractOutside={(event) => { if (uploadConfirming) event.preventDefault() }} onEscapeKeyDown={(event) => { if (uploadConfirming) event.preventDefault() }}>
-        <DialogHeader><DialogTitle>上传 {preparation?.files.length ?? 0} 个文件</DialogTitle><DialogDescription>上传到所选目录。确认后切换目录不会改变本次目标。</DialogDescription></DialogHeader>
-        <div className="rounded-md border bg-surface-inset p-3"><p className="mb-1 text-xs text-muted-foreground">{entry.plugin.displayName} · {entry.environmentName}</p><p className="break-all font-mono text-xs">{preparation?.path}</p>{preparation?.sourcePath && preparation.sourcePath !== preparation.path ? <p className="mt-1 break-all text-xs text-muted-foreground">由 {preparation.sourcePath} 解析，上传位置已固定。</p> : null}</div>
-        <div className="max-h-52 overflow-auto divide-y">{preparation?.files.map((file) => <div key={file.remotePath} className="flex items-center gap-2 py-2 text-xs"><FileText size={15} /><span className="min-w-0 flex-1 break-all">{file.name}</span><span className="shrink-0 text-muted-foreground">{formatTransferBytes(file.bytes)}</span>{file.exists ? <Badge variant="warning">已存在</Badge> : null}</div>)}</div>
-        {preparation?.files.some((file) => file.exists) ? <label className="flex items-start gap-2 text-xs leading-5"><input type="checkbox" className="mt-1" checked={overwrite} disabled={uploadConfirming} onChange={(event) => setOverwrite(event.target.checked)} />覆盖上面标记为「已存在」的文件</label> : null}
-        {uploadError ? <p className="text-xs text-danger" role="alert">{uploadError}</p> : null}
-        <DialogFooter><Button variant="outline" disabled={uploadConfirming} onClick={() => setPreparation(null)}>取消</Button><Button disabled={!connected || uploadConfirming || Boolean(preparation?.files.some((file) => file.exists) && !overwrite)} onClick={() => { void confirmUpload() }}>{uploadConfirming ? <SpinnerGap className="animate-spin" /> : <UploadSimple />}确认上传</Button></DialogFooter>
-      </DialogContent>
+    <Dialog open={Boolean(preparation)} onOpenChange={(value) => { if (!value && !uploadActionRef.current) setPreparation(null) }}>
+      {preparation ? <ServerUploadDialog api={api} scope={scope} preparation={preparation} serverName={entry.plugin.displayName} projectName={entry.projectName} environmentName={entry.environmentName} identity={sshIdentity} busy={uploadConfirming || uploadRevising} confirming={uploadConfirming} connected={connected} needsReview={uploadNeedsReview} overwrite={overwrite} error={uploadError} onOverwrite={setOverwrite} onRevise={reviseUpload} onConfirm={() => { void confirmUpload() }} onCancel={() => setPreparation(null)} onReselect={() => { const target = preparation.sourcePath ?? preparation.path; setPreparation(null); void pickUpload(target) }} /> : null}
     </Dialog>
     <Dialog open={closeDialog} onOpenChange={setCloseDialog}><DialogContent><DialogHeader><DialogTitle>关闭服务器工作区</DialogTitle><DialogDescription>{activeJobs.length ? "还有上传任务进行中。返回详情可以保留所有任务；请等上传结束或取消任务后再关闭工作区。" : "将结束这个工作区的终端会话并清除显示记录。服务器连接保持。"}</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => { setCloseDialog(false); onBack() }}>返回详情并保留</Button><Button disabled={activeJobs.length > 0} onClick={onClose}>关闭工作区</Button></DialogFooter></DialogContent></Dialog>
   </div>

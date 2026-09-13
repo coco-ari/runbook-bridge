@@ -548,3 +548,84 @@ test('目录缓存限制目录数和总条目，断连清除作用域缓存', as
   h.disconnect();
   assert.equal(h.files.directoryCache.snapshots.size, 0);
 });
+
+test('上传方案更换目录和移除文件后重新绑定预检，旧确认不能再使用', async (t) => {
+  const h = harness(); t.after(() => h.files.dispose());
+  const calls = [];
+  h.operations.prepareMutation = async (_plugin, _capability, args) => {
+    calls.push(args);
+    return { ...args, _precondition: { local: { size: 123, sha256: 'fixture-recheck-' + calls.length }, remote: { exists: args.remotePath.startsWith('/new/'), type: 'file' } } };
+  };
+  const first = await h.files.prepareUpload(owner, { ...scope, path: '/old' }, [local('keep'), local('remove')]);
+  const next = await h.files.reviseUpload(owner, { ...scope, preparationId: first.preparationId, path: '/new', fileNames: [first.files[0].name] });
+  assert.notEqual(next.preparationId, first.preparationId);
+  assert.deepEqual(next.files, [{ name: first.files[0].name, bytes: 123, remotePath: '/new/' + first.files[0].name, exists: true }]);
+  assert.equal(calls.length, 3, '保留的文件重新计算预检状态');
+  assert.equal(calls.at(-1).localPath, local('keep'));
+  assert.equal(JSON.stringify(next).includes('localPath'), false);
+  assert.equal(JSON.stringify(next).includes('sha256'), false);
+  await assert.rejects(h.files.confirmUpload(owner, { ...scope, preparationId: first.preparationId, overwrite: true }), { code: 'UPLOAD_CONFIRMATION_INVALID' });
+  await assert.rejects(h.files.confirmUpload(owner, { ...scope, preparationId: next.preparationId, overwrite: false }), { code: 'TARGET_EXISTS' });
+  const result = await h.files.confirmUpload(owner, { ...scope, preparationId: next.preparationId, overwrite: true });
+  assert.equal(result.jobs[0].path, '/new/' + first.files[0].name);
+});
+
+test('上传方案修改期间阻止旧确认，预检失败后可重试但不能恢复旧写入凭证', async (t) => {
+  const h = harness(); t.after(() => h.files.dispose());
+  const first = await h.files.prepareUpload(owner, { ...scope, path: '/old' }, [local('keep')]);
+  let release;
+  h.operations.prepareMutation = async (_plugin, _capability, args) => {
+    await new Promise((resolve) => { release = resolve; });
+    if (args.remotePath.startsWith('/denied/')) throw Object.assign(new Error('fixture denied'), { code: 'PERMISSION_DENIED' });
+    return { ...args, _precondition: { local: { size: 1 }, remote: { exists: false } } };
+  };
+  const payload = { ...scope, preparationId: first.preparationId, path: '/denied', fileNames: first.files.map(file => file.name) };
+  const pending = h.files.reviseUpload(owner, payload);
+  await flush();
+  await assert.rejects(h.files.confirmUpload(owner, { ...scope, preparationId: first.preparationId, overwrite: true }), { code: 'UPLOAD_REVIEW_REQUIRED' });
+  await assert.rejects(h.files.reviseUpload(owner, payload), { code: 'WORKSPACE_BUSY' });
+  release();
+  await assert.rejects(pending, { code: 'PERMISSION_DENIED' });
+  assert.equal(h.files.jobs.size, 0);
+  await assert.rejects(h.files.confirmUpload(owner, { ...scope, preparationId: first.preparationId, overwrite: true }), { code: 'UPLOAD_REVIEW_REQUIRED' });
+  const retry = h.files.reviseUpload(owner, { ...payload, path: '/valid' });
+  await flush(); release();
+  assert.equal((await retry).path, '/valid');
+});
+
+test('上传方案修改拒绝跨窗口跨作用域和新增本地文件，移除最后一个文件撤销确认', async (t) => {
+  const h = harness(); t.after(() => h.files.dispose());
+  const first = await h.files.prepareUpload(owner, { ...scope, path: '/old' }, [local('keep')]);
+  const payload = { ...scope, preparationId: first.preparationId, path: '/new', fileNames: first.files.map(file => file.name) };
+  await assert.rejects(h.files.reviseUpload('renderer:2', payload), { code: 'UPLOAD_CONFIRMATION_INVALID' });
+  await assert.rejects(h.files.reviseUpload(owner, { ...payload, environmentId: 'other' }), { code: 'UPLOAD_CONFIRMATION_INVALID' });
+  await assert.rejects(h.files.reviseUpload(owner, { ...payload, fileNames: ['unknown.txt'] }), { code: 'INVALID_ARGUMENT' });
+  await assert.rejects(h.files.reviseUpload(owner, { ...payload, fileNames: [...payload.fileNames, ...payload.fileNames] }), { code: 'INVALID_ARGUMENT' });
+  assert.equal(await h.files.reviseUpload(owner, { ...payload, fileNames: [] }), null);
+  assert.equal(h.files.preparations.size, 0);
+  await assert.rejects(h.files.confirmUpload(owner, { ...scope, preparationId: first.preparationId, overwrite: true }), { code: 'UPLOAD_CONFIRMATION_INVALID' });
+});
+
+test('上传方案修改绑定配置和窗口生命周期，关闭后迟到预检不能重新发布', async (t) => {
+  for (const close of ['owner', 'scope', 'revision', 'generation']) await t.test(close, async () => {
+    const h = harness();
+    try {
+      const first = await h.files.prepareUpload(owner, { ...scope, path: '/old' }, [local('keep')]);
+      let release;
+      h.operations.prepareMutation = async (_plugin, _capability, args) => {
+        await new Promise((resolve) => { release = resolve; });
+        return { ...args, _precondition: { local: { size: 1 }, remote: { exists: false } } };
+      };
+      const pending = h.files.reviseUpload(owner, { ...scope, preparationId: first.preparationId, path: '/new', fileNames: first.files.map(file => file.name) });
+      await flush();
+      if (close === 'owner') h.files.closeOwner(owner);
+      if (close === 'scope') h.files.closeScope(scope);
+      if (close === 'revision') h.plugin.revision += 1;
+      if (close === 'generation') h.reconnect();
+      release();
+      await assert.rejects(pending, { code: close === 'scope' ? 'UPLOAD_CONFIRMATION_INVALID' : 'WORKSPACE_CHANGED' });
+      assert.equal(h.files.jobs.size, 0);
+      assert.ok([...h.files.preparations.values()].every(preparation => preparation.needsRevision));
+    } finally { h.files.dispose(); }
+  });
+});

@@ -151,18 +151,18 @@ export class ServerWorkspaceFiles {
     await this.assertPath(plugin, directory.canonicalPath, 'directory');
   }
 
-  async prepareUpload(ownerId, payload, localPaths) {
+  async prepareUpload(ownerId, payload, localPaths, previous = null) {
     if (!Array.isArray(localPaths) || !localPaths.length || localPaths.length > 20) throw new AppError('INVALID_ARGUMENT', '每次请选择 1 至 20 个普通文件。');
     if (this.preparing.has(ownerId)) throw new AppError('WORKSPACE_BUSY', '正在校验上一批文件，请稍候。');
     this.preparing.add(ownerId);
     try {
-      const binding = await this.requirePlugin(ownerId, payload);
+      const binding = await this.requirePlugin(ownerId, payload, previous);
       const sourcePath = remotePath(payload.path);
       const resolved = await this.resolvePath(binding.plugin, sourcePath, 'directory');
       const directory = resolved.canonicalPath;
       const uploadDirectory = { path: sourcePath, canonicalPath: directory };
       for (const [id, item] of this.preparations) {
-        if (item.expiresAt <= this.now() || item.ownerId === ownerId) this.preparations.delete(id);
+        if (item.expiresAt <= this.now() || (item.ownerId === ownerId && item !== previous)) this.preparations.delete(id);
       }
       const names = new Set();
       const files = [];
@@ -180,6 +180,9 @@ export class ServerWorkspaceFiles {
       await this.requirePlugin(ownerId, payload, binding);
       await this.assertUploadDirectory(binding.plugin, uploadDirectory);
       await this.requirePlugin(ownerId, payload, binding);
+      if (previous && ![...this.preparations.values()].includes(previous)) throw new AppError('UPLOAD_CONFIRMATION_INVALID', '上传选择已失效，请重新选择文件。');
+      if (previous && previous.expiresAt <= this.now()) throw new AppError('UPLOAD_CONFIRMATION_EXPIRED', '上传确认已过期，请重新选择文件。');
+      for (const [id, item] of this.preparations) if (item.ownerId === ownerId) this.preparations.delete(id);
       const preparationId = crypto.randomUUID();
       const expiresAt = this.now() + PREPARATION_TTL;
       this.preparations.set(preparationId, { ...binding, ownerId, files, path: directory, uploadDirectory, expiresAt });
@@ -187,6 +190,28 @@ export class ServerWorkspaceFiles {
         name, bytes: args._precondition.local.size, remotePath: args.remotePath, exists: args._precondition.remote.exists,
       })) };
     } finally { this.preparing.delete(ownerId); }
+  }
+
+  async reviseUpload(ownerId, payload) {
+    this.ownerEpoch(ownerId);
+    const scope = scopeOf(payload);
+    const selectedPath = remotePath(payload.path);
+    const preparation = this.preparations.get(payload.preparationId);
+    if (!preparation || preparation.ownerId !== ownerId || !sameScope(preparation.scope, scope)) throw new AppError('UPLOAD_CONFIRMATION_INVALID', '上传选择已失效，请重新选择文件。');
+    if (preparation.expiresAt <= this.now()) {
+      this.preparations.delete(payload.preparationId);
+      throw new AppError('UPLOAD_CONFIRMATION_EXPIRED', '上传确认已过期，请重新选择文件。');
+    }
+    if (!Array.isArray(payload.fileNames) || payload.fileNames.length > 20 || new Set(payload.fileNames).size !== payload.fileNames.length || payload.fileNames.some((name) => typeof name !== 'string' || !preparation.files.some((file) => file.name === name))) throw new AppError('INVALID_ARGUMENT', '只能保留本次已经选择的文件。');
+    if (this.preparing.has(ownerId)) throw new AppError('WORKSPACE_BUSY', '正在校验上一批文件，请稍候。');
+    // 修改开始即禁止旧确认；失败时仅保留文件选择供重试，不恢复旧的写入凭证。
+    preparation.needsRevision = true;
+    if (!payload.fileNames.length) {
+      this.preparations.delete(payload.preparationId);
+      return null;
+    }
+    const localPaths = payload.fileNames.map((name) => preparation.files.find((file) => file.name === name).args.localPath);
+    return this.prepareUpload(ownerId, { ...scope, path: selectedPath }, localPaths, preparation);
   }
 
   async confirmUpload(ownerId, payload) {
@@ -197,6 +222,7 @@ export class ServerWorkspaceFiles {
       this.preparations.delete(payload.preparationId);
       throw new AppError('UPLOAD_CONFIRMATION_EXPIRED', '上传确认已过期，请重新选择文件。');
     }
+    if (preparation.needsRevision) throw new AppError('UPLOAD_REVIEW_REQUIRED', '上传选择已经修改，请重新检查后确认。');
     if (typeof payload.overwrite !== 'boolean' || (preparation.files.some(({ args }) => args._precondition.remote.exists) && !payload.overwrite)) throw new AppError('TARGET_EXISTS', '请明确确认覆盖同名文件。');
     if ([...this.jobs.values()].filter((job) => job.ownerId === ownerId && ACTIVE.has(job.status)).length + preparation.files.length > 40) throw new AppError('WORKSPACE_BUSY', '待上传文件过多，请等待当前传输完成。');
     // 在第一次异步操作前消耗凭证，避免重复点击并发使用同一确认。
