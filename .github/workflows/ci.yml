@@ -51,18 +51,28 @@ jobs:
       - name: Automated tests
         run: corepack pnpm test
       - name: Production React UI workflow smoke test
-        run: corepack pnpm run test:ui:all
+        run: |-
+          failed=0
+          for suite in test:ui test:ui:business test:ui:plugins test:ui:plugin-matrix test:ui:server-workspace test:ui:database; do
+            corepack pnpm run "$suite" || failed=1
+          done
+          exit "$failed"
         env:
           RUNBOOK_BRIDGE_SCREENSHOT_DIR: ${{ runner.temp }}/runbook-bridge-ui-${{ matrix.platform }}-${{ matrix.arch }}
+      - name: Build Windows test package
+        if: runner.os == 'Windows'
+        run: corepack pnpm run dist
       - name: Build macOS test package
         if: runner.os == 'macOS'
         run: corepack pnpm run dist:mac:${{ matrix.arch }}
-      - name: Verify macOS package
-        if: runner.os == 'macOS'
+      - name: Verify packaged application
         run: |-
           node scripts/verify-package.mjs "${{ matrix.app }}"
           node scripts/packaged-mcp-smoke.mjs "${{ matrix.app }}"
           node scripts/packaged-ui-smoke.cjs "${{ matrix.app }}"
+      - name: Verify Windows install and overwrite upgrade
+        if: runner.os == 'Windows'
+        run: node scripts/install-upgrade-regression.cjs
       - name: Verify macOS install and overwrite upgrade
         if: runner.os == 'macOS'
         run: |-

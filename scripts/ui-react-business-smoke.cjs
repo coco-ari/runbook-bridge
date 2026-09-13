@@ -477,6 +477,18 @@ async function click(win,selector,label = selector) {
 async function openMenu(win,selector,label) {
   await focusRenderer(win);
   await waitFor(win,`document.querySelector(${JSON.stringify(selector)})?.getClientRects().length > 0`,`${label} trigger after layout settles`);
+  await win.webContents.executeJavaScript(`(() => {
+    const target = document.querySelector(${JSON.stringify(selector)});
+    target?.scrollIntoView({block:'nearest'});
+    target?.focus();
+  })()`,true);
+  // 错误提示等临时浮层消失后再点击，不能让平台字体宽度决定是否误点遮挡层。
+  await waitFor(win,`(() => {
+    const target = document.querySelector(${JSON.stringify(selector)});
+    if (!(target instanceof HTMLElement)) return false;
+    const rect = target.getBoundingClientRect();
+    return target.contains(document.elementFromPoint(Math.round(rect.left+rect.width/2),Math.round(rect.top+rect.height/2)));
+  })()`,`${label} receives native pointer input`);
   const point = await win.webContents.executeJavaScript(`(() => {
     const target = document.querySelector(${JSON.stringify(selector)});
     if (!(target instanceof HTMLElement) || target.getClientRects().length === 0) return null;
