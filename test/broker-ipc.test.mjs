@@ -156,3 +156,37 @@ test('broker routes MySQL schema search through the existing describe capability
   assert.equal(invocations[0].capability,'describe');
   assert.deepEqual(invocations[0].args,{operation:'search',keywords:['coupon','uid'],limit:25});
 });
+
+test('Unix Broker 限制 socket 和 Token 权限，拒绝覆盖普通文件及活动 socket', {skip:process.platform === 'win32'}, async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'ai-ops-unix-'));
+  t.after(() => fs.rm(root,{recursive:true,force:true}));
+  const token = await rotateBrokerToken(root);
+  const server = new BrokerServer({dataRoot:root,token,v2Service:{listProjects:() => ({projects:[]})}});
+  await fs.writeFile(server.endpoint,'owned regular file',{mode:0o600});
+  await assert.rejects(server.start(),(error) => error.code === 'BROKER_UNAVAILABLE');
+  assert.equal(await fs.readFile(server.endpoint,'utf8'),'owned regular file');
+  await fs.unlink(server.endpoint);
+  await server.start();
+  t.after(() => server.stop());
+  assert.equal((await fs.stat(server.endpoint)).mode & 0o777,0o600);
+  assert.equal((await fs.stat(path.join(root,'broker.token'))).mode & 0o777,0o600);
+  const duplicate = new BrokerServer({dataRoot:root,token});
+  await assert.rejects(duplicate.start(),(error) => error.code === 'BROKER_UNAVAILABLE');
+  assert.deepEqual(await callBroker(root,'v2.listProjects',{},2_000),{projects:[]});
+  await server.stop();
+  await assert.rejects(fs.stat(server.endpoint),{code:'ENOENT'});
+  await server.start();
+  assert.deepEqual(await callBroker(root,'v2.listProjects',{},2_000),{projects:[]});
+});
+
+test('Unix Broker 和 MCP 在长数据目录下使用同一短 socket', {skip:process.platform === 'win32'}, async (t) => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(),'ai-ops-unix-long-'));
+  const root = path.join(parent,'中文目录'.repeat(20));
+  t.after(() => fs.rm(parent,{recursive:true,force:true}));
+  const token = await rotateBrokerToken(root);
+  const server = new BrokerServer({dataRoot:root,token,v2Service:{listProjects:() => ({projects:[]})}});
+  await server.start();
+  t.after(() => server.stop());
+  assert.ok(Buffer.byteLength(server.endpoint) <= 100);
+  assert.deepEqual(await callBroker(root,'v2.listProjects',{},2_000),{projects:[]});
+});

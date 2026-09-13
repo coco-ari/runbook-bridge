@@ -78,7 +78,7 @@ const ADDRESS_COPY: Readonly<Record<string, string>> = {
 const TRANSPORT_COPY: Readonly<Record<string, string>> = {
   direct: "直接连接",
   serverTunnel: "服务器隧道",
-  windowsVpn: "Windows VPN",
+  windowsVpn: "系统 VPN",
 }
 
 const TLS_COPY: Readonly<Record<string, string>> = {

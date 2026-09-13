@@ -125,13 +125,13 @@ const SERVER_UPLINK_LABELS: Readonly<Record<ServerUplinkType, string>> = {
   direct: "直接连接",
   socks5: "SOCKS5 代理",
   http: "HTTP 代理",
-  windowsVpn: "Windows VPN",
+  windowsVpn: "系统 VPN",
 }
 
 const DATA_TRANSPORT_LABELS: Readonly<Record<DataTransportKind, string>> = {
   direct: "直接连接",
   serverTunnel: "Server 隧道",
-  windowsVpn: "Windows VPN",
+  windowsVpn: "系统 VPN",
 }
 
 const TLS_MODE_LABELS: Readonly<Record<TlsMode, string>> = {
@@ -965,7 +965,7 @@ function ServerUplinkFields({
             <SelectItem value="direct">直接连接</SelectItem>
             <SelectItem value="socks5">SOCKS5 代理</SelectItem>
             <SelectItem value="http">HTTP 代理</SelectItem>
-            <SelectItem value="windowsVpn">Windows VPN</SelectItem>
+            <SelectItem value="windowsVpn">系统 VPN</SelectItem>
           </SelectContent>
         </Select>
       </Field>
@@ -1024,7 +1024,7 @@ function ServerUplinkFields({
       ) : null}
       {uplink.type === "windowsVpn" ? (
         <Field data-invalid={Boolean(errors.vpnAlias)}>
-          <FieldLabel htmlFor="plugin-server-vpn-alias">Windows VPN 网卡</FieldLabel>
+          <FieldLabel htmlFor="plugin-server-vpn-alias">系统 VPN 网卡</FieldLabel>
           <Input
             aria-describedby={errors.vpnAlias ? "plugin-server-vpn-alias-error" : undefined}
             aria-invalid={Boolean(errors.vpnAlias)}
@@ -1060,7 +1060,7 @@ function DataTransportFields({ draft, errors, availableServers, onChange }: Data
           <SelectContent>
             <SelectItem value="direct">直接连接</SelectItem>
             <SelectItem value="serverTunnel">Server 隧道</SelectItem>
-            <SelectItem value="windowsVpn">Windows VPN</SelectItem>
+            <SelectItem value="windowsVpn">系统 VPN</SelectItem>
           </SelectContent>
         </Select>
       </Field>
@@ -1093,7 +1093,7 @@ function DataTransportFields({ draft, errors, availableServers, onChange }: Data
       ) : null}
       {transport.kind === "windowsVpn" ? (
         <Field data-invalid={Boolean(errors.vpnAlias)}>
-          <FieldLabel htmlFor="plugin-data-vpn-alias">Windows VPN 网卡</FieldLabel>
+          <FieldLabel htmlFor="plugin-data-vpn-alias">系统 VPN 网卡</FieldLabel>
           <Input
             aria-describedby={errors.vpnAlias ? "plugin-data-vpn-alias-error" : undefined}
             aria-invalid={Boolean(errors.vpnAlias)}

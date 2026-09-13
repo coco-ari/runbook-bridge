@@ -6,6 +6,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { packagedPaths } = require('./packaged-paths.cjs');
 
 const PROJECT_ID = 'upgrade-regression';
 const ENVIRONMENT_ID = 'production';
@@ -238,8 +239,14 @@ async function stopInstalledApp(appProcess) {
   await cdp.call('Browser.close').catch(() => undefined);
   cdp.close();
   const started = Date.now();
-  while (child.exitCode === null && Date.now() - started < 15_000) await delay(100);
-  if (child.exitCode === null) child.kill();
+  const exited = () => child.exitCode !== null || child.signalCode !== null;
+  while (!exited() && Date.now() - started < 15_000) await delay(100);
+  if (!exited()) {
+    child.kill();
+    const killedAt = Date.now();
+    while (!exited() && Date.now() - killedAt < 5_000) await delay(100);
+  }
+  assert.equal(exited(),true,'覆盖安装之前应用必须完全退出');
 }
 
 function rendererInspectionExpression(expectedPluginCount) {
@@ -335,7 +342,7 @@ function structuredResult(result) {
 async function exerciseInstalledMcp(executable, isolation) {
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
-  const mcpEntrypoint = path.join(path.dirname(executable), 'resources', 'app.asar', 'src', 'mcp-v2.mjs');
+  const { mcpEntrypoint } = packagedPaths(executable);
   const transport = new StdioClientTransport({
     command: executable,
     args: [mcpEntrypoint],
@@ -383,7 +390,36 @@ async function assertFilesUnchanged(files) {
   for (const [file, expected] of files) assert.deepEqual(await fsp.readFile(file), expected, file);
 }
 
+function assertMacInstallDirectory(installDir) {
+  const parent = path.dirname(path.resolve(installDir));
+  assert.equal(path.dirname(parent),path.resolve(os.tmpdir()),'Mac 安装测试只能修改系统临时目录');
+  assert.ok(path.basename(parent).startsWith('ai-ops-install-regression-'),'Mac 安装测试目录无效');
+  assert.equal(path.basename(installDir),'InstalledApp');
+}
+
 async function install(installer, installDir, env) {
+  if (process.platform === 'darwin') {
+    assertMacInstallDirectory(installDir);
+    const mountPoint = path.join(path.dirname(installDir),'MountedDmg');
+    const bundle = path.join(installDir,'Agent运维工作台.app');
+    await fsp.mkdir(mountPoint,{recursive:true});
+    await fsp.mkdir(installDir,{recursive:true});
+    let mounted = false;
+    try {
+      await runProcess('/usr/bin/hdiutil',['attach','-nobrowse','-readonly','-mountpoint',mountPoint,installer]);
+      mounted = true;
+      const source = path.join(mountPoint,'Agent运维工作台.app');
+      await fsp.access(source);
+      // 覆盖前仅移除本次测试目录中的应用包，数据和钥匙串均保留。
+      await fsp.rm(bundle,{recursive:true,force:true});
+      await runProcess('/usr/bin/ditto',[source,bundle]);
+      const { executable } = packagedPaths(bundle);
+      await fsp.access(executable);
+      return executable;
+    } finally {
+      if (mounted) await runProcess('/usr/bin/hdiutil',['detach',mountPoint]);
+    }
+  }
   await runProcess(installer, ['/S', '--no-desktop-shortcut', `/D=${installDir}`], { env, timeoutMs: 180_000 });
   const executable = path.join(installDir, 'Agent\u8fd0\u7ef4\u5de5\u4f5c\u53f0.exe');
   await waitForFile(executable);
@@ -391,6 +427,11 @@ async function install(installer, installDir, env) {
 }
 
 async function uninstall(installDir, env) {
+  if (process.platform === 'darwin') {
+    assertMacInstallDirectory(installDir);
+    await fsp.rm(path.join(installDir,'Agent运维工作台.app'),{recursive:true,force:true});
+    return;
+  }
   const names = await fsp.readdir(installDir);
   const uninstallerName = names.find((name) => /^Uninstall.*\.exe$/i.test(name));
   assert.ok(uninstallerName, 'NSIS uninstaller was not installed');
@@ -403,6 +444,8 @@ async function orchestrate() {
   const root = path.resolve(__dirname, '..');
   const manifest = JSON.parse(await fsp.readFile(path.join(root, 'package.json'), 'utf8'));
   const installer = path.resolve(process.argv[2] ?? path.join(root, 'dist', `Agent\u8fd0\u7ef4\u5de5\u4f5c\u53f0 Setup ${manifest.version}.exe`));
+  assert.ok(['win32','darwin'].includes(process.platform),'安装回归只支持 Windows 和 macOS');
+  if (process.platform === 'darwin') assert.ok(process.argv[2]?.endsWith('.dmg'),'Mac 安装回归必须传入本次构建的 DMG');
   await fsp.access(installer);
   const temporaryRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'ai-ops-install-regression-'));
   const isolation = isolatedEnvironment(temporaryRoot);

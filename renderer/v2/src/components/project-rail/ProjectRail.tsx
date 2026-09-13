@@ -1,3 +1,4 @@
+import { shortcutLabel } from "@/lib/platform"
 import { useEffect, useMemo, useState } from "react"
 import {
   ArrowClockwise,
@@ -581,7 +582,7 @@ export function ProjectRail({
               <Kbd
                 className="border border-background/20 bg-background/10 px-1.5 py-0.5 font-mono text-[10px] leading-none"
               >
-                Ctrl N
+                {shortcutLabel("N")}
               </Kbd>
             </TooltipContent>
           </Tooltip>

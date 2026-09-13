@@ -2,15 +2,16 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { app, BrowserWindow, clipboard, dialog, ipcMain, powerMonitor, session } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, powerMonitor, session, Menu } from 'electron';
 import { ProjectStore } from './project-store.mjs';
+import { desktopMenuTemplate } from './desktop-menu.mjs';
 import { BrokerServer } from './broker-server.mjs';
 import { rotateBrokerToken } from './broker-auth.mjs';
 import { CredentialStore, migrateLegacyCredentialForPlugin } from './credential-store.mjs';
 import { defaultDataRoot } from './paths.mjs';
 import { WorkspaceStore } from './workspace-store.mjs';
 import { PluginCredentialVault, pluginCredentialInternals } from './plugin-credential-vault.mjs';
-import { AddressResolver, WindowsVpnGuard, RouteManager } from './route-manager.mjs';
+import { AddressResolver, SystemVpnGuard, RouteManager } from './route-manager.mjs';
 import { ServerPluginRuntime } from './server-plugin-runtime.mjs';
 import { MysqlPluginRuntime } from './mysql-plugin-runtime.mjs';
 import { RedisPluginRuntime } from './redis-plugin-runtime.mjs';
@@ -152,7 +153,7 @@ if (process.argv.includes('--mcp')) {
           }
         }
         const resolver = new AddressResolver();
-        const vpnGuard = new WindowsVpnGuard();
+        const vpnGuard = new SystemVpnGuard();
         const serverRuntime = new ServerPluginRuntime(workspaceStore, pluginCredentialVault, { resolver, vpnGuard });
         const routeManager = new RouteManager({ resolver, vpnGuard, serverRuntime });
         const mysqlRuntime = new MysqlPluginRuntime(routeManager, pluginCredentialVault);
@@ -218,6 +219,8 @@ if (process.argv.includes('--mcp')) {
             return result.canceled ? [] : result.filePaths;
           },
         });
+        const menuTemplate = desktopMenuTemplate();
+        if (menuTemplate) Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
         createWindow();
         powerMonitor.on('resume', () => environmentConnectionManager.networkChanged('system-resume').catch(() => undefined));
         app.on('activate', () => {

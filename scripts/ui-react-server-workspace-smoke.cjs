@@ -248,7 +248,7 @@ async function run() {
   const { ServerWorkspaceFiles } = await import('../src/server-workspace-files.mjs');
   workspaceFiles = new ServerWorkspaceFiles({ workspaceStore: { getPlugin: async () => plugin }, serverRuntime: { status: () => ({ connected, generation: 1 }), statRemotePath: async (_plugin, target) => fixtureStat(target) }, serverOperations: {} });
   register();
-  win = new BrowserWindow({ width: 1440, height: 920, show: false, webPreferences: { preload: path.join(root, 'src/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
+  win = new BrowserWindow({ enableLargerThanScreen:true, width: 1440, height: 920, show: false, webPreferences: { preload: path.join(root, 'src/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
   win.webContents.session.webRequest.onBeforeRequest((details, callback) => { if (/^https?:/u.test(details.url)) { externalRequests.push(details.url); callback({ cancel: true }); } else callback({}); });
   win.webContents.on('console-message', (_event, details) => { if (details.level === 'error') errors.push(details.message); });
   await win.loadFile(path.join(root, 'renderer-build/v2/index.html'));
@@ -369,8 +369,15 @@ async function run() {
   await wait(100); await clickText("查看上一批");
   await evaluate("(() => { const tree = document.querySelector('.server-tree-scroll'); tree.scrollTop = 0; tree.dispatchEvent(new Event('scroll')); })()");
   await wait(100);
+  // 虚拟列表只挂载可视区附近的条目，先滚动到明确的失效链接再验证禁用行为。
+  const unavailableLink = '[role="treeitem"][title^="/missing-link"][aria-disabled="true"]';
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (await evaluate('Boolean(document.querySelector(' + JSON.stringify(unavailableLink) + '))')) break;
+    await evaluate("(() => { const tree = document.querySelector('.server-tree-scroll'); tree.scrollTop += Math.max(80, tree.clientHeight / 2); tree.dispatchEvent(new Event('scroll')); })()");
+    await wait(80);
+  }
   const beforeLink = directoryReads.length;
-  await click('[role="treeitem"][aria-disabled="true"]');
+  await click(unavailableLink);
   assert.equal(directoryReads.length, beforeLink, "不遍历符号链接");
   await click('[role="treeitem"][title="/srv"]');
   await until(`document.querySelector('[role="treeitem"][title="/srv/example.conf"]')`, '懒加载子目录');

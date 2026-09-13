@@ -1744,7 +1744,7 @@ async function run() {
     callback({});
   });
 
-  const win = new BrowserWindow({
+  const win = new BrowserWindow({ enableLargerThanScreen:true,
     show:false,
     useContentSize:true,
     width:960,

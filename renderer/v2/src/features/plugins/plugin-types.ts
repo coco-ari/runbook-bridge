@@ -351,7 +351,7 @@ export function validatePluginDraft(draft: PluginFormDraft, purpose = "validate"
       }
     }
     if (uplink.type === "windowsVpn" && !uplink.interfaceAlias?.trim()) {
-      issues.push({ field: "vpnAlias", message: "请填写 Windows VPN 网卡名称。" })
+      issues.push({ field: "vpnAlias", message: "请填写 系统 VPN 网卡名称。" })
     }
   } else {
     const transport = draft.transport ?? { kind: "direct" as const }
@@ -359,7 +359,7 @@ export function validatePluginDraft(draft: PluginFormDraft, purpose = "validate"
       issues.push({ field: "tunnelServer", message: "请选择同环境的 Server 隧道。" })
     }
     if (transport.kind === "windowsVpn" && !transport.interfaceAlias?.trim()) {
-      issues.push({ field: "vpnAlias", message: "请填写 Windows VPN 网卡名称。" })
+      issues.push({ field: "vpnAlias", message: "请填写 系统 VPN 网卡名称。" })
     }
   }
   if (draft.pluginType === "mysql" && purpose !== "tls" && !draft.target.database?.trim()) {

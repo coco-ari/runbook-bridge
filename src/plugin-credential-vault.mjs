@@ -169,7 +169,7 @@ export class PluginCredentialVault {
   async save(plugin, secrets) {
     const normalized = this.normalizeSecrets(plugin, secrets);
     if (!Object.keys(normalized).length) throw new AppError('INVALID_ARGUMENT', '没有可保存的凭据。');
-    if (!this.encryption?.isEncryptionAvailable?.()) throw new AppError('CREDENTIAL_ENCRYPTION_UNAVAILABLE', 'Windows 安全存储当前不可用。');
+    if (!this.encryption?.isEncryptionAvailable?.()) throw new AppError('CREDENTIAL_ENCRYPTION_UNAVAILABLE', '系统安全存储当前不可用。');
     return this.enqueue(async () => {
       const slots = await this.readEnvelopeSlots();
       let existing;
@@ -190,7 +190,7 @@ export class PluginCredentialVault {
   }
 
   async saveUnlocked(plugin, normalized, slots = null, { removeResourceKeys = [] } = {}) {
-    if (!this.encryption?.isEncryptionAvailable?.()) throw new AppError('CREDENTIAL_ENCRYPTION_UNAVAILABLE', 'Windows 安全存储当前不可用。');
+    if (!this.encryption?.isEncryptionAvailable?.()) throw new AppError('CREDENTIAL_ENCRYPTION_UNAVAILABLE', '系统安全存储当前不可用。');
     const currentSlots = slots ?? await this.readEnvelopeSlots();
     const validBase = currentSlots.primary.envelope ?? currentSlots.backup.envelope;
     if (!validBase) {
@@ -264,7 +264,7 @@ export class PluginCredentialVault {
       throw new AppError('INVALID_ARGUMENT', '强制替换凭据必须提供至少一个新的凭据字段。');
     }
     if (!this.encryption?.isEncryptionAvailable?.()) {
-      throw new AppError('CREDENTIAL_ENCRYPTION_UNAVAILABLE', 'Windows 安全存储当前不可用。');
+      throw new AppError('CREDENTIAL_ENCRYPTION_UNAVAILABLE', '系统安全存储当前不可用。');
     }
     const previous = previousPlugin ?? nextPlugin;
     return this.enqueue(async () => {
@@ -334,7 +334,7 @@ export class PluginCredentialVault {
     if (entry.pluginType !== plugin.pluginType || entry.bindingHash !== bindingHash(plugin)) {
       throw new AppError('CREDENTIAL_BINDING_MISMATCH', '保存的凭据不再匹配当前插件目标，请重新输入。');
     }
-    if (!this.encryption?.isEncryptionAvailable?.()) throw new AppError('CREDENTIAL_ENCRYPTION_UNAVAILABLE', 'Windows 安全存储当前不可用。');
+    if (!this.encryption?.isEncryptionAvailable?.()) throw new AppError('CREDENTIAL_ENCRYPTION_UNAVAILABLE', '系统安全存储当前不可用。');
     try {
       const decrypted = await maybeAwait(this.encryption.decryptString(Buffer.from(entry.ciphertext, 'base64')));
       const parsed = JSON.parse(String(decrypted));

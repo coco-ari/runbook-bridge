@@ -6,11 +6,11 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const execFileAsync = promisify(execFile);
-const executable = path.resolve(process.argv[2] ?? 'dist/win-unpacked/Agent运维工作台.exe');
-const appAsar = path.join(path.dirname(executable), 'resources', 'app.asar', 'src', 'mcp-v2.mjs');
+const { packagedPaths } = await import('./packaged-paths.cjs');
+const { executable, appAsar, mcpEntrypoint } = packagedPaths(process.argv[2]);
 const transport = new StdioClientTransport({
   command: executable,
-  args: [appAsar],
+  args: [mcpEntrypoint],
   env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
   stderr: 'pipe',
 });
@@ -30,7 +30,7 @@ try {
   await client.close().catch(() => undefined);
 }
 
-const archiveModule = path.join(path.dirname(executable), 'resources', 'app.asar', 'src', 'log-archive.mjs');
+const archiveModule = path.join(appAsar, 'src', 'log-archive.mjs');
 const archiveSmoke = [
   "import assert from 'node:assert/strict';",
   "import { gzipSync } from 'node:zlib';",

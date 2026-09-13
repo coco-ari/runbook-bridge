@@ -156,7 +156,9 @@ export class ServerPluginRuntime extends EventEmitter {
       try {
         let localAddress;
         if (plugin.uplink?.type === 'windowsVpn') {
-          ({ localAddress } = await this.vpnGuard.assertRoute(candidate.address, candidate.family, plugin.uplink.interfaceAlias));
+          const route = await this.vpnGuard.assertRoute(candidate.address, candidate.family, plugin.uplink.interfaceAlias);
+          if (route?.verified !== true || !route.localAddress) throw new AppError('VPN_REQUIRED', '系统 VPN 路由尚未验证。');
+          ({ localAddress } = route);
         }
         const net = await import('node:net');
         const socket = await new Promise((resolve, reject) => {
@@ -172,6 +174,7 @@ export class ServerPluginRuntime extends EventEmitter {
         });
         return socket;
       } catch (error) {
+        if (error instanceof AppError && ['VPN_REQUIRED', 'INVALID_ARGUMENT'].includes(error.code)) throw error;
         lastError = error;
       }
     }

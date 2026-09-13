@@ -158,7 +158,7 @@ export class PluginDraftCredentialVault {
 
   async decryptCandidate(pluginType,candidate) {
     if (!this.encryption?.isEncryptionAvailable?.()) {
-      throw new AppError('DRAFT_CREDENTIAL_ENCRYPTION_UNAVAILABLE','Windows 安全存储当前不可用。');
+      throw new AppError('DRAFT_CREDENTIAL_ENCRYPTION_UNAVAILABLE','系统安全存储当前不可用。');
     }
     try {
       const decrypted = await maybeAwait(this.encryption.decryptString(Buffer.from(candidate.ciphertext,'base64')));
@@ -224,7 +224,7 @@ export class PluginDraftCredentialVault {
     const replacements = this.normalizeSecrets(draft.pluginType,secrets);
     if (!Object.keys(replacements).length) return {saved:false,state:await this.state(record,draft)};
     if (!this.encryption?.isEncryptionAvailable?.()) {
-      throw new AppError('DRAFT_CREDENTIAL_ENCRYPTION_UNAVAILABLE','Windows 安全存储当前不可用。');
+      throw new AppError('DRAFT_CREDENTIAL_ENCRYPTION_UNAVAILABLE','系统安全存储当前不可用。');
     }
     return this.enqueue(async () => {
       const slots = await this.readEnvelopeSlots();

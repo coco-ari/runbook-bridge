@@ -49,6 +49,8 @@ test('project creation persists only non-secret connection metadata', async (t) 
   assert.match(defaultReadme, /Programs\\Agent运维工作台\\Agent运维工作台\.exe/);
   assert.match(defaultReadme, /resources\\app\.asar\\src\\mcp-v2\.mjs/);
   assert.match(defaultReadme, /codex mcp get agent-ops/);
+  assert.match(defaultReadme, /Contents\/MacOS\/Agent运维工作台/u);
+  assert.match(defaultReadme, /Contents\/Resources\/app\.asar\/src\/mcp-v2\.mjs/u);
   assert.doesNotMatch(defaultReadme, /src\\mcp\.mjs|Programs\\AI运维工具/);
 });
 

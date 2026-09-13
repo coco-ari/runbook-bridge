@@ -150,7 +150,9 @@ test('packaged React smoke verifies compact rail geometry and process-restart pe
   assert.match(smoke,/event\.isTrusted/u);
   assert.match(smoke,/pressProjectRailShortcut\(running\.cdp\)/u);
   assert.match(smoke,/pressProjectRailResizer\(running\.cdp\)/u);
-  assert.match(smoke,/modifiers: 2/u);
+  assert.match(smoke,/modifiers: PRIMARY_MODIFIER/u);
+  assert.match(smoke,/PRIMARY_MODIFIER = process\.platform === 'darwin' \? 4 : 2/u);
+  assert.match(smoke,/event\.metaKey \? 'Meta\+B' : 'Control\+B'/u);
   assert.match(smoke,/assert\.equal\(snapshot\.sameResizer, true/u);
   assert.match(smoke,/assert\.equal\(snapshot\.focused, true/u);
   assert.match(smoke,/assert\.deepEqual\(snapshot\.trustedKeys, trustedKeys/u);

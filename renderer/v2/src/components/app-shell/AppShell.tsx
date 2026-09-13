@@ -1,3 +1,4 @@
+import { shortcutLabel } from "@/lib/platform"
 import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import { useGroupRef, usePanelRef, type Layout, type LayoutChangedMeta, type PanelSize } from "react-resizable-panels"
 import { toast } from "sonner"
@@ -1092,7 +1093,7 @@ export function AppShell() {
   const constraintLimited = viewportWidth < 960
   const projectResizeDescription = viewportWidth < 720
     ? "窗口过窄，放大窗口后可调整项目栏宽度。"
-    : "拖动调整项目栏宽度，双击恢复默认宽度（224 像素，受窗口空间限制）。聚焦分隔线后，按左右方向键调整宽度，按 Enter 折叠或展开；在非输入区域也可按 Ctrl+B。"
+    : `拖动调整项目栏宽度，双击恢复默认宽度（224 像素，受窗口空间限制）。聚焦分隔线后，按左右方向键调整宽度，按 Enter 折叠或展开；在非输入区域也可按 ${shortcutLabel("B")}。`
 
   return (
     <div className="h-full max-h-full min-h-0 relative w-full min-w-0 overflow-hidden bg-background text-foreground" data-shell-ready="true" data-testid="react-app-shell">

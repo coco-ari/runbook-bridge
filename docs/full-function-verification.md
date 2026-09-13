@@ -95,3 +95,32 @@ node scripts/install-upgrade-regression.cjs $installer.FullName
 确认变更没有削弱凭据隔离、首次连接控制、精确作用域、单次审批、主机指纹/TLS、MySQL/Redis 只读策略及审计保护。公有工具契约变化需要同步工具 Schema、服务、运行时、文档和打包 smoke。
 
 本机测试不证明企业 VPN、生产证书、系统 SSH Agent、全部代理链或远程基础设施已经验证。未运行的安装、升级、远端 CI 或人工检查必须明确标为未运行。安装包哈希、运行日志和截图属于对应交付产物，保留在忽略的产物目录或发布附件，不作为源码文档中的长期成功声明；不得包含真实凭据、客户数据或生产环境内容。
+
+## macOS 构建、包检查与分发
+
+完整要求和未验证项见 [macOS 适配方案](macos-adaptation.md)。在 Mac 上运行相同的 `check`、`test`、`test:ui:all`，然后按本机架构构建并验证。以下以 Apple Silicon 为例：
+
+```sh
+corepack pnpm run dist:mac:arm64
+node scripts/verify-package.mjs "dist/mac-arm64/Agent运维工作台.app"
+node scripts/packaged-mcp-smoke.mjs "dist/mac-arm64/Agent运维工作台.app"
+node scripts/packaged-ui-smoke.cjs "dist/mac-arm64/Agent运维工作台.app"
+VERSION=$(node -p "require('./package.json').version")
+node scripts/install-upgrade-regression.cjs "dist/RunbookBridge-${VERSION}-mac-arm64.dmg"
+```
+
+Intel 使用 `dist:mac:x64`，应用目录为 `dist/mac/Agent运维工作台.app`，DMG 后缀为 `mac-x64.dmg`。包检查也接受 `.app/Contents/MacOS/Agent运维工作台` 的绝对路径。
+
+安装回归只能在隔离 Mac 账户或一次性 Runner 运行。它把 DMG 只读挂载到临时目录，用 ditto 复制应用，验证初装、同版本覆盖后的配置/凭据/界面和 MCP，移除临时应用后确认数据保留。它不会写入真实 `/Applications`，也不证明跨版本迁移和用户下载后的 Gatekeeper 行为。
+
+普通 `dist:mac*` 是临时签名的开发包，并明确关闭该测试包的 Hardened Runtime。正式分发设置 `AI_OPS_MAC_RELEASE=1`，提供 `CSC_LINK`/`CSC_KEY_PASSWORD`（Developer ID 证书）和 `APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`、`APPLE_TEAM_ID`；也可使用 electron-builder 支持的 API Key 或钥匙串配置。正式构建强制签名、公证，使用 Hardened Runtime 及 JIT entitlement；缺少配置就失败，不降级成测试包。证书和密码只存 CI secrets。当前 Release 工作流采用 `MAC_CSC_LINK`、`MAC_CSC_KEY_PASSWORD` 和上述三个 Apple secrets。
+
+正式包还需要验证：
+
+```sh
+codesign --verify --deep --strict "dist/mac-arm64/Agent运维工作台.app"
+xcrun stapler validate "dist/mac-arm64/Agent运维工作台.app"
+spctl --assess --type execute --verbose "dist/mac-arm64/Agent运维工作台.app"
+```
+
+CI 原生运行 Windows x64、Mac arm64、Mac x64。Mac 增加包及安装回归；Release 在三平台检查全部通过后由单个任务发布附件和 SHA-256。实际 Mac VPN 出口切换、Finder 启动的 SSH Agent、钥匙串拒绝授权与签名升级、中文输入法、下载后的首次启动仍须系统验收；不得以 mock 或 workflow 文件存在代替通过证据。

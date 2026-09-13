@@ -333,6 +333,7 @@ async function collectWindowErrorDiagnostics(win) {
 }
 
 async function pressKey(win,keyCode,modifiers = []) {
+  if (process.platform === 'darwin') modifiers = modifiers.map(value => value === 'control' ? 'meta' : value);
   win.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});
   win.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers});
   await wait(100);
@@ -3542,7 +3543,7 @@ async function run() {
     callback({});
   });
 
-  const win = new BrowserWindow({
+  const win = new BrowserWindow({ enableLargerThanScreen:true,
     show:false,
     useContentSize:true,
     width:960,

@@ -419,7 +419,7 @@ export class CredentialStore {
       return { saved:false, preserved:await this.has(projectId) };
     }
     if (!this.encryption.isEncryptionAvailable()) {
-      throw new AppError('CREDENTIAL_STORAGE_UNAVAILABLE', 'Windows 安全存储当前不可用。');
+      throw new AppError('CREDENTIAL_STORAGE_UNAVAILABLE', '系统安全存储当前不可用。');
     }
     let encrypted;
     try {
@@ -427,7 +427,7 @@ export class CredentialStore {
         JSON.stringify({ binding: credentialBinding(config), secrets: clean }),
       );
     } catch {
-      throw new AppError('CREDENTIAL_STORAGE_FAILED', '无法使用 Windows 安全存储加密登录凭据。');
+      throw new AppError('CREDENTIAL_STORAGE_FAILED', '无法使用 系统安全存储加密登录凭据。');
     }
     const target = this.filePath(projectId);
     const temp = `${target}.${crypto.randomBytes(4).toString('hex')}.tmp`;

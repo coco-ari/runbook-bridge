@@ -70,7 +70,7 @@ function transportIssues(transport = {kind:'direct'}) {
   const kind = transport?.kind ?? 'direct';
   if (!TRANSPORTS.has(kind)) return [issue('transport.kind','INVALID_TRANSPORT','连接路径无效。')];
   if (kind === 'windowsVpn' && !hasText(transport.interfaceAlias)) {
-    return [issue('transport.interfaceAlias','REQUIRED','请选择 Windows VPN 网卡。')];
+    return [issue('transport.interfaceAlias','REQUIRED','请选择 系统 VPN 网卡。')];
   }
   if (kind === 'serverTunnel' && !hasText(transport.serverPluginInstanceId)) {
     return [issue('transport.serverPluginInstanceId','REQUIRED','请选择 Server 隧道。')];
@@ -138,7 +138,7 @@ const serverAdapter = Object.freeze({
         ? [portIssue(plugin?.uplink?.port,'uplink.port','代理')]
         : []),
       uplinkType === 'windowsVpn' && !hasText(plugin?.uplink?.interfaceAlias)
-        ? issue('uplink.interfaceAlias','REQUIRED','请选择 Windows VPN 网卡。')
+        ? issue('uplink.interfaceAlias','REQUIRED','请选择 系统 VPN 网卡。')
         : null,
     ];
     return configurationResult(issues);

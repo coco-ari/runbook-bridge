@@ -256,7 +256,7 @@ function normalizeTransport(input = {}) {
   if (kind === 'windowsVpn') {
     const interfaceAlias = String(input.interfaceAlias ?? '').trim();
     if (interfaceAlias.length > 128 || CONTROL_RE.test(interfaceAlias)) {
-      throw new AppError('INVALID_ARGUMENT', 'Windows VPN 网卡名称无效。');
+      throw new AppError('INVALID_ARGUMENT', '系统 VPN 网卡名称无效。');
     }
     if (interfaceAlias) transport.interfaceAlias = interfaceAlias;
   }
@@ -365,7 +365,7 @@ function normalizePlugin(input, scope, existing = null) {
     const uplinkType = ['direct', 'socks5', 'http', 'windowsVpn'].includes(uplink.type) ? uplink.type : 'direct';
     const proxyHost = uplinkType === 'socks5' || uplinkType === 'http' ? normalizeHost(uplink.host, { required:false }) : '';
     const vpnAlias = uplinkType === 'windowsVpn' ? String(uplink.interfaceAlias ?? '').trim() : '';
-    if (vpnAlias.length > 128 || CONTROL_RE.test(vpnAlias)) throw new AppError('INVALID_ARGUMENT', 'Windows VPN 网卡名称无效。');
+    if (vpnAlias.length > 128 || CONTROL_RE.test(vpnAlias)) throw new AppError('INVALID_ARGUMENT', '系统 VPN 网卡名称无效。');
     const authReady = Boolean(username) && (authType !== 'privateKey' || Boolean(auth.privateKeyPath));
     const uplinkReady = uplinkType === 'direct' || (['socks5','http'].includes(uplinkType) ? Boolean(proxyHost) : Boolean(vpnAlias));
     const port = normalizePort(target.port, 22);
