@@ -9,11 +9,10 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const execFileAsync = promisify(execFile);
-const executable = path.resolve(process.argv[2] ?? 'dist/win-unpacked/Agent运维工作台.exe');
+const { packagedPaths } = await import('./packaged-paths.cjs');
+const { executable, appAsar, mcpEntrypoint } = packagedPaths(process.argv[2]);
 const manifest = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
 await fs.access(executable);
-const appAsar = path.join(path.dirname(executable), 'resources', 'app.asar');
-const mcpEntrypoint = path.join(appAsar, 'src', 'mcp-v2.mjs');
 const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-package-'));
 try {
   const rendererInspectionProgram = [

@@ -108,7 +108,9 @@ test('quick-question smoke validates inline drafts, guarded navigation and exact
 
 test('business keyboard checks use real Chromium focus and native key input',async () => {
   const source = await fs.readFile('scripts/ui-react-business-smoke.cjs','utf8');
-  assert.match(source,/async function focusRenderer\(win\) \{\s*win\.webContents\.focus\(\);\s*await waitFor\(win,'document\.hasFocus\(\) === true'/u);
+  const focusPreparation = source.slice(source.indexOf('async function focusRenderer(win)'),source.indexOf('async function assertRendererKeyboardFocus(win)'));
+  assert.match(focusPreparation,/win\.webContents\.focus\(\);\s*await waitFor\(win,'document\.hasFocus\(\) === true'/u);
+  assert.match(focusPreparation,/process\.platform === 'darwin'[\s\S]*win\.show\(\); win\.focus\(\)/u);
   assert.match(source,/on\('did-finish-load',\(\) => win\.webContents\.focus\(\)\)/u);
   assert.match(source,/await win\.loadFile\(pagePath\);\s*await focusRenderer\(win\)/u);
   assert.match(source,/async function pressRendererKey\(win,keyCode,modifiers = \[\]\) \{\s*await focusRenderer\(win\);/u);

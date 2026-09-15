@@ -1,3 +1,4 @@
+import { shortcutLabel } from "@/lib/platform"
 import { FolderSimple, Plus, Stack, TreeStructure } from "@phosphor-icons/react"
 import { Fragment, useEffect, useRef } from "react"
 
@@ -122,7 +123,7 @@ export function GlobalCommand({
             >
               <Plus />
               新增项目
-              <CommandShortcut>Ctrl N</CommandShortcut>
+              <CommandShortcut>{shortcutLabel("N")}</CommandShortcut>
             </CommandItem>
             {onCreateEnvironment ? (
               <CommandItem

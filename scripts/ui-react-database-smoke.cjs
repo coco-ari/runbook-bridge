@@ -353,8 +353,8 @@ async function pressBodyShortcut(win,keyCode) {
   win.webContents.focus();
   await win.webContents.executeJavaScript('document.activeElement?.blur()',true);
   await waitFor(win,'document.activeElement === document.body','快捷键测试焦点位于 body');
-  win.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers:['control']});
-  win.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers:['control']});
+  win.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers:[process.platform === 'darwin' ? 'meta' : 'control']});
+  win.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers:[process.platform === 'darwin' ? 'meta' : 'control']});
   await wait(100);
 }
 
@@ -565,8 +565,8 @@ async function run() {
     callback(blocked ? {cancel:true} : {});
   });
   session.defaultSession.setPermissionRequestHandler((_contents,_permission,callback) => callback(false));
-  const win = new BrowserWindow({
-    show:false,useContentSize:true,width:1600,height:1000,
+  const win = new BrowserWindow({ enableLargerThanScreen:true,
+    show:process.platform === 'darwin',useContentSize:true,width:1600,height:1000,
     webPreferences:{preload:path.join(root,'src','preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false},
   });
   win.webContents.setWindowOpenHandler(() => ({action:'deny'}));
@@ -692,8 +692,8 @@ async function run() {
     await fill(win,testId('mysql-sql-editor'),'SELECT * FROM orders WHERE 1 = 0');
     win.webContents.focus();
     await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').focus()`,true);
-    win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter',modifiers:['control']});
-    win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter',modifiers:['control']});
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter',modifiers:[process.platform === 'darwin' ? 'meta' : 'control']});
+    win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter',modifiers:[process.platform === 'darwin' ? 'meta' : 'control']});
     await textContains(win,'mysql-query-result','查询成功，没有符合条件的数据');
     await textContains(win,'mysql-query-summary','返回 0 行');
     await fill(win,testId('mysql-sql-editor'),'SELECT duplicate_columns FROM orders');

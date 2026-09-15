@@ -110,7 +110,7 @@ export class AddressResolver {
   }
 }
 
-export class WindowsVpnGuard {
+export class SystemVpnGuard {
   constructor({ platform = process.platform, networkInterfaces = os.networkInterfaces, exec = execFileAsync } = {}) {
     this.platform = platform;
     this.networkInterfaces = networkInterfaces;
@@ -118,13 +118,38 @@ export class WindowsVpnGuard {
   }
 
   async assertRoute(address, family, interfaceAlias) {
-    if (!interfaceAlias) throw new AppError('VPN_REQUIRED', '未配置 Windows VPN 网卡。');
+    if (net.isIP(address) !== family || ![4, 6].includes(family)) throw new AppError('INVALID_ARGUMENT', 'VPN 路由检查只接受匹配地址族的 IP。');
+    if (typeof interfaceAlias !== 'string' || !interfaceAlias.trim() || interfaceAlias.length > 128 || /[\u0000-\u001f\u007f]/u.test(interfaceAlias)) {
+      throw new AppError('VPN_REQUIRED', '未配置有效的系统 VPN 网卡。');
+    }
+    if (!['win32', 'darwin'].includes(this.platform)) throw new AppError('VPN_REQUIRED', '当前系统不支持 VPN 路由验证。');
     const interfaces = this.networkInterfaces();
     const addresses = interfaces[interfaceAlias] ?? [];
-    const local = addresses.find((item) => !item.internal && (family === 4 ? item.family === 'IPv4' || item.family === 4 : item.family === 'IPv6' || item.family === 6));
+    const linkLocal = (ip) => /^fe[89ab][0-9a-f]:/iu.test(ip);
+    const local = addresses.find((item) => !item.internal
+      && (family === 4 ? item.family === 'IPv4' || item.family === 4 : item.family === 'IPv6' || item.family === 6)
+      // Mac 网卡可能先列出链路本地地址，该地址不能作为非链路本地 IPv6 目标的源地址。
+      && (this.platform !== 'darwin' || family !== 6 || linkLocal(item.address) === linkLocal(address)));
     if (!local) throw new AppError('VPN_REQUIRED', '指定 VPN 网卡未连接或没有匹配地址族的地址。');
-    if (this.platform !== 'win32') return { localAddress: local.address, interfaceAlias, verified: false };
-    if (!net.isIP(address)) throw new AppError('INVALID_ARGUMENT', 'VPN 路由检查只接受解析后的 IP。');
+    if (this.platform === 'darwin') {
+      try {
+        // 查询实际选路，不能用 -ifscope 强制指定出口来掩盖错误路由。
+        const { stdout } = await this.exec('/sbin/route', ['-n', 'get', family === 6 ? '-inet6' : '-inet', address], {
+          timeout:5_000, maxBuffer:64 * 1024, encoding:'utf8', env:{ ...process.env, LC_ALL:'C', LANG:'C' },
+        });
+        const matches = [...String(stdout).matchAll(/^\s*interface:\s*(\S+)\s*$/gmu)];
+        const flags = [...String(stdout).matchAll(/^\s*flags:\s*<([^>]+)>\s*$/gmu)];
+        if (matches.length !== 1 || matches[0][1] !== interfaceAlias || flags.length !== 1
+          || !flags[0][1].split(',').includes('UP') || /\b(?:REJECT|BLACKHOLE)\b/u.test(flags[0][1])) {
+          throw new AppError('VPN_REQUIRED', '目标路由没有经过指定 VPN 网卡，或该路由不可用。');
+        }
+      } catch {
+        throw new AppError('VPN_REQUIRED', '无法验证目标的系统 VPN 路由。');
+      }
+      const localAddress = family === 6 && linkLocal(local.address) && !local.address.includes('%')
+        ? local.address + '%' + interfaceAlias : local.address;
+      return { localAddress, interfaceAlias, verified:true };
+    }
     const escaped = address.replace(/'/g, "''");
     const script = `$r=Find-NetRoute -RemoteIPAddress '${escaped}' -ErrorAction Stop | Select-Object -First 1; [Console]::Out.Write([string]$r.InterfaceAlias)`;
     try {
@@ -134,11 +159,14 @@ export class WindowsVpnGuard {
       }
     } catch (error) {
       if (error instanceof AppError) throw error;
-      throw new AppError('VPN_REQUIRED', '无法验证目标的 Windows VPN 路由。');
+      throw new AppError('VPN_REQUIRED', '无法验证目标的系统 VPN 路由。');
     }
     return { localAddress: local.address, interfaceAlias, verified: true };
   }
 }
+
+// 保留旧导出名称，既有集成继续使用严格验证器。
+export { SystemVpnGuard as WindowsVpnGuard };
 
 export class LoopbackRelay {
   constructor(openTarget) {
@@ -214,7 +242,7 @@ class SocketRoute {
 }
 
 export class RouteManager {
-  constructor({ resolver = new AddressResolver(), vpnGuard = new WindowsVpnGuard(), serverRuntime = null, connect = connectSocket } = {}) {
+  constructor({ resolver = new AddressResolver(), vpnGuard = new SystemVpnGuard(), serverRuntime = null, connect = connectSocket } = {}) {
     this.resolver = resolver;
     this.vpnGuard = vpnGuard;
     this.serverRuntime = serverRuntime;
@@ -248,7 +276,9 @@ export class RouteManager {
       try {
         let localAddress;
         if (plugin.transport?.kind === 'windowsVpn') {
-          ({ localAddress } = await this.vpnGuard.assertRoute(candidate.address, candidate.family, plugin.transport.interfaceAlias));
+          const route = await this.vpnGuard.assertRoute(candidate.address, candidate.family, plugin.transport.interfaceAlias);
+          if (route?.verified !== true || !route.localAddress) throw new AppError('VPN_REQUIRED', '系统 VPN 路由尚未验证。');
+          ({ localAddress } = route);
         }
         const socket = await this.connect({ host: candidate.address, port: plugin.target.port, family: candidate.family, ...(localAddress ? { localAddress } : {}) }, Math.min(timeoutMs, remaining));
         socket.aiOpsRoute = { family: candidate.family, address: candidate.address };

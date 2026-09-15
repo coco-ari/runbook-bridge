@@ -1,87 +1,140 @@
 name: Release
-
 on:
   push:
     tags:
-      - "v*"
-
+      - v*
 permissions:
-  contents: write
-
+  contents: read
 jobs:
   build:
-    runs-on: windows-latest
-    timeout-minutes: 45
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win32
+            arch: x64
+            app: dist/win-unpacked/Agent运维工作台.exe
+          - os: macos-15
+            platform: darwin
+            arch: arm64
+            app: dist/mac-arm64/Agent运维工作台.app
+          - os: macos-15-intel
+            platform: darwin
+            arch: x64
+            app: dist/mac/Agent运维工作台.app
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 22
-
       - name: Verify release tag matches package version
         env:
           RELEASE_REF_NAME: ${{ github.ref_name }}
-        run: node scripts/verify-release-version.mjs "$env:RELEASE_REF_NAME"
-
+        run: node scripts/verify-release-version.mjs "$RELEASE_REF_NAME"
       - name: Enable Corepack
         run: corepack enable
-
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
+        run: corepack pnpm install --frozen-lockfile
       - name: Install Electron runtime
-        run: pnpm run install:electron-runtime
-
+        run: corepack pnpm run install:electron-runtime
       - name: Verify Electron runtime
-        run: node_modules/electron/dist/electron.exe --version
-
-      - name: Test
-        run: |
-          pnpm run check
-          pnpm test
-          pnpm run test:ui:all
-
+        run: corepack pnpm exec electron --version
+      - name: Syntax and type checks
+        run: corepack pnpm run check
+      - name: Automated tests
+        run: corepack pnpm test
+      - name: Production React UI workflow smoke test
+        run: corepack pnpm run test:ui:all
+        env:
+          RUNBOOK_BRIDGE_SCREENSHOT_DIR: ${{ runner.temp }}/runbook-bridge-ui-${{ matrix.platform }}-${{ matrix.arch }}
       - name: Build Windows installer
-        run: pnpm run dist
-
+        if: runner.os == 'Windows'
+        run: corepack pnpm run dist
+      - name: Build signed and notarized macOS installer
+        if: runner.os == 'macOS'
+        env:
+          AI_OPS_MAC_RELEASE: "1"
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: corepack pnpm run dist:mac:${{ matrix.arch }}
       - name: Verify packaged application
-        run: |
-          node scripts/verify-package.mjs "dist/win-unpacked/Agent运维工作台.exe"
-          node scripts/packaged-mcp-smoke.mjs "dist/win-unpacked/Agent运维工作台.exe"
-          node scripts/packaged-ui-smoke.cjs "dist/win-unpacked/Agent运维工作台.exe"
-
-      - name: Verify clean install and in-place upgrade
+        run: |-
+          node scripts/verify-package.mjs "${{ matrix.app }}"
+          node scripts/packaged-mcp-smoke.mjs "${{ matrix.app }}"
+          node scripts/packaged-ui-smoke.cjs "${{ matrix.app }}"
+      - name: Verify Windows clean install and in-place upgrade
+        if: runner.os == 'Windows'
         shell: pwsh
-        run: |
+        run: |-
           $installer = Get-ChildItem -LiteralPath dist -Filter "Agent运维工作台 Setup *.exe" | Select-Object -First 1
           if (-not $installer) { throw "Windows installer was not produced." }
           node scripts/install-upgrade-regression.cjs $installer.FullName
-
-      - name: Publish GitHub release
-        shell: pwsh
+      - name: Verify macOS install and overwrite upgrade
+        if: runner.os == 'macOS'
+        run: |-
+          VERSION=$(node -p "require('./package.json').version")
+          node scripts/install-upgrade-regression.cjs "dist/RunbookBridge-${VERSION}-mac-${{ matrix.arch }}.dmg"
+      - name: Verify macOS distribution signature
+        if: runner.os == 'macOS'
+        run: |-
+          /usr/bin/codesign --verify --deep --strict "${{ matrix.app }}"
+          /usr/bin/xcrun stapler validate "${{ matrix.app }}"
+          /usr/sbin/spctl --assess --type execute --verbose "${{ matrix.app }}"
+      - name: Prepare platform assets and checksums
+        run: node scripts/prepare-release-assets.mjs ${{ matrix.platform }} ${{ matrix.arch }}
+      - name: Upload verified platform assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: artifacts/release/${{ matrix.platform }}-${{ matrix.arch }}/
+          if-no-files-found: error
+      - name: Retain UI parity screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-parity-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/runbook-bridge-ui-${{ matrix.platform }}-${{ matrix.arch }}
+          if-no-files-found: ignore
+          retention-days: 7
+  publish:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - name: Download all verified platforms
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Publish one complete release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          $installer = Get-ChildItem -LiteralPath dist -Filter "Agent运维工作台 Setup *.exe" | Select-Object -First 1
-          if (-not $installer) { throw "Windows installer was not produced." }
-          $releaseInstaller = Join-Path $installer.DirectoryName "RunbookBridge-Setup-$($env:GITHUB_REF_NAME.TrimStart('v')).exe"
-          Copy-Item -LiteralPath $installer.FullName -Destination $releaseInstaller
-          $checksumPath = "$releaseInstaller.sha256"
-          $checksum = (Get-FileHash -LiteralPath $releaseInstaller -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$checksum  $(Split-Path -Leaf $releaseInstaller)" | Set-Content -LiteralPath $checksumPath -Encoding utf8NoBOM
-          $releaseArgs = @('release', 'create', $env:GITHUB_REF_NAME, $releaseInstaller, $checksumPath, '--verify-tag', '--generate-notes', '--title', $env:GITHUB_REF_NAME)
-          if ($env:GITHUB_REF_NAME.Contains('-')) {
-            $releaseArgs += @('--prerelease', '--latest=false', '--notes', '服务器工作区预发布版本，供体验与反馈；日常使用请选择 README 中的稳定版，试用前备份本地数据。')
-          } else {
-            $releaseArgs += @('--latest', '--notes', '稳定版本。安装与使用方法请参阅 README，下载 .exe 安装包即可使用。')
-          }
-          gh release view $env:GITHUB_REF_NAME --json tagName 2>$null | Out-Null
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release already exists; preserving its published assets and notes."
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |-
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --json tagName >/dev/null 2>&1; then
+            echo "Release already exists; preserving published assets."
             exit 0
-          }
-          gh @releaseArgs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          fi
+          args=(release create "$RELEASE_TAG" release/* --verify-tag --generate-notes --title "$RELEASE_TAG")
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            args+=(--prerelease --latest=false)
+          else
+            args+=(--latest)
+          fi
+          gh "${args[@]}"

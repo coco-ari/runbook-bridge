@@ -1,3 +1,4 @@
+import { shortcutLabel } from "@/lib/platform"
 import { copyMysqlText } from "./mysql-clipboard"
 import { Copy, Play } from "@phosphor-icons/react"
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
@@ -116,7 +117,7 @@ export function MysqlSqlEditor({ active = true, value, loading, collapsed, onCha
     <section aria-label="SQL 编辑器" className={`mysql-sql-editor-panel ${collapsed ? "is-collapsed" : ""}`} data-testid={active ? "mysql-query-editor-panel" : undefined}>
       <div className="mysql-editor-toolbar">
         <Button data-testid={active ? "mysql-query-run" : undefined} disabled={loading || !value.trim()} onClick={onRun} size="sm" type="button">
-          <Play aria-hidden="true" weight="fill" />{loading ? "查询中…" : "执行查询"}<kbd className="ml-2 hidden font-mono text-[10px] opacity-65 sm:inline">Ctrl ↵</kbd>
+          <Play aria-hidden="true" weight="fill" />{loading ? "查询中…" : "执行查询"}<kbd className="ml-2 hidden font-mono text-[10px] opacity-65 sm:inline">{shortcutLabel("↵")}</kbd>
         </Button>
         <Button aria-label="复制 SQL" data-testid={active ? "mysql-query-copy" : undefined} disabled={!value} onClick={() => void copySql()} size="icon-sm" title="复制 SQL" type="button" variant="ghost"><Copy aria-hidden="true" /></Button>
         <p className="mysql-editor-hint" id={`${uniqueId}-hint`}>支持单条 SELECT · Ctrl / ⌘ + Enter 执行</p>

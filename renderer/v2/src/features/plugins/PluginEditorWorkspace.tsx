@@ -1,3 +1,4 @@
+import { privateKeyPathExample } from "@/lib/platform"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowLeft,
@@ -125,13 +126,13 @@ const SERVER_UPLINK_LABELS: Readonly<Record<ServerUplinkType, string>> = {
   direct: "直接连接",
   socks5: "SOCKS5 代理",
   http: "HTTP 代理",
-  windowsVpn: "Windows VPN",
+  windowsVpn: "系统 VPN",
 }
 
 const DATA_TRANSPORT_LABELS: Readonly<Record<DataTransportKind, string>> = {
   direct: "直接连接",
   serverTunnel: "Server 隧道",
-  windowsVpn: "Windows VPN",
+  windowsVpn: "系统 VPN",
 }
 
 const TLS_MODE_LABELS: Readonly<Record<TlsMode, string>> = {
@@ -522,7 +523,7 @@ export function PluginEditorWorkspace({
                           aria-invalid={Boolean(fieldErrors.privateKeyPath)}
                           id="plugin-private-key"
                           onChange={(event) => updateAuth("privateKeyPath", event.target.value)}
-                          placeholder="C:\\Users\\name\\.ssh\\id_ed25519"
+                          placeholder={privateKeyPathExample()}
                           value={draft.auth.privateKeyPath ?? ""}
                         />
                         <FieldError id="plugin-private-key-error">
@@ -863,10 +864,8 @@ export function PluginEditorWorkspace({
           data-testid="plugin-unsaved-changes-confirmation"
           onCloseAutoFocus={(event) => {
             event.preventDefault()
-            if (discardAllowedRef.current) {
-              requestAnimationFrame(() => focusWorkspaceElement(document.getElementById("detail-main")))
-              return
-            }
+            // 已获准退出时由父工作区恢复入口焦点，避免确认框延迟关闭后再次抢走焦点。
+            if (discardAllowedRef.current) return
             requestAnimationFrame(() => {
               if (!focusWorkspaceElement(lastEditorFocusRef.current)) focusWorkspaceElement(workspaceRef.current)
             })
@@ -965,7 +964,7 @@ function ServerUplinkFields({
             <SelectItem value="direct">直接连接</SelectItem>
             <SelectItem value="socks5">SOCKS5 代理</SelectItem>
             <SelectItem value="http">HTTP 代理</SelectItem>
-            <SelectItem value="windowsVpn">Windows VPN</SelectItem>
+            <SelectItem value="windowsVpn">系统 VPN</SelectItem>
           </SelectContent>
         </Select>
       </Field>
@@ -1024,7 +1023,7 @@ function ServerUplinkFields({
       ) : null}
       {uplink.type === "windowsVpn" ? (
         <Field data-invalid={Boolean(errors.vpnAlias)}>
-          <FieldLabel htmlFor="plugin-server-vpn-alias">Windows VPN 网卡</FieldLabel>
+          <FieldLabel htmlFor="plugin-server-vpn-alias">系统 VPN 网卡</FieldLabel>
           <Input
             aria-describedby={errors.vpnAlias ? "plugin-server-vpn-alias-error" : undefined}
             aria-invalid={Boolean(errors.vpnAlias)}
@@ -1060,7 +1059,7 @@ function DataTransportFields({ draft, errors, availableServers, onChange }: Data
           <SelectContent>
             <SelectItem value="direct">直接连接</SelectItem>
             <SelectItem value="serverTunnel">Server 隧道</SelectItem>
-            <SelectItem value="windowsVpn">Windows VPN</SelectItem>
+            <SelectItem value="windowsVpn">系统 VPN</SelectItem>
           </SelectContent>
         </Select>
       </Field>
@@ -1093,7 +1092,7 @@ function DataTransportFields({ draft, errors, availableServers, onChange }: Data
       ) : null}
       {transport.kind === "windowsVpn" ? (
         <Field data-invalid={Boolean(errors.vpnAlias)}>
-          <FieldLabel htmlFor="plugin-data-vpn-alias">Windows VPN 网卡</FieldLabel>
+          <FieldLabel htmlFor="plugin-data-vpn-alias">系统 VPN 网卡</FieldLabel>
           <Input
             aria-describedby={errors.vpnAlias ? "plugin-data-vpn-alias-error" : undefined}
             aria-invalid={Boolean(errors.vpnAlias)}

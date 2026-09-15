@@ -158,6 +158,11 @@ async function click(selector) { assert.ok(await evaluate(`(() => { const elemen
 async function clickText(text) { assert.ok(await evaluate(`(() => { const element = [...document.querySelectorAll('button')].find((item) => item.textContent.trim() === ${JSON.stringify(text)} && item.getClientRects().length && !item.disabled); if (!element) return false; element.click(); return true })()`), text); await wait(70); }
 async function key(key, keyCode, ctrlKey = false) { await evaluate(`document.querySelector('.server-workspace:not([hidden]) .server-terminal-tab-panel:not([hidden]) .xterm-helper-textarea').dispatchEvent(new KeyboardEvent('keydown', { key:${JSON.stringify(key)}, code:${JSON.stringify(key === 'Enter' ? 'Enter' : 'Key' + key.toUpperCase())}, keyCode:${keyCode}, which:${keyCode}, ctrlKey:${ctrlKey}, bubbles:true, cancelable:true }))`); await wait(80); }
 async function paste(text) { await evaluate(`(() => { const data = new DataTransfer(); data.setData('text/plain', ${JSON.stringify(text)}); document.querySelector('.server-workspace:not([hidden]) .server-terminal-tab-panel:not([hidden]) .xterm-helper-textarea').dispatchEvent(new ClipboardEvent('paste', { clipboardData:data, bubbles:true, cancelable:true })) })()`); await wait(80); }
+async function setViewport(width, height) {
+  win.setContentSize(width, height);
+  await until(`innerWidth === ${width} && innerHeight === ${height}`, '固定内容区尺寸');
+  await wait(250);
+}
 async function snapshot(name) {
   const folder = process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR;
   if (!folder) return;
@@ -169,7 +174,9 @@ async function snapshot(name) {
   win.webContents.invalidate();
   await wait(180);
   await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-  fs.writeFileSync(path.join(absolute, name), (await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());
+  const frame = await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
+  assert.deepEqual(frame.getSize(),await evaluate('({width:innerWidth,height:innerHeight})'),'截图与内容区尺寸一致');
+  fs.writeFileSync(path.join(absolute, name), frame.toPNG());
 }
 
 async function exerciseUploadReview() {
@@ -248,10 +255,11 @@ async function run() {
   const { ServerWorkspaceFiles } = await import('../src/server-workspace-files.mjs');
   workspaceFiles = new ServerWorkspaceFiles({ workspaceStore: { getPlugin: async () => plugin }, serverRuntime: { status: () => ({ connected, generation: 1 }), statRemotePath: async (_plugin, target) => fixtureStat(target) }, serverOperations: {} });
   register();
-  win = new BrowserWindow({ width: 1440, height: 920, show: false, webPreferences: { preload: path.join(root, 'src/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
+  win = new BrowserWindow({ enableLargerThanScreen:true, useContentSize:true, width: 1440, height: 920, show: process.platform === 'darwin', webPreferences: { preload: path.join(root, 'src/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
   win.webContents.session.webRequest.onBeforeRequest((details, callback) => { if (/^https?:/u.test(details.url)) { externalRequests.push(details.url); callback({ cancel: true }); } else callback({}); });
   win.webContents.on('console-message', (_event, details) => { if (details.level === 'error') errors.push(details.message); });
   await win.loadFile(path.join(root, 'renderer-build/v2/index.html'));
+  await setViewport(1440, 920);
   await until(`document.querySelector('[data-project-id="${scope.projectId}"]')`, '项目');
   await click(`[data-project-id="${scope.projectId}"]`);
   await until(`document.querySelector('[data-testid="environment-trigger-${scope.environmentId}"]')`, '环境');
@@ -369,8 +377,15 @@ async function run() {
   await wait(100); await clickText("查看上一批");
   await evaluate("(() => { const tree = document.querySelector('.server-tree-scroll'); tree.scrollTop = 0; tree.dispatchEvent(new Event('scroll')); })()");
   await wait(100);
+  // 虚拟列表只挂载可视区附近的条目，先滚动到明确的失效链接再验证禁用行为。
+  const unavailableLink = '[role="treeitem"][title^="/missing-link"][aria-disabled="true"]';
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (await evaluate('Boolean(document.querySelector(' + JSON.stringify(unavailableLink) + '))')) break;
+    await evaluate("(() => { const tree = document.querySelector('.server-tree-scroll'); tree.scrollTop += Math.max(80, tree.clientHeight / 2); tree.dispatchEvent(new Event('scroll')); })()");
+    await wait(80);
+  }
   const beforeLink = directoryReads.length;
-  await click('[role="treeitem"][aria-disabled="true"]');
+  await click(unavailableLink);
   assert.equal(directoryReads.length, beforeLink, "不遍历符号链接");
   await click('[role="treeitem"][title="/srv"]');
   await until(`document.querySelector('[role="treeitem"][title="/srv/example.conf"]')`, '懒加载子目录');
@@ -469,7 +484,7 @@ async function run() {
   await wait(150);
   assert.ok(await evaluate(`document.querySelector('.server-terminal-container').getBoundingClientRect().width > window.innerWidth - 60`), '最大化终端获得完整宽度');
   await click('[aria-label="恢复分栏"]');
-  win.setSize(1000, 750); await wait(300);
+  await setViewport(1000, 750);
   assert.ok(await evaluate(`(() => { const rect = document.querySelector('.server-terminal-container').getBoundingClientRect(); return rect.height > 160 && rect.width > 350 && document.documentElement.scrollWidth <= window.innerWidth; })()`), '窄窗口终端仍可操作');
   await snapshot('server-workspace-narrow.png');
   const firstTerminal = opened[0];
@@ -523,12 +538,12 @@ async function run() {
   assert.ok(await evaluate("(() => {const el=document.querySelector('.server-upload-confirm-files'); return el.scrollHeight>el.clientHeight && document.documentElement.scrollWidth<=window.innerWidth;})()"), '文件列表有界滚动且页面不溢出');
   assert.ok(await evaluate("(() => {const r=document.querySelector('.server-upload-confirm-footer').getBoundingClientRect();return r.top>=0 && r.bottom<=innerHeight;})()"), '多文件时操作栏始终可见');
   await snapshot('upload-confirm-light-many.png');
-  win.setSize(650, 750); await wait(250);
+  await setViewport(650, 750);
   assert.ok(await evaluate("(() => {const el=document.querySelector('[role=dialog]');const rect=el.getBoundingClientRect();return rect.left>=0 && rect.right<=innerWidth && rect.height<=innerHeight && el.scrollWidth<=el.clientWidth+1;})()"), '窄窗口长文件名不溢出弹窗');
   assert.ok(await evaluate("(() => {const r=document.querySelector('.server-upload-confirm-footer').getBoundingClientRect();return r.top>=0 && r.bottom<=innerHeight;})()"), '窄窗口操作栏始终可见');
   await snapshot('upload-confirm-narrow.png');
   await clickText('取消');
-  win.setSize(1000, 750); await wait(150);
+  await setViewport(1000, 750);
   await clickText('结束会话');
   assert.ok(closed.length > 0, '结束终端关闭对应会话');
   assert.equal(connected, true, '结束终端保持服务器连接');

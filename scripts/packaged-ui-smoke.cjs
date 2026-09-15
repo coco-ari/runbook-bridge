@@ -8,9 +8,10 @@ const { createHash } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { exercisePackagedPluginLifecycle } = require('./packaged-plugin-lifecycle.cjs');
 
-const executable = path.resolve(
-  process.argv[2] ?? path.join('dist', 'win-unpacked', 'Agent运维工作台.exe'),
-);
+const { packagedPaths } = require('./packaged-paths.cjs');
+const { executable, appAsar } = packagedPaths(process.argv[2]);
+const PRIMARY_MODIFIER = process.platform === 'darwin' ? 4 : 2;
+const RAIL_SHORTCUT = process.platform === 'darwin' ? 'Meta+B' : 'Control+B';
 const PROJECT_RAIL_COLLAPSED_WIDTH = 128;
 const PROJECT_RAIL_EXPANDED_MIN_WIDTH = 176;
 const LAYOUT_STORAGE_KEY = 'runbook-bridge:app-shell-layout:v1';
@@ -382,10 +383,11 @@ async function exerciseProjectSearchInput(cdp) {
   await pressProjectRailShortcut(cdp);
   await waitForProjectRail(cdp, true, 'Ctrl+B in the search input does not resize the rail');
   for (const type of ['keyDown','keyUp']) await cdp.call('Input.dispatchKeyEvent', {
-    type, key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65, modifiers: 2,
+    type, key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: PRIMARY_MODIFIER,
+    ...(process.platform === 'darwin' && type === 'keyDown' ? {commands:['selectAll']} : {}),
   });
   for (const type of ['keyDown','keyUp']) await cdp.call('Input.dispatchKeyEvent', {
-    type, key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
+    type, key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8,
   });
   const cleared = await assertProjectSearch(cdp, 'clearing the 128px project search');
   assert.ok(cleared.trustedInputEvents > typed.trustedInputEvents, 'native clearing sends another trusted input event');
@@ -449,7 +451,7 @@ async function captureFailureDiagnostics(running) {
   })`);
   const screenshot = await running.cdp.call('Page.captureScreenshot', {format: 'png', fromSurface: true, captureBeyondViewport: false});
   const afterPaint = await inspectPanelGeometry(running.cdp);
-  const asarPath = path.join(path.dirname(executable), 'resources', 'app.asar');
+  const asarPath = appAsar;
   const asarHash = createHash('sha256').update(await fsp.readFile(asarPath)).digest('hex');
   const diagnostics = {beforePaint, scheduling, afterPaint, asarSha256: asarHash, renderer: running.rendererDiagnostics};
   if (diagnosticDirectory) {
@@ -505,7 +507,7 @@ async function focusProjectRailResizer(cdp) {
     window.__packagedProjectRailProbe = probe;
     resizer.addEventListener('keydown', (event) => {
       if (!event.isTrusted) return;
-      if (event.ctrlKey && event.key.toLowerCase() === 'b') probe.trustedKeys.push('Control+B');
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b') probe.trustedKeys.push(event.metaKey ? 'Meta+B' : 'Control+B');
       else if (event.key === 'Enter') probe.trustedKeys.push('Enter');
     });
     resizer.focus({preventScroll: true});
@@ -518,22 +520,21 @@ async function focusProjectRailResizer(cdp) {
 async function pressProjectRailShortcut(cdp) {
   await cdp.call('Input.dispatchKeyEvent', {
     type: 'keyDown', key: 'b', code: 'KeyB', windowsVirtualKeyCode: 66,
-    nativeVirtualKeyCode: 66, modifiers: 2,
+    modifiers: PRIMARY_MODIFIER,
   });
   await cdp.call('Input.dispatchKeyEvent', {
     type: 'keyUp', key: 'b', code: 'KeyB', windowsVirtualKeyCode: 66,
-    nativeVirtualKeyCode: 66, modifiers: 2,
+    modifiers: PRIMARY_MODIFIER,
   });
 }
 
 async function pressProjectRailResizer(cdp) {
   await cdp.call('Input.dispatchKeyEvent', {
     type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
-    nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r',
+    text: '\r', unmodifiedText: '\r',
   });
   await cdp.call('Input.dispatchKeyEvent', {
     type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
-    nativeVirtualKeyCode: 13,
   });
 }
 
@@ -596,7 +597,7 @@ async function clickThemeControl(cdp, testId) {
 async function pressThemeKey(cdp, key, code, keyCode) {
   for (const type of ['keyDown','keyUp']) {
     await cdp.call('Input.dispatchKeyEvent', {
-      type, key, code, windowsVirtualKeyCode:keyCode, nativeVirtualKeyCode:keyCode,
+      type, key, code, windowsVirtualKeyCode:keyCode,
       ...(type === 'keyDown' && key === 'Enter' ? {text:'\r',unmodifiedText:'\r'} : {}),
     });
   }
@@ -779,17 +780,17 @@ async function main() {
     const anchor = await focusProjectRailResizer(running.cdp);
     await pressProjectRailShortcut(running.cdp);
     const collapsed = await waitForProjectRail(running.cdp, true, 'collapse to 128px');
-    assertProjectRailFocus(collapsed, anchor, ['Control+B'], 'collapse to 128px');
+    assertProjectRailFocus(collapsed, anchor, [RAIL_SHORTCUT], 'collapse to 128px');
     await assertThemeControlGeometry(running.cdp, true);
     const compactSearch = await assertProjectSearch(running.cdp, '128px project search placeholder');
     await exerciseProjectSearchInput(running.cdp);
     await pressProjectRailResizer(running.cdp);
     const expandedAfter = await waitForProjectRail(running.cdp, false, 'expand to at least 176px');
-    assertProjectRailFocus(expandedAfter, anchor, ['Control+B','Enter'], 'expand to at least 176px');
+    assertProjectRailFocus(expandedAfter, anchor, [RAIL_SHORTCUT,'Enter'], 'expand to at least 176px');
     await assertProjectSearch(running.cdp, 'expanded project search preserves its input');
     await pressProjectRailShortcut(running.cdp);
     const beforeRestart = await waitForProjectRail(running.cdp, true, 'persist collapsed rail before restart');
-    assertProjectRailFocus(beforeRestart, anchor, ['Control+B','Enter','Control+B'], 'persist collapsed rail before restart');
+    assertProjectRailFocus(beforeRestart, anchor, [RAIL_SHORTCUT,'Enter',RAIL_SHORTCUT], 'persist collapsed rail before restart');
     await assertProjectSearch(running.cdp, 'collapsed project search preserves its input');
     assert.deepEqual(running.httpRequests, []);
     await selectThemePreference(running.cdp, 'dark');

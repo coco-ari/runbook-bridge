@@ -2222,8 +2222,8 @@ async function run() {
     callback({});
   });
 
-  const win = new BrowserWindow({
-    show:false,
+  const win = new BrowserWindow({ enableLargerThanScreen:true,
+    show:process.platform === 'darwin',
     useContentSize:true,
     width:960,
     height:640,

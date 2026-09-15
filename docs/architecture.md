@@ -23,7 +23,7 @@ Electron 只加载构建后的 `renderer-build/v2/index.html`。生成目录不�
 
 新增插件使用临时探针，修改连接配置使用受保护的编辑会话。验证只针对当前表单，不替换正式连接或 Agent 上下文；正式连接使用已提交配置和 active 凭据。未保存的表单不跨页面或重启保留。主要边界分别在 `src/plugin-probe-manager.mjs`、`src/plugin-edit-session-manager.mjs`、`src/plugin-validation-runtime.mjs` 和 `src/credential-use-resolver.mjs`。
 
-应用管理的秘密由 `src/plugin-credential-vault.mjs` 配合 Electron `safeStorage` / Windows DPAPI 加密，不写入工作区 YAML、运维说明、日志或 MCP 结果。配置与凭据提交由 `src/plugin-config-transaction.mjs` 协调，工作区变更由 `src/workspace-mutation-coordinator.mjs` 协调。旧凭据不可读时必须保留原密文；不能用空值覆盖它来掩盖错误。
+应用管理的秘密由 `src/plugin-credential-vault.mjs` 配合 Electron `safeStorage`（Windows DPAPI / macOS Keychain） 加密，不写入工作区 YAML、运维说明、日志或 MCP 结果。配置与凭据提交由 `src/plugin-config-transaction.mjs` 协调，工作区变更由 `src/workspace-mutation-coordinator.mjs` 协调。旧凭据不可读时必须保留原密文；不能用空值覆盖它来掩盖错误。
 
 ## 安全契约
 

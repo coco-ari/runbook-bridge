@@ -386,6 +386,7 @@ async function waitFor(win,evaluate,label,timeoutMs = 10000) {
 }
 
 async function focusRenderer(win) {
+  if (process.platform === 'darwin') { win.show(); win.focus(); }
   win.webContents.focus();
   await waitFor(win,'document.hasFocus() === true','real business renderer keyboard focus');
 }
@@ -476,14 +477,30 @@ async function click(win,selector,label = selector) {
 async function openMenu(win,selector,label) {
   await focusRenderer(win);
   await waitFor(win,`document.querySelector(${JSON.stringify(selector)})?.getClientRects().length > 0`,`${label} trigger after layout settles`);
+  await win.webContents.executeJavaScript(`(() => {
+    const target = document.querySelector(${JSON.stringify(selector)});
+    target?.scrollIntoView({block:'nearest'});
+    target?.focus();
+  })()`,true);
+  // 错误提示等临时浮层消失后再点击，不能让平台字体宽度决定是否误点遮挡层。
+  await waitFor(win,`(() => {
+    const target = document.querySelector(${JSON.stringify(selector)});
+    if (!(target instanceof HTMLElement)) return false;
+    const rect = target.getBoundingClientRect();
+    return target.contains(document.elementFromPoint(Math.round(rect.left+rect.width/2),Math.round(rect.top+rect.height/2)));
+  })()`,`${label} receives native pointer input`);
   const point = await win.webContents.executeJavaScript(`(() => {
     const target = document.querySelector(${JSON.stringify(selector)});
     if (!(target instanceof HTMLElement) || target.getClientRects().length === 0) return null;
     target.focus();
     const rect = target.getBoundingClientRect();
-    return {x:Math.round(rect.left + rect.width / 2),y:Math.round(rect.top + rect.height / 2)};
+    const x = Math.round(rect.left + rect.width / 2), y = Math.round(rect.top + rect.height / 2);
+    const hit = document.elementFromPoint(x,y);
+    return {x,y,hit:target.contains(hit),interceptor:hit?.getAttribute('data-testid') ?? hit?.tagName,
+      viewport:[window.innerWidth,window.innerHeight],bodyPointerEvents:getComputedStyle(document.body).pointerEvents};
   })()`,true);
   assert.ok(point,`${label} is not visible`);
+  assert.equal(point.hit,true,`${label} 按钮中心未命中：${JSON.stringify(point)}`);
   win.webContents.sendInputEvent({type:'mouseMove',x:point.x,y:point.y});
   win.webContents.sendInputEvent({type:'mouseDown',x:point.x,y:point.y,button:'left',clickCount:1});
   win.webContents.sendInputEvent({type:'mouseUp',x:point.x,y:point.y,button:'left',clickCount:1});
@@ -1744,8 +1761,8 @@ async function run() {
     callback({});
   });
 
-  const win = new BrowserWindow({
-    show:false,
+  const win = new BrowserWindow({ enableLargerThanScreen:true,
+    show:process.platform === 'darwin',
     useContentSize:true,
     width:960,
     height:640,

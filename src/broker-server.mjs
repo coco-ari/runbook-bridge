@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import net from 'node:net';
+import path from 'node:path';
 import { brokerEndpoint } from './paths.mjs';
 import { toPublicError, AppError } from './errors.mjs';
 
@@ -8,6 +9,7 @@ const MAX_REQUEST_BYTES = 1024 * 1024;
 export class BrokerServer {
   constructor({ dataRoot, token, v2Service = null, appVersion = 'unknown' }) {
     this.endpoint = brokerEndpoint(dataRoot);
+    this.dataRoot = dataRoot;
     this.token = token;
     this.v2Service = v2Service;
     this.appVersion = appVersion;
@@ -18,15 +20,46 @@ export class BrokerServer {
 
   async start() {
     if (this.server) return;
-    if (process.platform !== 'win32') await fs.rm(this.endpoint, { force: true });
-    this.server = net.createServer((socket) => this.handleSocket(socket));
-    await new Promise((resolve, reject) => {
-      this.server.once('error', reject);
-      this.server.listen(this.endpoint, () => {
-        this.server.removeListener('error', reject);
-        resolve();
+    if (process.platform !== 'win32') {
+      const directory = path.dirname(this.endpoint);
+      if (directory !== path.resolve(this.dataRoot)) {
+        await fs.mkdir(directory, { recursive:true, mode:0o700 });
+        const info = await fs.lstat(directory);
+        if (!info.isDirectory() || info.uid !== process.getuid() || (info.mode & 0o077) !== 0) {
+          throw new AppError('BROKER_UNAVAILABLE', '本地通信目录权限无效。');
+        }
+      }
+      const existing = await fs.lstat(this.endpoint).catch((error) => { if (error.code !== 'ENOENT') throw error; return null; });
+      if (existing) {
+        if (!existing.isSocket() || existing.uid !== process.getuid()) throw new AppError('BROKER_UNAVAILABLE', '本地通信路径已被占用。');
+        const inUse = await new Promise((resolve) => {
+          const probe = net.createConnection(this.endpoint);
+          const finish = (value) => { probe.destroy(); resolve(value); };
+          probe.once('connect', () => finish(true));
+          probe.once('error', (error) => finish(!['ENOENT', 'ECONNREFUSED'].includes(error.code)));
+          probe.setTimeout(1_000, () => finish(true));
+        });
+        if (inUse) throw new AppError('BROKER_UNAVAILABLE', '本地通信服务已在运行。');
+        await fs.unlink(this.endpoint);
+      }
+    }
+    const server = net.createServer((socket) => this.handleSocket(socket));
+    this.server = server;
+    try {
+      await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(this.endpoint, () => {
+          server.removeListener('error', reject);
+          resolve();
+        });
       });
-    });
+      if (process.platform !== 'win32') await fs.chmod(this.endpoint, 0o600);
+    } catch (error) {
+      this.server = null;
+      for (const socket of this.sockets) socket.destroy();
+      if (server.listening) await new Promise((resolve) => server.close(resolve));
+      throw error;
+    }
   }
 
   async stop() {

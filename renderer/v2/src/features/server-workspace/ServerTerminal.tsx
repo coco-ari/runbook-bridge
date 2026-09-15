@@ -121,7 +121,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, maximize
     mountedRef.current = true
     const terminal = new Terminal({
       cursorBlink: true,
-      fontFamily: '"Cascadia Mono", "Cascadia Code", Consolas, monospace',
+      fontFamily: '"Cascadia Mono", "Cascadia Code", Consolas, Menlo, Monaco, monospace',
       fontSize: 14,
       lineHeight: 1.35,
       scrollback: 5000,

@@ -79,7 +79,7 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(projectRail,/<InputGroup[\s\S]*?<InputGroupAddon[\s\S]*?<InputGroupInput/u);
   assert.match(projectRail,/SidebarMenuSkeleton/u);
   assert.match(projectRail,/import \{ Kbd \} from "@\/components\/ui\/kbd"/u);
-  assert.match(projectRail,/<Kbd[\s\S]*?>[\s\S]*?Ctrl N[\s\S]*?<\/Kbd>/u);
+  assert.match(projectRail,/<Kbd[\s\S]*?>[\s\S]*?shortcutLabel\("N"\)[\s\S]*?<\/Kbd>/u);
   assert.match(projectRail,/data-testid="project-search"/u);
   assert.match(projectRail,/<InputGroupInput[\s\S]*?text-xs!/u,
     'project search overrides the global native-input font reset');
