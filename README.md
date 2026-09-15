@@ -67,6 +67,10 @@ codex mcp add --env ELECTRON_RUN_AS_NODE=1 agent-ops -- `
 
 如果选择了其他安装目录，修改 `$workbenchDir`。注册后完全退出并重新打开 Codex；桌面应用需要继续运行。
 
+## MCP 日志排查
+
+动态日志可以有界读取，并返回增长标记和实际扫描范围；`server_read_file` 支持 `tail:true`。归档查询应分别设置压缩输入预算和解压预算，结果中的 `guidance` 会说明如何继续。参数示例、错误处理和限制见 [MCP 日志读取与排障](docs/mcp-log-reading.md)。
+
 ## 操作边界
 
 - **凭据留在本机**：应用管理的密码、私钥口令和代理凭据本地加密保存，不返回给 Agent。

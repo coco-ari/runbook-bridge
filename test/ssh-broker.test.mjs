@@ -221,12 +221,16 @@ async function startSshServer(t, {
                 sftpTracker.maxActiveReads = Math.max(sftpTracker.maxActiveReads ?? 0, sftpTracker.activeReads);
               }
               const respond = () => fsSync.read(entry.fd, buffer, 0, boundedLength, offset, (error, bytesRead) => {
-                if (sftpTracker) sftpTracker.activeReads -= 1;
+                if (sftpTracker) {
+                  sftpTracker.activeReads -= 1;
+                  sftpTracker.completedReadOffsets = [...(sftpTracker.completedReadOffsets ?? []), offset];
+                }
                 if (error) sftp.status(reqid, STATUS_CODE.FAILURE);
                 else if (bytesRead === 0) sftp.status(reqid, STATUS_CODE.EOF);
                 else sftp.data(reqid, buffer.subarray(0, bytesRead));
               });
-              if (sftpReadDelayMs > 0) setTimeout(respond, sftpReadDelayMs);
+              const delay = typeof sftpReadDelayMs === 'function' ? sftpReadDelayMs(offset) : sftpReadDelayMs;
+              if (delay > 0) setTimeout(respond, delay);
               else respond();
             });
             sftp.on('FSTAT', (reqid, handle) => {
@@ -1062,4 +1066,118 @@ test('host-key persistence failure closes the ready SSH client instead of leakin
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(broker.status(project.id).connected, false);
   assert.equal(tracker.activeClients(), 0);
+});
+
+test('live SFTP reads keep their initial bound during append and strict binary reads still reject growth', async (t) => {
+  for(const mode of ['append','shrink','rewrite']){
+    await t.test(mode,async (t)=>{
+      const root=await fs.mkdtemp(path.join(os.tmpdir(),'ai-ops-live-log-'));
+      const remoteRoot=path.join(root,'remote');
+      await fs.mkdir(path.join(remoteRoot,'logs'),{recursive:true});
+      const original=Buffer.from('old line\nneedle tail\n');
+      const target=path.join(remoteRoot,'logs','live.log');
+      await fs.writeFile(target,original);
+      t.after(()=>fs.rm(root,{recursive:true,force:true}));
+      const tracker={};
+      const port=await startSshServer(t,{
+        sftpRoot:remoteRoot,
+        sftpTracker:tracker,
+        onFirstSftpRead:(file)=>{
+          if(mode==='append') fsSync.appendFileSync(file,'new line\n');
+          else if(mode==='shrink') fsSync.truncateSync(file,4);
+          else {
+            fsSync.writeFileSync(file,Buffer.alloc(original.length,0x42));
+            const future=new Date(Date.now()+10000);
+            fsSync.utimesSync(file,future,future);
+          }
+        },
+      });
+      const h=await managedServer(t,root,port);
+      await h.connect();
+      if(mode==='append'){
+        const result=await h.runtime.readRemoteRange(h.plugin,'/logs/live.log',0,12,{allowGrowth:true,tail:true});
+        assert.equal(result.content,original.subarray(original.length-12).toString());
+        assert.equal(result.endByte,original.length);
+        assert.equal(result.size,original.length);
+        assert.equal(result.sourceGrew,true);
+        assert.equal(result.observedSize,original.length+9);
+      } else {
+        await assert.rejects(h.runtime.readRemoteRange(h.plugin,'/logs/live.log',0,12,{allowGrowth:true}),{code:'SOURCE_CHANGED'});
+      }
+      assert.equal(tracker.closeRequests,1);
+      assert.equal(tracker.closeResponses,1);
+    });
+  }
+});
+
+test('SFTP pipeline refills around a slow chunk with bounded concurrency and exact byte order', async (t) => {
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'ai-ops-sftp-pipeline-'));
+  const remoteRoot=path.join(root,'remote');
+  await fs.mkdir(path.join(remoteRoot,'logs'),{recursive:true});
+  const content=crypto.randomBytes(1024*1024);
+  await fs.writeFile(path.join(remoteRoot,'logs','archive.zip'),content);
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const tracker={};
+  let advancedBeforeFirst=false;
+  const port=await startSshServer(t,{
+    sftpRoot:remoteRoot,
+    sftpTracker:tracker,
+    maxSftpReadBytes:4096,
+    sftpReadDelayMs:(offset)=>{
+      if(offset>=512*1024 && !(tracker.completedReadOffsets??[]).includes(0)) advancedBeforeFirst=true;
+      return offset===0 ? 500 : 1;
+    },
+  });
+  const h=await managedServer(t,root,port);
+  await h.connect();
+  const result=await h.runtime.readRemoteBuffer(h.plugin,'/logs/archive.zip',0,content.length);
+  assert.deepEqual(result.content,content);
+  assert.equal(advancedBeforeFirst,true);
+  assert.ok(tracker.maxActiveReads>8);
+  assert.ok(tracker.maxActiveReads<=16);
+  assert.ok(Math.max(...tracker.requestedReadLengths)<=32768);
+  assert.equal(tracker.closeRequests,1);
+  assert.equal(tracker.closeResponses,1);
+});
+
+test('log search through the real SFTP path returns partial live coverage instead of SOURCE_CHANGED', async (t) => {
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'ai-ops-live-search-'));
+  const remoteRoot=path.join(root,'remote');
+  await fs.mkdir(path.join(remoteRoot,'logs'),{recursive:true});
+  const original=Buffer.from('needle before append\n');
+  await fs.writeFile(path.join(remoteRoot,'logs','live.log'),original);
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const port=await startSshServer(t,{
+    sftpRoot:remoteRoot,
+    onFirstSftpRead:(file)=>fsSync.appendFileSync(file,'needle after append\n'),
+  });
+  const h=await managedServer(t,root,port);
+  await h.connect();
+  const operations=new ServerOperations(h.runtime,h.store);
+  const result=await operations.searchLogs(h.plugin,{path:'/logs/live.log',contains:'needle'});
+  assert.equal(result.matchCount,1);
+  assert.equal(result.matches[0].text,'needle before append');
+  assert.equal(result.coverage[0].sourceGrew,true);
+  assert.equal(result.coverage[0].scannedBytes,original.length);
+  assert.equal(operations.logSnapshotCache.entries.size,0);
+});
+
+test('SFTP total timeout reports numeric transfer progress and closes the read session', async (t) => {
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'ai-ops-sftp-timeout-progress-'));
+  const remoteRoot=path.join(root,'remote');
+  await fs.mkdir(path.join(remoteRoot,'logs'),{recursive:true});
+  await fs.writeFile(path.join(remoteRoot,'logs','slow.log'),Buffer.alloc(65536,0x41));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const port=await startSshServer(t,{sftpRoot:remoteRoot,sftpReadDelayMs:(offset)=>offset===0 ? 0 : 1000});
+  const h=await managedServer(t,root,port);
+  await h.connect();
+  const internal=h.runtime.broker.withInternalSftp.bind(h.runtime.broker);
+  h.runtime.broker.withInternalSftp=(projectId,operation,options)=>internal(projectId,operation,{...options,timeoutMs:500});
+  await assert.rejects(h.runtime.readRemoteBuffer(h.plugin,'/logs/slow.log',0,65536),(error)=>{
+    assert.equal(error.code,'SFTP_OPERATION_TIMEOUT');
+    assert.deepEqual(error.details,{phase:'read',requestedBytes:65536,receivedBytes:30*1024,timeoutMs:500});
+    assert.match(error.message,/无需重新连接/);
+    assert.doesNotMatch(JSON.stringify(error.details),/slow.log|AAAA/);
+    return true;
+  });
 });

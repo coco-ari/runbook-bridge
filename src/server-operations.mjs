@@ -109,15 +109,17 @@ function normalizeLogQueries({ contains, queries } = {}) {
 function archiveSuffix(name) {
   const lower = String(name ?? '').toLowerCase();
   if (lower.endsWith('.zip')) return 'zip';
-  if (lower.endsWith('.gz')) return 'gzip';
+  if (lower.endsWith('.gz') || lower.endsWith('.gzip')) return 'gzip';
   return null;
 }
 
-function assertLogReadIdentity(file, read) {
-  if (Number.isFinite(Number(file.size)) && Number(read.size) !== Number(file.size)) {
+function assertLogReadIdentity(file, read, { allowGrowth = false } = {}) {
+  const grew = Number(read.size) > Number(file.size);
+  if (Number.isFinite(Number(file.size)) && Number(read.size) !== Number(file.size) && !(allowGrowth && grew)) {
     throw new AppError('SOURCE_CHANGED', '日志文件大小已经变化，请重新搜索。');
   }
-  if (Number.isFinite(Number(file.mtime)) && Number(read.mtime) !== Number(file.mtime)) {
+  if (Number.isFinite(Number(file.mtime)) && Number(read.mtime) !== Number(file.mtime)
+    && !(allowGrowth && grew && Number(read.mtime) >= Number(file.mtime))) {
     throw new AppError('SOURCE_CHANGED', '日志文件修改时间已经变化，请重新搜索。');
   }
   if (path.posix.normalize(read.canonicalPath) !== path.posix.normalize(file.canonicalPath ?? file.path)) {
@@ -126,10 +128,17 @@ function assertLogReadIdentity(file, read) {
   if (file.allowedRoot && !withinRoot(file.allowedRoot, read.canonicalPath)) {
     throw new AppError('SOURCE_NOT_ALLOWED', '日志文件已经移出登记的数据源。');
   }
+  if (file.source && Math.max(Number(read.size), Number(read.observedSize ?? read.size)) > file.source.maxFileBytes) {
+    throw new AppError('SOURCE_NOT_ALLOWED', '日志文件已经超过登记数据源的大小上限。');
+  }
+  if (!allowGrowth && read.sourceGrew) {
+    throw new AppError('SOURCE_CHANGED', '归档在读取期间发生变化，请在轮转完成后重新搜索。');
+  }
+  return grew || read.sourceGrew === true;
 }
 
 function withoutArchiveSuffix(name) {
-  return archiveSuffix(name) ? String(name).replace(/\.(?:zip|gz)$/iu, '') : String(name);
+  return archiveSuffix(name) ? String(name).replace(/\.(?:zip|gz|gzip)$/iu, '') : String(name);
 }
 
 function defaultLogName(name, includeArchives) {
@@ -144,6 +153,17 @@ function sourceNameMatches(source, name, filter, includeArchives) {
   const patterns = Array.isArray(source.patterns) ? source.patterns : [];
   const sourceMatch = candidates.some((candidate) => patterns.some((pattern) => globMatches(pattern, candidate)));
   return sourceMatch && (!filter || candidates.some((candidate) => globMatches(filter, candidate)));
+}
+
+function logSearchGuidance(reasons) {
+  const guidance = [];
+  if (reasons.has('sourceGrew')) guidance.push('日志在读取期间增长，coverage 标明本次范围；需要最新内容时再次搜索，不能据此断言新增内容没有匹配。');
+  if (reasons.has('fileTailOnly')) guidance.push('本次只搜索文件尾部；历史问题请用日期 pattern 选择轮转日志，或在上限内增大 maxScanBytes。');
+  if (reasons.has('maxScanBytes')) guidance.push('扫描预算不足；指定单个文件后按文件大小设置 maxScanBytes，最大 67108864。ZIP/GZIP 必须完整读取压缩输入。');
+  if (reasons.has('maxExpandedBytes') || reasons.has('archiveRejected')) guidance.push('检查 skipped 中的具体原因；解压大小超限时可增大 maxExpandedBytes，最大 134217728；损坏、加密、压缩比或不支持的格式无法通过增加扫描预算解决。');
+  if (reasons.has('maxFilesOrListing')) guidance.push('文件发现范围不完整；用日期 pattern、单个文件 path 或更窄的子目录继续搜索。');
+  if (reasons.has('timeBudget')) guidance.push('搜索时间预算已用尽；指定单个文件并合并 queries，缩小读取范围后重试。');
+  return guidance;
 }
 
 function cacheEntryBytes(value) {
@@ -476,10 +496,13 @@ export class ServerOperations {
     const source = this.source(plugin, descriptor.sourceId);
     if (source.kind !== 'log') throw new AppError('SOURCE_NOT_ALLOWED', '该文件不属于日志数据源。');
     const limit = Math.min(Math.max(Number(maxBytes) || 262_144, 1), plugin.limits.maxBytes);
-    const start = offset !== null ? offset : tail ? Math.max(0, descriptor.size - limit) : 0;
-    const result = await this.serverRuntime.readRemoteRange(plugin, descriptor.path, start, limit);
-    if (result.mtime !== descriptor.mtime) throw new AppError('SOURCE_CHANGED', '文件已经变化，请重新列出。');
-    return { fileId, relativePath: descriptor.relativePath, content: result.content, startByte: result.startByte, endByte: result.endByte, size: result.size, nextCursor: result.truncated ? String(result.endByte) : null, truncated: result.truncated };
+    const result = await this.serverRuntime.readRemoteRange(plugin, descriptor.path, offset ?? 0, limit, {
+      allowGrowth:!archiveSuffix(descriptor.path), tail:offset === null && tail,
+    });
+    const sourceGrew = assertLogReadIdentity({ ...descriptor, source, allowedRoot:source.root }, result, {
+      allowGrowth:!archiveSuffix(descriptor.path),
+    });
+    return { fileId, relativePath: descriptor.relativePath, content: result.content, startByte: result.startByte, endByte: result.endByte, size: result.size, observedSize:result.observedSize ?? result.size, sourceGrew, nextCursor: result.truncated ? String(result.endByte) : null, truncated: result.truncated };
   }
 
   async searchLogs(plugin, args = {}) {
@@ -544,9 +567,12 @@ export class ServerOperations {
           if (current.type !== 'file' || !withinRoot(file.source.root, current.canonicalPath ?? current.path)) {
             throw new AppError('SOURCE_NOT_ALLOWED', '该文件不再属于有效的日志数据源。');
           }
-          if (Number(current.size) !== Number(file.size) || Number(current.mtime) !== Number(file.mtime)) {
-            throw new AppError('SOURCE_CHANGED', '日志文件已经变化，请重新列出。');
-          }
+          const grew = assertLogReadIdentity(file, { ...current, canonicalPath:current.canonicalPath ?? current.path }, {
+            allowGrowth:!archiveSuffix(file.path),
+          });
+          if (grew) file.listedIdentity = { ...file };
+          file.size = current.size;
+          file.mtime = current.mtime;
           file.canonicalPath = current.canonicalPath ?? current.path;
           file.allowedRoot = file.source.root;
         }
@@ -667,6 +693,8 @@ export class ServerOperations {
         }
         const fileSize = Math.max(0, Number(file.size) || 0);
         let probeBytesRead = 0;
+        let sourceGrew = false;
+        let observedSize = fileSize;
         const plainLength = Math.min(fileSize, remainingScan, remainingExpanded);
         const needsArchiveProbe = !effectiveArchive && fileSize > 0 && (
           !includeArchives
@@ -681,13 +709,12 @@ export class ServerOperations {
           }
           let probe;
           if (typeof reader.readBuffer === 'function') {
-            probe = await reader.readBuffer(file.canonicalPath ?? file.path, 0, probeLength);
+            probe = await reader.readBuffer(file.canonicalPath ?? file.path, 0, probeLength, { allowGrowth:true });
           } else if (typeof this.serverRuntime.readRemoteBuffer === 'function') {
-            probe = await this.serverRuntime.readRemoteBuffer(plugin, file.canonicalPath ?? file.path, 0, probeLength);
+            probe = await this.serverRuntime.readRemoteBuffer(plugin, file.canonicalPath ?? file.path, 0, probeLength, { allowGrowth:true });
           } else {
             throw new AppError('CAPABILITY_NOT_IMPLEMENTED', '当前 Server Runtime 不支持二进制日志读取。');
           }
-          assertLogReadIdentity(file, probe);
           const probeContent = Buffer.isBuffer(probe.content) ? probe.content : Buffer.from(probe.content ?? []);
           if (probeContent.length !== probeLength) {
             throw new AppError('SOURCE_CHANGED', '日志文件在类型探测期间已经变化，请重新搜索。');
@@ -701,6 +728,8 @@ export class ServerOperations {
             content:probeContent,
           });
           effectiveArchive = detectedType === 'plain' ? null : detectedType;
+          sourceGrew = assertLogReadIdentity(effectiveArchive ? file.listedIdentity ?? file : file, probe, { allowGrowth:!effectiveArchive });
+          observedSize = Number(probe.observedSize ?? probe.size);
         }
         if (effectiveArchive && !includeArchives) {
           skipped.push({ path:file.path, code:'ARCHIVES_EXCLUDED' });
@@ -732,7 +761,7 @@ export class ServerOperations {
           file.canonicalPath ?? file.path, Number(file.size), Number(file.mtime), start, length,
           remainingExpanded, remainingArchiveEntries, includeArchives, effectiveArchive,
         ]);
-        let expanded = this.logSnapshotCache.get(cacheKey);
+        let expanded = sourceGrew || file.listedIdentity ? null : this.logSnapshotCache.get(cacheKey);
         if (expanded) {
           cacheHits += 1;
           cacheSavedRemoteBytes += length;
@@ -742,21 +771,25 @@ export class ServerOperations {
           if (length === 0) {
             read = { canonicalPath:file.canonicalPath ?? file.path, content:Buffer.alloc(0), startByte:0, endByte:0, size:0, mtime:Number(file.mtime), truncated:false };
           } else if (typeof reader.readBuffer === 'function') {
-            read = await reader.readBuffer(file.canonicalPath ?? file.path, start, length);
+            read = await reader.readBuffer(file.canonicalPath ?? file.path, start, length, { allowGrowth:!effectiveArchive });
           } else if (typeof this.serverRuntime.readRemoteBuffer === 'function') {
-            read = await this.serverRuntime.readRemoteBuffer(plugin, file.canonicalPath ?? file.path, start, length);
+            read = await this.serverRuntime.readRemoteBuffer(plugin, file.canonicalPath ?? file.path, start, length, { allowGrowth:!effectiveArchive });
           } else {
             throw new AppError('CAPABILITY_NOT_IMPLEMENTED', '当前 Server Runtime 不支持二进制日志读取。');
           }
           const content = Buffer.isBuffer(read.content) ? read.content : Buffer.from(read.content ?? []);
-          assertLogReadIdentity(file, read);
           try {
+            const detectedType = detectLogArchiveType({ filePath:read.canonicalPath, content });
+            const allowGrowth = detectedType === 'plain' && !effectiveArchive;
+            sourceGrew = assertLogReadIdentity(allowGrowth ? file : file.listedIdentity ?? file, read, { allowGrowth }) || sourceGrew;
+            observedSize = Math.max(observedSize, Number(read.observedSize ?? read.size));
+            if (content.length !== length) throw new AppError('SOURCE_CHANGED', '日志读取范围不完整，请重新搜索。');
             expanded = await this.expandLogArchive({
               filePath:read.canonicalPath,
               content,
               maxExpandedBytes:remainingExpanded,
               maxEntries:Math.max(1, remainingArchiveEntries),
-              maxEntryBytes:Math.min(32 * 1024 * 1024, remainingExpanded),
+              maxEntryBytes:remainingExpanded,
               maxCompressionRatio:100,
               allowArchives:includeArchives,
             });
@@ -784,10 +817,11 @@ export class ServerOperations {
             remoteBytesRead += content.length;
             continue;
           }
-          this.logSnapshotCache.set(cacheKey, expanded);
+          if (!sourceGrew) this.logSnapshotCache.set(cacheKey, expanded);
           remoteBytesRead += content.length;
         }
 
+        if (sourceGrew) truncationReasons.add('sourceGrew');
         scannedBytes += expanded.inputBytes;
         expandedBytes += expanded.expandedBytes;
         scannedFiles += 1;
@@ -855,7 +889,11 @@ export class ServerOperations {
           scannedBytes:expanded.inputBytes,
           probeBytesRead,
           expandedBytes:expanded.expandedBytes,
-          complete:start === 0 && !expanded.truncated,
+          scanEndByte:start + expanded.inputBytes,
+          snapshotSize:fileSize,
+          observedSize,
+          sourceGrew,
+          complete:start === 0 && !expanded.truncated && !sourceGrew,
         });
       }
 
@@ -877,6 +915,7 @@ export class ServerOperations {
         archivesScanned,
         archiveEntriesScanned,
         coverage,
+        guidance:logSearchGuidance(truncationReasons),
         skipped,
         cache:{ hits:cacheHits, misses:cacheMisses, savedRemoteBytes:cacheSavedRemoteBytes, entries:cache.entries, bytes:cache.bytes, ttlMs:cache.ttlMs },
         truncated:selectionTruncated || truncationReasons.size > 0,
@@ -956,9 +995,9 @@ export class ServerOperations {
     return operation({
       statPath: (remotePath) => this.serverRuntime.statRemotePath(plugin, remotePath),
       listDirectory: (remotePath) => this.serverRuntime.listRemoteDirectory(plugin, remotePath),
-      readRange: (remotePath, start, maxBytes) => this.serverRuntime.readRemoteRange(plugin, remotePath, start, maxBytes),
+      readRange: (remotePath, start, maxBytes, options) => this.serverRuntime.readRemoteRange(plugin, remotePath, start, maxBytes, options),
       ...(typeof this.serverRuntime.readRemoteBuffer === 'function'
-        ? { readBuffer:(remotePath, start, maxBytes) => this.serverRuntime.readRemoteBuffer(plugin, remotePath, start, maxBytes) }
+        ? { readBuffer:(remotePath, start, maxBytes, options) => this.serverRuntime.readRemoteBuffer(plugin, remotePath, start, maxBytes, options) }
         : {}),
     });
   }
@@ -1012,12 +1051,13 @@ export class ServerOperations {
     return this.withRemoteReadSession(plugin, (reader) => this.findFilesWithReader(reader, options));
   }
 
-  async readFile(plugin, { path: remotePath, cursor, maxBytes = 262_144 } = {}) {
+  async readFile(plugin, { path: remotePath, cursor, maxBytes = 262_144, tail = false } = {}) {
     const offset = parseOffsetCursor(cursor);
     const requestedPath = normalizeRemotePath(remotePath);
     const limit = Math.min(Math.max(Number(maxBytes) || 262_144, 1), 1024 * 1024);
-    const result = await this.serverRuntime.readRemoteRange(plugin, requestedPath, offset, limit);
-    return { path:result.canonicalPath, content:result.content, startByte:result.startByte, endByte:result.endByte, size:result.size, mtime:result.mtime, nextCursor:result.truncated ? String(result.endByte) : null, truncated:result.truncated };
+    if (typeof tail !== 'boolean' || (tail && cursor != null)) throw new AppError('INVALID_ARGUMENT', 'tail 不能与 cursor 同时使用。');
+    const result = await this.serverRuntime.readRemoteRange(plugin, requestedPath, offset, limit, { allowGrowth:!archiveSuffix(requestedPath), tail });
+    return { path:result.canonicalPath, content:result.content, startByte:result.startByte, endByte:result.endByte, size:result.size, mtime:result.mtime, observedSize:result.observedSize ?? result.size, sourceGrew:result.sourceGrew === true, nextCursor:result.truncated ? String(result.endByte) : null, truncated:result.truncated };
   }
 
   async searchFiles(plugin, { path: remotePath, pattern = '*', contains, maxDepth = 6, maxFiles = 100, maxMatches = 200, maxScanBytes = 16 * 1024 * 1024 } = {}) {

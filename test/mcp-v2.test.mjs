@@ -136,6 +136,10 @@ test('V2 MCP exposes unrestricted bounded reads and confirmation-gated server ch
   const serverPlugin = {limits:{maxBytes:65_536}};
   const firstFilePage = await serverOperations.readFile(serverPlugin, {path:'/logs/app.log', maxBytes:2});
   const serverReadFile = listed.tools.find((item) => item.name === 'server_read_file');
+  assert.equal(serverReadFile.inputSchema.properties.tail.type,'boolean');
+  assert.equal(serverReadFile.inputSchema.properties.tail.default,false);
+  assert.deepEqual(serverReadFile.inputSchema.not.required,['tail','cursor']);
+  assert.match(client.getInstructions(),/coverage、truncated、skipped 和 guidance/u);
   assertCursorMatchesSchema(serverReadFile, firstFilePage.nextCursor);
   await serverOperations.readFile(serverPlugin, {path:'/logs/app.log', cursor:firstFilePage.nextCursor, maxBytes:2});
   await serverOperations.readFile(serverPlugin, {path:'/logs/app.log', cursor:2, maxBytes:2});

@@ -70,7 +70,7 @@ function remoteDirectory(name,canonicalPath){
   return {name,canonicalPath,isDirectory:true,isFile:false,isSymbolicLink:false,size:0,mtime:0};
 }
 
-function createRemoteLogRuntime({files,directories={},readCanonicalPaths={},readDelayMs=0}){
+function createRemoteLogRuntime({files,directories={},readCanonicalPaths={},readDelayMs=0,beforeRead}){
   const stored=new Map(Object.entries(files).map(([remotePath,value])=>[
     remotePath,
     {
@@ -104,6 +104,7 @@ function createRemoteLogRuntime({files,directories={},readCanonicalPaths={},read
           calls.maxActiveReads=Math.max(calls.maxActiveReads,calls.activeReads);
           try{
             if(readDelayMs>0) await new Promise((resolve)=>setTimeout(resolve,readDelayMs));
+            await beforeRead?.({remotePath,start,maxBytes});
             const file=stored.get(remotePath);
             assert.ok(file,`unexpected read: ${remotePath}`);
             const content=file.content.subarray(start,Math.min(file.content.length,start+maxBytes));
@@ -827,4 +828,151 @@ test('a plain-file type probe that exhausts the scan budget truncates instead of
     {remotePath:'/logs/first.log',start:0,maxBytes:first.length},
     {remotePath:'/logs/second.log',start:0,maxBytes:4},
   ]);
+});
+
+test('growing plain logs return bounded coverage without caching a moving source', async () => {
+  const original=Buffer.from('needle before append\n');
+  const grown=Buffer.concat([original,Buffer.from('needle later\n')]);
+  const h=createRemoteLogRuntime({
+    files:{'/logs/live.log':{content:original,mtime:1}},
+    beforeRead:()=>h.updateFile('/logs/live.log',{content:grown,mtime:2}),
+  });
+  const operations=new ServerOperations(h.runtime,{});
+  const result=await operations.searchLogs(plugin,{path:'/logs/live.log',contains:'needle',maxScanBytes:65536});
+  assert.equal(result.matchCount,1);
+  assert.equal(result.coverage[0].sourceGrew,true);
+  assert.equal(result.coverage[0].snapshotSize,original.length);
+  assert.equal(result.coverage[0].scanEndByte,original.length);
+  assert.equal(result.coverage[0].observedSize,grown.length);
+  assert.equal(result.coverage[0].complete,false);
+  assert.ok(result.truncationReasons.includes('sourceGrew'));
+  assert.match(result.guidance.join(' '),/增长/);
+  assert.equal(operations.logSnapshotCache.entries.size,0);
+});
+
+test('a growing log survives both magic probing and a bounded tail read', async () => {
+  const original=Buffer.concat([Buffer.alloc(70000,0x78),Buffer.from('\nneedle\n')]);
+  let content=original;
+  let mtime=1;
+  const h=createRemoteLogRuntime({
+    files:{'/logs/live.log':{content,mtime}},
+    beforeRead:()=>{
+      content=Buffer.concat([content,Buffer.from('appended\n')]);
+      h.updateFile('/logs/live.log',{content,mtime:++mtime});
+    },
+  });
+  const operations=new ServerOperations(h.runtime,{});
+  const result=await operations.searchLogs(plugin,{path:'/logs/live.log',contains:'needle',maxScanBytes:65536});
+  assert.equal(result.matchCount,1);
+  assert.equal(h.calls.reads.length,2);
+  assert.equal(result.coverage[0].sourceGrew,true);
+  assert.ok(result.coverage[0].scanEndByte<=original.length);
+  assert.ok(result.remoteBytesRead<=65536);
+  assert.equal(operations.logSnapshotCache.entries.size,0);
+});
+
+test('listed log handles refresh growth before searching while respecting source limits', async () => {
+  const original=Buffer.from('old line\n');
+  const source={sourceId:'logs',displayName:'Logs',kind:'log',root:'/logs',patterns:['*.log'],maxFileBytes:128};
+  const scopedPlugin={...plugin,sources:[source]};
+  const h=createRemoteLogRuntime({files:{'/logs/live.log':{content:original,mtime:1}}});
+  const operations=new ServerOperations(h.runtime,{});
+  const fileId=operations.rememberFile(scopedPlugin,source,{canonicalPath:'/logs/live.log',size:original.length,mtime:1});
+  h.updateFile('/logs/live.log',{content:Buffer.concat([original,Buffer.from('new needle\n')]),mtime:2});
+  const result=await operations.searchLogs(scopedPlugin,{fileIds:[fileId],contains:'needle'});
+  assert.equal(result.matchCount,1);
+  assert.equal(result.matches[0].text,'new needle');
+  h.updateFile('/logs/live.log',{content:Buffer.alloc(129,0x41),mtime:3});
+  await assert.rejects(operations.searchLogs(scopedPlugin,{fileIds:[fileId],contains:'needle'}),{code:'SOURCE_NOT_ALLOWED'});
+});
+
+test('same-size rewrites, shrinking files and growing disguised archives remain rejected', async () => {
+  for(const variant of ['rewrite','shrink','archive']){
+    const original=variant==='archive' ? gzipSync('needle\n') : Buffer.from('needle\n');
+    const changed=variant==='rewrite' ? Buffer.from('needle!') : variant==='shrink' ? Buffer.from('ne') : Buffer.concat([original,Buffer.from('extra')]);
+    const h=createRemoteLogRuntime({
+      files:{'/logs/app.log':{content:original,mtime:1}},
+      beforeRead:()=>h.updateFile('/logs/app.log',{content:changed,mtime:2}),
+    });
+    const operations=new ServerOperations(h.runtime,{});
+    await assert.rejects(operations.searchLogs(plugin,{path:'/logs/app.log',contains:'needle'}),{code:'SOURCE_CHANGED'});
+    assert.equal(operations.logSnapshotCache.entries.size,0);
+  }
+});
+
+test('gzip aliases are discovered and archive entries use the declared expanded budget above 32 MiB', async () => {
+  const content=Buffer.allocUnsafe(33*1024*1024);
+  let state=123456789;
+  for(let index=0;index<content.length;index+=1){
+    state^=state<<13; state^=state>>>17; state^=state<<5;
+    content[index]=index%160===159 ? 10 : 65+((state>>>0)%26);
+  }
+  content.write('ARCHIVE_LARGE_NEEDLE\n',0,'utf8');
+  const archive=gzipSync(content);
+  const h=createRemoteLogRuntime({
+    files:{'/logs/large.log.gzip':{content:archive,mtime:1}},
+    directories:{'/logs':[remoteFile('large.log.gzip','/logs/large.log.gzip',archive,1)]},
+  });
+  const operations=new ServerOperations(h.runtime,{});
+  const args={path:'/logs',pattern:'*.log',contains:'ARCHIVE_LARGE_NEEDLE',maxScanBytes:32*1024*1024,maxExpandedBytes:32*1024*1024};
+  const rejected=await operations.searchLogs(plugin,args);
+  assert.equal(rejected.matchCount,0);
+  assert.equal(rejected.truncated,true);
+  assert.match(rejected.guidance.join(' '),/maxExpandedBytes/);
+  const accepted=await operations.searchLogs(plugin,{...args,maxExpandedBytes:48*1024*1024});
+  assert.equal(accepted.matchCount,1);
+  assert.equal(accepted.archivesScanned,1);
+  assert.equal(accepted.expandedBytes,content.length);
+  assert.equal(accepted.coverage[0].complete,true);
+  for(const key of operations.logSnapshotCache.entries.keys()) operations.logSnapshotCache.remove(key);
+  operations.logSnapshotCache.scheduleExpiry();
+});
+
+test('file tail reads forward live-read options and reject ambiguous cursors before I/O', async () => {
+  const calls=[];
+  const operations=new ServerOperations({
+    readRemoteRange:async(...args)=>{
+      calls.push(args);
+      return {canonicalPath:'/logs/live.log',content:'needle\n',startByte:93,endByte:100,size:100,mtime:2,sourceGrew:true,observedSize:110,truncated:false};
+    },
+  },{});
+  const result=await operations.readFile(plugin,{path:'/logs/live.log',tail:true,maxBytes:7});
+  assert.deepEqual(calls[0].slice(1),['/logs/live.log',0,7,{allowGrowth:true,tail:true}]);
+  assert.equal(result.sourceGrew,true);
+  assert.equal(result.observedSize,110);
+  await assert.rejects(operations.readFile(plugin,{path:'/logs/live.log',tail:true,cursor:'0'}),{code:'INVALID_ARGUMENT'});
+  assert.equal(calls.length,1);
+});
+
+test('readLog uses current tail bounds and preserves registered file scope', async () => {
+  const source={sourceId:'logs',displayName:'Logs',kind:'log',root:'/logs',patterns:['*.log'],maxFileBytes:1024};
+  let canonicalPath='/logs/live.log';
+  const operations=new ServerOperations({
+    readRemoteRange:async(_plugin,_path,start,limit,options)=>{
+      assert.equal(start,0);
+      assert.equal(options.tail,true);
+      assert.equal(options.allowGrowth,true);
+      return {canonicalPath,content:'needle\n',startByte:93,endByte:100,size:100,mtime:2,sourceGrew:true,observedSize:110,truncated:false};
+    },
+  },{});
+  const scopedPlugin={...plugin,sources:[source]};
+  const fileId=operations.rememberFile(scopedPlugin,source,{canonicalPath,size:10,mtime:1});
+  const result=await operations.readLog(scopedPlugin,{fileId,maxBytes:7});
+  assert.equal(result.startByte,93);
+  assert.equal(result.sourceGrew,true);
+  canonicalPath='/outside/live.log';
+  await assert.rejects(operations.readLog(scopedPlugin,{fileId,maxBytes:7}),{code:'SOURCE_CHANGED'});
+});
+
+test('a changed magic-only archive cannot reuse a fresh path cache through an older fileId', async () => {
+  const original=gzipSync('needle before\n');
+  const source={sourceId:'logs',displayName:'Logs',kind:'log',root:'/logs',patterns:['*.log'],maxFileBytes:1024};
+  const scopedPlugin={...plugin,sources:[source]};
+  const h=createRemoteLogRuntime({files:{'/logs/archive.log':{content:original,mtime:1}}});
+  const operations=new ServerOperations(h.runtime,{});
+  const fileId=operations.rememberFile(scopedPlugin,source,{canonicalPath:'/logs/archive.log',size:original.length,mtime:1});
+  h.updateFile('/logs/archive.log',{content:Buffer.concat([original,gzipSync('needle after\n')]),mtime:2});
+  const fresh=await operations.searchLogs(scopedPlugin,{path:'/logs/archive.log',contains:'needle'});
+  assert.equal(fresh.matchCount,2);
+  await assert.rejects(operations.searchLogs(scopedPlugin,{fileIds:[fileId],contains:'needle'}),{code:'SOURCE_CHANGED'});
 });

@@ -143,7 +143,7 @@ export class BrokerServer {
       case 'serverStat': return this.v2Service.invoke(params, 'fs.stat', { path:params.path });
       case 'serverListDirectory': return this.v2Service.invoke(params, 'fs.list', { path:params.path, cursor:params.cursor, limit:params.limit });
       case 'serverFindFiles': return this.v2Service.invoke(params, 'fs.find', { path:params.path, pattern:params.pattern, maxDepth:params.maxDepth, maxResults:params.maxResults });
-      case 'serverReadFile': return this.v2Service.invoke(params, 'fs.read', { path:params.path, cursor:params.cursor, maxBytes:params.maxBytes });
+      case 'serverReadFile': return this.v2Service.invoke(params, 'fs.read', { path:params.path, cursor:params.cursor, maxBytes:params.maxBytes, tail:params.tail });
       case 'serverSearchFiles': return this.v2Service.invoke(params, 'fs.search', { path:params.path, pattern:params.pattern, contains:params.contains, maxDepth:params.maxDepth, maxFiles:params.maxFiles, maxMatches:params.maxMatches, maxScanBytes:params.maxScanBytes });
       case 'serverDownloadFile': return params.path
         ? this.v2Service.invoke(params, 'fs.download', { path:params.path })

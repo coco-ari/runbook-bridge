@@ -283,12 +283,12 @@ export class ServerPluginRuntime extends EventEmitter {
     return this.broker.statRemotePath(this.key(plugin), remotePath);
   }
 
-  readRemoteRange(plugin, remotePath, start, maxBytes) {
-    return this.broker.readRemoteRange(this.key(plugin), remotePath, start, maxBytes);
+  readRemoteRange(plugin, remotePath, start, maxBytes, options = {}) {
+    return this.broker.readRemoteRange(this.key(plugin), remotePath, start, maxBytes, options);
   }
 
-  readRemoteBuffer(plugin, remotePath, start, maxBytes) {
-    return this.broker.readRemoteBuffer(this.key(plugin), remotePath, start, maxBytes);
+  readRemoteBuffer(plugin, remotePath, start, maxBytes, options = {}) {
+    return this.broker.readRemoteBuffer(this.key(plugin), remotePath, start, maxBytes, options);
   }
 
   downloadRemoteFile(plugin, remotePath, localPath, maxBytes) {

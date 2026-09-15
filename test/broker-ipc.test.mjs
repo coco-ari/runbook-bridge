@@ -134,6 +134,9 @@ test('broker preserves legacy log search and forwards every bounded search field
     queries:['WARN'],
   }, 2_000);
   assert.equal(invocations[2].args.path, '/var/log/app');
+  await callBroker(root, 'v2.serverReadFile', {...scope,path:'/var/log/app.log',tail:true,maxBytes:4096}, 2_000);
+  assert.equal(invocations[3].capability, 'fs.read');
+  assert.deepEqual(invocations[3].args, {path:'/var/log/app.log',cursor:undefined,maxBytes:4096,tail:true});
 });
 
 test('broker routes MySQL schema search through the existing describe capability', async (t) => {

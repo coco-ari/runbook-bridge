@@ -26,6 +26,9 @@ try {
   assert.equal(logSearch.inputSchema.properties.queries.maxItems, 10);
   assert.equal(logSearch.inputSchema.properties.includeArchives.type, 'boolean');
   assert.equal(logSearch.inputSchema.allOf.length, 2);
+  assert.match(logSearch.inputSchema.properties.maxExpandedBytes.description, /单个归档条目/u);
+  assert.equal(result.tools.find((tool) => tool.name === 'server_read_file').inputSchema.properties.tail.type, 'boolean');
+  assert.match(client.getInstructions(), /coverage、truncated、skipped 和 guidance/u);
 } finally {
   await client.close().catch(() => undefined);
 }
@@ -54,10 +57,15 @@ const archiveSmoke = [
   "const zipResult = await expandLogArchive({ filePath:'packaged.zip', content:zip });",
   "assert.equal(zipResult.archiveType, 'zip');",
   "assert.equal(zipResult.snapshots[0].content.toString('utf8'), 'PACKAGED_ZIP_OK\\n');",
+  "const { ServerOperations } = await import(pathToFileURL(process.env.AI_OPS_OPERATIONS_MODULE).href);",
+  "const runtime = { withRemoteReadSession:async (_plugin, operation) => operation({statPath:async () => ({type:'file',path:'/logs/packaged.zip',canonicalPath:'/logs/packaged.zip',size:zip.length,mtime:1}),readBuffer:async () => ({canonicalPath:'/logs/packaged.zip',content:zip,size:zip.length,mtime:1})}) };",
+  "const operations = new ServerOperations(runtime, {});",
+  "const searched = await operations.searchLogs({projectId:'package',environmentId:'test',pluginInstanceId:'server'}, {path:'/logs/packaged.zip',queries:['PACKAGED_ZIP_OK']});",
+  "assert.equal(searched.matchCount, 1); assert.equal(searched.coverage[0].sourceGrew, false); assert.ok(Array.isArray(searched.guidance));",
   "process.stdout.write('archive-ok');",
 ].join('\n');
 const archiveResult = await execFileAsync(executable, ['--input-type=module', '--eval', archiveSmoke], {
-  env: { ...process.env, AI_OPS_ARCHIVE_MODULE: archiveModule, ELECTRON_RUN_AS_NODE: '1' },
+  env: { ...process.env, AI_OPS_ARCHIVE_MODULE: archiveModule, AI_OPS_OPERATIONS_MODULE:path.join(path.dirname(archiveModule), 'server-operations.mjs'), ELECTRON_RUN_AS_NODE: '1' },
   timeout: 30_000,
   windowsHide: true,
 });
