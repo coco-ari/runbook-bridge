@@ -10,6 +10,9 @@ import { SshBroker } from '../src/ssh-broker.mjs';
 async function fixture(t, mode) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(),'runbook-download-'));
   t.after(() => fs.rm(root,{recursive:true,force:true}));
+  // 模拟真实 SSH Socket 持有事件循环，确保 Node.js 22 能观察无响应超时。
+  const connectionHandle = setInterval(() => {},1000);
+  t.after(() => clearInterval(connectionHandle));
   const sftp = new EventEmitter();
   let callback;
   let closed = false;
