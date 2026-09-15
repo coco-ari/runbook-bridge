@@ -4148,6 +4148,8 @@ async function run() {
       `document.querySelector('a[href="#detail-main"]')?.click()`,
       true,
     );
+    // 隐藏窗口先完成绘制，才能观察跳转链接在两帧后设置的真实焦点。
+    await captureRenderedFrame(win);
     await waitFor(
       win,
       `document.querySelector('[data-testid="detail-workspace"]')?.dataset.collapsed === 'false' && document.activeElement?.id === 'detail-main'`,
