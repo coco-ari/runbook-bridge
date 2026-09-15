@@ -134,13 +134,14 @@ function transferError(error) {
   return new AppError('TRANSFER_FAILED', '文件传输失败。');
 }
 
-function withSftp(client, action, { timeoutMs = 0, timeoutCode = 'TRANSFER_TIMEOUT', timeoutMessage = '文件传输超时。', signal = null } = {}) {
+function withSftp(client, action, { timeoutMs = 0, inactivityMs = 0, timeoutCode = 'TRANSFER_TIMEOUT', timeoutMessage = '文件传输超时。', signal = null } = {}) {
   return new Promise((resolve, reject) => {
     const controller = new AbortController();
     let sftp = null;
     let settled = false;
     let closing = false;
     let timeoutTimer = null;
+    let inactivityTimer = null;
     let forceCloseTimer = null;
     let progress = { phase:'sftp', timeoutMs };
 
@@ -171,6 +172,7 @@ function withSftp(client, action, { timeoutMs = 0, timeoutCode = 'TRANSFER_TIMEO
       if (settled) return;
       settled = true;
       clearTimeout(timeoutTimer);
+      clearTimeout(inactivityTimer);
       clearTimeout(forceCloseTimer);
       signal?.removeEventListener('abort', onExternalAbort);
       safeEnd();
@@ -204,6 +206,16 @@ function withSftp(client, action, { timeoutMs = 0, timeoutCode = 'TRANSFER_TIMEO
       );
       timeoutTimer.unref?.();
     }
+    const reportProgress = (value) => {
+      if (settled) return;
+      progress = { ...value, timeoutMs };
+      clearTimeout(inactivityTimer);
+      if (inactivityMs > 0) {
+        inactivityTimer = setTimeout(() => abort(new AppError(timeoutCode, '文件传输长时间没有进展，请稍后重试。', { ...progress, timeoutMs:inactivityMs, totalTimeoutMs:timeoutMs })), inactivityMs);
+        inactivityTimer.unref?.();
+      }
+    };
+    reportProgress(progress);
 
     try {
       client.sftp((error, openedSftp) => {
@@ -226,7 +238,7 @@ function withSftp(client, action, { timeoutMs = 0, timeoutCode = 'TRANSFER_TIMEO
           return;
         }
         Promise.resolve()
-          .then(() => action(sftp, { signal: controller.signal, abort, reportProgress:(value) => { progress = { ...value, timeoutMs }; } }))
+          .then(() => action(sftp, { signal: controller.signal, abort, reportProgress }))
           .then(
             (value) => finish(controller.signal.reason ?? null, value),
             (error) => finish(controller.signal.reason ?? error),
@@ -485,9 +497,19 @@ function sftpChmod(sftp, target, mode) {
   return new Promise((resolve, reject) => sftp.chmod(target, mode, (error) => (error ? reject(error) : resolve())));
 }
 
-function sftpFastGet(sftp, remotePath, localPath) {
+function sftpFastGet(sftp, remotePath, localPath, totalBytes, lifecycle) {
   return new Promise((resolve, reject) => {
-    sftp.fastGet(remotePath, localPath, (error) => (error ? reject(error) : resolve()));
+    sftp.fastGet(remotePath, localPath, {
+      concurrency:SFTP_READ_WINDOW,
+      chunkSize:SFTP_READ_CHUNK_BYTES,
+      step(transferredBytes) {
+        lifecycle.reportProgress({ phase:'download', transferredBytes, totalBytes });
+        if (transferredBytes > totalBytes) {
+          lifecycle.abort(new AppError('SOURCE_CHANGED', '文件在下载期间增长，已停止传输，请重新选择文件。', { transferredBytes, totalBytes }));
+          try { sftp.end(); } catch { /* 通道已关闭时保留原始中断原因。 */ }
+        }
+      },
+    }, (error) => (error ? reject(error) : resolve()));
   });
 }
 
@@ -1131,7 +1153,7 @@ export class SshBroker {
     });
   }
 
-  async withInternalSftp(projectId, operation, { timeoutMs = SFTP_READ_INACTIVITY_MS, signal = null } = {}) {
+  async withInternalSftp(projectId, operation, { timeoutMs = SFTP_READ_INACTIVITY_MS, inactivityMs = 0, signal = null } = {}) {
     const session = this.requireSession(projectId);
     return withSftp(
       session.client,
@@ -1140,6 +1162,7 @@ export class SshBroker {
         timeoutMs,
         signal,
         timeoutCode: 'SFTP_OPERATION_TIMEOUT',
+        inactivityMs,
         timeoutMessage: '服务器文件操作超过时限。日志搜索请指定单个文件、合并 queries 并缩小 maxScanBytes；目录和 stat 正常时无需重新连接。',
       },
     );
@@ -1196,7 +1219,7 @@ export class SshBroker {
 
   async downloadRemoteFile(projectId, remotePath, localPath, maxBytes = 100 * 1024 * 1024) {
     const normalized = normalizeAbsoluteRemotePath(remotePath);
-    return this.withInternalSftp(projectId, async (sftp) => {
+    return this.withInternalSftp(projectId, async (sftp, _session, lifecycle) => {
       const canonical = await sftpRealpath(sftp, normalized);
       const stats = await sftpStat(sftp, canonical);
       if (!stats.isFile()) throw new AppError('SOURCE_NOT_ALLOWED', '目标不是普通文件。');
@@ -1204,16 +1227,25 @@ export class SshBroker {
       await fsp.mkdir(path.dirname(localPath), { recursive: true });
       const temporary = `${localPath}.${crypto.randomBytes(4).toString('hex')}.part`;
       try {
-        await sftpFastGet(sftp, canonical, temporary);
+        lifecycle.reportProgress({ phase:'download', transferredBytes:0, totalBytes:Number(stats.size) });
+        await sftpFastGet(sftp, canonical, temporary, Number(stats.size), lifecycle);
+        throwIfAborted(lifecycle.signal);
+        const current = await sftpStat(sftp, canonical);
+        const currentPath = await sftpRealpath(sftp, normalized);
+        if (!current.isFile() || Number(current.size) !== Number(stats.size) || Number(current.mtime) !== Number(stats.mtime) || currentPath !== canonical) {
+          throw new AppError('SOURCE_CHANGED', '下载期间文件身份已经变化，请重新选择文件。');
+        }
         const downloaded = await fsp.stat(temporary);
         if (downloaded.size > Number(maxBytes)) throw new AppError('FILE_TOO_LARGE', '下载文件在传输期间超过上限。');
+        if (downloaded.size !== Number(stats.size)) throw new AppError('TRANSFER_INTEGRITY_FAILED', '下载文件大小与读取快照不一致。');
+        throwIfAborted(lifecycle.signal);
         await fsp.rename(temporary, localPath);
         return { canonicalPath: canonical, localPath, bytes: downloaded.size, mtime: Number(stats.mtime ?? 0) };
       } catch (error) {
         await fsp.rm(temporary, { force: true }).catch(() => undefined);
         throw error;
       }
-    });
+    }, { timeoutMs:10 * 60 * 1000, inactivityMs:SFTP_READ_INACTIVITY_MS });
   }
 
   async uploadRemoteFileApproved(projectId, localPath, remotePath, precondition, { onProgress, signal, beforeCommit } = {}) {

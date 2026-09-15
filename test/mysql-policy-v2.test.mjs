@@ -19,7 +19,11 @@ test('MySQL policy accepts the observed parser-supported pure time and JSON help
     "SELECT id FROM orders WHERE message LIKE '%SLEEP(%'",
     'SELECT 1 /* BENCHMARK( */',
   ]) assert.doesNotThrow(() => validateMysqlSelect(sql));
-  assert.throws(() => validateMysqlSelect('SELECT UTC_TIMESTAMP()'),(error) => error.code === 'DATABASE_FUNCTION_NOT_ALLOWED');
+  for (const sql of [
+    'SELECT UTC_TIMESTAMP(), UNIX_TIMESTAMP(), CHAR_LENGTH(name) FROM users',
+    'SELECT JSON_KEYS(payload), JSON_ARRAYAGG(id) FROM orders GROUP BY payload',
+    'SELECT EXISTS(SELECT id FROM orders WHERE user_id = 1)',
+  ]) assert.doesNotThrow(() => validateMysqlSelect(sql));
 });
 
 test('MySQL policy reports unsupported functions and syntax as actionable errors', () => {
@@ -43,6 +47,10 @@ for (const sql of [
   'SELECT * FROM users FOR UPDATE',
   'SELECT app.ABS(balance) FROM users',
   'SELECT app.JSON_VALID(payload) FROM users',
+  'SELECT app.UTC_TIMESTAMP() FROM users',
+  'SELECT EXISTS(SELECT id FROM other.orders)',
+  'SELECT EXISTS(SELECT SLEEP(5))',
+  'SELECT @@time_zone',
   "SELECT LOAD_FILE('/etc/passwd')",
   'SELECT SLEEP(10)',
   "SELECT GET_LOCK/**/('deploy', 1)",

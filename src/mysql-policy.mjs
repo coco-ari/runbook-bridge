@@ -5,12 +5,12 @@ import { AppError } from './errors.mjs';
 const { Parser } = parserPackage;
 const parser = new Parser();
 const PURE_FUNCTIONS = new Set([
-  'abs', 'avg', 'ceil', 'ceiling', 'coalesce', 'concat', 'concat_ws', 'convert', 'count',
+  'abs', 'avg', 'ceil', 'ceiling', 'char_length', 'coalesce', 'concat', 'concat_ws', 'convert', 'count',
   'convert_tz', 'curdate', 'current_date', 'current_timestamp', 'date', 'date_add', 'date_format', 'date_sub',
-  'day', 'extract', 'floor', 'greatest', 'group_concat', 'if', 'ifnull', 'json_extract',
+  'day', 'exists', 'extract', 'floor', 'greatest', 'group_concat', 'if', 'ifnull', 'json_arrayagg', 'json_extract', 'json_keys',
   'json_length', 'json_unquote', 'json_valid', 'least', 'left', 'length', 'lower', 'lpad', 'max', 'min', 'month', 'now',
   'nullif', 'replace', 'right', 'round', 'rpad', 'substring', 'substring_index', 'sum',
-  'timestampdiff', 'trim', 'upper', 'year',
+  'timestampdiff', 'trim', 'unix_timestamp', 'upper', 'utc_timestamp', 'year',
 ]);
 const FORBIDDEN_FUNCTIONS = new Set([
   'benchmark', 'get_lock', 'is_free_lock', 'load_file', 'master_pos_wait', 'name_const',
@@ -18,6 +18,12 @@ const FORBIDDEN_FUNCTIONS = new Set([
   'wait_for_executed_gtid_set', 'wait_until_sql_thread_after_gtids',
 ]);
 const FORBIDDEN_TEXT = /\b(?:into\s+(?:out|dump)file|procedure\s+analyse|for\s+(?:update|share)|lock\s+in\s+share\s+mode)\b/i;
+
+export const MYSQL_READ_CAPABILITIES = Object.freeze({
+  statements:['SELECT','EXPLAIN SELECT'], fixedDatabase:true, views:false,
+  variables:false, crossDatabase:false, allowedFunctions:[...PURE_FUNCTIONS].sort(),
+  schemaSearchDefault:'auto', metadataTtlMs:60_000, maxConcurrentPerPlugin:1,
+});
 
 function functionName(node) {
   const parts = node?.name?.name;
@@ -48,11 +54,7 @@ function collectTables(ast) {
       if (source.db) throw new AppError('HARD_POLICY_DENIED', '禁止跨数据库查询。');
       tables.add(table);
     }
-    if (node.type === 'aggr_func' && !PURE_FUNCTIONS.has(String(node.name ?? '').toLowerCase())) {
-      const name = String(node.name ?? 'unknown').toLowerCase();
-      if (FORBIDDEN_FUNCTIONS.has(name)) throw new AppError('HARD_POLICY_DENIED', `禁止使用高风险函数 ${name}。`);
-      throw new AppError('DATABASE_FUNCTION_NOT_ALLOWED', `不允许使用函数 ${name}。`, {function:name});
-    }
+
   });
   return [...tables];
 }
@@ -81,6 +83,11 @@ export function validateMysqlSelect(sql, { maxSqlBytes = 65_536 } = {}) {
         const denied = name || 'unknown';
         throw new AppError('DATABASE_FUNCTION_NOT_ALLOWED', `不允许使用函数 ${denied}。`, {function:denied});
       }
+    }
+    if (node.type === 'aggr_func' && !PURE_FUNCTIONS.has(String(node.name ?? '').toLowerCase())) {
+      const name = String(node.name ?? 'unknown').toLowerCase();
+      if (FORBIDDEN_FUNCTIONS.has(name)) throw new AppError('HARD_POLICY_DENIED', `禁止使用高风险函数 ${name}。`);
+      throw new AppError('DATABASE_FUNCTION_NOT_ALLOWED', `不允许使用函数 ${name}。`, {function:name});
     }
     if (['var', 'variable', 'assign'].includes(node.type)) throw new AppError('HARD_POLICY_DENIED', '禁止变量读取或写入。');
   });

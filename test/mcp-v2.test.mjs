@@ -77,7 +77,7 @@ test('V2 MCP exposes unrestricted bounded reads and confirmation-gated server ch
   assert.ok(searchLogs.inputSchema.allOf.every((group) => exactlyOneBranch(group, legacySearch)));
   assert.equal(exactlyOneBranch(searchLogs.inputSchema.allOf[0], {fileIds:['one'],path:'/logs'}), false);
   assert.equal(exactlyOneBranch(searchLogs.inputSchema.allOf[1], {contains:'one',queries:['two']}), false);
-  assert.deepEqual(searchLogs.inputSchema.not, {required:['maxMatches','maxLines']});
+  assert.equal('maxLines' in searchLogs.inputSchema.properties, false);
   const searchProperties = searchLogs.inputSchema.properties;
   assert.deepEqual(searchProperties.matchMode.enum, ['any','all']);
   assert.equal(searchProperties.matchMode.default, 'any');
@@ -87,7 +87,6 @@ test('V2 MCP exposes unrestricted bounded reads and confirmation-gated server ch
   assert.deepEqual([searchProperties.maxDepth.minimum,searchProperties.maxDepth.maximum], [0,12]);
   assert.deepEqual([searchProperties.maxFiles.minimum,searchProperties.maxFiles.maximum], [1,100]);
   assert.deepEqual([searchProperties.maxMatches.minimum,searchProperties.maxMatches.maximum], [1,500]);
-  assert.deepEqual([searchProperties.maxLines.minimum,searchProperties.maxLines.maximum], [1,500]);
   assert.deepEqual([searchProperties.beforeLines.minimum,searchProperties.beforeLines.maximum], [0,50]);
   assert.deepEqual([searchProperties.afterLines.minimum,searchProperties.afterLines.maximum], [0,50]);
   assert.deepEqual([searchProperties.maxScanBytes.minimum,searchProperties.maxScanBytes.maximum], [65_536,64 * 1024 * 1024]);

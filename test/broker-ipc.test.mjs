@@ -7,6 +7,7 @@ import test from 'node:test';
 import { BrokerServer } from '../src/broker-server.mjs';
 import { callBroker } from '../src/broker-client.mjs';
 import { rotateBrokerToken } from '../src/broker-auth.mjs';
+import { RUNTIME_INFO } from '../src/package-metadata.mjs';
 
 test('local broker requires the shared per-user token and returns structured data', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-broker-'));
@@ -21,7 +22,7 @@ test('local broker requires the shared per-user token and returns structured dat
     (error) => error.code === 'METHOD_NOT_FOUND',
   );
   assert.deepEqual(await callBroker(root, 'v2.listProjects', {}, 2_000), { projects: [{ projectId: 'demo' }] });
-  assert.deepEqual(await callBroker(root, 'info', {}, 2_000), { version: 'unknown', protocolVersion: 2 });
+  assert.deepEqual(await callBroker(root, 'info', {}, 2_000), { ...RUNTIME_INFO, version:'unknown', protocolVersion:2 });
 });
 
 test('broker survives an abandoned client and stop closes idle pipe clients promptly', async (t) => {
@@ -97,6 +98,8 @@ test('broker preserves legacy log search and forwards every bounded search field
     maxDepth:12,
     maxFiles:100,
     maxMatches:500,
+    cursor:'a'.repeat(64),
+    refresh:true,
     beforeLines:50,
     afterLines:49,
     includeArchives:true,
@@ -119,6 +122,8 @@ test('broker preserves legacy log search and forwards every bounded search field
     maxDepth:12,
     maxFiles:100,
     maxMatches:500,
+    cursor:'a'.repeat(64),
+    refresh:true,
     maxLines:undefined,
     beforeLines:50,
     afterLines:49,
@@ -153,11 +158,11 @@ test('broker routes MySQL schema search through the existing describe capability
   t.after(() => server.stop());
   const params = {
     projectId:'project-one',environmentId:'production',pluginInstanceId:'mysql-main',contextToken:'context-token-1234',
-    keywords:['coupon','uid'],limit:25,
+    keywords:['coupon','uid'],limit:25,table:'orders',searchIn:'columns',refresh:true,
   };
   assert.deepEqual(await callBroker(root,'v2.mysqlSearchSchema',params,2000),{accepted:true});
   assert.equal(invocations[0].capability,'describe');
-  assert.deepEqual(invocations[0].args,{operation:'search',keywords:['coupon','uid'],limit:25});
+  assert.deepEqual(invocations[0].args,{operation:'search',keywords:['coupon','uid'],limit:25,table:'orders',searchIn:'columns',refresh:true});
 });
 
 test('Unix Broker 限制 socket 和 Token 权限，拒绝覆盖普通文件及活动 socket', {skip:process.platform === 'win32'}, async (t) => {

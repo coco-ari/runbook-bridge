@@ -3,7 +3,6 @@ on:
   push:
     branches:
       - main
-      - codex/macos-support
   pull_request: null
   workflow_dispatch: null
 permissions:
@@ -78,6 +77,17 @@ jobs:
         run: |-
           VERSION=$(node -p "require('./package.json').version")
           node scripts/install-upgrade-regression.cjs "dist/RunbookBridge-${VERSION}-mac-${{ matrix.arch }}.dmg"
+      - name: Retain verified installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            build/runtime.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Retain validation artifacts
         if: always()
         uses: actions/upload-artifact@v4

@@ -18,12 +18,21 @@ const client = new Client({ name: 'packaged-mcp-smoke', version: '1.0.0' });
 try {
   await client.connect(transport);
   const result = await client.listTools();
-  assert.equal(result.tools.length, 35);
+  assert.equal(result.tools.length, 36);
   assert.ok(result.tools.some((tool) => tool.name === 'open_environment'));
   assert.ok(result.tools.some((tool) => tool.name === 'mysql_search_schema'));
   assert.ok(!result.tools.some((tool) => tool.name === 'execute'));
   const logSearch = result.tools.find((tool) => tool.name === 'server_search_logs');
   assert.equal(logSearch.inputSchema.properties.queries.maxItems, 10);
+  assert.equal(logSearch.inputSchema.properties.maxLines, undefined);
+  assert.equal(logSearch.inputSchema.properties.cursor.pattern, '^[a-f0-9]{64}$');
+  assert.equal(logSearch.inputSchema.properties.refresh.type, 'boolean');
+  const confirmation = result.tools.find(tool => tool.name === 'get_confirmation_status');
+  assert.equal(confirmation.annotations.readOnlyHint, true);
+  assert.equal(confirmation.inputSchema.properties.waitMs.maximum, 10000);
+  const schemaSearch = result.tools.find(tool => tool.name === 'mysql_search_schema');
+  assert.ok(schemaSearch.inputSchema.properties.searchIn.enum.includes('auto'));
+  assert.equal(result.tools.find(tool => tool.name === 'mysql_describe_table').inputSchema.properties.includeIndexes.type, 'boolean');
   assert.equal(logSearch.inputSchema.properties.includeArchives.type, 'boolean');
   assert.equal(logSearch.inputSchema.allOf.length, 2);
   assert.match(logSearch.inputSchema.properties.maxExpandedBytes.description, /单个归档条目/u);
@@ -43,7 +52,7 @@ const archiveSmoke = [
   "assert.equal(result.archiveType, 'gzip');",
   "assert.equal(result.snapshots[0].content.toString('utf8'), 'PACKAGED_ARCHIVE_OK\\n');",
   "const zipName = Buffer.from('packaged.log');",
-  "const zipBody = Buffer.from('PACKAGED_ZIP_OK\\n');",
+  "const zipBody = Buffer.from('PACKAGED_ZIP_OK\\nPACKAGED_ZIP_OK\\n');",
   "let zipCrc = 0xffffffff;",
   "for (const byte of zipBody) { zipCrc ^= byte; for (let bit = 0; bit < 8; bit += 1) zipCrc = (zipCrc & 1) ? 0xedb88320 ^ (zipCrc >>> 1) : zipCrc >>> 1; }",
   "zipCrc = (zipCrc ^ 0xffffffff) >>> 0;",
@@ -56,18 +65,27 @@ const archiveSmoke = [
   "const zip = Buffer.concat([local, zipName, zipBody, central, zipName, end]);",
   "const zipResult = await expandLogArchive({ filePath:'packaged.zip', content:zip });",
   "assert.equal(zipResult.archiveType, 'zip');",
-  "assert.equal(zipResult.snapshots[0].content.toString('utf8'), 'PACKAGED_ZIP_OK\\n');",
+  "assert.equal(zipResult.snapshots[0].content.toString('utf8'), 'PACKAGED_ZIP_OK\\nPACKAGED_ZIP_OK\\n');",
   "const { ServerOperations } = await import(pathToFileURL(process.env.AI_OPS_OPERATIONS_MODULE).href);",
   "const runtime = { withRemoteReadSession:async (_plugin, operation) => operation({statPath:async () => ({type:'file',path:'/logs/packaged.zip',canonicalPath:'/logs/packaged.zip',size:zip.length,mtime:1}),readBuffer:async () => ({canonicalPath:'/logs/packaged.zip',content:zip,size:zip.length,mtime:1})}) };",
   "const operations = new ServerOperations(runtime, {});",
-  "const searched = await operations.searchLogs({projectId:'package',environmentId:'test',pluginInstanceId:'server'}, {path:'/logs/packaged.zip',queries:['PACKAGED_ZIP_OK']});",
+  "const searched = await operations.searchLogs({projectId:'package',environmentId:'test',pluginInstanceId:'server'}, {path:'/logs/packaged.zip',queries:['PACKAGED_ZIP_OK'],maxMatches:1});",
   "assert.equal(searched.matchCount, 1); assert.equal(searched.coverage[0].sourceGrew, false); assert.ok(Array.isArray(searched.guidance));",
+  "assert.ok(searched.nextCursor); assert.equal(searched.status,'partial');",
+  "const next = await operations.searchLogs({projectId:'package',environmentId:'test',pluginInstanceId:'server'}, {path:'/logs/packaged.zip',queries:['PACKAGED_ZIP_OK'],maxMatches:1,cursor:searched.nextCursor});",
+  "assert.equal(next.matchCount,1); assert.equal(next.status,'complete'); assert.equal(next.cache.hits,1);",
+  "const { ConfirmationManager } = await import(pathToFileURL(process.env.AI_OPS_CONFIRMATION_MODULE).href);",
+  "const manager = new ConfirmationManager(); const scope = {projectId:'package',environmentId:'test',pluginInstanceId:'server',clientInstanceId:'fixture'};",
+  "const entry = manager.request(scope,'service.control',{unit:'fixture.service',action:'restart'});",
+  "const waiting = manager.status(scope,entry.requestId,1000); manager.approve(entry.requestId);",
+  "assert.equal((await waiting).status,'approved'); assert.equal(manager.approved.size,1);",
+  "await assert.rejects(manager.status({...scope,clientInstanceId:'other'},entry.requestId),{code:'CONFIRMATION_NOT_FOUND'});",
   "process.stdout.write('archive-ok');",
 ].join('\n');
 const archiveResult = await execFileAsync(executable, ['--input-type=module', '--eval', archiveSmoke], {
-  env: { ...process.env, AI_OPS_ARCHIVE_MODULE: archiveModule, AI_OPS_OPERATIONS_MODULE:path.join(path.dirname(archiveModule), 'server-operations.mjs'), ELECTRON_RUN_AS_NODE: '1' },
+  env: { ...process.env, AI_OPS_ARCHIVE_MODULE: archiveModule, AI_OPS_CONFIRMATION_MODULE:path.join(path.dirname(archiveModule), 'confirmation-manager.mjs'), AI_OPS_OPERATIONS_MODULE:path.join(path.dirname(archiveModule), 'server-operations.mjs'), ELECTRON_RUN_AS_NODE: '1' },
   timeout: 30_000,
   windowsHide: true,
 });
 assert.match(archiveResult.stdout, /archive-ok/u);
-console.log('Packaged MCP smoke passed (35 structured tools; archive runtime available)');
+console.log('Packaged MCP smoke passed (36 structured tools; archive runtime available)');

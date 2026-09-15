@@ -70,6 +70,9 @@ export class OperationGate {
       riskLevel:rule.risk,
       approvalLevel:rule.approvalLevel ?? 'standard',
       confirmationCreated:pending.deduplicated !== true,
+      status:'awaiting_user',
+      nextTool:'get_confirmation_status',
+      guidance:'使用 requestId 作为 confirmationId 查询或等待状态；仅 approved 时按原参数重试一次，不要反复提交等待中的变更。',
     });
   }
 }

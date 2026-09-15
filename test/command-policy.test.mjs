@@ -12,6 +12,10 @@ import { SshBroker } from '../src/ssh-broker.mjs';
 
 const DEFAULT_POLICY = { enabled: true, customDeny: [] };
 
+test('固定 systemctl cat 读取允许通过', () => {
+  assertAllowed("LC_ALL=C systemctl --no-pager --full cat -- 'fixture.service'");
+});
+
 function assertAllowed(command, policy = DEFAULT_POLICY) {
   const decision = evaluateCommandPolicy(command, policy);
   assert.equal(decision.allowed, true, `${command} should be allowed: ${JSON.stringify(decision)}`);

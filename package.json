@@ -27,7 +27,7 @@
     "ai-ops-mcp": "src/mcp-v2.mjs"
   },
   "scripts": {
-    "start": "corepack pnpm run build:renderer && electron .",
+    "start": "corepack pnpm run build:renderer && corepack pnpm run build:metadata && electron .",
     "install:electron-runtime": "node node_modules/electron/install.js",
     "test": "node --test test/*.test.mjs",
     "test:ui": "corepack pnpm run build:renderer && electron scripts/ui-react-foundation-smoke.cjs",
@@ -39,12 +39,13 @@
     "build:renderer": "vite build --config renderer/v2/vite.config.ts",
     "test:ui:packaged": "node scripts/packaged-ui-smoke.cjs",
     "check": "node scripts/check-syntax.mjs && corepack pnpm run check:renderer",
-    "dist": "corepack pnpm run build:renderer && electron-builder --win --publish never",
+    "dist": "corepack pnpm run build:renderer && corepack pnpm run build:metadata && electron-builder --win --publish never",
     "test:ui:plugin-matrix": "corepack pnpm run build:renderer && electron scripts/ui-react-plugin-editor-matrix-smoke.cjs",
     "test:ui:server-workspace": "corepack pnpm run build:renderer && electron scripts/ui-react-server-workspace-smoke.cjs",
-    "dist:mac": "corepack pnpm run build:renderer && node scripts/build-mac.mjs",
-    "dist:mac:arm64": "corepack pnpm run build:renderer && node scripts/build-mac.mjs arm64",
-    "dist:mac:x64": "corepack pnpm run build:renderer && node scripts/build-mac.mjs x64"
+    "dist:mac": "corepack pnpm run build:renderer && corepack pnpm run build:metadata && node scripts/build-mac.mjs",
+    "dist:mac:arm64": "corepack pnpm run build:renderer && corepack pnpm run build:metadata && node scripts/build-mac.mjs arm64",
+    "dist:mac:x64": "corepack pnpm run build:renderer && corepack pnpm run build:metadata && node scripts/build-mac.mjs x64",
+    "build:metadata": "node scripts/build-metadata.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.4",
@@ -95,7 +96,8 @@
       "!src/mcp.mjs",
       "renderer-build/v2/**/*",
       "!renderer/v2/**/*",
-      "package.json"
+      "package.json",
+      "build/runtime.json"
     ],
     "asarUnpack": [
       "node_modules/ssh2/**/*"

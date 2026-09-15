@@ -258,7 +258,7 @@ function matchesBuiltin(context) {
     }
     if (name === 'systemctl') {
       const action = args.find((arg) => !arg.startsWith('-'))?.toLowerCase();
-      const allowed = new Set(['status', 'is-active', 'is-enabled', 'show', 'list-units', 'list-unit-files', 'start', 'stop', 'restart', 'try-restart', 'reload']);
+      const allowed = new Set(['status', 'is-active', 'is-enabled', 'show', 'cat', 'list-units', 'list-unit-files', 'start', 'stop', 'restart', 'try-restart', 'reload']);
       if (action && !allowed.has(action)) {
         return ['SYSTEMCTL_ACTION', '该 systemctl 操作不在允许的部署动作范围内。'];
       }

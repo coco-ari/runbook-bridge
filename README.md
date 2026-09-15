@@ -94,7 +94,7 @@ corepack pnpm start
 
 ### macOS 源码构建与 MCP
 
-macOS 适配位于 `codex/macos-support` 分支，Apple Silicon 与 Intel 已在 GitHub Actions 的 macOS 15 Runner 上通过完整 UI、包内功能及隔离安装/覆盖升级回归，与 Windows 共用业务和界面代码。上面的已发布下载链接仍是 Windows 安装包；Mac 当前为源码开发测试版，正式签名和分发尚未完成，验证结果及系统验收边界见 [macOS 适配方案](docs/macos-adaptation.md)。
+macOS 支持已合并到 `main`，后续 Windows 与 macOS 在主分支共同开发。Apple Silicon 与 Intel 已在 GitHub Actions 的 macOS 15 Runner 上通过完整 UI、包内功能及隔离安装/覆盖升级回归，与 Windows 共用业务和界面代码。上面的已发布下载链接仍是 Windows 安装包；通过三平台 CI 验证的测试安装包保存在对应运行的 installers 归档中；Mac 正式签名和公证分发尚未完成，验证结果及系统验收边界见 [macOS 适配方案](docs/macos-adaptation.md)。
 
 在 Mac 安装 Node.js 22+、Corepack 和 Xcode Command Line Tools 后，使用仓库锁定依赖构建：
 
@@ -119,3 +119,13 @@ codex mcp get agent-ops
 macOS 数据保存在 `~/.ai-ops-tool`，密码由系统钥匙串加密。两个平台使用同一套项目/环境/插件格式，但 Windows 密文不能直接搬到 Mac 解密；迁移配置后重新填写凭据和本机私钥路径。自定义 `AI_OPS_DATA_DIR` 时，桌面与 MCP 必须使用同一个绝对路径。
 
 “系统 VPN”要求先在操作系统连接 VPN，再填写实际网卡名称（例如 Mac 的 `utunN`）。工作台会验证目标 IP 的实际出口，验证失败就拒绝连接；旧配置和 MCP 的 `windowsVpn` 标识继续兼容。Mac 使用 Command 快捷键，仍支持原有 Ctrl 快捷键。最后一个窗口关闭时，应用退出并断开连接，与 Windows 保持一致。
+
+## Codex 查询与排障效率
+
+- 日志支持 ZIP/GZIP、多关键词和有界续查。返回 `nextCursor` 时保持其他参数一致继续，结合 `status`、`conclusion`、`coverage` 判断范围；`inconclusive` 不能解释成没有异常。目录短期复用，`refresh:true` 发起最新搜索。见 [日志读取与排障](docs/mcp-log-reading.md)。
+- MySQL Schema 默认先匹配表，未命中再查字段；可指定 `searchIn`、准确 `table`、`includeIndexes:true`。元数据缓存 60 秒，业务查询仍逐次执行和校验，`refresh:true` 可更新元数据。
+- 变更待确认时，使用 `get_confirmation_status`（`waitMs` 最长 10 秒）查询当前会话状态。只有 `approved` 时原参数重试一次；`running/succeeded` 不要重发。
+- `open_environment` 返回桌面 `runtime`、`mcpRuntime` 和 MySQL 能力说明。相同版本号也能通过 `buildId`、`gitCommit`、`startedAt` 判断运行的是哪份构建。
+- 查询按插件限制并发，并设全局排队与内存预算；压缩处理在本地工作线程执行。`READ_BUSY` 表示排队繁忙，先等待再重试。
+
+职责拆分、资源预算与缓存边界见 [架构说明](docs/architecture.md)。

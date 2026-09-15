@@ -11,7 +11,7 @@ test('the legacy free-form shell MCP is absent and excluded from production pack
 });
 
 test('the V2 MCP exposes confirmed shell without restoring legacy generic calls', async () => {
-  const source = await fs.readFile('src/mcp-v2.mjs', 'utf8');
+  const source = await fs.readFile('src/mcp-v2.mjs', 'utf8') + await fs.readFile('src/mcp-tool-contract.mjs', 'utf8');
   for (const forbidden of ['execute_batch', "name: 'execute'", "name: 'upload'", "name: 'download'", 'plugin_call']) {
     assert.equal(source.includes(forbidden), false, `unexpected legacy capability: ${forbidden}`);
   }

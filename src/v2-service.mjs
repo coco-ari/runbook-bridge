@@ -7,6 +7,8 @@ import { pluginWithRunbookSources, resourceHintsFromRunbook } from './runbook-so
 import { workspaceInternals } from './workspace-store.mjs';
 import { isolateNewPluginIdentity } from './plugin-creation-identity.mjs';
 import { prepareDesktopMysqlOperation } from './desktop-mysql-operation.mjs';
+import { RUNTIME_INFO } from './package-metadata.mjs';
+import { MYSQL_READ_CAPABILITIES } from './mysql-policy.mjs';
 
 const MAX_RUNBOOK_BYTES = 64 * 1024;
 const AGENT_PLUGIN_FIELDS = {
@@ -143,6 +145,8 @@ export class V2Service {
     const resourceHintSnapshot = resourceHintsFromRunbook(opened.plugins,openedRunbook.content);
     return {
       projectId: params.projectId,
+      runtime:RUNTIME_INFO,
+      capabilities:{ mysql:MYSQL_READ_CAPABILITIES },
       environment: { environmentId: opened.environment.environmentId, name: opened.environment.name },
       runbook: { content: openedRunbook.content, hash: opened.runbook.hash, empty: opened.runbook.empty, truncated: false },
       plugins:this.publicPluginsWithAssessments(opened.plugins,connection),
@@ -284,6 +288,16 @@ export class V2Service {
     return { plugin:pluginWithRunbookSources(verified.plugin, verified.runbook.content), environment:verified.environment };
   }
 
+  async confirmationStatus(params) {
+    const scope = scopeOf(params);
+    await this.contextManager.verify(scope.projectId, scope.environmentId, scope.pluginInstanceId, params.contextToken, scope.clientInstanceId);
+    if (typeof params.confirmationId !== 'string' || !/^[a-f0-9-]{36}$/.test(params.confirmationId)) throw new AppError('INVALID_ARGUMENT', 'confirmationId 必须是工具返回的确认标识。');
+    const result = await this.confirmationManager.status(scope, params.confirmationId, params.waitMs ?? 0);
+    // 等待期间上下文或配置可能失效，返回之前再次验证绑定。
+    if (params.waitMs) await this.contextManager.verify(scope.projectId, scope.environmentId, scope.pluginInstanceId, params.contextToken, scope.clientInstanceId);
+    return { ...result, nextAction:result.status === 'approved' ? 'retry_exact_operation_once' : ['awaiting_user','consumed','running'].includes(result.status) ? 'wait' : 'stop' };
+  }
+
   assertPluginConnected(scope, plugin) {
     const runtime = this.connectionManager.snapshot(scope.projectId, scope.environmentId).plugins[scope.pluginInstanceId];
     if (runtime?.phase !== 'connected') {
@@ -392,37 +406,45 @@ export class V2Service {
       throw error;
     }
     const started = Date.now();
-    await this.workspaceStore.appendAudit(plugin.projectId, {
+    try {
+      await this.workspaceStore.appendAudit(plugin.projectId, {
       type: 'plugin-operation-started', requestId, environmentId: plugin.environmentId,
       pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, capability,
       pluginNameSnapshot: plugin.displayName, actor, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'started', confirmationId,
-    });
+      });
+    } catch (error) {
+      if (confirmationId) this.confirmationManager.executionStatus(confirmationId,'failed','AUDIT_WRITE_FAILED');
+      throw error;
+    }
+    if (confirmationId) this.confirmationManager.executionStatus(confirmationId,'running');
     if (confirmationId) this.workspaceChanged?.({ type:'confirmation-execution', status:'running', confirmationId, projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId });
     try {
       let result;
-      if (plugin.pluginType === 'server') result = await this.invokeServer(plugin, capability, operationArgs);
+      if (plugin.pluginType === 'server') result = await this.invokeServer(plugin, capability, operationArgs, scopeOf(params));
       else result = await this.pluginManager.invoke(plugin, capability, { ...operationArgs, policyApproved: true });
       const durationMs = Date.now() - started;
       const auditFailed = await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor, capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'success', durationMs, confirmationId }).then(() => false, () => true);
+      if (confirmationId) this.confirmationManager.executionStatus(confirmationId,'succeeded');
       if (confirmationId) this.workspaceChanged?.({ type:'confirmation-execution', status:'success', confirmationId, projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, durationMs });
       return auditFailed && result && typeof result === 'object' ? { ...result, auditWarning:true } : result;
     } catch (error) {
       const durationMs = Date.now() - started;
       const errorCode = toPublicError(error).code;
+      if (confirmationId) this.confirmationManager.executionStatus(confirmationId,'failed',errorCode);
       await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor, capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'error', errorCode, durationMs, confirmationId }).catch(() => undefined);
       if (confirmationId) this.workspaceChanged?.({ type:'confirmation-execution', status:'error', confirmationId, projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, durationMs, errorCode });
       throw error;
     }
   }
 
-  invokeServer(plugin, capability, args) {
+  invokeServer(plugin, capability, args, scope = {}) {
     if (capability === 'status' || capability === 'diagnostics') return this.serverOperations.runAction(plugin, args.actionId, args.parameters ?? {});
     if (capability === 'service.inspect') return this.serverOperations.inspectService(plugin, args);
     if (capability === 'journal.read') return this.serverOperations.queryJournal(plugin, args);
     if (capability === 'container.inspect') return this.serverOperations.inspectContainer(plugin, args);
     if (capability === 'logs') {
       if (args.operation === 'list') return this.serverOperations.listFiles(plugin, args);
-      if (args.operation === 'search') return this.serverOperations.searchLogs(plugin, args);
+      if (args.operation === 'search') return this.serverOperations.searchLogs(plugin, { ...args, _clientInstanceId:scope.clientInstanceId });
       return this.serverOperations.readLog(plugin, args);
     }
     if (capability === 'config') return this.serverOperations.readConfig(plugin, args);

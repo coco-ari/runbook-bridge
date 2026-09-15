@@ -99,12 +99,12 @@ test('desktop table pagination and structure stay within the configured database
   assert.deepEqual(first,{ok:true,data:{tables:[
     {name:'alpha',type:'BASE TABLE',queryable:true},
     {name:'beta',type:'BASE TABLE',queryable:true},
-  ],nextCursor:'2',truncated:true}});
+  ],nextCursor:'2',truncated:true,cache:{hit:false,ageMs:0,ttlMs:60000}}});
   const second = await h.invoke('list-tables',{limit:2,cursor:first.data.nextCursor});
   assert.equal(second.data.tables[0].name,'gamma');
   assert.equal(second.data.nextCursor,null);
   const structure = await h.invoke('describe-table',{table:'alpha'});
-  assert.deepEqual(structure.data,{table:'alpha',columns:[{name:'id',type:'int',nullable:false,key:'PRI',default:null,extra:null}]});
+  assert.deepEqual(structure.data,{table:'alpha',columns:[{name:'id',type:'int',nullable:false,key:'PRI',default:null,extra:null}],truncated:false,cache:{hit:false,ageMs:0,ttlMs:60000}});
   assert.ok(h.queries.every((query) => query.values[0] === 'example' && query.timeout === 2500));
   assert.equal(h.authorizations.length,3);
   assert.equal(h.audits.length,6);

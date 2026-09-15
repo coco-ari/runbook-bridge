@@ -2,7 +2,10 @@ import { createMysqlConnection, guardMysqlConnection, destroyMysqlConnection, en
 import { EventEmitter } from 'node:events';
 import { AppError } from './errors.mjs';
 import { validateMysqlSelect, validateMysqlExplain, applyMysqlRowLimit } from './mysql-policy.mjs';
-import { parseOffsetCursor } from './pagination-cursor.mjs';
+import { capRows } from './mysql-results.mjs';
+import { MysqlSchemaReader, normalizeSchemaKeywords } from './mysql-schema-reader.mjs';
+import { BoundedReadScheduler } from './bounded-read-scheduler.mjs';
+import { BoundedReadCache } from './bounded-read-cache.mjs';
 
 const SYSTEM_DATABASES = new Set(['information_schema', 'mysql', 'performance_schema', 'sys']);
 const MYSQL_TIMEOUT_CODES = new Set(['PROTOCOL_SEQUENCE_TIMEOUT', 'ETIMEDOUT', 'ESOCKETTIMEDOUT']);
@@ -147,59 +150,22 @@ function normalizeParams(params) {
   });
 }
 
-function normalizeSchemaKeywords(input) {
-  if (!Array.isArray(input) || input.length < 1 || input.length > 10) {
-    throw new AppError('INVALID_ARGUMENT', 'Schema 搜索需要 1 到 10 个关键词。');
-  }
-  const keywords = [];
-  const seen = new Set();
-  for (const value of input) {
-    if (typeof value !== 'string') throw new AppError('INVALID_ARGUMENT', 'Schema 搜索关键词必须是字符串。');
-    const keyword = value.trim().normalize('NFKC');
-    if (!keyword || [...keyword].length > 64 || /[\u0000-\u001f\u007f]/u.test(keyword)) {
-      throw new AppError('INVALID_ARGUMENT', 'Schema 搜索关键词不能为空、包含控制字符或超过 64 个字符。');
-    }
-    const signature = keyword.toLocaleLowerCase('zh-CN');
-    if (!seen.has(signature)) {
-      seen.add(signature);
-      keywords.push(keyword);
-    }
-  }
-  return keywords;
-}
-
-function capRows(rows, maxRows, maxBytes) {
-  if (!Array.isArray(rows)) return { rows: [], rowCount: 0, bytes: 2, truncated: false };
-  const output = [];
-  let bytes = 2;
-  let truncated = false;
-  for (const row of rows) {
-    if (output.length >= maxRows) {
-      truncated = true;
-      break;
-    }
-    const serialized = JSON.stringify(row);
-    const rowBytes = Buffer.byteLength(serialized, 'utf8') + (output.length ? 1 : 0);
-    if (rowBytes > maxBytes || bytes + rowBytes > maxBytes) {
-      if (!output.length) throw new AppError('RESULT_LIMIT_EXCEEDED', '单行查询结果超过插件字节上限。');
-      truncated = true;
-      break;
-    }
-    output.push(row);
-    bytes += rowBytes;
-  }
-  if (rows.length > output.length) truncated = true;
-  return { rows: output, rowCount: output.length, bytes, truncated };
-}
-
 export class MysqlPluginRuntime extends EventEmitter {
-  constructor(routeManager, credentialVault, { client = {createConnection:createMysqlConnection} } = {}) {
+  constructor(routeManager, credentialVault, { client = {createConnection:createMysqlConnection}, now = Date.now, metadataTtlMs = 60_000, queueTimeoutMs = 10_000 } = {}) {
     super();
     this.routeManager = routeManager;
     this.credentialVault = credentialVault;
     this.client = client;
     this.sessions = new Map();
     this.connectAttempts = new Map();
+    this.readScheduler = new BoundedReadScheduler({ maxConcurrent:4, maxQueued:32, queueTimeoutMs });
+    this.metadataCache = new BoundedReadCache({ now, ttlMs:metadataTtlMs });
+    this.sessionIds = new WeakMap();
+    this.nextSessionId = 0;
+    this.schemaReader = new MysqlSchemaReader({
+      querySession:(plugin, request, options) => this.querySession(plugin, request, { ...options, phase:'metadata' }),
+      assertBaseTables:(plugin, tables) => this.assertBaseTables(plugin, tables),
+    });
   }
 
   status(plugin) {
@@ -230,17 +196,35 @@ export class MysqlPluginRuntime extends EventEmitter {
     await this.routeManager.closeRelay(plugin, session.routeGeneration).catch(() => undefined);
   }
 
-  async querySession(plugin, request, { invalidateOnAnyError = false, fallbackMessage } = {}) {
+  async querySession(plugin, request, { invalidateOnAnyError = false, fallbackMessage, phase = 'query' } = {}) {
     const session = this.require(plugin);
-    try {
-      return await session.connection.query(request);
-    } catch (error) {
-      const mapped = mysqlError(error, fallbackMessage);
-      if (invalidateOnAnyError || invalidatesSession(error) || invalidatesSession(mapped)) {
-        await this.invalidateSession(plugin, session, mapped);
+    return this.readScheduler.run(key(plugin), 1, async () => {
+      if (this.require(plugin) !== session) throw new AppError('PLUGIN_RECONNECTING', '排队期间数据库连接已更新，请重新发起查询。', { phase:'queue' });
+      try {
+        return await session.connection.query(request);
+      } catch (error) {
+        const mapped = mysqlError(error, fallbackMessage);
+        if (mapped.code === 'DATABASE_QUERY_TIMEOUT') {
+          mapped.details = { phase, timeoutMs:request.timeout, retryable:false, guidance:phase === 'metadata' ? '指定准确表名，或先仅搜索表名；避免反复扫描全库字段。' : '先调用 mysql_explain 检查执行计划，缩小时间范围或筛选条件后再查询。' };
+        }
+        if (invalidateOnAnyError || invalidatesSession(error) || invalidatesSession(mapped)) {
+          await this.invalidateSession(plugin, session, mapped);
+        }
+        throw mapped;
       }
-      throw mapped;
-    }
+    });
+  }
+
+  async readMetadata(plugin, signature, load, { refresh = false } = {}) {
+    if (typeof refresh !== 'boolean') throw new AppError('INVALID_ARGUMENT', 'refresh 必须是布尔值。');
+    const session = this.sessions.get(key(plugin));
+    if (!session) return load();
+    this.require(plugin);
+    if (!this.sessionIds.has(session)) this.sessionIds.set(session, ++this.nextSessionId);
+    const cacheKey = JSON.stringify([key(plugin), this.sessionIds.get(session), plugin.revision, plugin.target.database, plugin.limits, signature]);
+    const cached = await this.metadataCache.read(cacheKey, load, { refresh });
+    if (this.require(plugin) !== session) throw new AppError('PLUGIN_RECONNECTING', '元数据读取期间连接已更新，请重新查询。');
+    return { ...cached.value, cache:{ hit:cached.hit, ageMs:cached.ageMs, ttlMs:this.metadataCache.ttlMs } };
   }
 
   async connect(plugin, suppliedSecrets = {}, { signal = null, attemptToken = null, validationPurpose = null } = {}) {
@@ -414,7 +398,7 @@ export class MysqlPluginRuntime extends EventEmitter {
       sql: `SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME IN (${placeholders})`,
       timeout: plugin.limits.timeoutMs,
       values: [plugin.target.database, ...tables],
-    }, { fallbackMessage:'MySQL 表访问检查失败。' });
+    }, { fallbackMessage:'MySQL 表访问检查失败。', phase:'metadata' });
     const types = new Map(rows.map((row) => [String(row.TABLE_NAME), String(row.TABLE_TYPE)]));
     for (const table of tables) {
       const type = types.get(table);
@@ -423,88 +407,17 @@ export class MysqlPluginRuntime extends EventEmitter {
     }
   }
 
-  async listTables(plugin, { cursor, limit = 100 } = {}) {
-    const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 200);
-    const offset = parseOffsetCursor(cursor);
-    const [rows] = await this.querySession(plugin, {
-      sql: 'SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME LIMIT ? OFFSET ?',
-      timeout: plugin.limits.timeoutMs,
-      values: [plugin.target.database, safeLimit + 1, offset],
-    }, { fallbackMessage:'MySQL 数据表列表读取失败。' });
-    const truncated = rows.length > safeLimit;
-    return {
-      tables: rows.slice(0, safeLimit).map((row) => ({ name: row.TABLE_NAME, type: row.TABLE_TYPE, queryable: row.TABLE_TYPE === 'BASE TABLE' })),
-      nextCursor: truncated ? String(offset + safeLimit) : null,
-      truncated,
-    };
+
+  listTables(plugin, options = {}) {
+    return this.readMetadata(plugin, ['tables', { ...options, refresh:undefined }], () => this.schemaReader.listTables(plugin, options), options);
   }
 
-  async searchSchema(plugin, { keywords: inputKeywords, limit = 50 } = {}) {
-    const keywords = normalizeSchemaKeywords(inputKeywords);
-    const safeLimit = limit;
-    if (!Number.isSafeInteger(safeLimit) || safeLimit < 1 || safeLimit > 100) {
-      throw new AppError('INVALID_ARGUMENT', 'Schema 搜索结果上限必须是 1 到 100 之间的整数。');
-    }
-    const tablePredicate = keywords
-      .map(() => "(INSTR(LOWER(t.TABLE_NAME), LOWER(?)) > 0 OR INSTR(LOWER(COALESCE(t.TABLE_COMMENT, '')), LOWER(?)) > 0)")
-      .join(' OR ');
-    const columnPredicate = keywords
-      .map(() => "(INSTR(LOWER(c.COLUMN_NAME), LOWER(?)) > 0 OR INSTR(LOWER(COALESCE(c.COLUMN_COMMENT, '')), LOWER(?)) > 0)")
-      .join(' OR ');
-    const [rows] = await this.querySession(plugin, {
-      sql: `SELECT 'table' AS match_kind, t.TABLE_NAME AS table_name, t.TABLE_COMMENT AS table_comment,
-        NULL AS column_name, NULL AS column_type, NULL AS column_comment, NULL AS column_key
-        FROM information_schema.TABLES t
-        WHERE t.TABLE_SCHEMA = ? AND t.TABLE_TYPE = 'BASE TABLE' AND (${tablePredicate})
-        UNION ALL
-        SELECT 'column' AS match_kind, c.TABLE_NAME AS table_name, t.TABLE_COMMENT AS table_comment,
-        c.COLUMN_NAME AS column_name, c.COLUMN_TYPE AS column_type, c.COLUMN_COMMENT AS column_comment, c.COLUMN_KEY AS column_key
-        FROM information_schema.COLUMNS c
-        INNER JOIN information_schema.TABLES t ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME
-        WHERE c.TABLE_SCHEMA = ? AND t.TABLE_TYPE = 'BASE TABLE' AND (${columnPredicate})
-        ORDER BY table_name, match_kind DESC, column_name
-        LIMIT ?`,
-      timeout: plugin.limits.timeoutMs,
-      values: [
-        plugin.target.database,
-        ...keywords.flatMap((keyword) => [keyword, keyword]),
-        plugin.target.database,
-        ...keywords.flatMap((keyword) => [keyword, keyword]),
-        safeLimit + 1,
-      ],
-    }, { fallbackMessage:'MySQL Schema 搜索失败。' });
-    const matches = rows.slice(0, safeLimit).map((row) => ({
-      kind:row.match_kind,
-      table:row.table_name,
-      tableComment:row.table_comment || null,
-      ...(row.match_kind === 'column' ? {column:{
-        name:row.column_name,
-        type:row.column_type,
-        key:row.column_key || null,
-        comment:row.column_comment || null,
-      }} : {}),
-    }));
-    const capped = capRows(matches, safeLimit, plugin.limits.maxBytes);
-    return {
-      keywords,
-      matches:capped.rows,
-      matchCount:capped.rowCount,
-      bytes:capped.bytes,
-      truncated:rows.length > safeLimit || capped.truncated,
-      limitsApplied:{maxMatches:safeLimit,maxBytes:plugin.limits.maxBytes,timeoutMs:plugin.limits.timeoutMs},
-    };
+  searchSchema(plugin, options = {}) {
+    return this.readMetadata(plugin, ['search', { ...options, refresh:undefined }], () => this.schemaReader.searchSchema(plugin, options), options);
   }
 
-  async describeTable(plugin, tableName) {
-    const table = String(tableName ?? '').trim();
-    if (!table || table.length > 128 || /[\u0000-\u001f\u007f]/.test(table)) throw new AppError('INVALID_ARGUMENT', '表名无效。');
-    await this.assertBaseTables(plugin, [table]);
-    const [rows] = await this.querySession(plugin, {
-      sql: 'SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION',
-      timeout: plugin.limits.timeoutMs,
-      values: [plugin.target.database, table],
-    }, { fallbackMessage:'MySQL 表结构读取失败。' });
-    return { table, columns: rows.map((row) => ({ name: row.COLUMN_NAME, type: row.COLUMN_TYPE, nullable: row.IS_NULLABLE === 'YES', key: row.COLUMN_KEY || null, default: row.COLUMN_DEFAULT, extra: row.EXTRA || null })) };
+  describeTable(plugin, table, options = {}) {
+    return this.readMetadata(plugin, ['describe', table, { ...options, refresh:undefined }], () => this.schemaReader.describeTable(plugin, table, options), options);
   }
 
   async queryReadonly(plugin, sql, params) {
@@ -539,6 +452,7 @@ export class MysqlPluginRuntime extends EventEmitter {
   }
 
   async closeAll() {
+    this.metadataCache.clear();
     const entries = [...this.sessions.entries()];
     this.sessions.clear();
     await Promise.all(entries.map(async ([, session]) => { session.closing = true; await endMysqlConnection(session.connection); }));

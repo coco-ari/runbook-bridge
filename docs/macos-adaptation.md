@@ -2,7 +2,7 @@
 
 ## 目标与边界
 
-在 `codex/macos-support` 分支开发，完成后合回主线。Windows 与 macOS 共用业务代码、React Renderer、IPC、MCP 和安全策略；不建立独立 Mac 界面，不删减 VPN、终端、数据库、文件传输或 Agent 功能。
+`codex/macos-support` 已合入 `main`，后续在主分支共同开发。Windows 与 macOS 共用业务代码、React Renderer、IPC、MCP 和安全策略；不建立独立 Mac 界面，不删减 VPN、终端、数据库、文件传输或 Agent 功能。
 
 “功能、界面 1:1”指相同数据、相同内容区尺寸下的信息结构、页面布局、主题、操作入口、状态反馈和业务结果一致。系统窗口边框、文件选择器、钥匙串授权框以及操作系统字体栅格化由平台提供；Mac 使用 Command 快捷键，同时保留已有 Ctrl 支持。以上系统差异不允许改变内容区布局或缺失操作。Windows 行为必须回归通过。
 
@@ -45,7 +45,7 @@
 
 - 保留 `dist` 的 Windows 命令兼容性，增加显式 `dist:mac`、`dist:mac:arm64`、`dist:mac:x64`。继续使用已有 electron-builder，不增加生产依赖。
 - 包定位器识别 Windows 可执行文件和 Mac `.app`/`Contents/MacOS/<binary>`，由 `Contents/Resources/app.asar` 定位 Mac 源码；路径含空格及中文必须通过。
-- 包验证仍检查源码和 Renderer 哈希、源文件排除、全部 35 个 MCP 工具及真实本机协议驱动，不降低既有断言。
+- 包验证仍检查源码和 Renderer 哈希、源文件排除、全部 36 个 MCP 工具及真实本机协议驱动，不降低既有断言。
 - `ELECTRON_RUN_AS_NODE=1` 是现有 MCP 启动契约，签名配置不得关闭对应 Fuse。文档使用实际安装的 `.app` 内可执行文件及 `mcp-v2.mjs` 路径。
 - `ssh2` 可选原生加密扩展需要检查目标架构和 Electron ABI；不能把 Windows 的 `node_modules` 复制到 Mac。优先使用现有 JavaScript 回退并以包内真实 SSH 协议测试确认。
 - 开发构建与可公开分发的签名构建区分记录。正式分发需一致 Developer ID 签名、Hardened Runtime、最小必要 entitlements、Apple 公证及 stapling；Apple 账户和证书仅放 CI secret，不进入源码。
@@ -60,7 +60,7 @@
 | VPN | IPv4/IPv6、正确路由、错误出口、缺失网卡、断线、系统选路变化；Server 与数据库拒绝未验证连接 |
 | 服务器工作区 | 终端输入/输出/尺寸/关闭、文件浏览/读取/上传审批/覆盖/取消和状态隔离 |
 | 数据库工作区 | 多表标签、查询/分页/筛选/排序、补全/拖表、复制、MySQL 只读边界及 Redis 范围 |
-| Agent | 35 个 MCP 工具、stdio、Broker 重启、短期上下文、断开拒绝、单次确认绑定、审计 |
+| Agent | 36 个 MCP 工具、stdio、Broker 重启、短期上下文、断开拒绝、单次确认绑定、审计 |
 | UI 一致性 | 六组完整 Electron smoke，浅/深色、固定内容区尺寸、Command/Ctrl、焦点/弹层、中文路径和输入法 |
 | 本地安全 | Keychain 保存/重启解密/拒绝授权/升级解密、Socket/Token 权限与清理，不触碰真实用户数据 |
 | 安装与升级 | DMG 挂载、拷贝安装、启动、退出、覆盖安装、数据/密文/布局保持、MCP 仍可用、移除应用保留数据 |
@@ -86,7 +86,7 @@
 - 已修正实际 Mac 草稿确认框延迟抢焦点问题、自动化 Command+A 编辑命令、临时提示遮挡点击，以及主线原有服务器虚拟列表 smoke 定位问题；没有减少功能或放宽安全策略。
 - 当前产物为临时签名的开发测试包。仓库未配置 Apple 签名和公证 secrets，正式分发会明确失败；尚未发布 Mac Release。
 - 自动化结果不替代真实 VPN 断线/出口切换、Finder 启动的系统 SSH Agent、中文输入法、用户拒绝钥匙串授权、不同版本签名升级及下载后的 Gatekeeper 首启验收。这些仍需具备相应环境后完成。
-- 后续提交的结果见 [适配分支 CI](https://github.com/coco-ari/runbook-bridge/actions/workflows/ci.yml?query=branch%3Acodex%2Fmacos-support)。安装包上传等待用户单独授权；截图归档不包含真实运维数据。
+- 后续提交的结果见 [适配分支 CI](https://github.com/coco-ari/runbook-bridge/actions/workflows/ci.yml?query=branch%3Acodex%2Fmacos-support)。当前主线 CI 在全部验证通过后保存 installers 测试安装包，未发布正式 Release；截图归档不包含真实运维数据。
 
 ## 官方参考
 

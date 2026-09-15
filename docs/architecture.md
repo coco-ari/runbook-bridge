@@ -9,7 +9,7 @@
 | Electron 主进程 | `src/main.mjs` 组合本地 Broker、存储、凭据、运行时、连接管理器和 IPC，并管理应用生命周期 |
 | 桌面界面 | `renderer/v2/index.html` 与 `renderer/v2/src/` 是唯一 React、TypeScript、Vite 源入口；构建结果为 `renderer-build/v2/` |
 | 桌面 API | `src/preload.cjs` 提供显式桥接；`src/ipc-v2.mjs` 校验并分发桌面请求 |
-| MCP | `src/mcp-v2.mjs` 提供工具 Schema，经 `src/broker-client.mjs` 和 `src/broker-server.mjs` 访问运行中的桌面应用 |
+| MCP | `src/mcp-v2.mjs` 提供传输，`src/mcp-tool-contract.mjs` 集中管理工具 Schema 与指引，经 `src/broker-client.mjs` 和 `src/broker-server.mjs` 访问运行中的桌面应用 |
 | 共享服务 | `src/v2-service.mjs` 处理作用域、上下文、能力策略、确认和运行时调用 |
 | 插件运行时 | Server、MySQL、Redis 的连接与操作分别由对应 runtime 和 operation 模块实现 |
 
@@ -78,3 +78,26 @@ Electron 只加载构建后的 `renderer-build/v2/index.html`。生成目录不�
 | Broker pipe 前缀 | `ai-ops-tool-*` |
 
 这些名称属于不同集成层，不能作为清理顺带统一。更名必须设计安装升级、数据目录、MCP 注册与管道协调的兼容迁移，并具备相应回归。
+
+## 查询职责与资源预算
+
+| 模块 | 职责 |
+| --- | --- |
+| `server-operations.mjs` | Server 操作门面、固定命令、普通文件操作和变更前置条件 |
+| `server-log-search.mjs` / `log-search-cursors.mjs` | 日志发现编排、输入快照复用、覆盖范围、续查和证据状态 |
+| `server-file-discovery.mjs` | 共享有界目录发现，最多并发 2 个目录、200 个目录/10000 个条目、1000 个候选文件 |
+| `server-read-utils.mjs` / `log-search-limits.mjs` | 路径/文件身份检查与日志参数上限；工具 Schema 和执行端共用上限 |
+| `log-processor.mjs` / `log-processing-worker.mjs` | 最多 2 个本地工作线程执行解压和逐行匹配，返回有界匹配及上下文；空闲释放，不阻塞 Electron 主线程 |
+| `mysql-plugin-runtime.mjs` | 连接、排队、会话失效与执行；业务 SELECT 不缓存 |
+| `mysql-schema-reader.mjs` / `mysql-results.mjs` | 固定库元数据查询和有界结果序列化 |
+| `bounded-read-scheduler.mjs` / `bounded-read-cache.mjs` | 共享并发/排队预算、短期 LRU、合并相同进行中读取 |
+| `confirmation-status-store.mjs` | 仅保存控制状态，提供最多 10 秒的等待；不批准或重复执行操作 |
+| `scripts/build-metadata.mjs` / `package-metadata.mjs` | 生成源码指纹、提交和构建时间；包内及 MCP/Broker 返回真实运行信息 |
+
+MySQL 同插件串行、全局最多 4 个查询。缓存仅用于展示元数据，最长 60 秒/4 MiB/128 项，与实际连接对象、插件版本、固定库和读取预算绑定；业务查询的基础表/作用域校验逐次执行。字段搜索默认先查表，准确表名可进一步收窄信息表扫描；索引按需读取且共享结果字节预算。
+
+Server 读取全局最多 4 个、同插件最多 2 个；下载全局最多 2 个、同插件 1 个。日志额外限制全局 2 个、同插件 1 个，按 `2×输入预算 + 3×展开预算` 预留最多 512 MiB 调度额度。这是准入估算，不是进程 RSS 硬上限；线程有独立堆上限，原始快照最多 64 MiB、上下文输出最多 2 MiB。归档压缩输入 64 MiB、展开 128 MiB、128 条目和 100 倍压缩比不变。普通文件搜索每批行主动让出事件循环。
+
+缓存不是授权，不省略当前上下文、连接和文件身份检查，不存应用凭据或业务查询结果。目录缓存 15 秒，日志快照/游标 5 分钟。确认历史最多 1024 条/15 分钟，只保存作用域、能力、状态及时间；最多 32 个等待，不包含参数、批准令牌和输出。调用状态接口前后验证上下文，原有单次确认消费仍由操作门禁执行。
+
+Windows、macOS arm64/x64 共用 `main`。CI 在三种原生 Runner 上执行检查、单元/UI 测试、打包、包内测试和隔离安装升级验证，通过后保存测试安装包；不自动发布 Release。`build/runtime.json` 是生成物，源码模式明确标为 `development`，避免读取旧生成物伪装成包内构建。

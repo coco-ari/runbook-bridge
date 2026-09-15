@@ -3,6 +3,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { brokerEndpoint } from './paths.mjs';
 import { toPublicError, AppError } from './errors.mjs';
+import { RUNTIME_INFO } from './package-metadata.mjs';
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 
@@ -127,7 +128,7 @@ export class BrokerServer {
     if (method.startsWith('v2.')) return this.dispatchV2(method.slice(3), params);
     switch (method) {
       case 'info':
-        return { version: this.appVersion, protocolVersion: 2 };
+        return { ...RUNTIME_INFO, version:this.appVersion, protocolVersion:2 };
       default:
         throw new AppError('METHOD_NOT_FOUND', '旧版 Broker 操作已停用，请重新加载 Agent 运维工作台 MCP。');
     }
@@ -139,6 +140,7 @@ export class BrokerServer {
       case 'listProjects': return this.v2Service.listProjects(params);
       case 'listEnvironments': return this.v2Service.listEnvironments(params);
       case 'openEnvironment': return this.v2Service.openEnvironment(params);
+      case 'confirmationStatus': return this.v2Service.confirmationStatus(params);
       case 'addPlugin': return this.v2Service.addPlugin(params);
       case 'listEnvironmentPlugins': return this.v2Service.listEnvironmentPlugins(params);
       case 'readRunbook': return this.v2Service.readRunbook(params);
@@ -164,6 +166,8 @@ export class BrokerServer {
         maxDepth:params.maxDepth,
         maxFiles:params.maxFiles,
         maxMatches:params.maxMatches,
+        cursor:params.cursor,
+        refresh:params.refresh,
         maxLines:params.maxLines,
         beforeLines:params.beforeLines,
         afterLines:params.afterLines,
@@ -175,7 +179,7 @@ export class BrokerServer {
       case 'serverReadConfig': return this.v2Service.invoke(params, 'config', { fileId: params.fileId, cursor: params.cursor, maxBytes: params.maxBytes });
       case 'serverStat': return this.v2Service.invoke(params, 'fs.stat', { path:params.path });
       case 'serverListDirectory': return this.v2Service.invoke(params, 'fs.list', { path:params.path, cursor:params.cursor, limit:params.limit });
-      case 'serverFindFiles': return this.v2Service.invoke(params, 'fs.find', { path:params.path, pattern:params.pattern, maxDepth:params.maxDepth, maxResults:params.maxResults });
+      case 'serverFindFiles': return this.v2Service.invoke(params, 'fs.find', { path:params.path, pattern:params.pattern, maxDepth:params.maxDepth, maxResults:params.maxResults, refresh:params.refresh });
       case 'serverReadFile': return this.v2Service.invoke(params, 'fs.read', { path:params.path, cursor:params.cursor, maxBytes:params.maxBytes, tail:params.tail });
       case 'serverSearchFiles': return this.v2Service.invoke(params, 'fs.search', { path:params.path, pattern:params.pattern, contains:params.contains, maxDepth:params.maxDepth, maxFiles:params.maxFiles, maxMatches:params.maxMatches, maxScanBytes:params.maxScanBytes });
       case 'serverDownloadFile': return params.path
@@ -187,9 +191,9 @@ export class BrokerServer {
       case 'serverDeletePath': return this.v2Service.invoke(params, 'fs.delete', { path:params.path });
       case 'serverControlService': return this.v2Service.invoke(params, 'service.control', { action:params.action, unit:params.unit });
       case 'serverExecuteShell': return this.v2Service.invoke(params, 'shell.execute', { command:params.command, workingDirectory:params.workingDirectory });
-      case 'mysqlListTables': return this.v2Service.invoke(params, 'describe', { cursor: params.cursor, limit: params.limit });
-      case 'mysqlSearchSchema': return this.v2Service.invoke(params, 'describe', { operation:'search', keywords:params.keywords, limit:params.limit });
-      case 'mysqlDescribeTable': return this.v2Service.invoke(params, 'describe', { table: params.table });
+      case 'mysqlListTables': return this.v2Service.invoke(params, 'describe', { cursor:params.cursor, limit:params.limit, refresh:params.refresh });
+      case 'mysqlSearchSchema': return this.v2Service.invoke(params, 'describe', { operation:'search', keywords:params.keywords, limit:params.limit, table:params.table, searchIn:params.searchIn, refresh:params.refresh });
+      case 'mysqlDescribeTable': return this.v2Service.invoke(params, 'describe', { table:params.table, includeIndexes:params.includeIndexes, refresh:params.refresh });
       case 'mysqlQueryReadonly': return this.v2Service.invoke(params, 'select', { sql: params.sql, params: params.params });
       case 'mysqlExplain': return this.v2Service.invoke(params, 'explain', { sql: params.sql, params: params.params });
       case 'redisScan': return this.v2Service.invoke(params, 'scan', { patternId: params.patternId, cursor: params.cursor, limit: params.limit });

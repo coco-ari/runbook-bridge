@@ -4,7 +4,7 @@
 
 ## 环境与数据边界
 
-- 使用 Windows 10/11、Node.js 22+ 和 `package.json` 中固定的 pnpm 版本，通过 Corepack 运行。
+- 使用 Windows 10/11 或受支持的 macOS、Node.js 22+ 和 `package.json` 中固定的 pnpm 版本，通过 Corepack 运行。
 - 测试使用临时数据目录、合成数据、模拟运行时或本机协议测试服务，不连接真实基础设施，不读取用户的生产配置和凭据。
 - Electron UI 组按顺序执行，避免原生窗口抢焦点影响鼠标、键盘和弹层验证。
 - `pnpm start` 只用于人工桌面验证，不属于隔离自动测试，不应为了验收连接真实生产资源。
@@ -124,3 +124,11 @@ spctl --assess --type execute --verbose "dist/mac-arm64/Agent运维工作台.app
 ```
 
 CI 原生运行 Windows x64、Mac arm64、Mac x64，三端均运行六组 UI、包检查和隔离安装/覆盖升级回归。任一 UI 组失败仍使 CI 失败，同时收集其他组结果。Release 在三平台检查全部通过后由单个任务发布附件和 SHA-256。实际 Mac VPN 出口切换、Finder 启动的 SSH Agent、钥匙串拒绝授权与签名升级、中文输入法、下载后的首次启动仍须系统验收；不得以 mock 或 workflow 文件存在代替通过证据。
+
+## MCP 查询优化回归
+
+- `test/server-operations-v2.test.mjs`：日志完整行续查、ZIP 跨成员匹配分页、缓存减少传输、游标隔离、失败读取预算、动态源与路径边界。
+- `test/bounded-reads.test.mjs`、`test/log-processor.test.mjs`、`test/mysql-read-efficiency.test.mjs`、`test/sftp-download-efficiency.test.mjs`：并发/队列、主线程响应、元数据复用及授权分离、传输进度和清理。
+- `test/operation-gate.test.mjs`：确认状态等待、客户端隔离和单次消费；`test/build-metadata.test.mjs`：构建指纹。
+- 包内 `verify-package.mjs` 核对源码、Renderer、构建指纹和 36 个工具；`packaged-mcp-smoke.mjs` 在实际 Electron 包中运行工作线程归档续查及确认状态回归。
+- 三平台 CI 验证完成后保存 `installers-win32-x64`、`installers-darwin-arm64`、`installers-darwin-x64`，同时包含 `build/runtime.json`。以提交号定位 CI 运行，不以相同版本号的旧包作为本次证据。

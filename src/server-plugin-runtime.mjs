@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { SshBroker } from './ssh-broker.mjs';
 import { createProxySocket } from './proxy.mjs';
 import { AppError } from './errors.mjs';
+import { BoundedReadScheduler } from './bounded-read-scheduler.mjs';
 
 function scopeKey(projectId, environmentId, pluginInstanceId) {
   return `${projectId}/${environmentId}/${pluginInstanceId}`;
@@ -121,6 +122,8 @@ export class ServerPluginRuntime extends EventEmitter {
     this.adapter = new ScopedServerStoreAdapter(workspaceStore);
     this.broker = new SshBroker(this.adapter);
     this.connectAttempts = new Map();
+    this.readScheduler = new BoundedReadScheduler({ maxConcurrent:4, maxPerKey:2 });
+    this.downloadScheduler = new BoundedReadScheduler({ maxConcurrent:2 });
     this.broker.setLifecycleHandler((event) => this.emit('lifecycle', { ...event, ...parseScopeKey(event.projectId), resourceKey: event.projectId }));
   }
 
@@ -271,7 +274,7 @@ export class ServerPluginRuntime extends EventEmitter {
   }
 
   listRemoteDirectory(plugin, remotePath, options = {}) {
-    return this.broker.listRemoteDirectory(this.key(plugin), remotePath, options);
+    return this.boundedRead(plugin, () => this.broker.listRemoteDirectory(this.key(plugin), remotePath, options));
   }
 
   withWorkspaceReadSession(plugin, operation, options = {}) {
@@ -279,23 +282,37 @@ export class ServerPluginRuntime extends EventEmitter {
   }
 
   withRemoteReadSession(plugin, operation) {
-    return this.broker.withRemoteReadSession(this.key(plugin), operation);
+    return this.boundedRead(plugin, () => this.broker.withRemoteReadSession(this.key(plugin), operation));
   }
 
   statRemotePath(plugin, remotePath) {
-    return this.broker.statRemotePath(this.key(plugin), remotePath);
+    return this.boundedRead(plugin, () => this.broker.statRemotePath(this.key(plugin), remotePath));
   }
 
   readRemoteRange(plugin, remotePath, start, maxBytes, options = {}) {
-    return this.broker.readRemoteRange(this.key(plugin), remotePath, start, maxBytes, options);
+    return this.boundedRead(plugin, () => this.broker.readRemoteRange(this.key(plugin), remotePath, start, maxBytes, options));
   }
 
   readRemoteBuffer(plugin, remotePath, start, maxBytes, options = {}) {
-    return this.broker.readRemoteBuffer(this.key(plugin), remotePath, start, maxBytes, options);
+    return this.boundedRead(plugin, () => this.broker.readRemoteBuffer(this.key(plugin), remotePath, start, maxBytes, options));
   }
 
   downloadRemoteFile(plugin, remotePath, localPath, maxBytes) {
-    return this.broker.downloadRemoteFile(this.key(plugin), remotePath, localPath, maxBytes);
+    const resource = this.key(plugin);
+    const session = this.broker.requireSession(resource);
+    return this.downloadScheduler.run(resource,1,() => this.boundedRead(plugin, () => {
+      if (this.broker.requireSession(resource) !== session) throw new AppError('PLUGIN_RECONNECTING', '等待下载期间连接已更新，请重新查询。');
+      return this.broker.downloadRemoteFile(resource, remotePath, localPath, maxBytes);
+    }));
+  }
+
+  boundedRead(plugin, operation) {
+    const resource = this.key(plugin);
+    const session = this.broker.requireSession(resource);
+    return this.readScheduler.run(resource,1,() => {
+      if (this.broker.requireSession(resource) !== session) throw new AppError('PLUGIN_RECONNECTING', '等待读取期间连接已更新，请重新查询。');
+      return operation();
+    });
   }
 
   uploadRemoteFile(plugin, localPath, remotePath, precondition, options = {}) {

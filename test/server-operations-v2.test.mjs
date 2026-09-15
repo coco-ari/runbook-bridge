@@ -5,6 +5,54 @@ import { ServerOperations } from '../src/server-operations.mjs';
 
 const plugin={projectId:'p1',environmentId:'e1',pluginInstanceId:'s1',pluginType:'server',limits:{maxBytes:65536},actions:[{actionId:'service.status',serviceId:'orders',displayName:'Orders',unit:'orders.service'},{actionId:'filesystem.usage',mountId:'data',displayName:'Data',mountPath:'/srv/data'}],sources:[]};
 
+test('日志参数错误返回合法范围且不触发远端请求', async () => {
+  const operations = new ServerOperations({},{});
+  await assert.rejects(operations.searchLogs(plugin,{path:'/logs/app.log',queries:['fixture'],maxScanBytes:1}), error => error.code === 'INVALID_ARGUMENT' && error.details.field === 'maxScanBytes' && error.details.suggestedValue === 65536);
+});
+
+test('续查游标拒绝插件版本变化和过期状态', async () => {
+  let now = 1000;
+  const {runtime} = createRemoteLogRuntime({files:{'/logs/app.log':'hit one\nhit two\n'}});
+  const operations = new ServerOperations(runtime,{}, {now:() => now});
+  const args = {path:'/logs/app.log',queries:['hit'],maxMatches:1};
+  const first = await operations.searchLogs(plugin,args);
+  await assert.rejects(operations.searchLogs({...plugin,revision:2},{...args,cursor:first.nextCursor}),{code:'LOG_CURSOR_MISMATCH'});
+  now += 300001;
+  await assert.rejects(operations.searchLogs(plugin,{...args,cursor:first.nextCursor}),{code:'LOG_CURSOR_EXPIRED'});
+});
+
+test('多文件读取中途变化也消耗扫描预算并保留未读文件', async () => {
+  let fixture;
+  const contents = 'fixture'.padEnd(40000,'x');
+  fixture = createRemoteLogRuntime({
+    files:{'/logs/a.log':contents,'/logs/b.log':contents,'/logs/c.log':contents},
+    directories:{'/logs':['a','b','c'].map(name => remoteFile(name+'.log','/logs/'+name+'.log',contents))},
+    beforeRead:({remotePath,maxBytes}) => { if (maxBytes > 4) fixture.updateFile(remotePath,{content:contents,mtime:2}); },
+  });
+  const operations = new ServerOperations(fixture.runtime,{});
+  const result = await operations.searchLogs(plugin,{path:'/logs',queries:['fixture'],maxScanBytes:65536});
+  assert.ok(result.scannedBytes <= 65536);
+  assert.ok(fixture.calls.reads.reduce((sum,read) => sum + read.maxBytes,0) <= 65536);
+  assert.equal(result.status,'partial');
+  assert.equal(result.conclusion,'inconclusive');
+  assert.ok(result.nextCursor);
+  assert.ok(!fixture.calls.reads.some(read => read.remotePath === '/logs/c.log'));
+});
+
+test('目录缓存新搜索重新核对文件元数据，显式刷新重新列目录', async () => {
+  const entries = [remoteFile('a.log','/logs/a.log','old\n')];
+  const fixture = createRemoteLogRuntime({files:{'/logs/a.log':'old\n'},directories:{'/logs':entries}});
+  const operations = new ServerOperations(fixture.runtime,{});
+  const args = {path:'/logs',queries:['new']};
+  assert.equal((await operations.searchLogs(plugin,args)).matchCount,0);
+  fixture.updateFile('/logs/a.log',{content:'new\n',mtime:2});
+  assert.equal((await operations.searchLogs(plugin,args)).matchCount,1);
+  assert.equal(fixture.calls.lists.length,1);
+  entries[0].mtime = 2;
+  await operations.searchLogs(plugin,{...args,refresh:true});
+  assert.equal(fixture.calls.lists.length,2);
+});
+
 const CRC32_TABLE = Array.from({ length:256 }, (_, index) => {
   let value=index;
   for(let bit=0;bit<8;bit+=1) value=(value&1)===1 ? 0xedb88320^(value>>>1) : value>>>1;
@@ -228,6 +276,78 @@ test('file search shares one remote read session across discovery and reads', as
   assert.equal(result.matches[0].text,'ERROR failed');
 });
 
+test('目录续查不重复发现文件，按页完成剩余文件', async () => {
+  const files = Object.fromEntries(['a','b','c'].map((name,index) => [`/logs/${name}.log`,{content:Buffer.from(`needle ${name}\n`),mtime:3-index}]));
+  const directories = {'/logs':Object.entries(files).map(([file,value]) => remoteFile(file.split('/').at(-1),file,value.content,value.mtime))};
+  const {runtime,calls} = createRemoteLogRuntime({files,directories});
+  const operations = new ServerOperations(runtime,{});
+  const args = {path:'/logs',queries:['needle'],maxFiles:1,maxScanBytes:65536};
+  const first = await operations.searchLogs(plugin,args);
+  const second = await operations.searchLogs(plugin,{...args,cursor:first.nextCursor});
+  const third = await operations.searchLogs(plugin,{...args,cursor:second.nextCursor});
+  assert.equal(first.status,'partial');
+  assert.equal(third.status,'complete');
+  assert.equal(third.nextCursor,null);
+  assert.equal(third.progress.filesFinished,3);
+  assert.equal(third.progress.matchedSoFar,3);
+  assert.deepEqual(calls.lists,['/logs']);
+  assert.equal(calls.reads.length,3);
+});
+
+test('普通日志按完整行向前续查，不漏掉窗口边界和历史命中', async () => {
+  const lines = Array.from({length:7000},(_,index) => `MARK-${index} 中文日志 ${'x'.repeat(13)}\n`);
+  const {runtime} = createRemoteLogRuntime({files:{'/logs/large.log':{content:Buffer.from(lines.join('')),mtime:1}}});
+  const operations = new ServerOperations(runtime,{});
+  const args = {path:'/logs/large.log',queries:['MARK-'],maxMatches:500,maxScanBytes:65536,maxExpandedBytes:65536,beforeLines:0,afterLines:0};
+  let cursor;
+  const returned = [];
+  let last;
+  for (let page = 0; page < 40; page += 1) {
+    last = await operations.searchLogs(plugin,{...args,...(cursor ? {cursor} : {})});
+    returned.push(...last.matches.map(match => match.text));
+    cursor = last.nextCursor;
+    if (!cursor) break;
+  }
+  assert.equal(cursor,null);
+  assert.equal(last.status,'complete');
+  assert.equal(returned.length,lines.length);
+  assert.equal(new Set(returned).size,lines.length);
+  assert.deepEqual(new Set(returned),new Set(lines.map(line => line.trimEnd())));
+});
+
+test('ZIP 跨成员分页匹配只传输一次输入，续查绑定参数及会话', async () => {
+  const content = createZip([{name:'a.log',content:'needle a1\nneedle a2\nneedle a3\n'},{name:'b.log',content:'needle b1\nneedle b2\nneedle b3\n'}]);
+  const {runtime,calls} = createRemoteLogRuntime({files:{'/logs/archive.zip':{content,mtime:1}}});
+  const operations = new ServerOperations(runtime,{});
+  const args = {path:'/logs/archive.zip',queries:['needle'],maxMatches:2,maxScanBytes:65536,_clientInstanceId:'one'};
+  const first = await operations.searchLogs(plugin,args);
+  await assert.rejects(operations.searchLogs(plugin,{...args,cursor:first.nextCursor,_clientInstanceId:'two'}),{code:'LOG_CURSOR_MISMATCH'});
+  await assert.rejects(operations.searchLogs(plugin,{...args,cursor:first.nextCursor,queries:['other']}),{code:'LOG_CURSOR_MISMATCH'});
+  const second = await operations.searchLogs(plugin,{...args,cursor:first.nextCursor});
+  const third = await operations.searchLogs(plugin,{...args,cursor:second.nextCursor});
+  assert.equal(third.nextCursor,null);
+  assert.equal(third.status,'complete');
+  assert.equal(new Set([...first.matches,...second.matches,...third.matches].map(match => match.text)).size,6);
+  assert.equal(calls.reads.length,1);
+  assert.equal(second.remoteBytesRead,0);
+  assert.equal(third.remoteBytesRead,0);
+});
+
+test('未扫描完整的零命中明确返回无法下结论', async () => {
+  const content = Buffer.from('historical needle\n' + 'ordinary log\n'.repeat(10000));
+  const {runtime} = createRemoteLogRuntime({files:{'/logs/large.log':{content,mtime:1}}});
+  const operations = new ServerOperations(runtime,{});
+  const args = {path:'/logs/large.log',queries:['needle'],maxScanBytes:65536};
+  const first = await operations.searchLogs(plugin,args);
+  assert.equal(first.matchCount,0);
+  assert.equal(first.conclusion,'inconclusive');
+  assert.ok(first.nextCursor);
+  let current = first;
+  for (let page = 0; current.nextCursor && page < 5; page += 1) current = await operations.searchLogs(plugin,{...args,cursor:current.nextCursor});
+  assert.equal(current.conclusion,'matches');
+  assert.equal(current.status,'complete');
+});
+
 test('legacy fileIds and contains search keeps the original result fields', async () => {
   const content=Buffer.from('INFO ready\nERROR failed\n');
   const source={sourceId:'logs',displayName:'Logs',kind:'log',root:'/logs',patterns:['*.log'],maxFileBytes:1024*1024};
@@ -298,7 +418,7 @@ test('path directory recursively scans plain, gzip, and ZIP logs once for querie
     maxExpandedBytes:65536,
   });
 
-  assert.deepEqual(calls.stats,['/logs']);
+  assert.deepEqual(calls.stats,['/logs','/logs/nested']);
   assert.equal(calls.sessions,1);
   assert.deepEqual(calls.lists,['/logs','/logs/nested']);
   assert.deepEqual(calls.reads.map(({remotePath})=>remotePath).sort(),[

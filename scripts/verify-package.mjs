@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createBuildMetadata } from './build-metadata.mjs';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -20,6 +21,7 @@ try {
     "import path from 'node:path';",
     "import {createHash} from 'node:crypto';",
     "const appAsar=process.env.AI_OPS_APP_ASAR;",
+    "const buildInfo=JSON.parse(fs.readFileSync(path.join(appAsar,'build','runtime.json'),'utf8'));",
     "const rendererRoot=path.join(appAsar,'renderer-build','v2');",
     "const indexPath=path.join(rendererRoot,'index.html');",
     "const walk=(root,prefix='')=>fs.readdirSync(root,{withFileTypes:true}).flatMap((entry)=>{const relative=prefix?prefix+'/'+entry.name:entry.name;return entry.isDirectory()?walk(path.join(root,entry.name),relative):[relative];});",
@@ -30,7 +32,7 @@ try {
     "const rendererHashes=Object.fromEntries(files.map((file)=>[file,digest(path.join(rendererRoot,file))]));",
     "const html=fs.readFileSync(indexPath,'utf8');",
     'const references=[...html.matchAll(/(?:src|href)="\\.\\/([^"]+)"/gu)].map((match)=>match[1]);',
-    "process.stdout.write(JSON.stringify({files,references,html,sourceHashes,rendererHashes,sourceRendererPresent:fs.existsSync(path.join(appAsar,'renderer'))}));",
+    "process.stdout.write(JSON.stringify({buildInfo,files,references,html,sourceHashes,rendererHashes,sourceRendererPresent:fs.existsSync(path.join(appAsar,'renderer'))}));",
   ].join('\n');
   const rendererInspectionResult = await execFileAsync(
     executable,
@@ -46,6 +48,18 @@ try {
     },
   );
   const renderer = JSON.parse(rendererInspectionResult.stdout);
+  const currentBuild = await createBuildMetadata(path.resolve(import.meta.dirname,'..'));
+  assert.equal(renderer.buildInfo.buildId,currentBuild.buildId,'安装包构建指纹与源码不一致');
+  assert.equal(renderer.buildInfo.gitCommit,currentBuild.gitCommit,'安装包提交与源码不一致');
+  const runtimeResult = await execFileAsync(executable,['--input-type=module','--eval',
+    "import {pathToFileURL} from 'node:url'; const {RUNTIME_INFO}=await import(pathToFileURL(process.env.AI_OPS_RUNTIME_MODULE).href); process.stdout.write(JSON.stringify(RUNTIME_INFO));"], {
+    env:{...process.env,ELECTRON_RUN_AS_NODE:'1',AI_OPS_RUNTIME_MODULE:path.join(appAsar,'src','package-metadata.mjs')},timeout:30000,windowsHide:true,
+  });
+  const runtime = JSON.parse(runtimeResult.stdout);
+  assert.equal(runtime.buildId,renderer.buildInfo.buildId);
+  assert.equal(runtime.version,manifest.version);
+  assert.equal(runtime.platform,process.platform);
+  assert.equal(runtime.arch,process.arch);
   for (const [relative,expected] of Object.entries(renderer.sourceHashes)) {
     const contents = await fs.readFile(new URL(`../src/${relative}`, import.meta.url));
     assert.equal(createHash('sha256').update(contents).digest('hex'), expected,
@@ -90,11 +104,15 @@ try {
   const tools = await client.listTools();
   assert.deepEqual(
     tools.tools.map((tool) => tool.name),
-    ['list_projects', 'list_environments', 'open_environment', 'add_plugin', 'server_list_actions', 'server_run_action', 'server_system_snapshot', 'server_service_inspect', 'server_journal_query', 'server_container_inspect', 'server_list_sources', 'server_list_files', 'server_read_log', 'server_search_logs', 'server_read_config', 'server_stat', 'server_list_directory', 'server_find_files', 'server_read_file', 'server_search_files', 'server_download_file', 'server_upload_file', 'server_write_file', 'server_move_path', 'server_delete_path', 'server_control_service', 'server_execute_shell', 'mysql_list_tables', 'mysql_search_schema', 'mysql_describe_table', 'mysql_query_readonly', 'mysql_explain', 'redis_scan', 'redis_read', 'redis_ttl'],
+    ['get_confirmation_status', 'list_projects', 'list_environments', 'open_environment', 'add_plugin', 'server_list_actions', 'server_run_action', 'server_system_snapshot', 'server_service_inspect', 'server_journal_query', 'server_container_inspect', 'server_list_sources', 'server_list_files', 'server_read_log', 'server_search_logs', 'server_read_config', 'server_stat', 'server_list_directory', 'server_find_files', 'server_read_file', 'server_search_files', 'server_download_file', 'server_upload_file', 'server_write_file', 'server_move_path', 'server_delete_path', 'server_control_service', 'server_execute_shell', 'mysql_list_tables', 'mysql_search_schema', 'mysql_describe_table', 'mysql_query_readonly', 'mysql_explain', 'redis_scan', 'redis_read', 'redis_ttl'],
   );
   const logSearch = tools.tools.find((tool) => tool.name === 'server_search_logs');
   const schemaSearch = tools.tools.find((tool) => tool.name === 'mysql_search_schema');
   assert.equal(schemaSearch.inputSchema.properties.keywords.maxItems, 10);
+  assert.ok(schemaSearch.inputSchema.properties.searchIn.enum.includes('auto'));
+  assert.equal(logSearch.inputSchema.properties.maxLines,undefined);
+  assert.equal(logSearch.inputSchema.properties.cursor.pattern,'^[a-f0-9]{64}$');
+  assert.equal(tools.tools.find(tool => tool.name === 'get_confirmation_status').annotations.readOnlyHint,true);
   assert.equal(logSearch.inputSchema.properties.path.type, 'string');
   assert.equal(logSearch.inputSchema.properties.sourceId.type, 'string');
   assert.equal(logSearch.inputSchema.properties.queries.maxItems, 10);

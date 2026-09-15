@@ -6,6 +6,7 @@ dist/
 artifacts/
 coverage/
 renderer-build/
+build/runtime.json
 *.log
 *.tmp
 *.part

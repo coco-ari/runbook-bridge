@@ -63,7 +63,7 @@ test('MySQL schema search stays in the fixed database and treats keywords as lit
   };
   const plugin = {target:{database:'orders'},limits:{timeoutMs:5000,maxBytes:64 * 1024}};
   const keyword = "coupon%_' OR 1=1 --";
-  const result = await runtime.searchSchema(plugin,{keywords:[keyword,' UID ','uid'],limit:2});
+  const result = await runtime.searchSchema(plugin,{keywords:[keyword,' UID ','uid'],limit:2,searchIn:'all'});
 
   assert.deepEqual(result.keywords,[keyword,'UID']);
   assert.equal(result.matchCount,2);

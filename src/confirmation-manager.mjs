@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { AppError } from './errors.mjs';
+import { ConfirmationStatusStore } from './confirmation-status-store.mjs';
 
 function fingerprint(value) {
   return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -13,11 +14,12 @@ export class ConfirmationManager extends EventEmitter {
     this.now = now;
     this.pending = new Map();
     this.approved = new Map();
+    this.statuses = new ConfirmationStatusStore({ now });
   }
 
   pruneExpired(current = this.now()) {
-    for (const [id, entry] of this.pending) if (entry.expiresAt <= current) this.pending.delete(id);
-    for (const [token, entry] of this.approved) if (entry.expiresAt <= current) this.approved.delete(token);
+    for (const [id, entry] of this.pending) if (entry.expiresAt <= current) { this.pending.delete(id); this.statuses.record(entry,'expired'); }
+    for (const [token, entry] of this.approved) if (entry.expiresAt <= current) { this.approved.delete(token); this.statuses.record(entry,'expired'); }
   }
 
   invalidateMatching(predicate) {
@@ -26,11 +28,13 @@ export class ConfirmationManager extends EventEmitter {
     for (const [id, entry] of this.pending) {
       if (!predicate(entry)) continue;
       this.pending.delete(id);
+      this.statuses.record(entry,'invalidated');
       changed = true;
     }
     for (const [token, entry] of this.approved) {
       if (!predicate(entry)) continue;
       this.approved.delete(token);
+      this.statuses.record(entry,'invalidated');
       changed = true;
     }
     if (changed) this.emit('changed', this.list());
@@ -60,6 +64,7 @@ export class ConfirmationManager extends EventEmitter {
     const requestId = crypto.randomUUID();
     const entry = { requestId, operationHash, ...scope, capability, summary, ...metadata, actor: 'Agent', createdAt: new Date().toISOString(), expiresAt: current + this.ttlMs };
     this.pending.set(requestId, entry);
+    this.statuses.record(entry,'awaiting_user');
     this.emit('changed', this.list());
     return { ...entry, deduplicated:false };
   }
@@ -72,13 +77,17 @@ export class ConfirmationManager extends EventEmitter {
     this.pending.delete(requestId);
     const approvalToken = crypto.randomBytes(24).toString('base64url');
     this.approved.set(approvalToken, { ...entry, expiresAt: current + this.ttlMs });
+    this.statuses.record({ ...entry, expiresAt:current + this.ttlMs },'approved');
     this.emit('changed', this.list());
     return { approvalToken, requestId, expiresAt: new Date(current + this.ttlMs).toISOString() };
   }
 
   reject(requestId) {
     this.pruneExpired();
-    if (!this.pending.delete(requestId)) throw new AppError('CONFIRMATION_NOT_FOUND', '确认请求不存在。');
+    const entry = this.pending.get(requestId);
+    if (!entry) throw new AppError('CONFIRMATION_NOT_FOUND', '确认请求不存在。');
+    this.pending.delete(requestId);
+    this.statuses.record(entry,'rejected');
     this.emit('changed', this.list());
     return { requestId, rejected: true };
   }
@@ -90,7 +99,11 @@ export class ConfirmationManager extends EventEmitter {
     this.approved.delete(String(token ?? ''));
     if (!entry) throw new AppError('CONFIRMATION_REQUIRED', '该操作需要在桌面端确认。');
     const operationHash = fingerprint({ scope, capability, args });
-    if (entry.operationHash !== operationHash) throw new AppError('CONFIRMATION_SCOPE_MISMATCH', '操作内容已变化，需要重新确认。');
+    if (entry.operationHash !== operationHash) {
+      this.statuses.record(entry,'invalidated');
+      throw new AppError('CONFIRMATION_SCOPE_MISMATCH', '操作内容已变化，需要重新确认。');
+    }
+    this.statuses.record(entry,'consumed');
     return entry;
   }
 
@@ -98,7 +111,7 @@ export class ConfirmationManager extends EventEmitter {
     this.pruneExpired();
     const operationHash = fingerprint({ scope, capability, args });
     for (const [token, entry] of this.approved) {
-      if (entry.operationHash === operationHash) { this.approved.delete(token); return entry; }
+      if (entry.operationHash === operationHash) { this.approved.delete(token); this.statuses.record(entry,'consumed'); return entry; }
     }
     return false;
   }
@@ -106,5 +119,17 @@ export class ConfirmationManager extends EventEmitter {
   list() {
     this.pruneExpired();
     return [...this.pending.values()].map((entry) => ({ ...entry, operationHash: undefined }));
+  }
+
+  async status(scope, requestId, waitMs = 0) {
+    if (!Number.isSafeInteger(waitMs) || waitMs < 0 || waitMs > 10_000) throw new AppError('INVALID_ARGUMENT', 'waitMs 必须是 0 到 10000 之间的整数。');
+    this.pruneExpired();
+    await this.statuses.wait(scope, requestId, waitMs);
+    this.pruneExpired();
+    return this.statuses.get(scope, requestId);
+  }
+
+  executionStatus(requestId, status, errorCode) {
+    this.statuses.update(requestId,status,errorCode);
   }
 }

@@ -129,8 +129,7 @@ function matchDescriptor(snapshot, lineIndex, text, matchedKeywords) {
 }
 
 /**
- * Searches immutable log snapshots without interpreting keywords as regular expressions.
- * Matching is line-based: AND requires every keyword on the same line, while OR requires one.
+ * 按字面量搜索不可变快照；AND 要求关键词在同一行命中，OR 命中任意关键词即可。
  */
 export function searchLogSnapshots({
   snapshots,
@@ -140,6 +139,8 @@ export function searchLogSnapshots({
   beforeLines = 0,
   afterLines = 0,
   maxMatches = DEFAULT_MAX_MATCHES,
+  maxContextBytes = 2 * 1024 * 1024,
+  matchOffset = 0,
 } = {}) {
   if (!Array.isArray(snapshots)) {
     throw codedError('INVALID_LOG_SEARCH_ARGUMENT', 'snapshots must be an array', TypeError);
@@ -154,6 +155,10 @@ export function searchLogSnapshots({
   const normalizedBeforeLines = finiteInteger(beforeLines, 'beforeLines', 0);
   const normalizedAfterLines = finiteInteger(afterLines, 'afterLines', 0);
   const normalizedMaxMatches = finiteInteger(maxMatches, 'maxMatches', DEFAULT_MAX_MATCHES);
+  const normalizedMatchOffset = finiteInteger(matchOffset, 'matchOffset', 0);
+  const contextLimit = Math.min(2 * 1024 * 1024, finiteInteger(maxContextBytes, 'maxContextBytes', 2 * 1024 * 1024));
+  let contextBytes = 0;
+  let outputTruncated = false;
 
   let totalMatches = 0;
   let firstMatch = null;
@@ -222,7 +227,7 @@ export function searchLogSnapshots({
       summary.firstMatch ??= descriptor;
       summary.lastMatch = descriptor;
 
-      if (matches.length < normalizedMaxMatches) {
+      if (totalMatches > normalizedMatchOffset && matches.length < normalizedMaxMatches) {
         matches.push(descriptor);
         selectedIndexes.push(lineIndex);
         summary.returnedMatches += 1;
@@ -243,6 +248,18 @@ export function searchLogSnapshots({
         const range = ranges[rangeIndex];
         if (!range) break;
         if (lineIndex < range.start) continue;
+        const boundedText = matchDescriptor(prepared, lineIndex, text, []).text;
+        const bytes = Buffer.byteLength(boundedText, 'utf8') + 128;
+        if (contextBytes + bytes > contextLimit) {
+          outputTruncated = true;
+          if (context?.lines.length) {
+            context.endLine = context.lines.at(-1).lineNumber;
+            contexts.push(context);
+          }
+          break;
+        }
+        contextBytes += bytes;
+        outputTruncated ||= boundedText.length < text.length;
         context ??= {
           snapshotIndex,
           path:prepared.path,
@@ -262,7 +279,7 @@ export function searchLogSnapshots({
         if (selectedSet.has(lineIndex)) context.selectedMatchLineNumbers.push(lineIndex + 1);
         context.lines.push({
           lineNumber: lineIndex + 1,
-          text,
+          text:boundedText,
           isMatch: evaluation.matched,
           selectedMatch: selectedSet.has(lineIndex),
           matchedKeywords: evaluation.matched ? evaluation.matchedKeywords : [],
@@ -278,12 +295,12 @@ export function searchLogSnapshots({
   }
 
   const sourceTruncated = snapshotSummaries.some((snapshot) => snapshot.truncated);
-  const resultLimited = totalMatches > matches.length;
+  const resultLimited = totalMatches - normalizedMatchOffset > matches.length;
   const truncation = {
-    any: sourceTruncated || resultLimited,
+    any: sourceTruncated || resultLimited || outputTruncated,
     sourceTruncated,
     resultLimited,
-    omittedMatches: Math.max(0, totalMatches - matches.length),
+    omittedMatches: Math.max(0, totalMatches - normalizedMatchOffset - matches.length),
     snapshots: snapshotSummaries.map((snapshot) => ({
       snapshotIndex: snapshot.snapshotIndex,
       path: snapshot.path,
@@ -308,6 +325,8 @@ export function searchLogSnapshots({
     lastMatch,
     matches,
     contexts,
+    contextBytes,
+    outputTruncated,
     snapshots: snapshotSummaries,
     truncated: truncation.any,
     truncation,
