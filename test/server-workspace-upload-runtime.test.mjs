@@ -41,14 +41,16 @@ class SftpFixture extends EventEmitter {
     assert.equal(options.flags, 'wx');
     this.files.set(target, Buffer.alloc(0));
     this.modes.set(target, options.mode | 0o100000);
-    return new Writable({
+    const writer = new Writable({
       highWaterMark: options.highWaterMark,
       write: (chunk, _encoding, callback) => {
         this.writes.push(chunk.length);
         this.files.set(target, Buffer.concat([this.files.get(target), chunk]));
-        Promise.resolve(this.onWrite?.(this, target)).then(() => setImmediate(callback), callback);
+        Promise.resolve(this.onWrite?.(this, target)).then(() => { writer.bytesWritten += chunk.length; setImmediate(callback); }, callback);
       },
     });
+    writer.bytesWritten = 0;
+    return writer;
   }
 }
 
@@ -153,4 +155,33 @@ test('覆盖上传优先使用 OpenSSH 原子替换并保留普通执行权限',
   assert.equal(extensionCalled, true);
   assert.equal(sftp.modes.get('/uploads/example.bin'), 0o100755);
   assert.equal(sftp.renames.length, 1);
+});
+
+
+test('持续收到服务器写入确认时保持上传，进度不能提前报告成功', async t => {
+  const { broker, source, sftp, precondition, content } = await fixture(t, {
+    onWrite: () => new Promise(resolve => setTimeout(resolve, 90)),
+  });
+  const original = broker.withInternalSftp.bind(broker);
+  broker.withInternalSftp = (scope, action, policy) => original(scope, action, { ...policy, inactivityMs: 400, timeoutMs: 5000 });
+  const progress = [];
+  await broker.uploadRemoteFileApproved('scope', source, '/uploads/example.bin', precondition, { onProgress: event => progress.push(event) });
+  const partial = progress.filter(event => event.phase === 'uploading' && event.transferredBytes > 0);
+  assert.ok(partial.length >= 2, '持续上传按确认量报告多次进度');
+  assert.ok(partial.every(event => event.transferredBytes < content.length));
+  assert.equal(progress.at(-1).transferredBytes, content.length);
+  assert.deepEqual(sftp.files.get('/uploads/example.bin'), content);
+});
+
+test('本地数据进入发送队列但服务器不确认时触发无进展超时', async t => {
+  const { broker, source, sftp, precondition } = await fixture(t, { onWrite: () => new Promise(() => {}) });
+  const original = broker.withInternalSftp.bind(broker);
+  let policy;
+  broker.withInternalSftp = (scope, action, options) => { policy = options; return original(scope, action, { ...options, inactivityMs: 350 }); };
+  const progress = [];
+  await assert.rejects(broker.uploadRemoteFileApproved('scope', source, '/uploads/example.bin', precondition, { onProgress: event => progress.push(event) }), { code: 'SFTP_OPERATION_TIMEOUT' });
+  assert.equal(policy.inactivityMs, 90_000);
+  assert.ok(progress.every(event => event.transferredBytes === 0));
+  assert.equal(sftp.renames.length, 0);
+  assert.equal(sftp.files.has('/uploads/example.bin'), false);
 });

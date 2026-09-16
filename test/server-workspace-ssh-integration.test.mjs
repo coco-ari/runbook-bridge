@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import { ServerWorkspaceFiles } from '../src/server-workspace-files.mjs';
 import { ServerOperations } from '../src/server-operations.mjs';
 import { EventEmitter } from 'node:events';
@@ -162,18 +164,21 @@ test('真实 SFTP 解析相对目录链接和文件链接，拒绝失效循环�
   const clients = new Set();
   const openedFiles = [];
   const directoryCalls = { sessions: 0, opens: 0, reads: 0, active: 0, peak: 0, linkStats: 0 };
+  let holdUploadStat = false; let heldUploadSftp;
   const server = new ssh2.Server({ hostKeys: [key] }, (client) => {
     clients.add(client); client.on('close', () => clients.delete(client)); client.on('error', () => undefined);
     client.on('authentication', ctx => ctx.method === 'password' && ctx.username === 'fixture' && ctx.password === 'fixture-password' ? ctx.accept() : ctx.reject());
     client.on('ready', () => client.on('session', accept => {
       const session = accept();
+      session.on('pty', approve => approve());
+      session.on('shell', approve => { const channel=approve(); channel.on('error',()=>undefined); channel.on('data', data=>channel.write(data)); });
       session.on('sftp', approve => {
         const sftp = approve(); const handles = new Map(); let sequence = 0;
         directoryCalls.sessions += 1;
         sftp.on('error', () => undefined);
         const action = (id, fn) => { try { fn(); } catch { sftp.status(id, 2); } };
         sftp.on('REALPATH', (id, value) => action(id, () => { const target = resolve(value); sftp.name(id, [{ filename: target, longname: target, attrs: attrs(target) }]); }));
-        sftp.on('LSTAT', (id, value) => action(id, () => { if (nodes.get(value)?.type === 'symlink') directoryCalls.linkStats += 1; sftp.attrs(id, attrs(resolve(value, false))); }));
+        sftp.on('LSTAT', (id, value) => action(id, () => { if (holdUploadStat && value === '/usr/bin') { heldUploadSftp = sftp; return; } if (nodes.get(value)?.type === 'symlink') directoryCalls.linkStats += 1; sftp.attrs(id, attrs(resolve(value, false))); }));
         sftp.on('STAT', (id, value) => action(id, () => sftp.attrs(id, attrs(resolve(value)))));
         sftp.on('OPENDIR', (id, value) => action(id, () => { directoryCalls.opens += 1; const handle = Buffer.from(String(++sequence)); handles.set(handle.toString(), { path: resolve(value), read: false, offset: 0 }); sftp.handle(id, handle); }));
         sftp.on('READDIR', (id, handle) => action(id, () => {
@@ -204,7 +209,7 @@ test('真实 SFTP 解析相对目录链接和文件链接，拒绝失效循环�
   const plugin = { ...scope, pluginType: 'server', configState: 'ready', revision: 1 };
   const runtime = {
     status: () => broker.status('fixture'),
-    withRemoteReadSession: (_plugin, fn) => broker.withRemoteReadSession('fixture', fn),
+    withRemoteReadSession: (_plugin, fn, options) => broker.withRemoteReadSession('fixture', fn, options),
     statRemotePath: (_plugin, value) => broker.statRemotePath('fixture', value),
     listRemoteDirectory: (_plugin, value, options) => broker.listRemoteDirectory('fixture', value, options),
     readRemoteRange: (_plugin, value, start, limit) => broker.readRemoteRange('fixture', value, start, limit),
@@ -275,4 +280,46 @@ test('真实 SFTP 解析相对目录链接和文件链接，拒绝失效循环�
   assert.equal(directoryCalls.opens, scanCount, '后续页不重新打开目录句柄');
   assert.equal(directoryCalls.active, 0, 'EOF 后没有悬挂目录请求');
   t.diagnostic(JSON.stringify({ fixture: '650 条目，每个 READDIR 响应延迟 15 ms，共四页', legacyFirstMs: Math.round(legacyFirstMs), optimizedFirstMs: Math.round(optimizedFirstMs), legacyTotalMs: Math.round(legacyTotalMs), optimizedTotalMs: Math.round(performance.now() - optimizedStart) }));
+  const uploadRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'upload-review-ssh-'));
+  const uploadPaths = Array.from({ length: 5 }, (_, index) => path.join(uploadRoot, 'upload-' + index + '.txt'));
+  await Promise.all(uploadPaths.map(file => fs.writeFile(file, 'fixture')));
+  t.after(async () => {
+    assert.ok(path.resolve(uploadRoot).startsWith(path.resolve(os.tmpdir()) + path.sep + 'upload-review-ssh-'));
+    await fs.rm(uploadRoot, { recursive: true, force: true });
+  });
+  const uploadSessionStart = directoryCalls.sessions;
+  const review = await files.beginUploadReview('renderer:1', { ...scope, path: '/bin' }, uploadPaths);
+  assert.equal(review.status, 'checking');
+  await files.uploadReviews.records.get(review.reviewId).done;
+  const ready = await files.readUploadReview('renderer:1', { ...scope, reviewId: review.reviewId });
+  assert.equal(ready.status, 'ready');
+  assert.equal(ready.path, '/usr/bin');
+  assert.equal(directoryCalls.sessions - uploadSessionStart, 2, '真实 SFTP 的五个文件只复用两个检查通道');
+
+  const terminal = await broker.openTerminal('fixture', { defaultColors: false });
+  terminal.on('error', () => undefined);
+  terminal.resume();
+  const echo = async text => {
+    const response = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('终端回显超时')), 3000);
+      terminal.once('data', data => { clearTimeout(timeout); resolve(data.toString()); });
+    });
+    terminal.write(text);
+    assert.equal(await response, text);
+  };
+  await echo('before-cancel');
+  holdUploadStat = true;
+  const cancelled = await files.beginUploadReview('renderer:1', { ...scope, path: '/usr/bin' }, uploadPaths);
+  const pendingReview = files.uploadReviews.records.get(cancelled.reviewId);
+  for (let i = 0; i < 100 && !heldUploadSftp; i += 1) await delay(10);
+  assert.ok(heldUploadSftp, '真实 SFTP 检查正在等待服务端响应');
+  files.cancelUploadReview('renderer:1', { ...scope, reviewId: cancelled.reviewId });
+  await pendingReview.done;
+  holdUploadStat = false;
+  assert.equal(files.preparations.size, 0);
+  assert.equal(broker.status('fixture').connected, true, '取消预处理不会断开 SSH 连接');
+  await echo('after-cancel');
+  assert.equal((await files.readFile('renderer:1', { ...scope, path: '/usr/bin/tool.conf' })).content, content.toString(), '取消后文件预览仍可读取');
+  terminal.end();
+
 });

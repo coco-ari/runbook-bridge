@@ -26,10 +26,16 @@ export function parentRemotePath(path: string): string {
 }
 
 export function formatTransferBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024) return `${Math.round(bytes)} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+}
+
+export function formatTransferEta(seconds: number): string {
+  if (seconds < 60) return `约 ${Math.max(1, Math.ceil(seconds))} 秒`
+  if (seconds < 3600) return `约 ${Math.ceil(seconds / 60)} 分钟`
+  return `约 ${(seconds / 3600).toFixed(1)} 小时`
 }
 
 export function serverEntryType(entry: ServerDirectoryEntry) {

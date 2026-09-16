@@ -211,6 +211,7 @@ if (process.argv.includes('--mcp')) {
           ...v2,
           broadcast,
           quickQuestionClipboard:clipboard,
+          terminalClipboard:clipboard,
           isWorkspaceRenderer: (sender) => sender.getURL() === pathToFileURL(path.join(__dirname, '..', 'renderer-build', 'v2', 'index.html')).href,
           pickServerUploadFiles: async (sender) => {
             const window = BrowserWindow.fromWebContents(sender);

@@ -2,6 +2,7 @@ import { AppError, toPublicError } from './errors.mjs';
 
 const SCOPE_KEYS = ['projectId', 'environmentId', 'pluginInstanceId'];
 const CALLS = [
+  ['server-workspace-prepare-upload-resume', 'serverWorkspaceFiles', 'prepareUploadResume', ['jobId']],
   ['server-terminal-open', 'serverWorkspaceManager', 'openTerminal', ['cols', 'rows', 'tabId', 'defaultColors']],
   ['server-terminal-read', 'serverWorkspaceManager', 'readTerminal', ['sessionId']],
   ['server-terminal-write', 'serverWorkspaceManager', 'writeTerminal', ['sessionId', 'data', 'encoding']],
@@ -9,7 +10,9 @@ const CALLS = [
   ['server-terminal-close', 'serverWorkspaceManager', 'closeTerminal', ['sessionId']],
   ['server-workspace-list-directory', 'serverWorkspaceFiles', 'listDirectory', ['path', 'cursor', 'snapshotId', 'deferLinks', 'resolveLinks']],
   ['server-workspace-read-file', 'serverWorkspaceFiles', 'readFile', ['path']],
-  ['server-workspace-revise-upload', 'serverWorkspaceFiles', 'reviseUpload', ['preparationId', 'path', 'fileNames']],
+  ['server-workspace-revise-upload', 'serverWorkspaceFiles', 'reviseUploadReview', ['reviewId', 'fileNames']],
+  ['server-workspace-read-upload-review', 'serverWorkspaceFiles', 'readUploadReview', ['reviewId']],
+  ['server-workspace-cancel-upload-review', 'serverWorkspaceFiles', 'cancelUploadReview', ['reviewId']],
   ['server-workspace-confirm-upload', 'serverWorkspaceFiles', 'confirmUpload', ['preparationId', 'overwrite']],
   ['server-workspace-cancel-upload', 'serverWorkspaceFiles', 'cancelUpload', ['jobId']],
   ['server-workspace-uploads', 'serverWorkspaceFiles', 'uploads', []],
@@ -60,6 +63,27 @@ export function registerServerWorkspaceIpc(ipcMain, services) {
       return manager[method](ownerId, payload);
     });
   }
+  handle('server-terminal-clipboard', ['sessionId', 'action', 'text'], async (ownerId, payload, event) => {
+    const adapter = services.terminalClipboard;
+    if (!services.serverWorkspaceManager || !adapter) throw new AppError('WORKSPACE_UNAVAILABLE', '终端剪贴板暂不可用。');
+    if (!['copy', 'paste'].includes(payload.action)
+      || (payload.action === 'copy' && (typeof payload.text !== 'string' || Buffer.byteLength(payload.text) > 1024 * 1024))
+      || (payload.action === 'paste' && payload.text !== undefined)) {
+      throw new AppError('INVALID_ARGUMENT', '剪贴板操作无效或复制内容超过 1 MiB。');
+    }
+    await services.serverWorkspaceManager.requireRecord(ownerId, payload, { allowClosed: payload.action === 'copy' });
+    ownerFor(event);
+    // 仅响应桌面终端操作，剪贴板内容不进入 MCP、审计或错误详情。
+    try {
+      if (payload.action === 'copy') { adapter.writeText(payload.text); return {}; }
+      const text = adapter.readText();
+      if (Buffer.byteLength(text) > 65536) throw new AppError('CLIPBOARD_TOO_LARGE', '粘贴内容超过 64 KB，请分批操作。');
+      return { text };
+    } catch (error) {
+      if (error?.code === 'CLIPBOARD_TOO_LARGE') throw error;
+      throw new AppError('CLIPBOARD_UNAVAILABLE', '无法访问系统剪贴板，请稍后重试。');
+    }
+  });
   handle('server-workspace-pick-upload', ['path'], async (ownerId, payload, event) => {
     if (!services.serverWorkspaceFiles || !services.pickServerUploadFiles) throw new AppError('WORKSPACE_UNAVAILABLE', '文件选择暂不可用。');
     if (picking.has(ownerId)) throw new AppError('WORKSPACE_BUSY', '请选择或关闭当前文件选择窗口。');
@@ -70,7 +94,7 @@ export function registerServerWorkspaceIpc(ipcMain, services) {
       if (!files?.length) return null;
       ownerFor(event);
       await services.serverWorkspaceFiles.requirePlugin(ownerId, payload, binding);
-      return services.serverWorkspaceFiles.prepareUpload(ownerId, payload, files);
+      return services.serverWorkspaceFiles.beginUploadReview(ownerId, payload, files);
     } finally { picking.delete(ownerId); }
   });
 }

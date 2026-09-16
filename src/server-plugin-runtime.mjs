@@ -281,8 +281,8 @@ export class ServerPluginRuntime extends EventEmitter {
     return this.broker.withRemoteReadSession(this.key(plugin), operation, options);
   }
 
-  withRemoteReadSession(plugin, operation) {
-    return this.boundedRead(plugin, () => this.broker.withRemoteReadSession(this.key(plugin), operation));
+  withRemoteReadSession(plugin, operation, options = {}) {
+    return this.boundedRead(plugin, () => this.broker.withRemoteReadSession(this.key(plugin), operation, options));
   }
 
   statRemotePath(plugin, remotePath) {

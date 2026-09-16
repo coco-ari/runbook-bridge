@@ -2,7 +2,7 @@ import { WorkspaceBackButton, WorkspaceHeaderActions } from "@/components/worksp
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { CaretDown, CaretUp, CheckCircle, MapPin, SpinnerGap, TerminalWindow, UploadSimple, X } from "@phosphor-icons/react"
 import { usePanelRef } from "react-resizable-panels"
-import type { AiOpsV2Api, EnvironmentRuntime, PluginScope, ServerDirectoryEntry, ServerUploadJob, ServerUploadPreparation } from "@/bridge/ai-ops-v2"
+import type { AiOpsV2Api, EnvironmentRuntime, PluginScope, ServerDirectoryEntry, ServerUploadJob, ServerUploadReview } from "@/bridge/ai-ops-v2"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -13,7 +13,7 @@ import { ServerFileTree } from "./ServerFileTree"
 import { CopyUploadPath, ServerUploadDialog, UploadFileIcon } from "./ServerUploadDialog"
 import { ServerTerminalTabs } from "./ServerTerminalTabs"
 import { ServerFilePreviews } from "./ServerFilePreviews"
-import { formatTransferBytes, parentRemotePath, quoteRemotePath, serverEntryType, serverWorkspaceKey, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
+import { formatTransferBytes, formatTransferEta, parentRemotePath, quoteRemotePath, serverEntryType, serverWorkspaceKey, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
 import "./server-workspace.css"
 
 export interface ServerWorkspaceEntry {
@@ -24,7 +24,7 @@ export interface ServerWorkspaceEntry {
 }
 
 const ACTIVE_UPLOAD_STATUSES = new Set(["queued", "running", "verifying"])
-const UPLOAD_STATUS_LABELS: Record<ServerUploadJob["status"], string> = { queued: "等待上传", running: "正在上传", verifying: "正在校验", completed: "已完成", cancelled: "已取消", error: "上传失败" }
+const UPLOAD_STATUS_LABELS: Record<ServerUploadJob["status"], string> = { queued: "等待上传", running: "正在上传", verifying: "正在校验", completed: "已完成", cancelled: "已取消", error: "上传失败", interrupted: "已中断" }
 
 interface ServerWorkspaceProps {
   readonly api: AiOpsV2Api
@@ -50,14 +50,19 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
   const [jobs, setJobs] = useState<readonly ServerUploadJob[]>([])
   const [trayOpen, setTrayOpen] = useState(false)
   const [uploadPreparing, setUploadPreparing] = useState(false)
-  const [preparation, setPreparation] = useState<ServerUploadPreparation | null>(null)
+  const [preparation, setPreparation] = useState<ServerUploadReview | null>(null)
   const [overwrite, setOverwrite] = useState(false)
   const [uploadConfirming, setUploadConfirming] = useState(false)
-  const [uploadRevising, setUploadRevising] = useState(false)
+  const [uploadRevising, setUploadRevising] = useState<"removing" | "checking" | null>(null)
   const [uploadNeedsReview, setUploadNeedsReview] = useState(false)
   const uploadActionRef = useRef(false)
+  const uploadPickerRef = useRef(false)
+  const uploadSelectionVersion = useRef(0)
+  const preparationRef = useRef(preparation)
+  preparationRef.current = preparation
   const [fileLocation, setFileLocation] = useState<Readonly<{ path: string; id: number }> | null>(null)
   const [uploadError, setUploadError] = useState("")
+  const [uploadJobError, setUploadJobError] = useState("")
   const [invalidatedPath, setInvalidatedPath] = useState<Readonly<{ path: string; id: number }> | null>(null)
   const [refreshEpoch, setRefreshEpoch] = useState(0)
   const [refreshPaths, setRefreshPaths] = useState<readonly string[]>([])
@@ -72,12 +77,17 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
   visibleRef.current = visible
   const activeJobs = jobs.filter((job) => ACTIVE_UPLOAD_STATUSES.has(job.status))
   const completedJobs = jobs.filter((job) => job.status === "completed")
+  const interruptedJobs = jobs.filter((job) => job.status === "interrupted")
   const failedJobs = jobs.filter((job) => job.status === "error")
 
   useEffect(() => {
     mountedRef.current = true
-    return () => { mountedRef.current = false; previewGenerationRef.current += 1 }
-  }, [])
+    return () => {
+      mountedRef.current = false; previewGenerationRef.current += 1; uploadSelectionVersion.current += 1
+      const current = preparationRef.current
+      if (current) void api.serverWorkspaceCancelUploadReview({ ...scope, reviewId: current.reviewId }).catch(() => undefined)
+    }
+  }, [api, scope])
   useEffect(() => api.onEnvironmentStatus((next) => {
     if (next.projectId !== scope.projectId || next.environmentId !== scope.environmentId) return
     setRuntime((current) => !current || next.sequence >= current.sequence ? next : current)
@@ -98,8 +108,9 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
         if (completed.length) { setRefreshPaths(completed.map((job) => parentRemotePath(job.path))); setRefreshEpoch((value) => value + 1) }
         const changed = JSON.stringify(result.jobs) !== JSON.stringify(jobsRef.current)
         if (changed) setJobs(result.jobs)
+        setUploadJobError("")
       } catch (failure) {
-        if (!disposed && jobsRef.current.some((job) => ACTIVE_UPLOAD_STATUSES.has(job.status))) setUploadError(workspaceErrorMessage(failure))
+        if (!disposed && jobsRef.current.some((job) => ACTIVE_UPLOAD_STATUSES.has(job.status))) setUploadJobError(workspaceErrorMessage(failure))
       } finally {
         if (!disposed) timer = window.setTimeout(() => { void poll() }, jobsRef.current.some((job) => ACTIVE_UPLOAD_STATUSES.has(job.status)) ? 500 : visibleRef.current ? 1500 : 4000)
       }
@@ -124,24 +135,65 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
   }, [connected])
   const invalidatePreviewPath = useCallback((path: string) => setInvalidatedPath({ path, id: ++previewGenerationRef.current }), [])
 
+  useEffect(() => {
+    if (!preparation || preparation.status === "error") return
+    const reviewId = preparation.reviewId
+    const version = uploadSelectionVersion.current
+    let disposed = false
+    let timer = 0
+    const poll = async () => {
+      try {
+        const next = unwrapWorkspaceResult(await api.serverWorkspaceReadUploadReview({ ...scope, reviewId }))
+        if (disposed || version !== uploadSelectionVersion.current) return
+        setPreparation(next)
+        if (next.status === "error") { setUploadError(next.error?.message ?? "文件检查失败，请重试。"); setUploadNeedsReview(true); setOverwrite(false) }
+      } catch (failure) {
+        if (!disposed && version === uploadSelectionVersion.current) {
+          setUploadError(workspaceErrorMessage(failure)); setUploadNeedsReview(true); setOverwrite(false)
+          setPreparation(current => current?.reviewId === reviewId ? { ...current, status: "error", preparationId: null } : current)
+        }
+      } finally {
+        if (!disposed && version === uploadSelectionVersion.current) timer = window.setTimeout(() => { void poll() }, preparationRef.current?.status === "checking" ? 300 : 1500)
+      }
+    }
+    void poll()
+    return () => { disposed = true; window.clearTimeout(timer) }
+  }, [api, scope, preparation?.reviewId, preparation?.status])
+
+  const cancelPreparation = () => {
+    uploadSelectionVersion.current += 1
+    const current = preparationRef.current
+    preparationRef.current = null
+    setPreparation(null)
+    setUploadError("")
+    if (current) void api.serverWorkspaceCancelUploadReview({ ...scope, reviewId: current.reviewId }).catch(() => undefined)
+  }
+
   const pickUpload = useCallback(async (targetPath = path) => {
-    if (!connected || uploadPreparing) return
+    if (!connected || uploadPickerRef.current) return
+    uploadPickerRef.current = true
+    const version = ++uploadSelectionVersion.current
     setUploadPreparing(true)
     setUploadError("")
     try {
       const result = unwrapWorkspaceResult(await api.serverWorkspacePickUpload({ ...scope, path: targetPath }))
-      if (mountedRef.current && result) { setPreparation(result); setOverwrite(false); setUploadNeedsReview(false) }
+      if (mountedRef.current && version === uploadSelectionVersion.current && result) { setPreparation(result); setOverwrite(false); setUploadNeedsReview(false) }
+      else if (result) void api.serverWorkspaceCancelUploadReview({ ...scope, reviewId: result.reviewId }).catch(() => undefined)
     } catch (failure) { if (mountedRef.current) setUploadError(workspaceErrorMessage(failure)) }
-    finally { if (mountedRef.current) setUploadPreparing(false) }
+    finally { uploadPickerRef.current = false; if (mountedRef.current) setUploadPreparing(false) }
   }, [api, connected, path, scope, uploadPreparing])
 
-  const reviseUpload = async (target: string, names: readonly string[]) => {
+  const reviseUpload = async (names: readonly string[]) => {
     if (!preparation || uploadActionRef.current) return false
     uploadActionRef.current = true
-    setUploadRevising(true); setUploadNeedsReview(true); setOverwrite(false); setUploadError("")
+    const version = ++uploadSelectionVersion.current
+    setUploadRevising(names.length < preparation.files.length ? "removing" : "checking"); setUploadNeedsReview(true); setOverwrite(false); setUploadError("")
     try {
-      const result = unwrapWorkspaceResult(await api.serverWorkspaceReviseUpload({ ...scope, preparationId: preparation.preparationId, path: target, fileNames: names }))
-      if (!mountedRef.current) return false
+      const result = unwrapWorkspaceResult(await api.serverWorkspaceReviseUpload({ ...scope, reviewId: preparation.reviewId, fileNames: names }))
+      if (!mountedRef.current || version !== uploadSelectionVersion.current) {
+        if (result) void api.serverWorkspaceCancelUploadReview({ ...scope, reviewId: result.reviewId }).catch(() => undefined)
+        return false
+      }
       setPreparation(result); setUploadNeedsReview(false)
       return true
     } catch (failure) {
@@ -149,18 +201,20 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
       return false
     } finally {
       uploadActionRef.current = false
-      if (mountedRef.current) setUploadRevising(false)
+      if (mountedRef.current) setUploadRevising(null)
     }
   }
 
   const confirmUpload = async () => {
-    if (!preparation || uploadActionRef.current || uploadNeedsReview) return
+    if (!preparation || preparation.status !== "ready" || !preparation.preparationId || uploadActionRef.current || uploadNeedsReview) return
     uploadActionRef.current = true
     setUploadConfirming(true)
     setUploadError("")
     try {
       const result = unwrapWorkspaceResult(await api.serverWorkspaceConfirmUpload({ ...scope, preparationId: preparation.preparationId, overwrite }))
+      void api.serverWorkspaceCancelUploadReview({ ...scope, reviewId: preparation.reviewId }).catch(() => undefined)
       if (!mountedRef.current) return
+      uploadSelectionVersion.current += 1
       setJobs((current) => [...current.filter((job) => !result.jobs.some((next) => next.jobId === job.jobId)), ...result.jobs])
       setPreparation(null)
       setTrayOpen(true)
@@ -168,11 +222,26 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
     finally { uploadActionRef.current = false; if (mountedRef.current) setUploadConfirming(false) }
   }
 
+  const resumeUpload = async (jobId: string) => {
+    if (!connected || uploadActionRef.current || uploadPickerRef.current || preparation) return
+    uploadActionRef.current = true
+    const version = ++uploadSelectionVersion.current
+    setUploadJobError("")
+    try {
+      const result = unwrapWorkspaceResult(await api.serverWorkspacePrepareUploadResume({ ...scope, jobId }))
+      if (mountedRef.current && version === uploadSelectionVersion.current) {
+        setPreparation(result); setOverwrite(false); setUploadNeedsReview(false); setUploadError("")
+      } else void api.serverWorkspaceCancelUploadReview({ ...scope, reviewId: result.reviewId }).catch(() => undefined)
+    } catch (failure) { if (mountedRef.current) setUploadJobError(workspaceErrorMessage(failure)) }
+    finally { uploadActionRef.current = false }
+  }
+
   const cancelUpload = async (jobId: string) => {
+    setUploadJobError("")
     try {
       const job = unwrapWorkspaceResult(await api.serverWorkspaceCancelUpload({ ...scope, jobId }))
       if (mountedRef.current) setJobs((current) => current.map((item) => item.jobId === jobId ? job : item))
-    } catch (failure) { if (mountedRef.current) setUploadError(workspaceErrorMessage(failure)) }
+    } catch (failure) { if (mountedRef.current) setUploadJobError(workspaceErrorMessage(failure)) }
   }
 
   return <div className="server-workspace" hidden={!visible} data-testid="server-workspace" data-workspace-key={serverWorkspaceKey(scope)}>
@@ -185,6 +254,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
     {!connected ? <div className="server-workspace-connection-notice" role="status">服务器连接已断开。返回详情连接后，请手动打开终端。<Button size="sm" variant="ghost" onClick={onBack}>返回详情</Button></div> : null}
     {connection.state.error ? <div role="alert" className="server-workspace-error">{connection.state.error.message}</div> : null}
     {uploadError && !preparation ? <div role="alert" className="server-workspace-error">{uploadError}<Button size="icon-sm" variant="ghost" aria-label="收起上传提示" onClick={() => setUploadError("")}><X /></Button></div> : null}
+    {uploadJobError ? <div role="alert" className="server-workspace-error" data-testid="upload-job-error">{uploadJobError}<Button size="icon-sm" variant="ghost" aria-label="收起传输提示" onClick={() => setUploadJobError("")}><X /></Button></div> : null}
     <div className="server-workspace-body">
       <ResizablePanelGroup orientation="horizontal" id={`${panelId}-panels`}>
         <ResizablePanel id={`${panelId}-files`} defaultSize="320px" minSize="240px" maxSize="50%" collapsible collapsedSize={0} panelRef={treePanelRef}>
@@ -205,17 +275,17 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
       </ResizablePanelGroup>
     </div>
     <section className="server-upload-tray" aria-label="文件上传任务">
-      <div className="server-upload-tray-header"><button className="flex min-w-0 flex-1 items-center gap-2 text-xs" type="button" onClick={() => setTrayOpen((value) => !value)} aria-expanded={trayOpen}><UploadSimple size={15} />文件传输<span className={failedJobs.length ? "text-danger" : "text-muted-foreground"}>{activeJobs.length ? `${activeJobs.length} 项进行中` : jobs.length ? `${completedJobs.length} 项完成${failedJobs.length ? ` · ${failedJobs.length} 项失败` : ""}` : "暂无任务"}</span>{trayOpen ? <CaretDown size={12} /> : <CaretUp size={12} />}</button><span className="server-upload-target truncate text-[11px] text-muted-foreground" title={`新上传目标：${path}`}>新上传目标 {path}</span><Button size="sm" variant="ghost" disabled={!connected || uploadPreparing} onClick={() => { void pickUpload() }}>{uploadPreparing ? <SpinnerGap className="animate-spin" /> : <UploadSimple />}上传文件</Button></div>
+      <div className="server-upload-tray-header"><button className="flex min-w-0 flex-1 items-center gap-2 text-xs" type="button" onClick={() => setTrayOpen((value) => !value)} aria-expanded={trayOpen}><UploadSimple size={15} />文件传输<span className={failedJobs.length ? "text-danger" : "text-muted-foreground"}>{activeJobs.length ? `${activeJobs.length} 项进行中` : jobs.length ? `${completedJobs.length} 项完成${failedJobs.length ? ` · ${failedJobs.length} 项失败` : ""}` : "暂无任务"}{interruptedJobs.length ? ` · ${interruptedJobs.length} 项可继续` : ""}</span>{trayOpen ? <CaretDown size={12} /> : <CaretUp size={12} />}</button><span className="server-upload-target truncate text-[11px] text-muted-foreground" title={`新上传目标：${path}`}>新上传目标 {path}</span><Button size="sm" variant="ghost" disabled={!connected || uploadPreparing} onClick={() => { void pickUpload() }}>{uploadPreparing ? <SpinnerGap className="animate-spin" /> : <UploadSimple />}上传文件</Button></div>
       {trayOpen ? <div className="server-upload-list">{jobs.length ? jobs.map((job) => <div className="server-upload-row" key={job.jobId}>
         <div className="server-upload-task-icon"><UploadFileIcon name={job.name} /></div>
-        <div className="min-w-0 flex-1"><div className="server-upload-task-heading"><strong title={job.name}>{job.name}</strong>{job.status === "completed" ? <CheckCircle className="text-success" size={14} /> : null}<span className={job.status === "error" ? "text-danger" : "text-muted-foreground"}>{UPLOAD_STATUS_LABELS[job.status]}</span></div><div className="server-upload-task-target"><span>上传到</span><code title={job.path}>{job.path}</code><CopyUploadPath path={job.path} label={`复制 ${job.name} 的上传路径`} /></div>{job.message ? <p className="text-xs text-danger">{job.message}</p> : null}</div>
-        <div className="server-upload-progress"><div className="flex w-full justify-between gap-2"><span>{job.status === "verifying" ? "正在校验文件" : job.status === "completed" ? "上传完成" : job.status === "queued" ? "排队中" : job.status === "running" ? "正在传输" : "已停止"}</span><strong>{job.status === "completed" ? 100 : Math.min(100, Math.round(job.transferred / (job.bytes || 1) * 100))}%</strong></div><progress aria-label={`${job.name} 上传进度`} value={job.status === "completed" ? job.bytes || 1 : job.transferred} max={job.bytes || 1} /><span>{formatTransferBytes(job.transferred)} / {formatTransferBytes(job.bytes)}</span></div>
-        <div className="server-upload-task-action">{ACTIVE_UPLOAD_STATUSES.has(job.status) ? <Button size="icon-sm" variant="ghost" aria-label={`取消上传 ${job.name}`} onClick={() => { void cancelUpload(job.jobId) }}><X /></Button> : job.status === "completed" ? <Button size="sm" variant="ghost" disabled={!connected} aria-label={`定位到 ${job.name}`} onClick={() => { setMaximized(false); setFileLocation({ path: job.path, id: Date.now() }) }}><MapPin size={14} />定位文件</Button> : null}</div>
+        <div className="min-w-0 flex-1"><div className="server-upload-task-heading"><strong title={job.name}>{job.name}</strong>{job.status === "completed" ? <CheckCircle className="text-success" size={14} /> : null}<span className={job.status === "error" ? "text-danger" : "text-muted-foreground"}>{UPLOAD_STATUS_LABELS[job.status]}</span></div><div className="server-upload-task-target"><span>上传到</span><code title={job.path}>{job.path}</code><CopyUploadPath path={job.path} label={`复制 ${job.name} 的上传路径`} /></div>{job.message ? <p className={job.status === "interrupted" ? "text-xs text-muted-foreground" : "text-xs text-danger"}>{job.message}</p> : null}</div>
+        <div className="server-upload-progress"><div className="flex w-full justify-between gap-2"><span>{job.status === "verifying" ? "正在校验文件" : job.status === "completed" ? "上传完成" : job.status === "queued" ? "排队中" : job.status === "running" ? (job.phase === "preparing" ? "检查文件" : "正在传输") : "已停止"}</span><strong>{job.status === "completed" ? 100 : Math.min(100, Math.round(job.transferred / (job.bytes || 1) * 100))}%</strong></div><progress aria-label={`${job.name} 上传进度`} value={job.status === "completed" ? job.bytes || 1 : job.transferred} max={job.bytes || 1} /><span>{formatTransferBytes(job.transferred)} / {formatTransferBytes(job.bytes)}</span>{job.status === "running" && job.phase !== "preparing" ? <span data-testid="upload-speed">{job.bytesPerSecond == null ? "正在估算速度…" : job.bytesPerSecond === 0 ? "等待服务器响应…" : `${formatTransferBytes(job.bytesPerSecond)}/s · 剩余${job.etaSeconds == null ? "估算中" : formatTransferEta(job.etaSeconds)}`}</span> : null}</div>
+        <div className="server-upload-task-action">{job.status === "interrupted" ? <><Button size="sm" variant="outline" disabled={!connected || !job.canResume || Boolean(preparation)} onClick={() => { void resumeUpload(job.jobId) }}>继续上传</Button><Button size="icon-sm" variant="ghost" aria-label={`取消上传 ${job.name}`} onClick={() => { void cancelUpload(job.jobId) }}><X /></Button></> : ACTIVE_UPLOAD_STATUSES.has(job.status) ? <Button size="icon-sm" variant="ghost" aria-label={`取消上传 ${job.name}`} onClick={() => { void cancelUpload(job.jobId) }}><X /></Button> : job.status === "completed" ? <Button size="sm" variant="ghost" disabled={!connected} aria-label={`定位到 ${job.name}`} onClick={() => { setMaximized(false); setFileLocation({ path: job.path, id: Date.now() }) }}><MapPin size={14} />定位文件</Button> : null}</div>
       </div>) : <div className="px-4 py-6 text-center text-xs text-muted-foreground">选择目标目录，再上传本机文件。每项任务会保留自己的上传位置。</div>}</div> : null}
     </section>
     <footer className="server-workspace-footer"><span className="flex items-center gap-1.5"><TerminalWindow size={12} />SSH / SFTP</span><span>返回详情不会结束会话或上传</span></footer>
-    <Dialog open={Boolean(preparation)} onOpenChange={(value) => { if (!value && !uploadActionRef.current) setPreparation(null) }}>
-      {preparation ? <ServerUploadDialog api={api} scope={scope} preparation={preparation} serverName={entry.plugin.displayName} projectName={entry.projectName} environmentName={entry.environmentName} identity={sshIdentity} busy={uploadConfirming || uploadRevising} confirming={uploadConfirming} connected={connected} needsReview={uploadNeedsReview} overwrite={overwrite} error={uploadError} onOverwrite={setOverwrite} onRevise={reviseUpload} onConfirm={() => { void confirmUpload() }} onCancel={() => setPreparation(null)} onReselect={() => { const target = preparation.sourcePath ?? preparation.path; setPreparation(null); void pickUpload(target) }} /> : null}
+    <Dialog open={Boolean(preparation)} onOpenChange={(value) => { if (!value && !uploadActionRef.current) cancelPreparation() }}>
+      {preparation ? <ServerUploadDialog preparation={preparation} serverName={entry.plugin.displayName} environmentName={entry.environmentName} identity={sshIdentity} busy={uploadConfirming || Boolean(uploadRevising)} confirming={uploadConfirming} removing={uploadRevising === "removing"} connected={connected} needsReview={uploadNeedsReview} overwrite={overwrite} error={uploadError} onOverwrite={setOverwrite} onRevise={reviseUpload} onConfirm={() => { void confirmUpload() }} onCancel={cancelPreparation} onReselect={() => { const target = preparation.sourcePath ?? preparation.path; cancelPreparation(); void pickUpload(target) }} /> : null}
     </Dialog>
     <Dialog open={closeDialog} onOpenChange={setCloseDialog}><DialogContent><DialogHeader><DialogTitle>关闭服务器工作区</DialogTitle><DialogDescription>{activeJobs.length ? "还有上传任务进行中。返回详情可以保留所有任务；请等上传结束或取消任务后再关闭工作区。" : "将结束这个工作区的终端会话并清除显示记录。服务器连接保持。"}</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => { setCloseDialog(false); onBack() }}>返回详情并保留</Button><Button disabled={activeJobs.length > 0} onClick={onClose}>关闭工作区</Button></DialogFooter></DialogContent></Dialog>
   </div>

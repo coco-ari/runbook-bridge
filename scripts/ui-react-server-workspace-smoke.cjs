@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, nativeTheme, clipboard } = require('electron');
 
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('force-device-scale-factor', '1');
@@ -35,16 +35,42 @@ const closed = [];
 const errors = [];
 const externalRequests = [];
 let uploads = [];
+let uploadReadFailure = false;
 let preparationPath;
 let uploadSelection = ['release.tar'];
 let uploadPreparation;
 let revisionFailure = false;
+let reviewHeld = false;
+let reviewReadDelay = 0;
+const cancelledReviews = [];
 const uploadRevisions = [];
-const makePreparation = (target, names) => {
+let preparationRuns = 0;
+const makePreparation = (target, names, failure = false) => {
+  preparationRuns += 1;
   preparationPath = canonicalFixturePath(target);
-  uploadPreparation = { preparationId: require('node:crypto').randomUUID(), path: preparationPath, sourcePath: target, files: names.map(name => ({ name, bytes: 1000000, remotePath: path.posix.join(preparationPath, name), exists: name === 'release.tar' })), expiresAt: Date.now() + 60000 };
-  return uploadPreparation;
+  uploadPreparation = {
+    reviewId: require('node:crypto').randomUUID(), status:'checking', preparationId:null, expiresAt:null,
+    path:preparationPath, sourcePath:target, readyAt:Date.now()+500, failure,
+    progress:{phase:'hashing',completedFiles:0,totalFiles:names.length,hashedBytes:0,totalBytes:1000000*names.length},
+    files:names.map(name=>({name,localPath:path.win32.join('D:/发布文件/待上传',name),bytes:1000000,remotePath:path.posix.join(preparationPath,name),exists:null})),
+  };
+  return reviewResult(uploadPreparation);
 };
+function reviewResult(item) {
+  if (!reviewHeld && Date.now()>=item.readyAt && item.status==='checking') {
+    item.status=item.failure?'error':'ready';
+    item.error=item.failure?{code:'PERMISSION_DENIED',message:'目标目录暂时不可写，请重新检查。'}:undefined;
+    item.preparationId=item.failure?null:require('node:crypto').randomUUID();
+    item.expiresAt=item.failure?null:Date.now()+60000;
+    item.progress={...item.progress,phase:item.failure?'hashing':'ready',completedFiles:item.files.length,hashedBytes:item.progress.totalBytes};
+    item.files=item.files.map(file=>({...file,exists:file.name==='release.tar'}));
+  }
+  const {readyAt,failure,...result}=item;
+  return structuredClone(result);
+}
+let savedClipboard;
+let clipboardDelay = 0;
+let clipboardReads = 0;
 let completed = false;
 let workspaceFiles;
 let stagedRoot;
@@ -114,6 +140,16 @@ function register() {
     terminalSessions.get(input.sessionId).chunks.push(Buffer.from(input.data === '\r' ? '\r\noperator@demo:~$ ' : input.data === '\x03' ? '^C\r\noperator@demo:~$ ' : input.data));
     return {};
   });
+  handle('server-terminal-clipboard', async (input) => {
+    scoped(input);
+    assert.ok(terminalSessions.has(input.sessionId));
+    if (input.action === 'copy') { clipboard.writeText(input.text); return {}; }
+    clipboardReads += 1;
+    const text = clipboard.readText();
+    if (clipboardDelay) await wait(clipboardDelay);
+    if (Buffer.byteLength(text) > 65536) throw Object.assign(new Error('粘贴内容超过 64 KB，请分批操作。'), { code: 'CLIPBOARD_TOO_LARGE' });
+    return { text };
+  });
   handle('server-terminal-resize', (input) => { scoped(input); assert.ok(input.cols > 1 && input.rows > 1); resizes.push(input); return {}; });
   handle('server-terminal-close', (input) => { scoped(input); closed.push(input.sessionId); terminalSessions.get(input.sessionId).status = 'closed'; return {}; });
   const listDirectory = (input) => {
@@ -137,18 +173,50 @@ function register() {
   });
   workspaceFiles.serverOperations.readFile = async (_plugin, input) => { previewReads.push(input.path); if (previewDelay) await wait(previewDelay); return { path: input.path, content: '# 示例配置\nsource = ' + input.path + '\nserver_name = demo\nport = 8080\n' + (input.path.endsWith('.log') ? '日志示例\n'.repeat(200) : ''), size: 52, startByte: 0, endByte: 52, mtime: 1, truncated: false, nextCursor: null }; };
   handle('server-workspace-read-file', (input) => { scoped(input); if (previewFailure) throw Object.assign(new Error('没有文件读取权限。'), { code: previewFailure }); return workspaceFiles.readFile('renderer:1', input); });
-  handle('server-workspace-pick-upload', input => { scoped(input); return makePreparation(input.path, uploadSelection); });
-  handle('server-workspace-revise-upload', async input => {
-    scoped(input); assert.equal(input.preparationId, uploadPreparation.preparationId); assert.ok(input.fileNames.every(name => uploadPreparation.files.some(file => file.name === name)));
-    uploadRevisions.push(input); await wait(180);
-    if (revisionFailure) throw Object.assign(new Error('目标目录暂时不可写，请重新检查。'), { code: 'PERMISSION_DENIED' });
-    return input.fileNames.length ? makePreparation(input.path, input.fileNames) : null;
+  handle('server-workspace-prepare-upload-resume', input => {
+    scoped(input);
+    const job=uploads.find(item=>item.jobId===input.jobId);
+    assert.equal(job.status,'interrupted');
+    uploadPreparation={
+      reviewId:require('node:crypto').randomUUID(),preparationId:require('node:crypto').randomUUID(),status:'ready',expiresAt:Date.now()+60000,
+      path:'/srv',sourcePath:'/srv',resume:{jobId:job.jobId,bytes:job.resumeBytes},
+      files:[{name:job.name,localPath:path.win32.join('D:/发布文件/待上传',job.name),remotePath:job.path,bytes:job.bytes,exists:true}],
+      progress:{phase:'ready',completedFiles:1,totalFiles:1,hashedBytes:job.bytes,totalBytes:job.bytes}
+    };
+    return reviewResult(uploadPreparation);
   });
-  handle('server-workspace-confirm-upload', input => { scoped(input); assert.equal(input.preparationId, uploadPreparation.preparationId); assert.equal(input.overwrite, true); uploads = uploadPreparation.files.map((file, index) => ({ jobId: 'upload-job-' + index, name: file.name, path: file.remotePath, bytes: file.bytes, transferred: 0, status: 'running' })); return { jobs: uploads }; });
-  handle('server-workspace-uploads', (input) => { scoped(input); uploads = uploads.map((job) => { if (job.status !== 'running') return job; const transferred = Math.min(job.bytes, job.transferred + 80000); return { ...job, transferred, status: transferred === job.bytes ? 'completed' : 'running' }; }); return { jobs: uploads }; });
+  handle('server-workspace-pick-upload', input => { scoped(input); return makePreparation(input.path, uploadSelection); });
+  handle('server-workspace-read-upload-review', async input => {
+    scoped(input);
+    const item=uploadPreparation;
+    assert.equal(input.reviewId,item.reviewId);
+    if(reviewReadDelay) await wait(reviewReadDelay);
+    return reviewResult(item);
+  });
+  handle('server-workspace-cancel-upload-review', input => {
+    scoped(input); cancelledReviews.push(input.reviewId);
+    if(uploadPreparation?.reviewId===input.reviewId) uploadPreparation=null;
+    return {};
+  });
+  handle('server-workspace-revise-upload', async input => {
+    scoped(input); assert.equal(input.reviewId,uploadPreparation.reviewId);
+    assert.ok(input.fileNames.every(name=>uploadPreparation.files.some(file=>file.name===name)));
+    assert.equal(input.path,undefined,'修订不能指定目标目录');
+    uploadRevisions.push(input);
+    if (uploadPreparation.status === 'ready' && uploadPreparation.expiresAt > Date.now() && input.fileNames.length > 0 && input.fileNames.length < uploadPreparation.files.length) {
+      const files = uploadPreparation.files.filter(file => input.fileNames.includes(file.name));
+      const bytes = files.reduce((sum, file) => sum + file.bytes, 0);
+      uploadPreparation = { ...uploadPreparation, reviewId:require('node:crypto').randomUUID(), preparationId:require('node:crypto').randomUUID(), files,
+        progress:{phase:'ready',completedFiles:files.length,totalFiles:files.length,hashedBytes:bytes,totalBytes:bytes} };
+      return reviewResult(uploadPreparation);
+    }
+    return input.fileNames.length?makePreparation(uploadPreparation.sourcePath,input.fileNames,revisionFailure):null;
+  });
+  handle('server-workspace-confirm-upload', input => { scoped(input); assert.equal(input.preparationId, uploadPreparation.preparationId); assert.equal(input.overwrite, true); uploads = uploadPreparation.files.map((file, index) => ({ jobId: 'upload-job-' + index, name: file.name, path: file.remotePath, bytes: file.bytes, transferred: 0, status: 'running', phase:'uploading', bytesPerSecond:80000, etaSeconds:12 })); return { jobs: uploads }; });
+  handle('server-workspace-uploads', (input) => { scoped(input); if (uploadReadFailure) throw new Error('已有上传任务状态暂时无法读取。'); uploads = uploads.map((job) => { if (job.status !== 'running') return job; const transferred = Math.min(job.bytes, job.transferred + 80000); return { ...job, transferred, status: transferred === job.bytes ? 'completed' : 'running' }; }); return { jobs: uploads }; });
   handle('server-workspace-cancel-upload', (input) => { scoped(input); uploads = uploads.map((job) => ({ ...job, status: 'cancelled' })); return uploads[0]; });
 }
-async function evaluate(source) { return win.webContents.executeJavaScript(source, true); }
+async function evaluate(source) { try { return await win.webContents.executeJavaScript(source, true); } catch (error) { throw new Error("界面脚本执行失败：" + source.slice(0, 700), { cause: error }); } }
 async function until(source, label) {
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) { if (await evaluate(source)) return; await wait(40); }
@@ -158,11 +226,40 @@ async function click(selector) { assert.ok(await evaluate(`(() => { const elemen
 async function clickText(text) { assert.ok(await evaluate(`(() => { const element = [...document.querySelectorAll('button')].find((item) => item.textContent.trim() === ${JSON.stringify(text)} && item.getClientRects().length && !item.disabled); if (!element) return false; element.click(); return true })()`), text); await wait(70); }
 async function key(key, keyCode, ctrlKey = false) { await evaluate(`document.querySelector('.server-workspace:not([hidden]) .server-terminal-tab-panel:not([hidden]) .xterm-helper-textarea').dispatchEvent(new KeyboardEvent('keydown', { key:${JSON.stringify(key)}, code:${JSON.stringify(key === 'Enter' ? 'Enter' : 'Key' + key.toUpperCase())}, keyCode:${keyCode}, which:${keyCode}, ctrlKey:${ctrlKey}, bubbles:true, cancelable:true }))`); await wait(80); }
 async function paste(text) { await evaluate(`(() => { const data = new DataTransfer(); data.setData('text/plain', ${JSON.stringify(text)}); document.querySelector('.server-workspace:not([hidden]) .server-terminal-tab-panel:not([hidden]) .xterm-helper-textarea').dispatchEvent(new ClipboardEvent('paste', { clipboardData:data, bubbles:true, cancelable:true })) })()`); await wait(80); }
+async function nativePaste(text, shortcut = false) {
+  clipboard.writeText(text);
+  await evaluate("document.querySelector('.server-terminal-tab-panel:not([hidden]) .xterm-helper-textarea').focus()");
+  if (shortcut) {
+    const modifiers = process.platform === 'darwin' ? ['meta'] : ['control', 'shift'];
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers });
+    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers });
+  } else win.webContents.paste();
+  await wait(100);
+}
 async function setViewport(width, height) {
   win.setContentSize(width, height);
   await until(`innerWidth === ${width} && innerHeight === ${height}`, '固定内容区尺寸');
   await wait(250);
 }
+async function assertPasteAppearance(theme) {
+  const appearance = await evaluate(`(() => {
+    const rows = document.querySelector('.server-terminal-tab-panel:not([hidden]) .xterm-rows');
+    const cell = [...rows.querySelectorAll('span')].find(item => item.textContent.includes('paste-highlight'));
+    if (!cell) return null;
+    const style = getComputedStyle(cell);
+    const rgb = value => value.match(/\\d+/g).slice(0, 3).map(Number);
+    const luminance = value => rgb(value).map(c => { const v=c/255; return v<=0.04045 ? v/12.92 : ((v+0.055)/1.055)**2.4 }).reduce((n,v,i)=>n+v*[0.2126,0.7152,0.0722][i],0);
+    const fg=luminance(style.color), bg=luminance(style.backgroundColor);
+    return { foreground: style.color, background: style.backgroundColor, contrast:(Math.max(fg,bg)+0.05)/(Math.min(fg,bg)+0.05), font:style.fontFamily, size:style.fontSize };
+  })()`);
+  assert.ok(appearance, '粘贴高亮已呈现');
+  assert.equal(appearance.background, 'rgb(0, 95, 95)', '高亮不再使用白色背景');
+  assert.ok(appearance.contrast >= 7, '粘贴高亮文本对比度达到 7:1');
+  assert.ok(appearance.font.includes('Microsoft YaHei UI'), '为中文提供清晰的无衬线字体回退');
+  assert.equal(appearance.size, '14px');
+  await snapshot('terminal-paste-highlight-' + theme + '.png');
+}
+
 async function snapshot(name) {
   const folder = process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR;
   if (!folder) return;
@@ -180,39 +277,59 @@ async function snapshot(name) {
 }
 
 async function exerciseUploadReview() {
-  const buttonDisabled = "[...document.querySelectorAll('[role=dialog] button')].find(item => item.textContent.includes('开始上传')).disabled";
-  const changePath = async target => {
-    await until("document.querySelector('[aria-label=上传目标目录路径]')?.disabled === false", '目录加载完成');
-    await evaluate("(() => {const input=document.querySelector('[aria-label=上传目标目录路径]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input," + JSON.stringify(target) + ");input.dispatchEvent(new Event('input',{bubbles:true}));})()");
-    await clickText('转到');
-    await until("[...document.querySelectorAll('[role=dialog] button')].some(item=>item.textContent.includes('使用此目录')&&!item.disabled)", '目录可确认');
-  };
+  const buttonDisabled = "document.querySelector('[data-testid=upload-confirm-submit]').disabled";
+  const readsBefore = directoryReads.length;
   assert.equal(await evaluate("document.querySelectorAll('[data-testid=upload-file-row]').length"), 2);
-  assert.ok(await evaluate("document.querySelector('[aria-label=上传方向]').textContent.includes('本机')"));
+  assert.equal(await evaluate("document.querySelector('[data-testid=upload-source-path]').textContent"), uploadPreparation.files[0].localPath);
   assert.equal(await evaluate("document.querySelector('[data-testid=upload-destination-path]').textContent"), '/srv');
+  assert.equal(await evaluate("document.querySelectorAll('.server-upload-directory-picker').length"), 0);
+  assert.equal(await evaluate("[...document.querySelectorAll('[role=dialog] button')].some(item=>item.textContent.includes('更换目录'))"), false);
+  assert.ok(await evaluate("document.querySelector('.server-upload-file-meta strong').textContent.includes('KB')"));
+  assert.ok(await evaluate(buttonDisabled), '检查期间禁止上传');
+  assert.ok(await evaluate("document.querySelector('[data-testid=upload-review-progress]')?.textContent.includes('校验文件')"), '检查进度可见');
+  await snapshot('upload-review-checking.png');
+  for (const [label, expected] of [
+    ['复制 release.tar 的本地路径', uploadPreparation.files[0].localPath],
+    ['复制 release.tar 的目标目录', '/srv'],
+  ]) {
+    clipboard.writeText('fixture-before-path-copy');
+    await click('[aria-label="' + label + '"]');
+    assert.equal(clipboard.readText(), expected, '复制完整路径到系统剪贴板');
+  }
+  reviewHeld=false;
+  await until("!document.querySelector('[data-testid=upload-review-progress]') && !document.querySelector('[role=dialog] input[type=checkbox]').disabled", '检查完成后允许确认覆盖');
   await snapshot('upload-confirm-dark.png');
   await click('[role=dialog] input[type=checkbox]');
-  await clickText('更换目录');
-  await changePath('/srv/config');
-  await snapshot('upload-choose-directory.png');
-  revisionFailure = true;
-  await clickText('使用此目录');
-  await until("document.querySelector('.server-upload-review-error')?.textContent.includes('暂时不可写')", '目标检查失败可恢复');
-  assert.ok(await evaluate(buttonDisabled), '失败后禁止旧目标上传');
-  assert.equal(await evaluate("document.querySelector('[role=dialog] input[type=checkbox]').checked"), false, '更换目标清除覆盖选择');
-  revisionFailure = false;
-  await clickText('使用此目录');
-  await until("document.querySelector('[data-testid=upload-destination-path]')?.textContent==='/srv/config'", '新目标检查完成');
-  assert.ok(await evaluate("[...document.querySelectorAll('.server-upload-final-path code')].every(item=>item.textContent.startsWith('/srv/config/'))"), '逐文件更新最终路径');
-  await click('[role=dialog] input[type=checkbox]');
+  const checksBeforeRemoval = preparationRuns;
+  const expiresBeforeRemoval = uploadPreparation.expiresAt;
+  const tokenBeforeRemoval = uploadPreparation.preparationId;
   await click('[aria-label="移除 deployment-report.xlsx"]');
-  await until("document.querySelectorAll('[data-testid=upload-file-row]').length===1", '移除文件重新检查');
-  assert.ok(await evaluate(buttonDisabled), '移除文件后再次确认覆盖');
-  await clickText('更换目录');
-  await changePath('/srv');
-  await clickText('使用此目录');
-  await until("document.querySelector('[data-testid=upload-destination-path]')?.textContent==='/srv' && !document.querySelector('.server-upload-directory-picker')", '恢复目标');
-  assert.ok(uploadRevisions.length >= 4);
+  await until("document.querySelectorAll('[data-testid=upload-file-row]').length === 1 && !document.querySelector('[data-testid=upload-review-progress]')", '移除直接更新清单');
+  assert.equal(preparationRuns, checksBeforeRemoval, '移除不启动整批检查');
+  assert.equal(uploadPreparation.expiresAt, expiresBeforeRemoval, '移除不延长原确认有效期');
+  assert.notEqual(uploadPreparation.preparationId, tokenBeforeRemoval, '移除替换旧凭证');
+  assert.ok(await evaluate("document.querySelector('.server-upload-total').textContent.includes('1 个文件') && document.querySelector('.server-upload-total').textContent.includes('976.6 KB')"), '数量和大小立即更新');
+  assert.equal(await evaluate("document.querySelector('[role=dialog] input[type=checkbox]').checked"), false, '移除后重新确认剩余同名覆盖');
+  assert.equal(await evaluate("document.querySelector('[role=dialog] input[type=checkbox]').disabled"), false, '移除后可以直接确认覆盖');
+  await snapshot('upload-after-remove.png');
+  uploadPreparation.status = 'error'; uploadPreparation.preparationId = null;
+  uploadPreparation.error = {code:'UPLOAD_CONFIRMATION_EXPIRED',message:'上传确认已过期，请重新检查文件。'};
+  await until("document.querySelector('.server-upload-review-error')?.textContent.includes('已过期')", '移除后继续轮询到期状态');
+  revisionFailure = true;
+  await clickText('重新检查');
+  await until("document.querySelector('.server-upload-review-error')?.textContent.includes('暂时不可写')", '文件重新检查失败可恢复');
+  assert.ok(await evaluate(buttonDisabled), '失败后禁止旧凭证上传');
+  assert.equal(await evaluate("document.querySelector('[role=dialog] input[type=checkbox]').checked"), false, '重新检查清除覆盖选择');
+  revisionFailure = false;
+  await clickText('重新检查');
+  await until("!document.querySelector('[data-testid=upload-review-progress]') && !document.querySelector('.server-upload-review-error') && document.querySelector('[role=dialog] input[type=checkbox]')?.disabled === false", '原目录重新检查完成');
+  assert.equal(await evaluate("document.querySelectorAll('[data-testid=upload-file-row]').length"), 1, '后台重试保留移除后的文件清单');
+  assert.ok(await evaluate(buttonDisabled), '重新检查后再次确认覆盖');
+  assert.equal(await evaluate("document.querySelector('[data-testid=upload-destination-path]').textContent"), '/srv');
+  assert.equal(uploadRevisions.length, 3);
+  assert.ok(uploadRevisions.every(input => !Object.hasOwn(input, 'path')), '修订不接受目标目录');
+  assert.equal(directoryReads.length, readsBefore, '确认页不额外浏览远端目录');
+  await snapshot('upload-confirm-single.png');
 }
 
 async function assertWorkspaceCoexistence() {
@@ -252,10 +369,12 @@ async function assertWorkspaceCoexistence() {
 
 async function run() {
   await app.whenReady();
+  savedClipboard = { text: clipboard.readText(), html: clipboard.readHTML(), rtf: clipboard.readRTF(), image: clipboard.readImage() };
   const { ServerWorkspaceFiles } = await import('../src/server-workspace-files.mjs');
   workspaceFiles = new ServerWorkspaceFiles({ workspaceStore: { getPlugin: async () => plugin }, serverRuntime: { status: () => ({ connected, generation: 1 }), statRemotePath: async (_plugin, target) => fixtureStat(target) }, serverOperations: {} });
   register();
   win = new BrowserWindow({ enableLargerThanScreen:true, useContentSize:true, width: 1440, height: 920, show: process.platform === 'darwin', webPreferences: { preload: path.join(root, 'src/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
+  win.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   win.webContents.session.webRequest.onBeforeRequest((details, callback) => { if (/^https?:/u.test(details.url)) { externalRequests.push(details.url); callback({ cancel: true }); } else callback({}); });
   win.webContents.on('console-message', (_event, details) => { if (details.level === 'error') errors.push(details.message); });
   await win.loadFile(path.join(root, 'renderer-build/v2/index.html'));
@@ -312,7 +431,7 @@ async function run() {
   await snapshot('server-symlink-expanded.png');
   await clickText('上传文件');
   await until(`document.querySelector('[role="dialog"]')?.textContent.includes('/usr/bin')`, '链接上传显示实际目录');
-  assert.ok(await evaluate(`document.querySelector('[role="dialog"]').textContent.includes('由 /bin 解析')`), '上传确认解释链接路径');
+  assert.ok(await evaluate(`document.querySelector('[role="dialog"]').textContent.includes('目录链接 /bin → 上方实际目录')`), '上传确认解释链接路径');
   await clickText('取消');
   await click('[role="treeitem"][title^="/current.conf →"]');
   await until(`document.querySelector('.server-preview-tab-panel:not([hidden]) .server-preview-content')?.textContent.includes('server_name')`, '普通文件链接可预览');
@@ -436,16 +555,49 @@ async function run() {
   previewDelay = 0;
   await key('c', 67, true);
   assert.ok(writes.some((item) => item.data === '\x03'), 'Ctrl+C送到交互会话');
-  await paste('echo one\necho two');
-  await until(`document.querySelector('[role="dialog"]')?.textContent.includes('确认粘贴')`, '多行粘贴提示');
-  await clickText('确认并填入首行');
-  assert.ok(writes.some((item) => item.data.includes('echo one') && !item.data.includes('echo two')), '只发送首行');
-  assert.ok(!writes.some((item) => item.data.includes('echo two')), '未自动发送剩余行');
-  await until("document.querySelector('[role=\"dialog\"]') === null", "确认后关闭对话框便于操作终端");
-  assert.ok(await evaluate(`[...document.querySelectorAll('.server-paste-queue button')].some(item => item.disabled)`), '按Enter前不能拼接下一行');
-  await key('Enter', 13);
-  await clickText('填入下一行');
-  assert.ok(writes.some((item) => item.data.includes('echo two')), '下一行由用户手动填入');
+  const pasted = 'cat <<EOF\r\n  第一行\r\n\r\n第二行\r\nEOF';
+  const beforePaste = writes.length;
+  await nativePaste(pasted);
+  await until(`document.querySelector('[role="dialog"]')?.textContent.includes('确认粘贴')`, '系统剪贴板多行预览');
+  assert.equal(writes.length, beforePaste, '预览前不发送任何一行');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('[role=dialog] pre')).fontSize"), '14px', '多行预览使用可读字号');
+  await snapshot('terminal-paste-preview.png');
+  await clickText('确认粘贴整段');
+  assert.equal(writes.at(-1).data, pasted.replace(/\r?\n/gu, '\r'), '整段保留中文、缩进与空行');
+  await until('document.querySelector("[role=dialog]") === null', '确认后关闭预览');
+  const sessionId = opened[0];
+  terminalSessions.get(sessionId).chunks.push(Buffer.from('\x1b[?2004h'));
+  await wait(250);
+  const readsBefore = clipboardReads;
+  await nativePaste('echo shortcut\necho second', true);
+  await until('document.querySelector("[role=dialog]")?.textContent.includes("echo shortcut")', '真实快捷键读取剪贴板');
+  assert.equal(clipboardReads, readsBefore + 1, '快捷键只读取一次');
+  await clickText('确认粘贴整段');
+  assert.equal(writes.at(-1).data, '\x1b[200~echo shortcut\recho second\x1b[201~', '遵循远端括号粘贴模式且不额外回车');
+  terminalSessions.get(sessionId).chunks.push(Buffer.from('\x1b[?2004l'));
+  await wait(250);
+  await nativePaste('echo cancelled\necho never');
+  const beforeCancel = writes.length;
+  await clickText('取消');
+  assert.equal(writes.length, beforeCancel, '取消粘贴不发送');
+  await until('document.querySelector("[role=dialog]") === null', '取消后关闭预览');
+  await wait(200);
+  const box = await evaluate("(() => { const e=document.querySelector('.server-terminal-tab-panel:not([hidden]) .xterm-screen'); const r=e.getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width} })()");
+  win.webContents.sendInputEvent({type:'mouseMove', x:Math.round(box.x+2), y:Math.round(box.y+8)});
+  await wait(50);
+  win.webContents.sendInputEvent({type:'mouseDown', x:Math.round(box.x+2), y:Math.round(box.y+8), button:'left', clickCount:1});
+  await wait(50);
+  win.webContents.sendInputEvent({type:'mouseMove', x:Math.round(box.x+box.w-5), y:Math.round(box.y+35), button:'left', modifiers:['leftButtonDown']});
+  await wait(70);
+  win.webContents.sendInputEvent({type:'mouseUp', x:Math.round(box.x+box.w-5), y:Math.round(box.y+35), button:'left', clickCount:1});
+  await wait(100);
+  await clickText('复制');
+  assert.ok(clipboard.readText().includes('\n'), '终端多行选中内容复制到系统剪贴板');
+  const copiedText = clipboard.readText();
+  terminalSessions.get(sessionId).chunks.push(Buffer.from('\x1b]52;c;dGVzdA==\x07'));
+  await wait(200);
+  assert.equal(clipboard.readText(), copiedText, '远端 OSC 52 不能改写剪贴板');
+  await snapshot('terminal-multiline-paste.png');
   const beforeLargePaste = writes.length;
   await paste('中'.repeat(30000));
   assert.equal(writes.length, beforeLargePaste, 'UTF8超过64KB在发送前拒绝');
@@ -457,14 +609,40 @@ async function run() {
   await click('[data-testid="plugin-open-workspace"]');
   assert.equal(opened.length, 1, '返回重开保留同一终端');
   assert.ok(await evaluate(`document.querySelector('.server-preview-tab-panel:not([hidden]) .server-preview-content')?.textContent.includes('server_name')`), '返回保留预览');
+  uploadSelection = ['cancelled-large.bin'];
+  reviewHeld = true; reviewReadDelay = 700;
+  await clickText('上传文件');
+  await until("document.querySelector('[data-testid=upload-review-progress]')", '慢检查先显示清单');
+  const cancelledReviewId = uploadPreparation.reviewId;
+  await wait(100);
+  await clickText('取消');
+  assert.ok(cancelledReviews.includes(cancelledReviewId), '取消终止对应预处理任务');
+  reviewReadDelay = 0;
   uploadSelection = ['release.tar', 'deployment-report.xlsx'];
   await clickText('上传文件');
+  await wait(800);
+  assert.ok(await evaluate("document.querySelector('[role=dialog]').textContent.includes('release.tar') && !document.querySelector('[role=dialog]').textContent.includes('cancelled-large.bin')"), '迟到结果不能覆盖新选择');
+
   await until(`document.querySelector('[role="dialog"]')?.textContent.includes('release.tar')`, '上传文件确认');
   await exerciseUploadReview();
   assert.ok(await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(item => item.textContent.includes('开始上传')).disabled`), '覆盖必须明确选择');
   await click('[role="dialog"] input[type="checkbox"]');
   await clickText('开始上传 1 个文件');
   assert.equal(uploads[0].path, '/srv/release.tar', '确认锁定目录');
+  await until("document.querySelector('[data-testid=upload-speed]')?.textContent.includes('/s')", '显示上传速度');
+  assert.ok(await evaluate("document.querySelector('[data-testid=upload-speed]').textContent.includes('剩余约 12 秒')"), '显示剩余时间');
+  await snapshot('upload-speed-estimate.png');
+  uploadSelection = ['next-batch.bin']; reviewHeld = true; uploadReadFailure = true;
+  await clickText('上传文件');
+  await until("document.querySelector('[data-testid=upload-review-progress]') && document.querySelector('[data-testid=upload-job-error]')", '检查与已有传输提示并存');
+  assert.equal(await evaluate("document.querySelector('.server-upload-review-error')"), null, '已有任务的查询错误不会进入新文件检查窗口');
+  assert.equal(uploads[0].status, 'running', '预处理不会停止已有上传');
+  uploadReadFailure = false;
+  const transferredBeforeReview = uploads[0].transferred;
+  await until("!document.querySelector('[data-testid=upload-job-error]')", '状态查询恢复后清除传输提示');
+  assert.ok(uploads[0].transferred > transferredBeforeReview, '后台检查期间已有上传继续推进');
+  await clickText('取消'); reviewHeld = false;
+  assert.equal(uploads[0].status, 'running', '取消新检查不取消已有上传');
   const progressBefore = uploads[0].transferred;
   await click('[data-testid="server-workspace-back"]');
   // 工作区隐藏时空闲轮询最长为 4 秒，等待实际进度避免依赖固定时序。
@@ -480,6 +658,19 @@ async function run() {
   await until("document.querySelector('[role=treeitem][aria-selected=true]')?.getAttribute('title')==='/srv/release.tar'", '定位上传文件并高亮');
   assert.ok(await evaluate("document.querySelector('.server-upload-task-target code').textContent==='/srv/release.tar'"), '任务持续展示固定目标');
   await snapshot('upload-task-completed.png');
+  uploads=uploads.map(job=>({...job,status:'interrupted',canResume:true,resumeBytes:400000,transferred:400000,message:'上传已中断，连接恢复后可继续。'}));
+  await until(`[...document.querySelectorAll('.server-upload-task-action button')].some(button=>button.textContent==='继续上传')`,'中断任务显示继续上传');
+  await clickText('继续上传');
+  await until(`document.querySelector('[role="dialog"]')?.textContent.includes('继续前会校验')`,'续传确认说明校验和已传大小');
+  assert.ok(await evaluate(`document.querySelector('[aria-label="移除 release.tar"]').disabled`),'续传不能替换文件');
+  assert.ok(await evaluate(`document.querySelector('[data-testid=upload-confirm-submit]').disabled`),'续传覆盖仍需明确确认');
+  await snapshot('upload-resume-confirm.png');
+  await click('[role="dialog"] input[type="checkbox"]');
+  await clickText('确认继续上传');
+  await until(`!document.querySelector('[role="dialog"]')`,'续传确认关闭');
+  assert.equal(uploads.length,1,'续传复用原任务');
+  uploads=uploads.map(job=>({...job,status:'completed',transferred:job.bytes}));
+
   await click('[aria-label="最大化终端"]');
   await wait(150);
   assert.ok(await evaluate(`document.querySelector('.server-terminal-container').getBoundingClientRect().width > window.innerWidth - 60`), '最大化终端获得完整宽度');
@@ -487,11 +678,17 @@ async function run() {
   await setViewport(1000, 750);
   assert.ok(await evaluate(`(() => { const rect = document.querySelector('.server-terminal-container').getBoundingClientRect(); return rect.height > 160 && rect.width > 350 && document.documentElement.scrollWidth <= window.innerWidth; })()`), '窄窗口终端仍可操作');
   await snapshot('server-workspace-narrow.png');
+  clipboardDelay = 500;
+  const beforeLatePaste = writes.length;
+  await nativePaste('late-paste-must-not-arrive', true);
   const firstTerminal = opened[0];
   await click('[aria-label="新增终端"]');
   await until("document.querySelectorAll('[aria-label=终端标签] [role=tab]').length === 2", '新增终端标签');
   await wait(200);
   const secondTerminal = opened.at(-1);
+  await wait(500);
+  clipboardDelay = 0;
+  assert.equal(writes.length, beforeLatePaste, '切换标签后丢弃迟到的剪贴板读取');
   assert.notEqual(firstTerminal, secondTerminal, '新标签使用独立会话');
   await paste('second-tab-input');
   assert.equal(writes.at(-1).sessionId, secondTerminal, '输入只发送给当前标签');
@@ -514,12 +711,17 @@ async function run() {
   await clickText('填入配色命令');
   assert.equal(writes.at(-1).sessionId, firstTerminal);
   assert.ok(writes.at(-1).data.includes("alias ll="), '配色命令补充 ll 别名');
+  const { TERMINAL_PASTE_COLORS } = await import('../src/server-terminal-startup.mjs');
+  assert.ok(writes.at(-1).data.endsWith(TERMINAL_PASTE_COLORS), '手动应用与新建会话使用同一粘贴配色');
   assert.ok(!/[\r\n]/u.test(writes.at(-1).data), '配色命令不自动回车执行');
   terminalSessions.get(firstTerminal).chunks.push(Buffer.from('\r\n\x1b[34mcolor-directory\x1b[0m \x1b[36mcolor-link\x1b[0m \x1b[32mcolor-executable\x1b[0m\r\n'));
   await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) .xterm-rows')?.textContent.includes('color-executable')", '渲染文件类型 ANSI 颜色');
   const palette = await evaluate("(() => { const rows=document.querySelector('.server-terminal-tab-panel:not([hidden]) .xterm-rows'); return ['color-directory','color-link','color-executable'].map(text => getComputedStyle([...rows.querySelectorAll('span')].find(item => item.textContent.includes(text))).color) })()");
   assert.equal(new Set(palette).size, 3, '目录、链接、可执行文件颜色不同');
   await snapshot('server-multiple-tabs.png');
+  terminalSessions.get(firstTerminal).chunks.push(Buffer.from('\r\n\x1b[27;48;5;23;38;5;195mpaste-highlight 中文多行\x1b[0m\r\n\x1b[27;48;5;23;38;5;195m    保留缩进和空行\x1b[0m\r\n'));
+  await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) .xterm-rows')?.textContent.includes('paste-highlight')", '模拟 Readline 原生粘贴高亮');
+  await assertPasteAppearance('dark');
   await click('[aria-label="关闭终端 2"]');
   await wait(100);
   assert.ok(closed.includes(secondTerminal), '关闭标签释放它的终端');
@@ -532,6 +734,7 @@ async function run() {
   assert.equal(lightColors.actual, lightColors.expected, '浅色标题使用当前前景色');
   assert.equal(lightColors.tree, lightColors.expected, '浅色树使用当前前景色');
   await snapshot('server-workspace-light.png');
+  await assertPasteAppearance('light');
   uploadSelection = ['release.tar', ...Array.from({length:19}, (_, index) => 'deployment-report-with-long-name-' + index + '.xlsx')];
   await clickText('上传文件');
   await until("document.querySelectorAll('[data-testid=upload-file-row]').length===20", '多文件滚动列表');
@@ -542,6 +745,9 @@ async function run() {
   assert.ok(await evaluate("(() => {const el=document.querySelector('[role=dialog]');const rect=el.getBoundingClientRect();return rect.left>=0 && rect.right<=innerWidth && rect.height<=innerHeight && el.scrollWidth<=el.clientWidth+1;})()"), '窄窗口长文件名不溢出弹窗');
   assert.ok(await evaluate("(() => {const r=document.querySelector('.server-upload-confirm-footer').getBoundingClientRect();return r.top>=0 && r.bottom<=innerHeight;})()"), '窄窗口操作栏始终可见');
   await snapshot('upload-confirm-narrow.png');
+  await setViewport(420, 750);
+  assert.ok(await evaluate("(() => {const el=document.querySelector('[role=dialog]'); return el.scrollWidth<=el.clientWidth+1 && el.getBoundingClientRect().bottom<=innerHeight;})()"), '更窄窗口路径换行且不溢出');
+  await snapshot('upload-confirm-compact.png');
   await clickText('取消');
   await setViewport(1000, 750);
   await clickText('结束会话');
@@ -585,4 +791,4 @@ async function run() {
   process.stdout.write(JSON.stringify({ ok: true, terminalSessions: opened.length, writes: writes.length, directoryReads: directoryReads.length, resizes: resizes.length, screenshotRoot: process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR ?? null }) + '\n');
 }
 
-run().catch((error) => { process.stderr.write(error.stack + '\n'); }).finally(() => { workspaceFiles?.dispose(); win?.destroy(); app.exit(completed ? 0 : 1); });
+run().catch((error) => { process.stderr.write(error.stack + '\n'); }).finally(() => { if (savedClipboard) clipboard.write(savedClipboard); workspaceFiles?.dispose(); win?.destroy(); app.exit(completed ? 0 : 1); });

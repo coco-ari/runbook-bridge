@@ -25,10 +25,11 @@ function quotePosix(value) {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
-async function sha256File(filePath) {
+async function sha256File(filePath, { signal, onProgress } = {}) {
   const hash = crypto.createHash('sha256');
-  const stream = fs.createReadStream(filePath);
-  for await (const chunk of stream) hash.update(chunk);
+  const stream = fs.createReadStream(filePath, { signal });
+  let bytes = 0;
+  for await (const chunk of stream) { hash.update(chunk); bytes += chunk.length; onProgress?.(bytes); }
   return hash.digest('hex');
 }
 
@@ -354,9 +355,9 @@ export class ServerOperations {
     return { path:result.canonicalPath, savedAs:result.localPath, bytes:result.bytes, mtime:result.mtime };
   }
 
-  async remoteSnapshot(plugin, remotePath) {
+  async remoteSnapshot(plugin, remotePath, stat = (target) => this.serverRuntime.statRemotePath(plugin, target)) {
     try {
-      const value = await this.serverRuntime.statRemotePath(plugin, normalizeRemotePath(remotePath));
+      const value = await stat(normalizeRemotePath(remotePath));
       return { exists:true, path:value.path, canonicalPath:value.canonicalPath, type:value.type, size:value.size, mtime:value.mtime, mode:value.mode };
     } catch (error) {
       if (error?.code === 'SOURCE_NOT_FOUND') return { exists:false, path:normalizeRemotePath(remotePath) };
@@ -364,18 +365,20 @@ export class ServerOperations {
     }
   }
 
-  async prepareMutation(plugin, capability, input) {
+  async prepareMutation(plugin, capability, input, { signal, onProgress, remoteSnapshot } = {}) {
     const args = { ...input };
     if (capability === 'fs.upload') {
       const localPath = path.resolve(String(args.localPath ?? ''));
       const local = await fsp.lstat(localPath).catch(() => { throw new AppError('PATH_INVALID', '本地上传文件不存在。'); });
       if (!local.isFile() || local.isSymbolicLink()) throw new AppError('PATH_INVALID', '只能上传本地普通文件。');
       if (local.size > 500 * 1024 * 1024) throw new AppError('FILE_TOO_LARGE', '上传文件不能超过 500 MiB。');
-      const sha256 = await sha256File(localPath);
+      signal?.throwIfAborted();
+      const sha256 = await sha256File(localPath, { signal, onProgress });
+      signal?.throwIfAborted();
       const after = await fsp.lstat(localPath);
       if (after.size !== local.size || after.mtimeMs !== local.mtimeMs) throw new AppError('LOCAL_FILE_CHANGED', '本地文件在校验期间发生变化。');
       const remotePath = normalizeRemotePath(args.remotePath);
-      const remote = await this.remoteSnapshot(plugin, remotePath);
+      const remote = remoteSnapshot ? await remoteSnapshot(remotePath) : await this.remoteSnapshot(plugin, remotePath);
       if (remote.exists && args.overwrite !== true) throw new AppError('TARGET_EXISTS', '远程目标已存在；如需覆盖请明确传 overwrite=true。');
       return { localPath, remotePath, overwrite:args.overwrite === true, _precondition:{ local:{ size:local.size, mtimeMs:local.mtimeMs, sha256 }, remote } };
     }

@@ -490,7 +490,18 @@ export interface ServerUploadPreparation {
   readonly preparationId: string
   readonly path: string
   readonly expiresAt: number
-  readonly files: readonly { readonly name: string; readonly bytes: number; readonly remotePath: string; readonly exists: boolean }[]
+  readonly files: readonly { readonly name: string; readonly localPath: string; readonly bytes: number; readonly remotePath: string; readonly exists: boolean }[]
+}
+
+export interface ServerUploadReview extends Omit<ServerUploadPreparation, "preparationId" | "expiresAt" | "files"> {
+  readonly resume?: { readonly jobId: string; readonly bytes: number }
+  readonly reviewId: string
+  readonly status: "checking" | "ready" | "error"
+  readonly preparationId: string | null
+  readonly expiresAt: number | null
+  readonly files: readonly { readonly name: string; readonly localPath: string; readonly bytes: number; readonly remotePath: string; readonly exists: boolean | null }[]
+  readonly progress: { readonly phase: "remote" | "hashing" | "ready"; readonly completedFiles: number; readonly totalFiles: number; readonly hashedBytes: number; readonly totalBytes: number; readonly currentFile?: string }
+  readonly error?: PublicError
 }
 
 export interface ServerUploadJob {
@@ -499,7 +510,12 @@ export interface ServerUploadJob {
   readonly path: string
   readonly bytes: number
   readonly transferred: number
-  readonly status: "queued" | "running" | "verifying" | "completed" | "cancelled" | "error"
+  readonly phase?: "preparing" | "uploading" | "verifying"
+  readonly bytesPerSecond?: number | null
+  readonly etaSeconds?: number | null
+  readonly canResume?: boolean
+  readonly resumeBytes?: number
+  readonly status: "queued" | "running" | "verifying" | "completed" | "cancelled" | "error" | "interrupted"
   readonly message?: string
 }
 
@@ -507,12 +523,16 @@ export interface AiOpsV2Api {
   serverTerminalOpen(payload: PluginScope & { cols: number; rows: number; tabId?: string; defaultColors?: boolean }): Promise<IpcResult<ServerTerminalSession>>
   serverTerminalRead(payload: PluginScope & { sessionId: string }): Promise<IpcResult<ServerTerminalRead>>
   serverTerminalWrite(payload: PluginScope & { sessionId: string; data: string; encoding?: "utf8" | "binary" }): Promise<IpcResult<OpaqueData>>
+  serverTerminalClipboard(payload: PluginScope & { sessionId: string } & ({ action: "copy"; text: string } | { action: "paste" })): Promise<IpcResult<{ text?: string }>>
   serverTerminalResize(payload: PluginScope & { sessionId: string; cols: number; rows: number }): Promise<IpcResult<OpaqueData>>
   serverTerminalClose(payload: PluginScope & { sessionId: string }): Promise<IpcResult<OpaqueData>>
   serverWorkspaceListDirectory(payload: PluginScope & { path: string; cursor?: string | null; snapshotId?: string; deferLinks?: boolean; resolveLinks?: boolean }): Promise<IpcResult<ServerDirectoryPage>>
   serverWorkspaceReadFile(payload: PluginScope & { path: string }): Promise<IpcResult<ServerFilePreview>>
-  serverWorkspacePickUpload(payload: PluginScope & { path: string }): Promise<IpcResult<ServerUploadPreparation | null>>
-  serverWorkspaceReviseUpload(payload: PluginScope & { preparationId: string; path: string; fileNames: readonly string[] }): Promise<IpcResult<ServerUploadPreparation | null>>
+  serverWorkspacePrepareUploadResume(payload: PluginScope & { jobId: string }): Promise<IpcResult<ServerUploadReview>>
+  serverWorkspacePickUpload(payload: PluginScope & { path: string }): Promise<IpcResult<ServerUploadReview | null>>
+  serverWorkspaceReviseUpload(payload: PluginScope & { reviewId: string; fileNames: readonly string[] }): Promise<IpcResult<ServerUploadReview | null>>
+  serverWorkspaceReadUploadReview(payload: PluginScope & { reviewId: string }): Promise<IpcResult<ServerUploadReview>>
+  serverWorkspaceCancelUploadReview(payload: PluginScope & { reviewId: string }): Promise<IpcResult<OpaqueData>>
   serverWorkspaceConfirmUpload(payload: PluginScope & { preparationId: string; overwrite: boolean }): Promise<IpcResult<{ jobs: readonly ServerUploadJob[] }>>
   serverWorkspaceCancelUpload(payload: PluginScope & { jobId: string }): Promise<IpcResult<ServerUploadJob>>
   serverWorkspaceUploads(payload: PluginScope): Promise<IpcResult<{ jobs: readonly ServerUploadJob[] }>>
@@ -584,12 +604,16 @@ export const AI_OPS_V2_API_NAMES = [
   "serverTerminalOpen",
   "serverTerminalRead",
   "serverTerminalWrite",
+  "serverTerminalClipboard",
   "serverTerminalResize",
   "serverTerminalClose",
   "serverWorkspaceListDirectory",
   "serverWorkspaceReadFile",
+  "serverWorkspacePrepareUploadResume",
   "serverWorkspacePickUpload",
   "serverWorkspaceReviseUpload",
+  "serverWorkspaceReadUploadReview",
+  "serverWorkspaceCancelUploadReview",
   "serverWorkspaceConfirmUpload",
   "serverWorkspaceCancelUpload",
   "serverWorkspaceUploads",

@@ -1,6 +1,10 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { AppError, toPublicError } from './errors.mjs';
+import { ServerUploadResumes } from './server-upload-resumes.mjs';
+import { recoverableUpload } from './server-upload-transfer.mjs';
+import { ServerUploadReviews } from './server-upload-reviews.mjs';
+import { ServerUploadProgress } from './server-upload-progress.mjs';
 import { ServerWorkspaceDirectoryCache } from './server-workspace-directory-cache.mjs';
 
 const PREPARATION_TTL = 5 * 60 * 1000;
@@ -22,7 +26,7 @@ function remotePath(input) {
   return path.posix.normalize(input);
 }
 function publicJob(job) {
-  return { jobId: job.jobId, name: job.name, path: job.path, bytes: job.bytes, transferred: job.transferred, status: job.status, ...(job.message ? { message: job.message } : {}) };
+  return { jobId: job.jobId, name: job.name, path: job.path, bytes: job.bytes, transferred: job.transferred, status: job.status, ...(job.status === 'interrupted' ? { canResume: !job.inFlight, resumeBytes: job.checkpoint?.bytes ?? 0 } : {}), ...(ACTIVE.has(job.status) ? job.progress?.snapshot(job.transferred, job.bytes) : {}), ...(job.message ? { message: job.message } : {}) };
 }
 
 // 人工上传使用独立的一次性预检凭证，完整参数只保留在主进程内存。
@@ -31,6 +35,8 @@ export class ServerWorkspaceFiles {
     Object.assign(this, { workspaceStore, serverRuntime, serverOperations, now });
     this.directoryCache = new ServerWorkspaceDirectoryCache(this);
     this.preparations = new Map();
+    this.uploadReviews = new ServerUploadReviews(this);
+    this.uploadResumes = new ServerUploadResumes(this);
     this.jobs = new Map();
     this.ownerEpochs = new Map();
     this.readCounts = new Map();
@@ -38,7 +44,7 @@ export class ServerWorkspaceFiles {
     this.running = 0;
     this.disposed = false;
     this.onLifecycle = (event) => {
-      if (['lost', 'disconnected'].includes(event.type)) this.closeScope(event, '服务器连接已断开。');
+      if (['lost', 'disconnected'].includes(event.type)) this.interruptScope(event);
     };
     serverRuntime.on?.('lifecycle', this.onLifecycle);
   }
@@ -78,8 +84,8 @@ export class ServerWorkspaceFiles {
     }
   }
 
-  withPathReader(plugin, operation) {
-    if (this.serverRuntime.withRemoteReadSession) return this.serverRuntime.withRemoteReadSession(plugin, (reader) => operation((target) => reader.statPath(target)));
+  withPathReader(plugin, operation, options = {}) {
+    if (this.serverRuntime.withRemoteReadSession) return this.serverRuntime.withRemoteReadSession(plugin, (reader) => operation((target) => reader.statPath(target)), options);
     return operation((target) => this.serverRuntime.statRemotePath(plugin, target));
   }
 
@@ -126,8 +132,8 @@ export class ServerWorkspaceFiles {
     }));
   }
 
-  async assertPath(plugin, selectedPath, type) {
-    const stat = await this.serverRuntime.statRemotePath(plugin, selectedPath);
+  async assertPath(plugin, selectedPath, type, readStat = (target) => this.serverRuntime.statRemotePath(plugin, target)) {
+    const stat = await readStat(selectedPath);
     if (stat.type !== type || stat.canonicalPath !== selectedPath) {
       throw new AppError('PATH_INVALID', '仅支持普通文件和目录，请使用不含符号链接的完整路径。');
     }
@@ -145,49 +151,75 @@ export class ServerWorkspaceFiles {
     }));
   }
 
-  async assertUploadDirectory(plugin, directory) {
-    const resolved = await this.resolvePath(plugin, directory.path, 'directory');
-    if (resolved.canonicalPath !== directory.canonicalPath) throw new AppError('WORKSPACE_PATH_CHANGED', '上传目录链接目标已变化，请重新选择文件并确认。');
-    await this.assertPath(plugin, directory.canonicalPath, 'directory');
+  normalizeUploadPath(input) { return remotePath(input); }
+
+  async assertUploadDirectory(plugin, directory, options = {}) {
+    return this.withPathReader(plugin, async stat => {
+      const resolved = await this.resolvePath(plugin, directory.path, 'directory', stat);
+      if (resolved.canonicalPath !== directory.canonicalPath) throw new AppError('WORKSPACE_PATH_CHANGED', '上传目录链接目标已变化，请重新选择文件并确认。');
+      await this.assertPath(plugin, directory.canonicalPath, 'directory', stat);
+    }, options);
   }
 
-  async prepareUpload(ownerId, payload, localPaths, previous = null) {
+  prepareUploadResume(ownerId, payload) { return this.uploadResumes.prepare(ownerId, payload); }
+
+  beginUploadReview(ownerId, payload, paths) { return this.uploadReviews.start(ownerId, payload, paths); }
+  readUploadReview(ownerId, payload) { return this.uploadReviews.read(ownerId, payload); }
+  reviseUploadReview(ownerId, payload) { return this.uploadReviews.revise(ownerId, payload); }
+  cancelUploadReview(ownerId, payload) { return this.uploadReviews.cancel(ownerId, payload); }
+
+  async prepareUpload(ownerId, payload, localPaths, previous = null, options = {}) {
     if (!Array.isArray(localPaths) || !localPaths.length || localPaths.length > 20) throw new AppError('INVALID_ARGUMENT', '每次请选择 1 至 20 个普通文件。');
     if (this.preparing.has(ownerId)) throw new AppError('WORKSPACE_BUSY', '正在校验上一批文件，请稍候。');
     this.preparing.add(ownerId);
     try {
-      const binding = await this.requirePlugin(ownerId, payload, previous);
+      options.ensureActive?.();
+      const binding = await this.requirePlugin(ownerId, payload, previous ?? options.binding);
       const sourcePath = remotePath(payload.path);
-      const resolved = await this.resolvePath(binding.plugin, sourcePath, 'directory');
+      const resolved = options.directory ? { canonicalPath: options.directory } : await this.resolvePath(binding.plugin, sourcePath, 'directory');
       const directory = resolved.canonicalPath;
+      if (previous && directory !== previous.path) throw new AppError('WORKSPACE_PATH_CHANGED', '上传目录链接目标已变化，请重新选择文件并确认。');
       const uploadDirectory = { path: sourcePath, canonicalPath: directory };
       for (const [id, item] of this.preparations) {
         if (item.expiresAt <= this.now() || (item.ownerId === ownerId && item !== previous)) this.preparations.delete(id);
       }
       const names = new Set();
       const files = [];
+      let hashedBytes = 0;
       for (const source of localPaths) {
         if (typeof source !== 'string' || !path.isAbsolute(source)) throw new AppError('PATH_INVALID', '本地文件路径无效。');
         const name = path.basename(source);
         if (!name || /[\0\r\n\\/]/u.test(name) || names.has(name)) throw new AppError('INVALID_ARGUMENT', '文件名无效，或同一批次中存在同名文件。');
         names.add(name);
+        options.ensureActive?.();
         const args = await this.serverOperations.prepareMutation(binding.plugin, 'fs.upload', {
           localPath: source, remotePath: path.posix.join(directory, name), overwrite: true,
+        }, {
+          signal: options.signal,
+          onProgress: bytes => options.onProgress?.({ currentFile: name, hashedBytes: hashedBytes + bytes }),
+          ...(options.snapshots ? { remoteSnapshot: async target => {
+            if (!options.snapshots.has(target)) throw new AppError('UPLOAD_REVIEW_REQUIRED', '目标检查不完整，请重新检查文件。');
+            return options.snapshots.get(target);
+          } } : {}),
         });
         if (args._precondition.remote.exists && args._precondition.remote.type !== 'file') throw new AppError('PATH_INVALID', '目标同名路径不是普通文件，不能覆盖。');
+        options.ensureActive?.();
         files.push({ name, args });
+        hashedBytes += args._precondition.local.size;
+        options.onProgress?.({ completedFiles: files.length, hashedBytes });
       }
       await this.requirePlugin(ownerId, payload, binding);
-      await this.assertUploadDirectory(binding.plugin, uploadDirectory);
+      await this.assertUploadDirectory(binding.plugin, uploadDirectory, { signal: options.signal });
       await this.requirePlugin(ownerId, payload, binding);
       if (previous && ![...this.preparations.values()].includes(previous)) throw new AppError('UPLOAD_CONFIRMATION_INVALID', '上传选择已失效，请重新选择文件。');
       if (previous && previous.expiresAt <= this.now()) throw new AppError('UPLOAD_CONFIRMATION_EXPIRED', '上传确认已过期，请重新选择文件。');
       for (const [id, item] of this.preparations) if (item.ownerId === ownerId) this.preparations.delete(id);
+      options.ensureActive?.();
       const preparationId = crypto.randomUUID();
       const expiresAt = this.now() + PREPARATION_TTL;
       this.preparations.set(preparationId, { ...binding, ownerId, files, path: directory, uploadDirectory, expiresAt });
       return { preparationId, path: directory, sourcePath, expiresAt, files: files.map(({ name, args }) => ({
-        name, bytes: args._precondition.local.size, remotePath: args.remotePath, exists: args._precondition.remote.exists,
+        name, localPath: args.localPath, bytes: args._precondition.local.size, remotePath: args.remotePath, exists: args._precondition.remote.exists,
       })) };
     } finally { this.preparing.delete(ownerId); }
   }
@@ -202,6 +234,7 @@ export class ServerWorkspaceFiles {
       this.preparations.delete(payload.preparationId);
       throw new AppError('UPLOAD_CONFIRMATION_EXPIRED', '上传确认已过期，请重新选择文件。');
     }
+    if (selectedPath !== preparation.uploadDirectory.path) throw new AppError('INVALID_ARGUMENT', '上传目标目录已固定，请取消后在目标目录重新选择文件。');
     if (!Array.isArray(payload.fileNames) || payload.fileNames.length > 20 || new Set(payload.fileNames).size !== payload.fileNames.length || payload.fileNames.some((name) => typeof name !== 'string' || !preparation.files.some((file) => file.name === name))) throw new AppError('INVALID_ARGUMENT', '只能保留本次已经选择的文件。');
     if (this.preparing.has(ownerId)) throw new AppError('WORKSPACE_BUSY', '正在校验上一批文件，请稍候。');
     // 修改开始即禁止旧确认；失败时仅保留文件选择供重试，不恢复旧的写入凭证。
@@ -230,8 +263,8 @@ export class ServerWorkspaceFiles {
     const binding = await this.requirePlugin(ownerId, scope, preparation);
     await this.assertUploadDirectory(binding.plugin, preparation.uploadDirectory);
     await this.requirePlugin(ownerId, scope, binding);
-    const jobs = preparation.files.map(({ name, args }) => {
-      const job = { ...binding, uploadDirectory: preparation.uploadDirectory, ownerId, jobId: crypto.randomUUID(), name, path: args.remotePath, bytes: args._precondition.local.size, transferred: 0, status: 'queued', args: { ...args, overwrite: payload.overwrite }, controller: new AbortController() };
+    const jobs = preparation.resumeJobId ? [this.uploadResumes.confirm(ownerId, scope, preparation, binding)] : preparation.files.map(({ name, args }) => {
+      const job = { ...binding, uploadDirectory: preparation.uploadDirectory, ownerId, jobId: crypto.randomUUID(), name, path: args.remotePath, bytes: args._precondition.local.size, transferred: 0, status: 'queued', progress: new ServerUploadProgress(this.now), args: { ...args, overwrite: payload.overwrite }, controller: new AbortController() };
       this.jobs.set(job.jobId, job);
       return job;
     });
@@ -242,7 +275,7 @@ export class ServerWorkspaceFiles {
 
   pruneJobs(ownerId) {
     const finished = [...this.jobs.values()].filter((job) => job.ownerId === ownerId && !ACTIVE.has(job.status));
-    for (const job of finished.slice(0, Math.max(0, finished.length - 40))) this.jobs.delete(job.jobId);
+    for (const job of finished.slice(0, Math.max(0, finished.length - 40))) { this.uploadResumes.forget(job); this.jobs.delete(job.jobId); }
   }
 
   async audit(job, result) {
@@ -257,12 +290,14 @@ export class ServerWorkspaceFiles {
       if (this.running >= 2) break;
       if (job.status !== 'queued') continue;
       job.status = 'running';
+      job.inFlight = true;
       this.running += 1;
       void this.runJob(job).finally(() => { this.running -= 1; this.pruneJobs(job.ownerId); this.drain(); });
     }
   }
 
   async runJob(job) {
+    const controller = job.controller;
     try {
       let binding = await this.requirePlugin(job.ownerId, job.scope, job);
       if (job.controller.signal.aborted) throw new AppError('TRANSFER_CANCELLED', '上传已取消。');
@@ -271,32 +306,38 @@ export class ServerWorkspaceFiles {
       binding = await this.requirePlugin(job.ownerId, job.scope, job);
       if (job.controller.signal.aborted) throw new AppError('TRANSFER_CANCELLED', '上传已取消。');
       await this.serverRuntime.uploadRemoteFile(binding.plugin, job.args.localPath, job.path, job.args._precondition, {
-        signal: job.controller.signal,
+        signal: job.controller.signal, resumable: true, checkpoint: job.checkpoint,
+        onCheckpoint: value => { if (job.controller === controller && ACTIVE.has(job.status) && !controller.signal.aborted) job.checkpoint = { ...value }; },
         beforeCommit: async () => {
           const current = await this.requirePlugin(job.ownerId, job.scope, job);
+          controller.signal.throwIfAborted();
           await this.assertUploadDirectory(current.plugin, job.uploadDirectory);
           await this.requirePlugin(job.ownerId, job.scope, job);
         },
         onProgress: ({ transferredBytes, phase }) => {
-          if (!ACTIVE.has(job.status)) return;
+          if (job.controller !== controller || controller.signal.aborted || !ACTIVE.has(job.status)) return;
           job.transferred = Math.min(job.bytes, Math.max(job.transferred, Number(transferredBytes) || 0));
+          job.progress.update(job.transferred, phase);
           job.status = phase === 'verifying' ? 'verifying' : 'running';
         },
       });
+      if (job.controller.signal.aborted) throw job.controller.signal.reason;
       job.status = 'completed';
       job.transferred = job.bytes;
       delete job.message;
       try { await this.audit(job, 'success'); } catch { job.message = '上传完成，但记录审计失败。'; }
     } catch (error) {
-      if (!['cancelled', 'error'].includes(job.status)) {
+      if (ACTIVE.has(job.status) && recoverableUpload(error, job.controller.signal)) this.uploadResumes.interrupt(job);
+      if (!['interrupted', 'cancelled', 'error'].includes(job.status)) {
         job.status = job.controller.signal.aborted ? 'cancelled' : 'error';
         job.message = job.controller.signal.aborted ? '上传已取消。' : toPublicError(error).message;
       }
       if (job.status === 'cancelled') job.message = '传输已取消，请刷新目录核对目标状态。';
       try { await this.audit(job, job.status); } catch { /* 失败信息只留在任务状态，避免记录远端内容。 */ }
     } finally {
-      // 已完成任务不再持有本地路径、哈希或其他内部上传参数。
-      delete job.args;
+      // 仅中断任务保留私有参数，旧操作退出前禁止启动新的续传。
+      job.inFlight = false;
+      if (job.status !== 'interrupted') this.uploadResumes.forget(job);
     }
   }
 
@@ -307,12 +348,13 @@ export class ServerWorkspaceFiles {
   }
 
   stopJob(job, status, message) {
-    if (!ACTIVE.has(job.status)) return;
-    const queued = job.status === 'queued';
+    if (!ACTIVE.has(job.status) && job.status !== 'interrupted') return;
+    const idle = !job.inFlight;
     job.status = status;
     job.message = message;
-    job.controller.abort();
-    if (queued) {
+    job.controller.abort(new AppError(status === 'cancelled' ? 'TRANSFER_CANCELLED' : 'WORKSPACE_CHANGED', message));
+    if (!job.inFlight) this.uploadResumes.forget(job);
+    if (idle) {
       delete job.args;
       void this.audit(job, status).catch(() => undefined);
     }
@@ -327,13 +369,22 @@ export class ServerWorkspaceFiles {
     return publicJob(job);
   }
 
+  interruptScope(scope) {
+    this.uploadReviews.clear(item => includesScope(item.scope, scope));
+    this.directoryCache.clear(item => includesScope(item.binding.scope, scope));
+    for (const [id, item] of this.preparations) if (includesScope(item.scope, scope)) this.preparations.delete(id);
+    for (const job of this.jobs.values()) if (includesScope(job.scope, scope)) this.uploadResumes.interrupt(job);
+  }
+
   closeScope(scope, reason = '服务器配置或连接已经变化。') {
+    this.uploadReviews.clear(item => includesScope(item.scope, scope));
     this.directoryCache.clear((item) => includesScope(item.binding.scope, scope));
     for (const [id, preparation] of this.preparations) if (includesScope(preparation.scope, scope)) this.preparations.delete(id);
     for (const job of this.jobs.values()) if (includesScope(job.scope, scope)) this.stopJob(job, 'error', reason);
   }
 
   closeOwner(ownerId) {
+    this.uploadReviews.clear(item => item.ownerId === ownerId);
     this.directoryCache.clear((item) => item.ownerId === ownerId);
     this.ownerEpochs.set(ownerId, (this.ownerEpochs.get(ownerId) ?? 0) + 1);
     for (const [id, preparation] of this.preparations) if (preparation.ownerId === ownerId) this.preparations.delete(id);
@@ -344,6 +395,7 @@ export class ServerWorkspaceFiles {
   }
 
   dispose() {
+    this.uploadReviews.clear(() => true);
     this.directoryCache.clear(() => true);
     this.disposed = true;
     this.serverRuntime.off?.('lifecycle', this.onLifecycle);

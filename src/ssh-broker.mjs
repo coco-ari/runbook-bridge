@@ -7,6 +7,8 @@ import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import ssh2 from 'ssh2';
 import { AppError } from './errors.mjs';
+import { uploadWithCheckpoints } from './server-upload-transfer.mjs';
+import { uploadTimeouts } from './server-upload-progress.mjs';
 import { evaluateCommandPolicy } from './command-policy.mjs';
 import { createProxySocket } from './proxy.mjs';
 
@@ -1153,7 +1155,7 @@ export class SshBroker {
     });
   }
 
-  async withInternalSftp(projectId, operation, { timeoutMs = SFTP_READ_INACTIVITY_MS, inactivityMs = 0, signal = null } = {}) {
+  async withInternalSftp(projectId, operation, { timeoutMs = SFTP_READ_INACTIVITY_MS, inactivityMs = 0, signal = null, timeoutMessage } = {}) {
     const session = this.requireSession(projectId);
     return withSftp(
       session.client,
@@ -1163,7 +1165,7 @@ export class SshBroker {
         signal,
         timeoutCode: 'SFTP_OPERATION_TIMEOUT',
         inactivityMs,
-        timeoutMessage: '服务器文件操作超过时限。日志搜索请指定单个文件、合并 queries 并缩小 maxScanBytes；目录和 stat 正常时无需重新连接。',
+        timeoutMessage: timeoutMessage ?? '服务器文件操作超过时限。日志搜索请指定单个文件、合并 queries 并缩小 maxScanBytes；目录和 stat 正常时无需重新连接。',
       },
     );
   }
@@ -1248,18 +1250,23 @@ export class SshBroker {
     }, { timeoutMs:10 * 60 * 1000, inactivityMs:SFTP_READ_INACTIVITY_MS });
   }
 
-  async uploadRemoteFileApproved(projectId, localPath, remotePath, precondition, { onProgress, signal, beforeCommit } = {}) {
+  async uploadRemoteFileApproved(projectId, localPath, remotePath, precondition, { onProgress, signal, beforeCommit, resumable = false, checkpoint, onCheckpoint } = {}) {
     const assertNotCancelled = () => {
       if (signal?.aborted) throw new AppError('TRANSFER_CANCELLED', '文件上传已取消。');
     };
     assertNotCancelled();
     const source = path.resolve(String(localPath ?? ''));
     const target = normalizeAbsoluteRemotePath(remotePath);
+    if (resumable) return uploadWithCheckpoints(this, projectId, source, target, precondition, { onProgress, signal, beforeCommit, checkpoint, onCheckpoint }, {
+      lstat: value => fsp.lstat(value), openLocal: value => fsp.open(value, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0)),
+      requireRemoteSnapshot, rename: sftpRename, timeouts: uploadTimeouts,
+    });
     const before = await fsp.lstat(source).catch(() => { throw new AppError('PATH_INVALID', '本地上传文件不存在。'); });
     if (!before.isFile() || before.isSymbolicLink()) throw new AppError('PATH_INVALID', '只能上传本地普通文件。');
     if (before.size !== precondition?.local?.size || before.mtimeMs !== precondition?.local?.mtimeMs) {
       throw new AppError('LOCAL_FILE_CHANGED', '本地文件在确认后发生变化，需要重新确认。');
     }
+    onProgress?.({ transferredBytes: 0, totalBytes: before.size, phase: 'preparing' });
     const sha256 = await hashFile(source, { signal });
     assertNotCancelled();
     if (sha256 !== precondition?.local?.sha256) throw new AppError('LOCAL_FILE_CHANGED', '本地文件内容在确认后发生变化，需要重新确认。');
@@ -1267,6 +1274,8 @@ export class SshBroker {
     await this.withInternalSftp(projectId, async (sftp, _session, lifecycle) => {
       await requireRemoteSnapshot(sftp, target, precondition.remote);
       let localHandle;
+      let progressTimer;
+      const stopReporting = () => clearInterval(progressTimer);
       try {
         throwIfAborted(lifecycle.signal);
         localHandle = await fsp.open(source, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0))
@@ -1277,7 +1286,7 @@ export class SshBroker {
         if (!sameLocalState(await localHandle.stat())) throw new AppError('LOCAL_FILE_CHANGED', '本地文件在确认后已被替换。');
         const contentHash = crypto.createHash('sha256');
         let transferredBytes = 0;
-        const report = (phase) => onProgress?.({ transferredBytes, totalBytes: before.size, phase });
+
         const meter = new Transform({
           transform(chunk, _encoding, callback) {
             contentHash.update(chunk);
@@ -1288,14 +1297,29 @@ export class SshBroker {
         const mode = precondition.remote?.type === 'file' ? precondition.remote.mode & 0o777 : 0o644;
         // 有界批量写入复用 SSH2 的 _writev，避免每个小块都独占一次网络往返。
         const writer = sftp.createWriteStream(temporary, { flags: 'wx', mode, highWaterMark: 512 * 1024 });
-        writer.on('drain', () => report('uploading'));
+        let acknowledgedBytes = -1;
+        const report = (phase) => {
+          // 只计算服务器已确认的写入；从本地流读出的字节不能作为上传成功进度。
+          const confirmed = Math.min(before.size, writer.bytesWritten || 0);
+          if (confirmed === acknowledgedBytes && phase === 'uploading') return;
+          acknowledgedBytes = confirmed;
+          lifecycle.reportProgress({ phase, transferredBytes: confirmed, totalBytes: before.size });
+          onProgress?.({ transferredBytes: confirmed, totalBytes: before.size, phase });
+        };
+        progressTimer = setInterval(() => {
+          try { report('uploading'); }
+          catch { lifecycle.abort(new AppError('TRANSFER_FAILED', '无法更新文件传输状态。')); }
+        }, 250);
+        progressTimer.unref?.();
+        lifecycle.signal.addEventListener('abort', stopReporting, { once: true });
         report('uploading');
         await pipeline(
-          fs.createReadStream(source, { fd: localHandle.fd, autoClose: false, start: 0, highWaterMark: 64 * 1024 }),
+          localHandle.createReadStream({ autoClose: false, start: 0, highWaterMark: 64 * 1024 }),
           meter,
           writer,
           { signal: lifecycle.signal },
         );
+        clearInterval(progressTimer);
         report('verifying');
         throwIfAborted(lifecycle.signal);
         const [currentPath, currentHandle] = await Promise.all([fsp.lstat(source), localHandle.stat()])
@@ -1313,9 +1337,11 @@ export class SshBroker {
         if (!isSftpInterruptedError(error) && !isSftpInterruptedError(lifecycle.signal.reason)) await sftpUnlink(sftp, temporary);
         throw error;
       } finally {
+        stopReporting();
+        lifecycle.signal.removeEventListener('abort', stopReporting);
         await localHandle?.close();
       }
-    }, { timeoutMs:10 * 60 * 1000, signal });
+    }, { ...uploadTimeouts(before.size), signal });
     return { localPath:source, remotePath:target, bytes:before.size, sha256 };
   }
 

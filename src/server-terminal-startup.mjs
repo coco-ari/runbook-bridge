@@ -1,8 +1,11 @@
 import crypto from 'node:crypto';
 import { AppError } from './errors.mjs';
 
+// 使用 Readline 原生高亮配置，仅影响当前 Bash；旧版不支持时保持原行为。
+export const TERMINAL_PASTE_COLORS = "if [ -n \"${BASH_VERSION-}\" ]; then builtin bind 'set active-region-start-color \\e[27;48;5;23;38;5;195m' 2>/dev/null; builtin bind 'set active-region-end-color \\e[0m' 2>/dev/null; fi";
+
 // 固定的人工终端启动配置；不接受 Renderer 或远端输出作为命令内容。
-export const DEFAULT_TERMINAL_COLORS = "if command ls --color=auto -d . >/dev/null 2>&1; then export LS_COLORS='di=01;34:ln=01;36:ex=01;32:or=01;31:fi=0:*.zip=01;35:*.tar=01;35:*.gz=01;35:*.jar=01;35'; alias ls='ls --color=auto'; alias ll='ls -alF --color=auto'; else case $(command uname -s) in Darwin|FreeBSD|OpenBSD|NetBSD|DragonFly) export CLICOLOR=1 LSCOLORS=ExFxCxDxBxegedabagacad; alias ls='ls -G'; alias ll='ls -alF -G';; esac; fi";
+export const DEFAULT_TERMINAL_COLORS = "if command ls --color=auto -d . >/dev/null 2>&1; then export LS_COLORS='di=01;34:ln=01;36:ex=01;32:or=01;31:fi=0:*.zip=01;35:*.tar=01;35:*.gz=01;35:*.jar=01;35'; alias ls='ls --color=auto'; alias ll='ls -alF --color=auto'; else case $(command uname -s) in Darwin|FreeBSD|OpenBSD|NetBSD|DragonFly) export CLICOLOR=1 LSCOLORS=ExFxCxDxBxegedabagacad; alias ls='ls -G'; alias ll='ls -alF -G';; esac; fi" + "; " + TERMINAL_PASTE_COLORS;
 
 export function probeTerminalShell(client, timeoutMs = 1500) {
   if (typeof client.exec !== 'function') return Promise.resolve(false);
