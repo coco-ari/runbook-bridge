@@ -1,21 +1,27 @@
 import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowUp, CaretDown, CaretRight, CaretUpDown, Eye, EyeSlash, File, FileCode, FileText, FileZip, FolderSimple, FolderOpen, Link, PencilSimple, SpinnerGap, TerminalWindow, TreeStructure, UploadSimple } from "@phosphor-icons/react"
+import { ArrowUp, DownloadSimple, CaretDown, CaretRight, CaretUpDown, Eye, EyeSlash, File, FileCode, FileText, FileZip, FolderSimple, FolderOpen, Link, PencilSimple, SpinnerGap, TerminalWindow, TreeStructure, UploadSimple } from "@phosphor-icons/react"
 import type { AiOpsV2Api, PluginScope, ServerDirectoryEntry, ServerDirectoryPage } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { isWorkspacePathStale, parentRemotePath, serverEntryType, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
 
-interface DirectoryState { readonly page?: ServerDirectoryPage; readonly loading: boolean; readonly error?: string; readonly metadataError?: string | undefined; readonly startCursor?: string; readonly history?: readonly string[] }
+interface DirectoryState { readonly page?: ServerDirectoryPage; readonly loading: boolean; readonly loadedAt?: number; readonly error?: string; readonly metadataError?: string | undefined; readonly startCursor?: string; readonly history?: readonly string[] }
+const DIRECTORY_TTL_MS = 30_000
+const needsDirectoryRead = (state?: DirectoryState) => !state?.page || Date.now() - (state.loadedAt ?? 0) >= DIRECTORY_TTL_MS
+
 type TreeRow = { readonly kind: "entry"; readonly entry: ServerDirectoryEntry; readonly depth: number; readonly cycle?: boolean }
   | { readonly kind: "loading" | "error" | "empty" | "more" | "limit" | "previous" | "cycle"; readonly directory: string; readonly depth: number; readonly message?: string }
 interface ServerFileTreeProps {
   readonly api: AiOpsV2Api
   readonly scope: PluginScope
   readonly connected: boolean
+  readonly visible: boolean
   readonly path: string
   readonly onPath: (path: string) => void
   readonly onPreview: (entry: ServerDirectoryEntry) => void
+  readonly onDownload: (entry: ServerDirectoryEntry) => void
+  readonly downloadBusy: boolean
   readonly onUpload: () => void
   readonly onInsertPath: (path: string) => void
   readonly invalidatedPath: Readonly<{ path: string; id: number }> | null
@@ -24,7 +30,11 @@ interface ServerFileTreeProps {
   readonly refreshPaths: readonly string[]
 }
 
-export function ServerFileTree({ api, scope, connected, path, onPath, onPreview, onUpload, onInsertPath, refreshEpoch, refreshPaths, invalidatedPath, locateFile }: ServerFileTreeProps) {
+export function ServerFileTree({ api, scope, connected, visible, path, onPath, onPreview, onUpload, onDownload, downloadBusy, onInsertPath, refreshEpoch, refreshPaths, invalidatedPath, locateFile }: ServerFileTreeProps) {
+  const [refreshing, setRefreshing] = useState(false)
+  const refreshingRef = useRef(false)
+  const connectedRef = useRef(connected)
+  connectedRef.current = connected
   const [root, setRoot] = useState("/")
   const [draft, setDraft] = useState("/")
   const [editingPath, setEditingPath] = useState(false)
@@ -83,7 +93,7 @@ export function ServerFileTree({ api, scope, connected, path, onPath, onPreview,
         }
         if (old?.page?.canonicalPath && old.page.canonicalPath !== page.canonicalPath) for (const cached of Object.keys(retained)) if (cached !== directory && cached.startsWith(directory.replace(/\/$/u, "") + "/")) delete retained[cached]
         if (cursor && old?.page?.canonicalPath && old.page.canonicalPath !== page.canonicalPath) return { ...retained, [directory]: { loading: false, error: "链接目标已变化，请重新读取目录。" } }
-        const next: Record<string, DirectoryState> = { ...retained, [directory]: { loading: false, startCursor: replace ? cursor ?? "0" : cursor ? old?.startCursor ?? "0" : "0", history: replace ? previous ? old?.history?.slice(0, -1) ?? [] : [...(old?.history ?? []), old?.startCursor ?? "0"] : cursor ? old?.history ?? [] : [], page: { ...page, entries: cursor && !replace ? [...(old?.page?.entries ?? []), ...page.entries].slice(0, 2000) : page.entries } } }
+        const next: Record<string, DirectoryState> = { ...retained, [directory]: { loading: false, loadedAt: cursor ? old?.loadedAt ?? Date.now() : Date.now(), startCursor: replace ? cursor ?? "0" : cursor ? old?.startCursor ?? "0" : "0", history: replace ? previous ? old?.history?.slice(0, -1) ?? [] : [...(old?.history ?? []), old?.startCursor ?? "0"] : cursor ? old?.history ?? [] : [], page: { ...page, entries: cursor && !replace ? [...(old?.page?.entries ?? []), ...page.entries].slice(0, 2000) : page.entries } } }
         // 限制后台保留的目录与条目；虚拟列表只挂载视口附近的行。
         while (Object.keys(next).length > 32 || Object.values(next).reduce((sum, item) => sum + (item.page?.entries.length ?? 0), 0) > 5000) {
           const oldest = Object.keys(next).find((key) => key !== directory && key !== rootRef.current && !next[key]?.loading)
@@ -150,7 +160,7 @@ export function ServerFileTree({ api, scope, connected, path, onPath, onPreview,
   }, [])
   useEffect(() => {
     if (!connected) { requestsRef.current.clear(); setDirectories({}); return }
-    if (!directoriesRef.current[root]?.page && !requestsRef.current.has(root)) void load(root)
+    if (needsDirectoryRead(directoriesRef.current[root]) && !requestsRef.current.has(root)) void load(root)
   }, [connected, load, root])
   useEffect(() => {
     if (!invalidatedPath || !connected) return
@@ -177,7 +187,7 @@ export function ServerFileTree({ api, scope, connected, path, onPath, onPreview,
     setRoot(normalized)
     setDraft(normalized)
     setExpanded((current) => new Set([...current, normalized]))
-    // 导航只读取尚未缓存的目录，同时保留每个浏览位置的滚动距离。
+    // 导航复用短期缓存，过期后按需刷新，并保留每个浏览位置的滚动距离。
     scrollPositionsRef.current.set(root, scrollRef.current?.scrollTop ?? 0)
     while (scrollPositionsRef.current.size > 32) scrollPositionsRef.current.delete(scrollPositionsRef.current.keys().next().value!)
     pendingScrollRef.current = scrollPositionsRef.current.get(normalized) ?? 0
@@ -188,7 +198,7 @@ export function ServerFileTree({ api, scope, connected, path, onPath, onPreview,
     })
     setSelected(normalized)
     onPath(normalized)
-    if (normalized === root && !directories[normalized]?.page && !requestsRef.current.has(normalized)) void load(normalized)
+    if (normalized === root && needsDirectoryRead(directories[normalized]) && !requestsRef.current.has(normalized)) void load(normalized)
   }
 
   const toggle = (entry: ServerDirectoryEntry) => {
@@ -205,7 +215,7 @@ export function ServerFileTree({ api, scope, connected, path, onPath, onPreview,
         else next.add(entry.path)
         return next
       })
-      if (!directories[entry.path]?.page && !requestsRef.current.has(entry.path)) void load(entry.path)
+      if (!expanded.has(entry.path) && needsDirectoryRead(directories[entry.path]) && !requestsRef.current.has(entry.path)) void load(entry.path)
       else setDirectories((current) => { const value = current[entry.path]; if (!value) return current; const next = { ...current }; delete next[entry.path]; return { ...next, [entry.path]: value } })
     } else if (serverEntryType(entry) === "file") onPreview(entry)
   }
@@ -289,6 +299,34 @@ export function ServerFileTree({ api, scope, connected, path, onPath, onPreview,
     return result
   }, [directories, expanded, root, showHidden])
 
+  const refreshVisibleDirectories = async (staleOnly = false) => {
+    if (!connectedRef.current || refreshingRef.current) return
+    const browserRoot = root
+    const targets = [...new Set([root, path, ...rows.flatMap(row => row.kind === "entry" && !row.cycle && serverEntryType(row.entry) === "directory" && expanded.has(row.entry.path) ? [row.entry.path] : [])])]
+      .filter(target => !staleOnly || needsDirectoryRead(directoriesRef.current[target]))
+    if (!targets.length) return
+    refreshingRef.current = true
+    setRefreshing(true)
+    const current = () => mountedRef.current && connectedRef.current && rootRef.current === browserRoot
+    const refresh = async (target: string) => {
+      if (current() && !requestsRef.current.has(target)) await load(target)
+    }
+    try {
+      // 先刷新根目录，再以两个请求的并发补齐当前目录和可见展开分支。
+      if (targets[0] === root) await refresh(targets.shift()!)
+      let next = 0
+      await Promise.all(Array.from({ length: Math.min(2, targets.length) }, async () => {
+        while (current() && next < targets.length) await refresh(targets[next++]!)
+      }))
+    } finally {
+      refreshingRef.current = false
+      if (mountedRef.current) setRefreshing(false)
+    }
+  }
+  useEffect(() => {
+    if (visible && connected) void refreshVisibleDirectories(true)
+  }, [visible, connected])
+
   useEffect(() => {
     if (!reveal || !connected || rows.some((row) => row.kind === "entry" && row.entry.path === reveal.path)) return
     const chain: string[] = []
@@ -358,7 +396,7 @@ export function ServerFileTree({ api, scope, connected, path, onPath, onPreview,
       <div className="server-file-actions">
         <Button size="icon-sm" variant="ghost" aria-label="收起所有目录" title="收起所有目录" onClick={() => { setExpanded(new Set()); if (scrollRef.current) scrollRef.current.scrollTop = 0 }}><CaretUpDown /></Button>
         <Button size="icon-sm" variant="ghost" aria-label="显示隐藏文件" title={showHidden ? "隐藏点文件" : "显示隐藏文件"} aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}>{showHidden ? <Eye /> : <EyeSlash />}</Button>
-        <WorkspaceIconButton action="refresh" label="刷新目录" disabled={!connected} onClick={() => { void load(root); if (path !== root) void load(path) }} />
+        <WorkspaceIconButton action="refresh" label="刷新目录" disabled={!connected || refreshing} busy={refreshing} onClick={() => { void refreshVisibleDirectories() }} />
         <Button size="icon-sm" variant="ghost" title="上传文件" aria-label="上传文件" disabled={!connected} onClick={onUpload}><UploadSimple /></Button>
       </div>
     </div>
@@ -394,7 +432,7 @@ export function ServerFileTree({ api, scope, connected, path, onPath, onPreview,
           const isDirectory = targetType === "directory"
           const open = expanded.has(entry.path)
           const supported = !row.cycle && (isDirectory || targetType === "file")
-          return <button key={`entry:${entry.path}`} data-tree-index={index} type="button" className={"server-tree-row" + (entry.type === "symlink" ? " server-tree-link" : "")} role="treeitem" aria-level={row.depth + 1} aria-selected={selected === entry.path} {...(isDirectory ? { "aria-expanded": open } : {})} aria-disabled={(!supported && !pending) || !connected} style={style} title={entry.type === "symlink" ? `${entry.path}${entry.linkTarget ? " → " + entry.linkTarget : ""}${row.cycle ? "（循环链接）" : pending ? metadataError ? "（链接信息读取失败，点击重试）" : "（正在读取链接信息）" : supported ? "" : "（目标不可用或不支持打开）"}` : entry.path} onClick={() => {
+          return <div key={`entry:${entry.path}`} data-tree-index={index} tabIndex={0} className={"server-tree-row" + (entry.type === "symlink" ? " server-tree-link" : "")} role="treeitem" aria-level={row.depth + 1} aria-selected={selected === entry.path} {...(isDirectory ? { "aria-expanded": open } : {})} aria-disabled={(!supported && !pending) || !connected} style={style} title={entry.type === "symlink" ? `${entry.path}${entry.linkTarget ? " → " + entry.linkTarget : ""}${row.cycle ? "（循环链接）" : pending ? metadataError ? "（链接信息读取失败，点击重试）" : "（正在读取链接信息）" : supported ? "" : "（目标不可用或不支持打开）"}` : entry.path} onClick={() => {
             if (!connected) return
             if (pending) {
               pendingOpenRef.current = entry.path
@@ -406,6 +444,8 @@ export function ServerFileTree({ api, scope, connected, path, onPath, onPreview,
             pendingOpenRef.current = null
             if (supported) toggle(entry)
           }} onKeyDown={(event) => {
+            if (event.target !== event.currentTarget) return
+            if ((event.key === "Enter" || event.key === " ") && supported && connected) { event.preventDefault(); toggle(entry); return }
             if (event.key === "ArrowRight" && isDirectory && !open && supported && connected) { event.preventDefault(); toggle(entry) }
             if (event.key === "ArrowLeft" && isDirectory && open && supported && connected) { event.preventDefault(); toggle(entry) }
             if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return
@@ -419,7 +459,8 @@ export function ServerFileTree({ api, scope, connected, path, onPath, onPreview,
             <span className="server-tree-icon">{isDirectory ? open ? <FolderOpen className="server-icon-folder" size={21} weight="fill" /> : <FolderSimple className="server-icon-folder" size={21} weight="fill" /> : (entry.type === "symlink" && targetType !== "file") ? <Link className="server-icon-link" size={20} weight="bold" /> : /\.(zip|tar|gz|tgz|jar|7z)$/iu.test(entry.name) ? <FileZip className="server-icon-archive" size={20} weight="duotone" /> : /\.(conf|json|yml|yaml|xml|sh|js|ts|html|css)$/iu.test(entry.name) ? <FileCode className="server-icon-code" size={20} weight="duotone" /> : /\.(txt|log|md)$/iu.test(entry.name) ? <FileText className="server-icon-file" size={20} weight="duotone" /> : <File className="server-icon-file" size={20} weight="duotone" />}{entry.type === "symlink" && supported ? <Link className="server-tree-link-badge" size={11} weight="bold" /> : null}</span>
             <span className="server-tree-name">{entry.name}</span>
             {entry.type === "symlink" ? <span className="server-tree-link-target" title={entry.linkTarget ?? (pending ? metadataError ?? "正在读取链接信息" : "链接目标无法解析")}>→ {entry.linkTarget ?? (pending ? metadataError ? "点击重试" : "读取中…" : "目标不可用")}{row.cycle ? " · 循环链接" : targetType === "special" ? " · 特殊文件" : ""}</span> : null}
-          </button>
+            {entry.type === "file" ? <Button className="server-tree-download" size="icon-sm" variant="ghost" disabled={!connected || downloadBusy} aria-label={`下载 ${entry.name}`} title="下载文件" onClick={event => { event.stopPropagation(); onDownload(entry) }}><DownloadSimple size={15} /></Button> : null}
+          </div>
         })}
       </div>
     </div>

@@ -127,8 +127,8 @@
 .server-upload-task-target > span { flex-shrink: 0; }
 .server-upload-task-target code { font-family: var(--font-mono); overflow-wrap: anywhere; min-width: 0; }
 .server-upload-task-target [data-slot="button"] { width: 24px; height: 24px; }
-.server-upload-task-action { display: flex; width: 86px; flex-shrink: 0; justify-content: flex-end; }
-.server-upload-task-action [data-slot="button"] { font-size: 11px; }
+.server-upload-task-action { display: flex; width: max-content; min-width: 86px; flex-shrink: 0; justify-content: flex-end; align-items: center; gap: 6px; }
+.server-upload-task-action [data-slot="button"] { flex-shrink: 0; font-size: 11px; }
 .server-upload-progress strong { color: var(--foreground); font-weight: 500; }
 @media (max-width: 640px) {
   .server-upload-dialog { padding: 16px; gap: 14px; }
@@ -149,3 +149,6 @@
 }
 
 .server-upload-checking { display: flex; align-items: center; gap: 8px; color: var(--muted-foreground); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.server-tree-download { margin-left: auto; flex-shrink: 0; opacity: 0; }
+.server-tree-row:hover .server-tree-download, .server-tree-row:focus-within .server-tree-download { opacity: 1; }

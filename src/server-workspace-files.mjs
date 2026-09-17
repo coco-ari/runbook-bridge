@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { AppError, toPublicError } from './errors.mjs';
+import { ServerWorkspaceDownloads } from './server-workspace-downloads.mjs';
 import { ServerUploadResumes } from './server-upload-resumes.mjs';
 import { recoverableUpload } from './server-upload-transfer.mjs';
 import { ServerUploadReviews } from './server-upload-reviews.mjs';
@@ -8,7 +9,8 @@ import { ServerUploadProgress } from './server-upload-progress.mjs';
 import { ServerWorkspaceDirectoryCache } from './server-workspace-directory-cache.mjs';
 
 const PREPARATION_TTL = 5 * 60 * 1000;
-const ACTIVE = new Set(['queued', 'running', 'verifying']);
+const ACTIVE = new Set(['queued', 'running', 'verifying', 'pausing']);
+const ENDED = new Set(['completed', 'cancelled', 'error']);
 const SCOPE_FIELDS = ['projectId', 'environmentId', 'pluginInstanceId'];
 
 function scopeOf(input) {
@@ -26,7 +28,7 @@ function remotePath(input) {
   return path.posix.normalize(input);
 }
 function publicJob(job) {
-  return { jobId: job.jobId, name: job.name, path: job.path, bytes: job.bytes, transferred: job.transferred, status: job.status, ...(job.status === 'interrupted' ? { canResume: !job.inFlight, resumeBytes: job.checkpoint?.bytes ?? 0 } : {}), ...(ACTIVE.has(job.status) ? job.progress?.snapshot(job.transferred, job.bytes) : {}), ...(job.message ? { message: job.message } : {}) };
+  return { direction: job.direction ?? 'upload', ...(job.localPath ? {localPath:job.localPath} : {}), canRemove: ENDED.has(job.status) && !job.inFlight, canPause: job.direction !== 'download' && ['queued', 'running'].includes(job.status) && job.checkpoint?.phase !== 'committing' && Boolean(job.plugin.target?.hostKeyFingerprint), jobId: job.jobId, name: job.name, path: job.path, bytes: job.bytes, transferred: job.transferred, status: job.status, ...(['interrupted', 'paused'].includes(job.status) ? { canResume: !job.inFlight, resumeBytes: job.checkpoint?.bytes ?? 0 } : {}), ...(ACTIVE.has(job.status) ? job.progress?.snapshot(job.transferred, job.bytes) : {}), ...(job.message ? { message: job.message } : {}) };
 }
 
 // 人工上传使用独立的一次性预检凭证，完整参数只保留在主进程内存。
@@ -38,6 +40,7 @@ export class ServerWorkspaceFiles {
     this.uploadReviews = new ServerUploadReviews(this);
     this.uploadResumes = new ServerUploadResumes(this);
     this.jobs = new Map();
+    this.downloads = new ServerWorkspaceDownloads(this);
     this.ownerEpochs = new Map();
     this.readCounts = new Map();
     this.preparing = new Set();
@@ -257,7 +260,7 @@ export class ServerWorkspaceFiles {
     }
     if (preparation.needsRevision) throw new AppError('UPLOAD_REVIEW_REQUIRED', '上传选择已经修改，请重新检查后确认。');
     if (typeof payload.overwrite !== 'boolean' || (preparation.files.some(({ args }) => args._precondition.remote.exists) && !payload.overwrite)) throw new AppError('TARGET_EXISTS', '请明确确认覆盖同名文件。');
-    if ([...this.jobs.values()].filter((job) => job.ownerId === ownerId && ACTIVE.has(job.status)).length + preparation.files.length > 40) throw new AppError('WORKSPACE_BUSY', '待上传文件过多，请等待当前传输完成。');
+    if ([...this.jobs.values()].filter((job) => job.ownerId === ownerId && !ENDED.has(job.status)).length + (preparation.resumeJobId ? 0 : preparation.files.length) > 40) throw new AppError('WORKSPACE_BUSY', '待上传文件过多，请等待当前传输完成。');
     // 在第一次异步操作前消耗凭证，避免重复点击并发使用同一确认。
     this.preparations.delete(payload.preparationId);
     const binding = await this.requirePlugin(ownerId, scope, preparation);
@@ -274,13 +277,13 @@ export class ServerWorkspaceFiles {
   }
 
   pruneJobs(ownerId) {
-    const finished = [...this.jobs.values()].filter((job) => job.ownerId === ownerId && !ACTIVE.has(job.status));
+    const finished = [...this.jobs.values()].filter((job) => job.ownerId === ownerId && ENDED.has(job.status) && !job.inFlight);
     for (const job of finished.slice(0, Math.max(0, finished.length - 40))) { this.uploadResumes.forget(job); this.jobs.delete(job.jobId); }
   }
 
   async audit(job, result) {
     await this.workspaceStore.appendAudit(job.scope.projectId, {
-      ...job.scope, pluginType: 'server', type: 'desktop-upload', source: 'desktop-human', result, operation: { remotePath: job.path, bytes: job.bytes },
+      ...job.scope, pluginType: 'server', type: job.direction === 'download' ? 'desktop-download' : 'desktop-upload', source: 'desktop-human', result, operation: { remotePath: job.path, bytes: job.bytes },
     });
   }
 
@@ -297,6 +300,7 @@ export class ServerWorkspaceFiles {
   }
 
   async runJob(job) {
+    if (job.direction === 'download') return this.downloads.run(job);
     const controller = job.controller;
     try {
       let binding = await this.requirePlugin(job.ownerId, job.scope, job);
@@ -307,6 +311,7 @@ export class ServerWorkspaceFiles {
       if (job.controller.signal.aborted) throw new AppError('TRANSFER_CANCELLED', '上传已取消。');
       await this.serverRuntime.uploadRemoteFile(binding.plugin, job.args.localPath, job.path, job.args._precondition, {
         signal: job.controller.signal, resumable: true, checkpoint: job.checkpoint,
+        shouldPause: () => job.pauseRequested === true,
         onCheckpoint: value => { if (job.controller === controller && ACTIVE.has(job.status) && !controller.signal.aborted) job.checkpoint = { ...value }; },
         beforeCommit: async () => {
           const current = await this.requirePlugin(job.ownerId, job.scope, job);
@@ -318,7 +323,7 @@ export class ServerWorkspaceFiles {
           if (job.controller !== controller || controller.signal.aborted || !ACTIVE.has(job.status)) return;
           job.transferred = Math.min(job.bytes, Math.max(job.transferred, Number(transferredBytes) || 0));
           job.progress.update(job.transferred, phase);
-          job.status = phase === 'verifying' ? 'verifying' : 'running';
+          job.status = job.pauseRequested ? 'pausing' : phase === 'verifying' ? 'verifying' : 'running';
         },
       });
       if (job.controller.signal.aborted) throw job.controller.signal.reason;
@@ -327,17 +332,18 @@ export class ServerWorkspaceFiles {
       delete job.message;
       try { await this.audit(job, 'success'); } catch { job.message = '上传完成，但记录审计失败。'; }
     } catch (error) {
+      if (job.status === 'pausing' && error?.code === 'UPLOAD_PAUSED' && !controller.signal.aborted) this.uploadResumes.pause(job);
       if (ACTIVE.has(job.status) && recoverableUpload(error, job.controller.signal)) this.uploadResumes.interrupt(job);
-      if (!['interrupted', 'cancelled', 'error'].includes(job.status)) {
+      if (!['paused', 'interrupted', 'cancelled', 'error'].includes(job.status)) {
         job.status = job.controller.signal.aborted ? 'cancelled' : 'error';
         job.message = job.controller.signal.aborted ? '上传已取消。' : toPublicError(error).message;
       }
       if (job.status === 'cancelled') job.message = '传输已取消，请刷新目录核对目标状态。';
       try { await this.audit(job, job.status); } catch { /* 失败信息只留在任务状态，避免记录远端内容。 */ }
     } finally {
-      // 仅中断任务保留私有参数，旧操作退出前禁止启动新的续传。
+      // 仅暂停和中断任务保留私有参数，旧操作退出前禁止启动新的续传。
       job.inFlight = false;
-      if (job.status !== 'interrupted') this.uploadResumes.forget(job);
+      if (!['paused', 'interrupted'].includes(job.status)) this.uploadResumes.forget(job);
     }
   }
 
@@ -347,8 +353,18 @@ export class ServerWorkspaceFiles {
     return { jobs: [...this.jobs.values()].filter((job) => job.ownerId === ownerId && sameScope(job.scope, scope)).map(publicJob) };
   }
 
+  exitSummary() {
+    let active = 0;
+    let resumable = 0;
+    for (const job of this.jobs.values()) {
+      if (job.inFlight || ACTIVE.has(job.status)) active += 1;
+      else if (['paused', 'interrupted'].includes(job.status)) resumable += 1;
+    }
+    return {active, resumable};
+  }
+
   stopJob(job, status, message) {
-    if (!ACTIVE.has(job.status) && job.status !== 'interrupted') return;
+    if (!ACTIVE.has(job.status) && !['interrupted', 'paused'].includes(job.status)) return;
     const idle = !job.inFlight;
     job.status = status;
     job.message = message;
@@ -358,6 +374,38 @@ export class ServerWorkspaceFiles {
       delete job.args;
       void this.audit(job, status).catch(() => undefined);
     }
+  }
+
+  pauseUpload(ownerId, payload) {
+    this.ownerEpoch(ownerId);
+    const job = this.jobs.get(payload.jobId);
+    if (!job || job.ownerId !== ownerId || !sameScope(job.scope, scopeOf(payload))) throw new AppError('UPLOAD_NOT_FOUND', '上传任务不存在。');
+    if (job.status === 'pausing' || job.status === 'paused') return publicJob(job);
+    if (!publicJob(job).canPause) throw new AppError('UPLOAD_PAUSE_UNAVAILABLE', '当前任务无法暂停，文件可能已进入最终校验。');
+    if (job.status === 'queued') {
+      this.uploadResumes.pause(job);
+      void this.audit(job, 'paused').catch(() => undefined);
+    } else {
+      job.pauseRequested = true;
+      job.status = 'pausing';
+      job.message = '正在等待当前批次写入完成…';
+    }
+    return publicJob(job);
+  }
+
+  clearTransfers(ownerId, payload) {
+    this.ownerEpoch(ownerId);
+    const scope = scopeOf(payload);
+    if (payload.jobId !== undefined && (typeof payload.jobId !== 'string' || !payload.jobId)) throw new AppError('INVALID_ARGUMENT', '任务标识无效。');
+    const matching = [...this.jobs.values()].filter(job => job.ownerId === ownerId && sameScope(job.scope, scope) && (payload.jobId === undefined || job.jobId === payload.jobId));
+    if (payload.jobId !== undefined && (!matching.length || !publicJob(matching[0]).canRemove)) throw new AppError('TRANSFER_BUSY', '仅能移除已经结束的传输记录。');
+    const removedIds = [];
+    for (const job of matching) if (publicJob(job).canRemove) {
+      this.uploadResumes.forget(job);
+      this.jobs.delete(job.jobId);
+      removedIds.push(job.jobId);
+    }
+    return { removedIds };
   }
 
   cancelUpload(ownerId, payload) {

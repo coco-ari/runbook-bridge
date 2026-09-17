@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, powerMonitor, session, Menu } from 'electron';
 import { ProjectStore } from './project-store.mjs';
 import { desktopMenuTemplate } from './desktop-menu.mjs';
+import { createTransferExitGuard } from './desktop-transfer-exit-guard.mjs';
 import { BrokerServer } from './broker-server.mjs';
 import { rotateBrokerToken } from './broker-auth.mjs';
 import { CredentialStore, migrateLegacyCredentialForPlugin } from './credential-store.mjs';
@@ -43,6 +44,19 @@ let credentialStore;
 let mainWindow;
 let v2;
 const SHUTDOWN_WATCHDOG_MS = 15_000;
+const transferExitGuard = createTransferExitGuard({
+  summary: () => v2?.serverWorkspaceFiles?.exitSummary() ?? {active:0, resumable:0},
+  confirm: async ({active, resumable}) => {
+    const options = {
+      type:'warning', title:'退出客户端', message:'还有未结束的文件传输',
+      detail:`${active} 项正在传输或等待结束，${resumable} 项已暂停或等待续传。\n退出将终止传输并清除续传信息，重新打开客户端后需要重新传输。`,
+      buttons:['留在客户端', '终止传输并退出'], defaultId:0, cancelId:0, noLink:true,
+    };
+    const result = mainWindow && !mainWindow.isDestroyed() ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
+    return result.response === 1;
+  },
+  quit: () => app.quit(),
+});
 
 app.setName('AI 运维工具');
 app.disableHardwareAcceleration();
@@ -63,6 +77,7 @@ function createWindow() {
     },
   });
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.on('close', event => { if (!app.__aiOpsClosing) transferExitGuard.allow(event); });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer-build', 'v2', 'index.html'));
@@ -213,6 +228,12 @@ if (process.argv.includes('--mcp')) {
           quickQuestionClipboard:clipboard,
           terminalClipboard:clipboard,
           isWorkspaceRenderer: (sender) => sender.getURL() === pathToFileURL(path.join(__dirname, '..', 'renderer-build', 'v2', 'index.html')).href,
+          pickServerDownloadPath: async (sender, name) => {
+            const window = BrowserWindow.fromWebContents(sender);
+            if (!window || window.isDestroyed()) return null;
+            const result = await dialog.showSaveDialog(window, {title:'下载文件', defaultPath:path.join(app.getPath('downloads'), name), properties:['showOverwriteConfirmation']});
+            return result.canceled ? null : result.filePath;
+          },
           pickServerUploadFiles: async (sender) => {
             const window = BrowserWindow.fromWebContents(sender);
             if (!window || window.isDestroyed()) return [];
@@ -235,6 +256,7 @@ if (process.argv.includes('--mcp')) {
 
     app.on('before-quit', (event) => {
       if (app.__aiOpsClosing) return;
+      if (!transferExitGuard.allow(event)) return;
       event.preventDefault();
       app.__aiOpsClosing = true;
       v2?.networkWatcher?.stop();

@@ -199,3 +199,34 @@ test('正式上传通道：空文件及 32 MiB 文件恢复校验保持内容完
     child.diagnostic(JSON.stringify({bytes,resumeVerificationBytes:f.counters.downloaded}));
   });
 });
+
+test('正式上传通道：批次安全暂停保留临时文件，继续从完整确认点写入', {timeout:20000}, async t=>{
+  const f=await setup(t,{writeDelayMs:25});
+  let pause=false;
+  f.faults.onWrite=()=>{pause=true;};
+  await assert.rejects(f.send({shouldPause:()=>pause}),{code:'UPLOAD_PAUSED'});
+  assert.equal(f.checkpoint().bytes,MiB);
+  assert.equal(f.files.get(f.checkpoint().temporary).length,MiB);
+  assert.equal(f.files.has('/upload.bin'),false);
+  assert.equal(f.counters.pendingWrites,0);
+  await f.broker.executeApproved('fixture','probe');
+  await assert.rejects(f.send({shouldPause:()=>f.counters.downloaded>0}),{code:'UPLOAD_PAUSED'});
+  assert.equal(f.checkpoint().bytes,MiB);
+  assert.equal(f.files.get(f.checkpoint().temporary).length,MiB);
+  const start=f.counters.writes.length;
+  f.faults.onWrite=null;
+  await f.send({shouldPause:()=>false});
+  assert.equal(f.counters.writes[start].offset,MiB);
+  assert.deepEqual(f.files.get('/upload.bin'),f.data);
+});
+
+test('正式上传通道：暂停后源文件变化阻止继续，最后批次也可以安全暂停', {timeout:20000}, async t=>{
+  const f=await setup(t);
+  await assert.rejects(f.send({shouldPause:()=>f.checkpoint()?.bytes===f.data.length}),{code:'UPLOAD_PAUSED'});
+  assert.equal(f.files.has('/upload.bin'),false);
+  assert.equal(f.files.get(f.checkpoint().temporary).length,f.data.length);
+  await fsp.writeFile(f.source,Buffer.alloc(f.data.length));
+  await fsp.utimes(f.source,1,1);
+  await assert.rejects(f.send(),{code:'LOCAL_FILE_CHANGED'});
+  assert.equal(f.files.has('/upload.bin'),false);
+});

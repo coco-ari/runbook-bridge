@@ -1250,14 +1250,14 @@ export class SshBroker {
     }, { timeoutMs:10 * 60 * 1000, inactivityMs:SFTP_READ_INACTIVITY_MS });
   }
 
-  async uploadRemoteFileApproved(projectId, localPath, remotePath, precondition, { onProgress, signal, beforeCommit, resumable = false, checkpoint, onCheckpoint } = {}) {
+  async uploadRemoteFileApproved(projectId, localPath, remotePath, precondition, { onProgress, signal, beforeCommit, resumable = false, checkpoint, onCheckpoint, shouldPause } = {}) {
     const assertNotCancelled = () => {
       if (signal?.aborted) throw new AppError('TRANSFER_CANCELLED', '文件上传已取消。');
     };
     assertNotCancelled();
     const source = path.resolve(String(localPath ?? ''));
     const target = normalizeAbsoluteRemotePath(remotePath);
-    if (resumable) return uploadWithCheckpoints(this, projectId, source, target, precondition, { onProgress, signal, beforeCommit, checkpoint, onCheckpoint }, {
+    if (resumable) return uploadWithCheckpoints(this, projectId, source, target, precondition, { onProgress, signal, beforeCommit, checkpoint, onCheckpoint, shouldPause }, {
       lstat: value => fsp.lstat(value), openLocal: value => fsp.open(value, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0)),
       requireRemoteSnapshot, rename: sftpRename, timeouts: uploadTimeouts,
     });

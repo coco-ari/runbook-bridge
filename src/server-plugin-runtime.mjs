@@ -1,3 +1,4 @@
+import { downloadWorkspaceFile } from './server-download-transfer.mjs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -295,6 +296,16 @@ export class ServerPluginRuntime extends EventEmitter {
 
   readRemoteBuffer(plugin, remotePath, start, maxBytes, options = {}) {
     return this.boundedRead(plugin, () => this.broker.readRemoteBuffer(this.key(plugin), remotePath, start, maxBytes, options));
+  }
+
+  downloadWorkspaceFile(plugin, remotePath, destination, expected, options) {
+    const resource = this.key(plugin);
+    const session = this.broker.requireSession(resource);
+    return this.downloadScheduler.run(resource, 1, () => {
+      options.signal?.throwIfAborted();
+      if (this.broker.requireSession(resource) !== session) throw new AppError('PLUGIN_RECONNECTING', '等待下载期间连接已更新，请重新下载。');
+      return downloadWorkspaceFile(this.broker, resource, remotePath, destination, expected, options);
+    });
   }
 
   downloadRemoteFile(plugin, remotePath, localPath, maxBytes) {

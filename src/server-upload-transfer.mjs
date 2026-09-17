@@ -5,9 +5,10 @@ export const UPLOAD_BLOCK_BYTES = 32 * 1024;
 export const UPLOAD_WINDOW_BLOCKS = 32;
 
 // 每批最多 1 MiB；只在整批写入回执到齐后推进可恢复的连续偏移。
-export async function writeUploadBlocks({ sftp, handle, localHandle, size, start = 0, hash = crypto.createHash('sha256'), signal, onAcknowledged, onCheckpoint }) {
+export async function writeUploadBlocks({ sftp, handle, localHandle, size, start = 0, hash = crypto.createHash('sha256'), signal, onAcknowledged, onCheckpoint, checkPause }) {
   let position = start;
   let acknowledged = start;
+  checkPause?.();
   while (position < size) {
     signal?.throwIfAborted();
     const buffer = Buffer.allocUnsafe(Math.min(UPLOAD_BLOCK_BYTES * UPLOAD_WINDOW_BLOCKS, size - position));
@@ -32,6 +33,7 @@ export async function writeUploadBlocks({ sftp, handle, localHandle, size, start
     signal?.throwIfAborted();
     position += buffer.length;
     onCheckpoint?.({ bytes: position, sha256: hash.copy().digest('hex') });
+    checkPause?.();
   }
   return { bytes: position, sha256: hash.digest('hex') };
 }
@@ -55,13 +57,14 @@ export function abortable(promise, signal) {
 
 const EMPTY_SHA256 = crypto.createHash('sha256').digest('hex');
 
-async function readLocalHash(handle, size, prefixBytes, signal) {
+async function readLocalHash(handle, size, prefixBytes, signal, checkPause) {
   const full = crypto.createHash('sha256');
   const prefix = crypto.createHash('sha256');
   let offset = 0;
   const buffer = Buffer.allocUnsafe(1024 * 1024);
   while (offset < size) {
     signal?.throwIfAborted();
+    checkPause?.();
     const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, size - offset), offset);
     if (!bytesRead) throw new AppError('LOCAL_FILE_CHANGED', '本地文件在检查期间发生变化。');
     full.update(buffer.subarray(0, bytesRead));
@@ -72,9 +75,10 @@ async function readLocalHash(handle, size, prefixBytes, signal) {
   return { sha256: full.digest('hex'), prefix };
 }
 
-async function remoteHash(sftp, handle, bytes, lifecycle) {
+async function remoteHash(sftp, handle, bytes, lifecycle, checkPause) {
   const hash = crypto.createHash('sha256');
   for (let position = 0; position < bytes;) {
+    checkPause?.();
     const buffer = Buffer.allocUnsafe(Math.min(16 * 30 * 1024, bytes - position));
     const reads = [];
     for (let offset = 0; offset < buffer.length; offset += 30 * 1024) {
@@ -129,6 +133,10 @@ export function recoverableUpload(error, signal) {
 // 恢复描述只由主进程持有；目标与源文件始终使用原确认的精确参数和前置条件。
 export async function uploadWithCheckpoints(broker, projectId, source, target, precondition, options, helpers) {
   const { signal, onProgress, onCheckpoint, beforeCommit } = options;
+  const checkPause = () => {
+    signal?.throwIfAborted();
+    if (options.shouldPause?.()) throw new AppError('UPLOAD_PAUSED', '上传已暂停。');
+  };
   let state = options.checkpoint ? { ...options.checkpoint } : null;
   const expected = precondition.local;
   if (state && (state.sourceHash !== expected.sha256 || state.size !== expected.size
@@ -149,8 +157,9 @@ export async function uploadWithCheckpoints(broker, projectId, source, target, p
   try {
     if (!sameLocal(await localHandle.stat())) throw new AppError('LOCAL_FILE_CHANGED', '本地文件在确认后已被替换。');
     onProgress?.({transferredBytes:state.bytes,phase:'preparing'});
-    const local = await readLocalHash(localHandle, expected.size, state.bytes, signal);
+    const local = await readLocalHash(localHandle, expected.size, state.bytes, signal, checkPause);
     if (local.sha256 !== expected.sha256 || local.prefix.copy().digest('hex') !== state.sha256 || !sameLocal(await localHandle.stat())) throw new AppError('LOCAL_FILE_CHANGED', '本地文件内容在确认后发生变化，需要重新确认。');
+    checkPause();
     publish();
     let reconciled = false;
     await broker.withInternalSftp(projectId, async (sftp, _session, lifecycle) => {
@@ -178,7 +187,7 @@ export async function uploadWithCheckpoints(broker, projectId, source, target, p
         if (state.owned) {
           const partial = await checkedRemoteHandle(sftp, state.temporary, 'r+', expected.size, lifecycle);
           remoteHandle = partial.handle; stat = partial.stat;
-          if (stat.size < state.bytes || await remoteHash(sftp, remoteHandle, state.bytes, lifecycle) !== state.sha256
+          if (stat.size < state.bytes || await remoteHash(sftp, remoteHandle, state.bytes, lifecycle, checkPause) !== state.sha256
             || !sameRemote(stat, await call('fstat', remoteHandle))) throw new AppError('UPLOAD_PARTIAL_CHANGED', '服务器已传部分发生变化，请重新上传。');
         } else {
           remoteHandle = await call('open', state.temporary, 'wx', precondition.remote.exists ? precondition.remote.mode & 0o777 : 0o644);
@@ -187,7 +196,7 @@ export async function uploadWithCheckpoints(broker, projectId, source, target, p
         state.phase = 'uploading'; publish();
         let lastPublished = 0;
         const result = await writeUploadBlocks({
-          sftp, handle:remoteHandle, localHandle, size:expected.size, start:state.bytes, hash:local.prefix, signal:lifecycle.signal,
+          sftp, handle:remoteHandle, localHandle, size:expected.size, start:state.bytes, hash:local.prefix, signal:lifecycle.signal, checkPause,
           onAcknowledged: bytes => {
             lifecycle.reportProgress({phase:'uploading',transferredBytes:bytes,totalBytes:expected.size});
             if (Date.now()-lastPublished >= 250 || bytes === expected.size) { lastPublished=Date.now(); onProgress?.({transferredBytes:bytes,phase:'uploading'}); }
@@ -208,7 +217,7 @@ export async function uploadWithCheckpoints(broker, projectId, source, target, p
         await abortable(helpers.rename(sftp, state.temporary, target, {overwrite:precondition.remote.exists}), lifecycle.signal);
       } catch (error) {
         const interrupted = recoverableUpload(error, signal) || recoverableUpload(lifecycle.signal.reason, signal);
-        if (!interrupted && state.owned && state.phase !== 'committing' && !['UPLOAD_PARTIAL_CHANGED','REMOTE_CHANGED'].includes(error.code)) {
+        if (!interrupted && state.owned && state.phase !== 'committing' && !['UPLOAD_PAUSED','UPLOAD_PARTIAL_CHANGED','REMOTE_CHANGED'].includes(error.code)) {
           // 主动取消时仍尝试清理自己的临时文件，最多等待半秒，不拖住断线收敛。
           await abortable(sftpCall(sftp, 'unlink', state.temporary), AbortSignal.timeout(500)).catch(() => undefined);
         }

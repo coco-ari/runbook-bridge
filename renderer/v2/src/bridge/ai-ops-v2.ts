@@ -505,6 +505,10 @@ export interface ServerUploadReview extends Omit<ServerUploadPreparation, "prepa
 }
 
 export interface ServerUploadJob {
+  readonly direction?: "upload" | "download"
+  readonly localPath?: string
+  readonly canPause?: boolean
+  readonly canRemove?: boolean
   readonly jobId: string
   readonly name: string
   readonly path: string
@@ -515,7 +519,7 @@ export interface ServerUploadJob {
   readonly etaSeconds?: number | null
   readonly canResume?: boolean
   readonly resumeBytes?: number
-  readonly status: "queued" | "running" | "verifying" | "completed" | "cancelled" | "error" | "interrupted"
+  readonly status: "queued" | "running" | "verifying" | "completed" | "cancelled" | "error" | "interrupted" | "pausing" | "paused"
   readonly message?: string
 }
 
@@ -528,6 +532,9 @@ export interface AiOpsV2Api {
   serverTerminalClose(payload: PluginScope & { sessionId: string }): Promise<IpcResult<OpaqueData>>
   serverWorkspaceListDirectory(payload: PluginScope & { path: string; cursor?: string | null; snapshotId?: string; deferLinks?: boolean; resolveLinks?: boolean }): Promise<IpcResult<ServerDirectoryPage>>
   serverWorkspaceReadFile(payload: PluginScope & { path: string }): Promise<IpcResult<ServerFilePreview>>
+  serverWorkspacePauseUpload(payload: PluginScope & { jobId: string }): Promise<IpcResult<ServerUploadJob>>
+  serverWorkspaceClearTransfers(payload: PluginScope & { jobId?: string }): Promise<IpcResult<{ removedIds: readonly string[] }>>
+  serverWorkspaceDownload(payload: PluginScope & { path: string }): Promise<IpcResult<ServerUploadJob | null>>
   serverWorkspacePrepareUploadResume(payload: PluginScope & { jobId: string }): Promise<IpcResult<ServerUploadReview>>
   serverWorkspacePickUpload(payload: PluginScope & { path: string }): Promise<IpcResult<ServerUploadReview | null>>
   serverWorkspaceReviseUpload(payload: PluginScope & { reviewId: string; fileNames: readonly string[] }): Promise<IpcResult<ServerUploadReview | null>>
@@ -609,6 +616,9 @@ export const AI_OPS_V2_API_NAMES = [
   "serverTerminalClose",
   "serverWorkspaceListDirectory",
   "serverWorkspaceReadFile",
+  "serverWorkspacePauseUpload",
+  "serverWorkspaceClearTransfers",
+  "serverWorkspaceDownload",
   "serverWorkspacePrepareUploadResume",
   "serverWorkspacePickUpload",
   "serverWorkspaceReviseUpload",

@@ -2,6 +2,8 @@ import { AppError, toPublicError } from './errors.mjs';
 
 const SCOPE_KEYS = ['projectId', 'environmentId', 'pluginInstanceId'];
 const CALLS = [
+  ['server-workspace-pause-upload', 'serverWorkspaceFiles', 'pauseUpload', ['jobId']],
+  ['server-workspace-clear-transfers', 'serverWorkspaceFiles', 'clearTransfers', ['jobId']],
   ['server-workspace-prepare-upload-resume', 'serverWorkspaceFiles', 'prepareUploadResume', ['jobId']],
   ['server-terminal-open', 'serverWorkspaceManager', 'openTerminal', ['cols', 'rows', 'tabId', 'defaultColors']],
   ['server-terminal-read', 'serverWorkspaceManager', 'readTerminal', ['sessionId']],
@@ -83,6 +85,19 @@ export function registerServerWorkspaceIpc(ipcMain, services) {
       if (error?.code === 'CLIPBOARD_TOO_LARGE') throw error;
       throw new AppError('CLIPBOARD_UNAVAILABLE', '无法访问系统剪贴板，请稍后重试。');
     }
+  });
+  handle('server-workspace-download', ['path'], async (ownerId, payload, event) => {
+    const files = services.serverWorkspaceFiles;
+    if (!files || !services.pickServerDownloadPath) throw new AppError('WORKSPACE_UNAVAILABLE', '下载暂不可用。');
+    if (picking.has(ownerId)) throw new AppError('WORKSPACE_BUSY', '请选择或关闭当前文件选择窗口。');
+    picking.add(ownerId);
+    try {
+      const prepared = await files.downloads.prepare(ownerId, payload);
+      const selected = await services.pickServerDownloadPath(event.sender, prepared.name);
+      if (!selected) return null;
+      ownerFor(event);
+      return await files.downloads.start(ownerId, payload, prepared, selected);
+    } finally { picking.delete(ownerId); }
   });
   handle('server-workspace-pick-upload', ['path'], async (ownerId, payload, event) => {
     if (!services.serverWorkspaceFiles || !services.pickServerUploadFiles) throw new AppError('WORKSPACE_UNAVAILABLE', '文件选择暂不可用。');

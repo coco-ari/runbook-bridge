@@ -35,7 +35,11 @@ const closed = [];
 const errors = [];
 const externalRequests = [];
 let uploads = [];
+let uploadConfirmCalls = 0;
+let pausedResumeRequests = 0;
+const uploadedPaths = new Set();
 let uploadReadFailure = false;
+let downloadFailure = false;
 let preparationPath;
 let uploadSelection = ['release.tar'];
 let uploadPreparation;
@@ -157,7 +161,8 @@ function register() {
     const entry = (name, type = 'file') => ({ name, path: (input.path === '/' ? '' : input.path) + '/' + name, type, size: 256, mtime: 1, mode: 0o644 });
     const roots = [entry('.env.example'), entry('app', 'directory'), { ...entry('bin', 'symlink'), path: '/usr/bin' }, entry('boot', 'directory'), { ...entry('current.conf', 'symlink'), path: '/srv/example.conf' }, { ...entry('default.conf', 'symlink'), path: '/srv/example.conf' }, entry('dev', 'directory'), entry('etc', 'directory'), entry('home', 'directory'), { ...entry('lib', 'symlink'), path: '/usr/lib' }, ...['media', 'mnt', 'opt', 'proc', 'root', 'run', 'srv', 'sys', 'tmp', 'usr', 'var'].map(name => entry(name, 'directory')), entry('welcome.txt'), entry('missing-link', 'symlink')];
     const entries = input.path === '/' ? [...roots, ...Array.from({ length: 2300 - roots.length }, (_, index) => entry('file-' + String(index).padStart(3, '0') + '.txt'))] : input.path === '/usr/bin' ? [{ ...entry('X11', 'symlink'), path: '/usr/bin' }, entry('apt'), entry('tool.conf')] : [entry('config', 'directory'), entry('example.conf'), entry('example.log'), entry('loading')];
-    entries.push(...uploads.filter(job => job.status === 'completed' && path.posix.dirname(job.path) === input.path).map(job => entry(job.name)));
+    for (const job of uploads) if (job.direction !== 'download' && job.status === 'completed') uploadedPaths.add(job.path);
+    entries.push(...[...uploadedPaths].filter(target => path.posix.dirname(target) === input.path).map(target => entry(path.posix.basename(target))));
     const offset = Number(input.cursor ?? 0);
     return { path: input.path, entries: entries.filter(item => !removedPaths.has(item.path)).slice(offset, offset + 200), nextCursor: entries.length > offset + 200 ? String(offset + 200) : null, truncated: entries.length > offset + 200 };
   };
@@ -173,10 +178,11 @@ function register() {
   });
   workspaceFiles.serverOperations.readFile = async (_plugin, input) => { previewReads.push(input.path); if (previewDelay) await wait(previewDelay); return { path: input.path, content: '# 示例配置\nsource = ' + input.path + '\nserver_name = demo\nport = 8080\n' + (input.path.endsWith('.log') ? '日志示例\n'.repeat(200) : ''), size: 52, startByte: 0, endByte: 52, mtime: 1, truncated: false, nextCursor: null }; };
   handle('server-workspace-read-file', (input) => { scoped(input); if (previewFailure) throw Object.assign(new Error('没有文件读取权限。'), { code: previewFailure }); return workspaceFiles.readFile('renderer:1', input); });
-  handle('server-workspace-prepare-upload-resume', input => {
+  handle('server-workspace-prepare-upload-resume', async input => {
     scoped(input);
     const job=uploads.find(item=>item.jobId===input.jobId);
-    assert.equal(job.status,'interrupted');
+    assert.ok(['interrupted','paused'].includes(job.status));
+    if (job.status === 'paused') { pausedResumeRequests += 1; await wait(250); }
     uploadPreparation={
       reviewId:require('node:crypto').randomUUID(),preparationId:require('node:crypto').randomUUID(),status:'ready',expiresAt:Date.now()+60000,
       path:'/srv',sourcePath:'/srv',resume:{jobId:job.jobId,bytes:job.resumeBytes},
@@ -212,8 +218,26 @@ function register() {
     }
     return input.fileNames.length?makePreparation(uploadPreparation.sourcePath,input.fileNames,revisionFailure):null;
   });
-  handle('server-workspace-confirm-upload', input => { scoped(input); assert.equal(input.preparationId, uploadPreparation.preparationId); assert.equal(input.overwrite, true); uploads = uploadPreparation.files.map((file, index) => ({ jobId: 'upload-job-' + index, name: file.name, path: file.remotePath, bytes: file.bytes, transferred: 0, status: 'running', phase:'uploading', bytesPerSecond:80000, etaSeconds:12 })); return { jobs: uploads }; });
-  handle('server-workspace-uploads', (input) => { scoped(input); if (uploadReadFailure) throw new Error('已有上传任务状态暂时无法读取。'); uploads = uploads.map((job) => { if (job.status !== 'running') return job; const transferred = Math.min(job.bytes, job.transferred + 80000); return { ...job, transferred, status: transferred === job.bytes ? 'completed' : 'running' }; }); return { jobs: uploads }; });
+  handle('server-workspace-confirm-upload', input => { scoped(input); uploadConfirmCalls += 1; assert.equal(input.preparationId, uploadPreparation.preparationId); assert.equal(input.overwrite, true); uploads = uploadPreparation.files.map((file, index) => ({ jobId: 'upload-job-' + index, name: file.name, path: file.remotePath, bytes: file.bytes, transferred: 0, status: 'running', canPause:true, phase:'uploading', bytesPerSecond:80000, etaSeconds:12 })); return { jobs: uploads }; });
+  handle('server-workspace-uploads', (input) => { scoped(input); if (uploadReadFailure) throw new Error('已有上传任务状态暂时无法读取。'); uploads = uploads.map((job) => { if (job.status !== 'running') return job; const transferred = Math.min(job.bytes, job.transferred + 80000); return { ...job, transferred, status: transferred === job.bytes ? 'completed' : 'running' }; }); return { jobs: uploads.map(job=>({...job,canPause:job.direction!=='download'&&job.status==='running',canRemove:['completed','cancelled','error'].includes(job.status)})) }; });
+  handle('server-workspace-pause-upload', input => {
+    scoped(input);const job=uploads.find(item=>item.jobId===input.jobId);
+    assert.equal(job.status,'running');
+    Object.assign(job,{status:'paused',canPause:false,canResume:true,resumeBytes:job.transferred,message:'上传已暂停，可在 30 分钟内继续；退出客户端后失效。'});
+    return job;
+  });
+  handle('server-workspace-clear-transfers', input => {
+    scoped(input);
+    const removedIds=uploads.filter(job=>(!input.jobId||job.jobId===input.jobId)&&['completed','cancelled','error'].includes(job.status)).map(job=>job.jobId);
+    uploads=uploads.filter(job=>!removedIds.includes(job.jobId));
+    return {removedIds};
+  });
+  handle('server-workspace-download', input => {
+    scoped(input);assert.equal(input.path,'/srv/release.tar');
+    if (downloadFailure) throw Object.assign(new Error('本地保存位置空间不足，请选择其他磁盘。'), {code:'DOWNLOAD_DISK_FULL'});
+    const job={jobId:'download-job',name:'release.tar',path:input.path,localPath:'D:/下载/release.tar',direction:'download',bytes:400000,transferred:0,status:'running'};
+    uploads.push(job);return job;
+  });
   handle('server-workspace-cancel-upload', (input) => { scoped(input); uploads = uploads.map((job) => ({ ...job, status: 'cancelled' })); return uploads[0]; });
 }
 async function evaluate(source) { try { return await win.webContents.executeJavaScript(source, true); } catch (error) { throw new Error("界面脚本执行失败：" + source.slice(0, 700), { cause: error }); } }
@@ -240,6 +264,27 @@ async function setViewport(width, height) {
   win.setContentSize(width, height);
   await until(`innerWidth === ${width} && innerHeight === ${height}`, '固定内容区尺寸');
   await wait(250);
+}
+async function assertTransferActionLayout(label) {
+  const layout = await evaluate(`(() => {
+    const row = document.querySelector('.server-upload-row');
+    if (!row) return null;
+    const progress = row.querySelector('.server-upload-progress').getBoundingClientRect();
+    const action = row.querySelector('.server-upload-task-action').getBoundingClientRect();
+    const bounds = row.getBoundingClientRect();
+    const buttons = [...row.querySelectorAll('.server-upload-task-action button')].map(button => {
+      const rect = button.getBoundingClientRect();
+      return {left:rect.left, right:rect.right, top:rect.top, bottom:rect.bottom};
+    });
+    return {progressRight:progress.right, actionLeft:action.left, actionRight:action.right, rowRight:bounds.right, buttons};
+  })()`);
+  assert.ok(layout && layout.buttons.length >= 2, label + '：包含主操作和移除按钮');
+  assert.ok(layout.actionLeft - layout.progressRight >= 8, label + '：进度与操作区有间距');
+  for (const button of layout.buttons) {
+    assert.ok(button.left >= layout.actionLeft - 1 && button.right <= layout.actionRight + 1, label + '：按钮完整位于操作区');
+    assert.ok(button.right <= layout.rowRight, label + '：按钮不越出任务行');
+  }
+  assert.ok(layout.buttons[1].left >= layout.buttons[0].right + 4, label + '：按钮之间不重叠');
 }
 async function assertPasteAppearance(theme) {
   const appearance = await evaluate(`(() => {
@@ -272,7 +317,9 @@ async function snapshot(name) {
   await wait(180);
   await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const frame = await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
-  assert.deepEqual(frame.getSize(),await evaluate('({width:innerWidth,height:innerHeight})'),'截图与内容区尺寸一致');
+  // 页面缩放改变 CSS 视口，截图仍使用窗口内容区的像素尺寸。
+  const [width, height] = win.getContentSize();
+  assert.deepEqual(frame.getSize(),{width,height},'截图与内容区尺寸一致');
   fs.writeFileSync(path.join(absolute, name), frame.toPNG());
 }
 
@@ -369,11 +416,30 @@ async function assertWorkspaceCoexistence() {
 
 async function run() {
   await app.whenReady();
+  const { createTransferExitGuard } = await import('../src/desktop-transfer-exit-guard.mjs');
   savedClipboard = { text: clipboard.readText(), html: clipboard.readHTML(), rtf: clipboard.readRTF(), image: clipboard.readImage() };
   const { ServerWorkspaceFiles } = await import('../src/server-workspace-files.mjs');
   workspaceFiles = new ServerWorkspaceFiles({ workspaceStore: { getPlugin: async () => plugin }, serverRuntime: { status: () => ({ connected, generation: 1 }), statRemotePath: async (_plugin, target) => fixtureStat(target) }, serverOperations: {} });
   register();
   win = new BrowserWindow({ enableLargerThanScreen:true, useContentSize:true, width: 1440, height: 920, show: process.platform === 'darwin', webPreferences: { preload: path.join(root, 'src/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
+  let exitAnswer, exitPrompts=0, requestedQuits=0;
+  const exitGuard=createTransferExitGuard({
+    summary:() => ({active:1,resumable:1}),
+    confirm:() => { exitPrompts++; return new Promise(resolve => {exitAnswer=resolve;}); },
+    quit:() => {requestedQuits++;},
+  });
+  const guardedClose=event => exitGuard.allow(event);
+  win.on('close',guardedClose);
+  win.close(); win.close();
+  await wait(50);
+  assert.equal(win.isDestroyed(),false,'确认前保留原生窗口');
+  assert.equal(exitPrompts,1,'重复关闭只显示一次确认');
+  exitAnswer(false); await wait(30);
+  assert.equal(requestedQuits,0,'取消退出不终止应用');
+  win.close(); await wait(30);
+  exitAnswer(true); await wait(30);
+  assert.equal(requestedQuits,1,'批准后交给应用退出流程');
+  win.removeListener('close',guardedClose);
   win.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   win.webContents.session.webRequest.onBeforeRequest((details, callback) => { if (/^https?:/u.test(details.url)) { externalRequests.push(details.url); callback({ cancel: true }); } else callback({}); });
   win.webContents.on('console-message', (_event, details) => { if (details.level === 'error') errors.push(details.message); });
@@ -533,6 +599,27 @@ async function run() {
   await until("!document.querySelector('.server-tree-scroll').textContent.includes('读取中')", '刷新目录完成');
   await assertTreeGeometry('回到顶部无重影');
   await snapshot('server-tree-no-overlap.png');
+  await click('[role="treeitem"][title="/srv/config"]');
+  await until(treeHas('/srv/config/example.conf'), '展开待刷新分支');
+  // 选择父目录后，子目录仍展开；删除其他分支中的文件应被全局刷新发现。
+  await click('[role="treeitem"][title="/srv"]');
+  await click('[role="treeitem"][title="/srv"]');
+  removedPaths.add('/srv/config/example.conf');
+  await click('[aria-label="刷新目录"]');
+  await until('!' + treeHas('/srv/config/example.conf') + ' && ' + treeHas('/srv/config/example.log'), '刷新覆盖非当前的展开子目录');
+  await until("!document.querySelector('[aria-label=刷新目录]').disabled", '展开分支刷新完成');
+  removedPaths.delete('/srv/config/example.conf');
+  const beforeStaleRefresh = directoryReads.length;
+  await evaluate("window.reviewOriginalNow = Date.now; Date.now = () => window.reviewOriginalNow() + 31000; undefined;");
+  await click('[role="treeitem"][title="/srv/config"]');
+  await click('[role="treeitem"][title="/srv/config"]');
+  await until(treeHas('/srv/config/example.conf'), '再次展开过期缓存会重新读取');
+  assert.ok(directoryReads.slice(beforeStaleRefresh).some(item => item.path === '/srv/config'), '过期分支发送新的目录请求');
+  await evaluate("Date.now = window.reviewOriginalNow; delete window.reviewOriginalNow;");
+  await click('[role="treeitem"][title="/srv/config"]');
+  await click('[role="treeitem"][title="/srv"]');
+  await click('[role="treeitem"][title="/srv"]');
+
   assert.ok(!writes.length, '文件树导航不会改变终端目录');
   await click('[role="treeitem"][title="/srv/example.conf"]');
   await until(`document.querySelector('.server-preview-tab-panel:not([hidden]) .server-preview-content')?.textContent.includes('server_name')`, '只读预览');
@@ -634,12 +721,12 @@ async function run() {
   await snapshot('upload-speed-estimate.png');
   uploadSelection = ['next-batch.bin']; reviewHeld = true; uploadReadFailure = true;
   await clickText('上传文件');
-  await until("document.querySelector('[data-testid=upload-review-progress]') && document.querySelector('[data-testid=upload-job-error]')", '检查与已有传输提示并存');
+  await until("document.querySelector('[data-testid=upload-review-progress]') && document.querySelector('[data-testid=upload-poll-error]')", '检查与已有传输提示并存');
   assert.equal(await evaluate("document.querySelector('.server-upload-review-error')"), null, '已有任务的查询错误不会进入新文件检查窗口');
   assert.equal(uploads[0].status, 'running', '预处理不会停止已有上传');
   uploadReadFailure = false;
   const transferredBeforeReview = uploads[0].transferred;
-  await until("!document.querySelector('[data-testid=upload-job-error]')", '状态查询恢复后清除传输提示');
+  await until("!document.querySelector('[data-testid=upload-poll-error]')", '状态查询恢复后清除传输提示');
   assert.ok(uploads[0].transferred > transferredBeforeReview, '后台检查期间已有上传继续推进');
   await clickText('取消'); reviewHeld = false;
   assert.equal(uploads[0].status, 'running', '取消新检查不取消已有上传');
@@ -657,7 +744,15 @@ async function run() {
   await click('[aria-label="定位到 release.tar"]');
   await until("document.querySelector('[role=treeitem][aria-selected=true]')?.getAttribute('title')==='/srv/release.tar'", '定位上传文件并高亮');
   assert.ok(await evaluate("document.querySelector('.server-upload-task-target code').textContent==='/srv/release.tar'"), '任务持续展示固定目标');
+  await assertTransferActionLayout('常规窗口');
   await snapshot('upload-task-completed.png');
+  await setViewport(1000, 750);
+  win.webContents.setZoomFactor(1.25);
+  await wait(250);
+  await assertTransferActionLayout('窄窗口及 125% 缩放');
+  await snapshot('upload-task-completed-zoom.png');
+  win.webContents.setZoomFactor(1);
+  await setViewport(1440, 920);
   uploads=uploads.map(job=>({...job,status:'interrupted',canResume:true,resumeBytes:400000,transferred:400000,message:'上传已中断，连接恢复后可继续。'}));
   await until(`[...document.querySelectorAll('.server-upload-task-action button')].some(button=>button.textContent==='继续上传')`,'中断任务显示继续上传');
   await clickText('继续上传');
@@ -669,7 +764,49 @@ async function run() {
   await clickText('确认继续上传');
   await until(`!document.querySelector('[role="dialog"]')`,'续传确认关闭');
   assert.equal(uploads.length,1,'续传复用原任务');
+  await until("document.querySelector('[aria-label=\"暂停上传 release.tar\"]')", '运行任务可暂停');
+  await click('[aria-label="暂停上传 release.tar"]');
+  await until("document.querySelector('.server-upload-row')?.textContent.includes('已暂停')", '暂停状态可识别');
+  assert.equal(uploads[0].status,'paused');
+  const pausedBytes=uploads[0].transferred;
+  await wait(800);assert.equal(uploads[0].transferred,pausedBytes,'暂停期间不推进');
+  const beforeDirectResume = uploadConfirmCalls;
+  await assertTransferActionLayout('暂停状态');
+  await evaluate(`(() => {
+    window.resumeDialogObserved = false;
+    window.resumeDialogObserver = new MutationObserver(() => { if (document.querySelector('[role=dialog]')) window.resumeDialogObserved = true; });
+    window.resumeDialogObserver.observe(document.body, {childList:true, subtree:true});
+    const button = [...document.querySelectorAll('.server-upload-task-action button')].find(item => item.textContent === '继续上传');
+    button.click(); button.click();
+  })()`);
+  await until("document.querySelector('.server-upload-task-action')?.textContent.includes('正在继续')", '直接继续时显示等待状态');
+  await until(`document.querySelector('[aria-label="暂停上传 release.tar"]')`, '暂停后一键恢复');
+  assert.equal(uploadConfirmCalls, beforeDirectResume + 1, '恢复只消费一次新确认');
+  assert.equal(pausedResumeRequests, 1, '重复点击不会重复准备恢复');
+  assert.equal(uploads.length, 1, '直接继续保留原任务');
+  assert.equal(await evaluate("window.resumeDialogObserver.disconnect(); window.resumeDialogObserved"), false, '暂停后继续全程不弹确认窗口');
+  assert.equal(uploadPreparation, null, '自动恢复后释放检查记录');
+  await until("document.querySelector('[aria-label=\"暂停上传 release.tar\"]')",'继续后恢复传输');
   uploads=uploads.map(job=>({...job,status:'completed',transferred:job.bytes}));
+  await until("document.querySelector('[aria-label=\"移除记录 release.tar\"]')",'已结束记录可移除');
+  await click('[aria-label="移除记录 release.tar"]');
+  await until("document.querySelectorAll('.server-upload-row').length===0",'移除单条记录');
+  await wait(1600);
+  assert.equal(await evaluate("document.querySelectorAll('.server-upload-row').length"),0,'轮询不会恢复已移除记录');
+  downloadFailure = true;
+  await click('[aria-label="下载 release.tar"]');
+  await until("document.querySelector('[data-testid=upload-job-error]')?.textContent.includes('空间不足')", '操作失败显示明确提示');
+  await wait(3200);
+  assert.ok(await evaluate("document.querySelector('[data-testid=upload-job-error]')?.textContent.includes('空间不足')"), '正常轮询不能清除操作失败提示');
+  downloadFailure = false;
+  await click('[aria-label="下载 release.tar"]');
+  await until("!document.querySelector('[data-testid=upload-job-error]')", '重新操作后清除旧错误');
+  await until("document.querySelector('.server-upload-task-target')?.textContent.includes('D:/下载/release.tar')",'目录树下载显示本地保存路径');
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"暂停上传 release.tar\"]')"),null,'下载不显示上传暂停');
+  await snapshot('download-task-running.png');
+  await until("document.querySelector('.server-upload-row')?.textContent.includes('已完成')",'下载完成');
+  await clickText('清除已结束');
+  await until("document.querySelectorAll('.server-upload-row').length===0",'批量清除结束记录');
 
   await click('[aria-label="最大化终端"]');
   await wait(150);

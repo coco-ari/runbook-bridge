@@ -16,21 +16,31 @@ export class ServerUploadResumes {
     delete job.checkpoint;
   }
 
+  retain(job, status, message) {
+    job.status = status;
+    job.message = message;
+    job.resumeUntil = this.files.now() + RESUME_TTL;
+    clearTimeout(job.resumeTimer);
+    job.resumeTimer = setTimeout(() => {
+      if (['paused', 'interrupted'].includes(job.status)) this.files.stopJob(job, 'error', '续传记录已过期，请重新选择文件。');
+    }, RESUME_TTL);
+    job.resumeTimer.unref?.();
+  }
+
+  pause(job) {
+    this.retain(job, 'paused', '上传已暂停，可在 30 分钟内继续；退出客户端后失效。');
+    job.transferred = job.checkpoint?.bytes ?? 0;
+  }
+
   interrupt(job) {
-    if (!['queued', 'running', 'verifying'].includes(job.status)) return;
+    if (!['queued', 'running', 'verifying', 'pausing'].includes(job.status)) return;
+    if (job.direction === 'download') { this.files.stopJob(job, 'error', '下载已中断，请重新下载。'); return; }
     if (!job.plugin.target?.hostKeyFingerprint || (job.resumeAttempts ?? 0) >= MAX_RESUMES) {
       this.files.stopJob(job, 'error', '上传已中断，请重新选择文件上传。');
       return;
     }
     const queued = job.status === 'queued';
-    job.status = 'interrupted';
-    job.message = '上传已中断，连接恢复后可在 30 分钟内继续。';
-    job.resumeUntil = this.files.now() + RESUME_TTL;
-    clearTimeout(job.resumeTimer);
-    job.resumeTimer = setTimeout(() => {
-      if (job.status === 'interrupted') this.files.stopJob(job, 'error', '续传记录已过期，请重新选择文件。');
-    }, RESUME_TTL);
-    job.resumeTimer.unref?.();
+    this.retain(job, 'interrupted', '上传已中断，连接恢复后可在 30 分钟内继续。');
     job.controller.abort(new AppError('UPLOAD_CONNECTION_LOST', '上传连接已中断。'));
     if (queued) void this.files.audit(job, 'interrupted').catch(() => undefined);
   }
@@ -39,7 +49,7 @@ export class ServerUploadResumes {
     this.files.ownerEpoch(ownerId);
     const job = this.files.jobs.get(payload.jobId);
     if (!job || job.ownerId !== ownerId || !sameScope(job.scope, payload)) throw new AppError('UPLOAD_NOT_FOUND', '上传任务不存在。');
-    if (job.status !== 'interrupted' || !job.args || job.inFlight || job.resumeUntil <= this.files.now() || (job.resumeAttempts ?? 0) >= MAX_RESUMES) {
+    if (!['interrupted', 'paused'].includes(job.status) || !job.args || job.inFlight || job.resumeUntil <= this.files.now() || (job.status === 'interrupted' && (job.resumeAttempts ?? 0) >= MAX_RESUMES)) {
       throw new AppError('UPLOAD_RESUME_UNAVAILABLE', '当前任务无法继续，请稍后重试或重新选择文件。');
     }
     return job;
@@ -79,9 +89,10 @@ export class ServerUploadResumes {
       throw new AppError('UPLOAD_RESUME_UNAVAILABLE', '续传状态已变化，请重新确认。');
     }
     clearTimeout(job.resumeTimer);
+    const attempts = (job.resumeAttempts ?? 0) + (job.status === 'interrupted' ? 1 : 0);
     Object.assign(job, binding, {
       status: 'queued', controller: new AbortController(), progress: new ServerUploadProgress(this.files.now),
-      transferred: job.checkpoint?.bytes ?? 0, resumeAttempts: (job.resumeAttempts ?? 0) + 1,
+      transferred: job.checkpoint?.bytes ?? 0, resumeAttempts: attempts, pauseRequested: false,
     });
     delete job.message;
     return job;

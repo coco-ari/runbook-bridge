@@ -779,3 +779,101 @@ test('续传 IPC 只能引用任务，拒绝客户端传入路径、偏移和检
   }
   assert.equal(called,0);
 });
+
+test('暂停仅处理本窗口任务，等待安全检查点，手动继续不消耗断线次数', async t => {
+  const h = harness(); t.after(() => h.files.dispose());
+  h.plugin.target = {hostKeyFingerprint:'SHA256:fixture'};
+  const prep = await h.files.prepareUpload(owner, {...scope,path:'/srv/example'}, [local('pause')]);
+  const {jobs:[job]} = await h.files.confirmUpload(owner, {...scope,preparationId:prep.preparationId,overwrite:false});
+  await flush();
+  assert.throws(() => h.files.pauseUpload('renderer:2', {...scope,jobId:job.jobId}), {code:'UPLOAD_NOT_FOUND'});
+  assert.equal(h.files.pauseUpload(owner, {...scope,jobId:job.jobId}).status,'pausing');
+  assert.equal(h.uploads[0].options.signal.aborted,false);
+  assert.equal(h.uploads[0].options.shouldPause(),true);
+  await assert.rejects(h.files.prepareUploadResume(owner, {...scope,jobId:job.jobId}), {code:'UPLOAD_RESUME_UNAVAILABLE'});
+  h.uploads[0].options.onCheckpoint({bytes:50,phase:'uploading'});
+  h.uploads[0].reject(Object.assign(new Error('pause'), {code:'UPLOAD_PAUSED'}));
+  await flush();
+  const paused=h.files.uploads(owner,scope).jobs[0];
+  assert.equal(paused.status,'paused'); assert.equal(paused.canResume,true); assert.equal(paused.transferred,50);
+  assert.throws(() => h.files.clearTransfers(owner,{...scope,jobId:job.jobId}),{code:'TRANSFER_BUSY'});
+  assert.deepEqual(h.files.clearTransfers(owner,scope),{removedIds:[]});
+  for (let i=0;i<4;i++) {
+    const review=await h.files.prepareUploadResume(owner,{...scope,jobId:job.jobId});
+    await h.files.confirmUpload(owner,{...scope,preparationId:review.preparationId,overwrite:false});
+    await flush();
+    assert.equal(h.files.jobs.get(job.jobId).resumeAttempts,0);
+    assert.equal(h.uploads.at(-1).options.shouldPause(),false);
+    h.files.pauseUpload(owner,{...scope,jobId:job.jobId});
+    h.uploads.at(-1).reject(Object.assign(new Error('pause'),{code:'UPLOAD_PAUSED'}));
+    await flush();
+  }
+  h.files.cancelUpload(owner,{...scope,jobId:job.jobId});
+  assert.deepEqual(h.files.clearTransfers(owner,{...scope,jobId:job.jobId}),{removedIds:[job.jobId]});
+});
+
+test('排队可暂停，最终校验不可暂停，活动任务不能清理', async t => {
+  const h=harness();t.after(()=>h.files.dispose());h.plugin.target={hostKeyFingerprint:'SHA256:fixture'};
+  const prep=await h.files.prepareUpload(owner,{...scope,path:'/srv/example'},['one','two','three'].map(local));
+  const {jobs}=await h.files.confirmUpload(owner,{...scope,preparationId:prep.preparationId,overwrite:false});
+  await flush();
+  assert.equal(h.files.pauseUpload(owner,{...scope,jobId:jobs[2].jobId}).status,'paused');
+  assert.equal(h.files.jobs.get(jobs[2].jobId).inFlight,undefined);
+  h.uploads[0].options.onProgress({transferredBytes:100,phase:'verifying'});
+  assert.throws(()=>h.files.pauseUpload(owner,{...scope,jobId:jobs[0].jobId}),{code:'UPLOAD_PAUSE_UNAVAILABLE'});
+  h.files.cancelUpload(owner,{...scope,jobId:jobs[1].jobId});
+  assert.throws(()=>h.files.clearTransfers(owner,{...scope,jobId:jobs[1].jobId}),{code:'TRANSFER_BUSY'});
+  await flush();
+  assert.deepEqual(h.files.clearTransfers('renderer:2',scope).removedIds,[]);
+  assert.deepEqual(h.files.clearTransfers(owner,{...scope,environmentId:'other'}).removedIds,[]);
+  assert.deepEqual(h.files.clearTransfers(owner,scope).removedIds,[jobs[1].jobId]);
+  h.uploads[0].resolve({bytes:100});await flush();
+  assert.deepEqual(h.files.clearTransfers(owner,scope).removedIds,[jobs[0].jobId]);
+  assert.equal(h.files.jobs.size,1);
+});
+
+test('暂停记录仍受过期、配置修改和窗口生命周期约束', async t=>{
+  let now=0;const h=harness({now:()=>now});t.after(()=>h.files.dispose());
+  h.plugin.target={hostKeyFingerprint:'SHA256:fixture'};h.files.running=2;
+  const prep=await h.files.prepareUpload(owner,{...scope,path:'/srv/example'},[local('pause')]);
+  const {jobs:[job]}=await h.files.confirmUpload(owner,{...scope,preparationId:prep.preparationId,overwrite:false});
+  h.files.pauseUpload(owner,{...scope,jobId:job.jobId});
+  now=31*60*1000;
+  await assert.rejects(h.files.prepareUploadResume(owner,{...scope,jobId:job.jobId}),{code:'UPLOAD_RESUME_UNAVAILABLE'});
+  h.files.closeScope(scope);
+  assert.equal(h.files.uploads(owner,scope).jobs[0].status,'error');
+  assert.equal(h.files.jobs.get(job.jobId).args,undefined);
+  h.files.closeOwner(owner);assert.equal(h.files.jobs.size,0);
+});
+
+test('下载只从原生对话框获取本地路径，拒绝越权字段及窗口换代', async t=>{
+  const h=harness();t.after(()=>h.files.dispose());
+  const handlers=new Map();const sender=new EventEmitter();sender.id=1;sender.mainFrame={};sender.isDestroyed=()=>false;
+  const event={sender,senderFrame:sender.mainFrame};
+  h.runtime.statRemotePath=async (_p,target)=>({type:'file',size:1,mode:0o100644,mtime:1,canonicalPath:target});
+  let picked=0;
+  registerServerWorkspaceIpc({handle:(name,fn)=>handlers.set(name,fn)},{
+    serverWorkspaceFiles:h.files,isWorkspaceRenderer:()=>true,
+    pickServerDownloadPath:async()=>{picked++;h.reconnect();return local('download');},
+  });
+  const invoke=(payload,ev=event)=>handlers.get('v2:server-workspace-download')(ev,payload);
+  assert.equal((await invoke({...scope,path:'/file.txt',localPath:local('evil')})).error.code,'INVALID_ARGUMENT');
+  assert.equal(picked,0);
+  assert.equal((await invoke({...scope,path:'/file.txt'},{sender,senderFrame:{}})).error.code,'WORKSPACE_ACCESS_DENIED');
+  assert.equal((await invoke({...scope,path:'/file.txt'})).error.code,'WORKSPACE_CHANGED');
+  assert.equal(h.files.jobs.size,0);
+});
+
+test('退出统计覆盖多个工作区、暂停和取消尚未收尾任务，不计入结束记录', t => {
+  const h=harness();
+  t.after(() => { h.files.jobs.clear(); h.files.dispose(); });
+  const states=[
+    {status:'queued'}, {status:'running'}, {status:'verifying'}, {status:'pausing'},
+    {status:'paused'}, {status:'interrupted'}, {status:'cancelled',inFlight:true},
+    {status:'completed'}, {status:'cancelled'}, {status:'error'},
+  ];
+  states.forEach((job,index)=>h.files.jobs.set(String(index),job));
+  assert.deepEqual(h.files.exitSummary(),{active:5,resumable:2});
+  h.files.jobs.clear();
+  assert.deepEqual(h.files.exitSummary(),{active:0,resumable:0});
+});
