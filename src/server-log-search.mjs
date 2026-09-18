@@ -6,6 +6,7 @@ import { BoundedReadScheduler } from './bounded-read-scheduler.mjs';
 import { logProcessor } from './log-processor.mjs';
 import { LogSearchCursors, logSearchBinding } from './log-search-cursors.mjs';
 import { LOG_SEARCH_LIMITS, logInteger } from './log-search-limits.mjs';
+import { selectLogResultPage } from './log-result-page.mjs';
 
 const LOG_SNAPSHOT_CACHE_TTL_MS = 5 * 60 * 1000;
 const LOG_SNAPSHOT_CACHE_MAX_BYTES = 64 * 1024 * 1024;
@@ -58,6 +59,8 @@ function sourceNameMatches(source, name, filter, includeArchives) {
 
 function logSearchGuidance(reasons) {
   const guidance = [];
+  if (reasons.has('outputBytes')) guidance.push('结果正文受到字节上限约束；存在 nextCursor 时继续获取其余匹配。');
+  if (reasons.has('contextOmitted')) guidance.push('单条匹配的上下文超过正文预算，本页保留匹配本身；需要上下文时增大 maxResultBytes 并从该文件发起新搜索。');
   if (reasons.has('sourceGrew')) guidance.push('日志在读取期间增长，coverage 标明本次范围；需要最新内容时再次搜索，不能据此断言新增内容没有匹配。');
   if (reasons.has('fileTailOnly')) guidance.push('本次只搜索文件尾部；历史问题请用日期 pattern 选择轮转日志，或在上限内增大 maxScanBytes。');
   if (reasons.has('maxScanBytes')) guidance.push('扫描预算不足；指定单个文件后按文件大小设置 maxScanBytes，最大 67108864。ZIP/GZIP 必须完整读取压缩输入。');
@@ -211,6 +214,7 @@ export class ServerLogSearch {
     const expandedBudget = logInteger(args.maxExpandedBytes, 'maxExpandedBytes',
       Math.min(LOG_SEARCH_MAX_EXPANDED_BYTES, Math.max(scanBudget, scanBudget * 4)));
     const maxArchiveEntries = logInteger(args.maxArchiveEntries, 'maxArchiveEntries');
+    const maxResultBytes = logInteger(args.maxResultBytes, 'maxResultBytes');
     for (const field of ['includeArchives','caseSensitive']) {
       if (args[field] !== undefined && typeof args[field] !== 'boolean') throw new AppError('INVALID_ARGUMENT', field + ' 必须是布尔值。', {field});
     }
@@ -450,9 +454,9 @@ export class ServerLogSearch {
             continue;
           }
           if (effectiveArchive && remainingArchiveEntries <= 0) {
-            skipped.push({ path:file.path, code:'ARCHIVE_ENTRY_BUDGET_EXHAUSTED' });
+            pending = files.slice(fileIndex);
             truncationReasons.add('maxArchiveEntries');
-            continue;
+            break;
           }
           if (!effectiveArchive && fileSize > 0 && remainingScan <= 0) {
             truncationReasons.add('maxScanBytes');
@@ -460,7 +464,15 @@ export class ServerLogSearch {
             break;
           }
           if (effectiveArchive && fileSize > remainingScan) {
-            skipped.push({ path:file.path, code:'ARCHIVE_INPUT_LIMIT', size:Number(file.size), remainingBytes:remainingScan });
+            const requiredInputBytes = fileSize + probeBytesRead;
+            if (requiredInputBytes <= scanBudget && scannedBytes > probeBytesRead) {
+              pending = files.slice(fileIndex);
+              truncationReasons.add('maxScanBytes');
+              break;
+            }
+            const retryable = requiredInputBytes <= LOG_SEARCH_LIMITS.maxScanBytes.maximum;
+            skipped.push({ path:file.path, code:'ARCHIVE_INPUT_LIMIT', size:Number(file.size), remainingBytes:remainingScan, retryable,
+              ...(retryable ? {suggestedArguments:{path:file.path,maxScanBytes:Math.max(scanBudget,requiredInputBytes)}} : {}) });
             truncationReasons.add('maxScanBytes');
             continue;
           }
@@ -475,7 +487,7 @@ export class ServerLogSearch {
             plugin.projectId, plugin.environmentId, plugin.pluginInstanceId,
             plugin.revision ?? null, reader.generation ?? null,
             file.canonicalPath ?? file.path, Number(file.size), Number(file.mtime), start, length,
-            remainingExpanded, remainingArchiveEntries, includeArchives, effectiveArchive,
+            includeArchives, effectiveArchive,
           ]);
           const cached = sourceGrew || file.listedIdentity || (args.refresh === true && !resumed) ? null : this.logSnapshotCache.get(cacheKey);
           scannedBytes += length;
@@ -543,11 +555,22 @@ export class ServerLogSearch {
               break;
             }
             if (!String(error?.code ?? '').startsWith('LOG_ARCHIVE_')) throw error;
+            const expandedLimit = ['LOG_ARCHIVE_ENTRY_TOO_LARGE','LOG_ARCHIVE_EXPANDED_LIMIT'].includes(error.code);
+            const entryLimit = error.code === 'LOG_ARCHIVE_ENTRY_LIMIT';
+            if ((expandedLimit && expandedBytes > 0) || (entryLimit && archiveEntriesScanned > 0)) {
+              // 本页前面的文件用掉预算时，保留整个归档到下一页，避免误报为永久跳过。
+              pending = files.slice(fileIndex);
+              truncationReasons.add(expandedLimit ? 'maxExpandedBytes' : 'maxArchiveEntries');
+              break;
+            }
             archiveEntriesScanned += Math.min(Math.max(0, remainingArchiveEntries), Math.max(0, Math.floor(Number(error?.details?.entriesScanned) || 0)));
             expandedBytes += Math.min(Math.max(0, remainingExpanded), Math.max(0, Math.floor(Number(error?.details?.expandedBytes) || 0)));
             if (error.code === 'LOG_ARCHIVE_DISABLED') skipped.push({ path:file.path, code:'ARCHIVES_EXCLUDED' });
             else {
-              skipped.push({ path:file.path, code:error.code, details:error.details ?? null });
+              const suggestedExpanded = Math.min(LOG_SEARCH_MAX_EXPANDED_BYTES, Math.max(expandedBudget * 2, Number(error.details?.expandedBytes) || 0));
+              const retryable = expandedLimit && expandedBudget < suggestedExpanded && (Number(error.details?.expandedBytes) || 0) <= LOG_SEARCH_MAX_EXPANDED_BYTES;
+              skipped.push({ path:file.path, code:error.code, details:error.details ?? null, ...(expandedLimit ? {retryable,
+                ...(retryable ? {suggestedArguments:{path:file.path,maxExpandedBytes:suggestedExpanded}} : {})} : {}) });
               truncationReasons.add('archiveRejected');
             }
             if (archiveEntriesScanned >= maxArchiveEntries) truncationReasons.add('maxArchiveEntries');
@@ -566,13 +589,15 @@ export class ServerLogSearch {
           for (const warning of expanded.warnings) skipped.push({ path:file.path, archiveMember:warning.archiveEntry, code:warning.code });
           if (expanded.truncated) truncationReasons.add('archiveEntriesSkipped');
 
+          const fileMatches = [];
+          const fileContexts = [];
           for (const snapshot of expanded.snapshots) {
             const search = snapshot.search;
             if (search.outputTruncated) truncationReasons.add('outputBytes');
             totalMatches += search.totalMatches;
             const lineNumberScope = snapshot.archiveEntry ? 'archiveMember' : searchedStart === 0 ? 'file' : rangeEnd === fileSize ? 'scannedTail' : 'scannedRange';
             for (const match of search.matches) {
-              matches.push({
+              fileMatches.push({
                 ...(file.fileId ? { fileId:file.fileId } : {}),
                 relativePath:file.relativePath,
                 path:file.canonicalPath ?? file.path,
@@ -603,11 +628,16 @@ export class ServerLogSearch {
               })),
             }));
             const bounded = boundedContexts(mappedContexts, Math.max(0, LOG_SEARCH_MAX_CONTEXT_BYTES - contextBytes));
-            contexts.push(...bounded.contexts);
+            fileContexts.push(...bounded.contexts);
             contextBytes += bounded.bytes;
             if (bounded.truncated) truncationReasons.add('outputBytes');
             if (search.truncation.resultLimited) truncationReasons.add('maxMatches');
           }
+          const page = selectLogResultPage({previousMatches:matches,previousContexts:contexts,matches:fileMatches,contexts:fileContexts,beforeLines,afterLines,maxBytes:maxResultBytes});
+          matches.push(...page.matches);
+          contexts.push(...page.contexts);
+          if (page.limited) truncationReasons.add('outputBytes');
+          if (page.contextOmitted) truncationReasons.add('contextOmitted');
           coverage.push({
             ...(file.fileId ? { fileId:file.fileId } : {}),
             path:file.canonicalPath ?? file.path,
@@ -625,7 +655,7 @@ export class ServerLogSearch {
             complete:searchedStart === 0 && !expanded.truncated && !sourceGrew,
           });
           const windowMatches = expanded.snapshots.reduce((sum,snapshot) => sum + snapshot.search.totalMatches,0);
-          const returnedMatches = expanded.snapshots.reduce((sum,snapshot) => sum + snapshot.search.matches.length,0);
+          const returnedMatches = page.matches.length;
           if ((file.matchOffset ?? 0) + returnedMatches < windowMatches) {
             pending.unshift({...file,windowStart:start,windowEnd:rangeEnd,matchOffset:(file.matchOffset ?? 0) + returnedMatches});
             break;
@@ -659,8 +689,6 @@ export class ServerLogSearch {
       return {
         selection:{ ...selection, includeArchives },
         query:{ count:queries.length, mode:modeValue, caseSensitive, literal:true },
-        matches,
-        contexts,
         matchCount:matches.length,
         totalMatches,
         filesConsidered:Math.min(files.length,maxFiles),
@@ -689,9 +717,13 @@ export class ServerLogSearch {
           maxScanBytes:scanBudget,
           maxExpandedBytes:expandedBudget,
           maxArchiveEntries,
+          maxResultBytes,
           beforeLines,
           afterLines,
         },
+        resultBytes:Buffer.byteLength(JSON.stringify({matches,contexts}),'utf8'),
+        matches,
+        contexts,
       };
     }));
   }

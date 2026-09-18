@@ -36,7 +36,7 @@ export class MysqlSchemaReader {
       sql: 'SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME LIMIT ? OFFSET ?',
       timeout: plugin.limits.timeoutMs,
       values: [plugin.target.database, safeLimit + 1, offset],
-    }, { fallbackMessage:'MySQL 数据表列表读取失败。' });
+    }, { fallbackMessage:'MySQL 数据表列表读取失败。', operation:'list_tables' });
     const truncated = rows.length > safeLimit;
     return {
       tables: rows.slice(0, safeLimit).map((row) => ({ name: row.TABLE_NAME, type: row.TABLE_TYPE, queryable: row.TABLE_TYPE === 'BASE TABLE' })),
@@ -77,7 +77,7 @@ export class MysqlSchemaReader {
         sql:`${sql} ORDER BY table_name, match_kind DESC, column_name LIMIT ?`,
         timeout:plugin.limits.timeoutMs,
         values:[...values, ...(kind === 'all' ? values : []), safeLimit + 1],
-      }, { fallbackMessage:'MySQL Schema 搜索失败。' });
+      }, { fallbackMessage:'MySQL Schema 搜索失败。', operation:`search_${kind}` });
       return rows;
     };
     // 先查成本较低的表目录，只有没有命中时才自动搜索字段。
@@ -121,14 +121,14 @@ export class MysqlSchemaReader {
       sql: 'SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION LIMIT 4097',
       timeout: plugin.limits.timeoutMs,
       values: [plugin.target.database, table],
-    }, { fallbackMessage:'MySQL 表结构读取失败。' });
+    }, { fallbackMessage:'MySQL 表结构读取失败。', operation:'describe_table' });
     const columns = capRows(rows.map((row) => ({ name: row.COLUMN_NAME, type: row.COLUMN_TYPE, nullable: row.IS_NULLABLE === 'YES', key: row.COLUMN_KEY || null, default: row.COLUMN_DEFAULT, extra: row.EXTRA || null })), 4096, plugin.limits.maxBytes);
     const result = { table, columns:columns.rows, truncated:columns.truncated };
     if (includeIndexes) {
       const [indexes] = await this.querySession(plugin, {
         sql:'SELECT INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME, SUB_PART FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY INDEX_NAME, SEQ_IN_INDEX LIMIT 257',
         values:[plugin.target.database, table], timeout:plugin.limits.timeoutMs,
-      }, { fallbackMessage:'MySQL 索引信息读取失败。' });
+      }, { fallbackMessage:'MySQL 索引信息读取失败。', operation:'describe_indexes' });
       let capped;
       try {
         capped = capRows(indexes, 256, Math.max(2, plugin.limits.maxBytes - columns.bytes));

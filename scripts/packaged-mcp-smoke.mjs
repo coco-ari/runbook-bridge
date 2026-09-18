@@ -27,6 +27,7 @@ try {
   assert.equal(logSearch.inputSchema.properties.maxLines, undefined);
   assert.equal(logSearch.inputSchema.properties.cursor.pattern, '^[a-f0-9]{64}$');
   assert.equal(logSearch.inputSchema.properties.refresh.type, 'boolean');
+  assert.deepEqual([logSearch.inputSchema.properties.maxResultBytes.minimum, logSearch.inputSchema.properties.maxResultBytes.maximum], [16384, 2097152]);
   const confirmation = result.tools.find(tool => tool.name === 'get_confirmation_status');
   assert.equal(confirmation.annotations.readOnlyHint, true);
   assert.equal(confirmation.inputSchema.properties.waitMs.maximum, 10000);
@@ -72,6 +73,8 @@ const archiveSmoke = [
   "const searched = await operations.searchLogs({projectId:'package',environmentId:'test',pluginInstanceId:'server'}, {path:'/logs/packaged.zip',queries:['PACKAGED_ZIP_OK'],maxMatches:1});",
   "assert.equal(searched.matchCount, 1); assert.equal(searched.coverage[0].sourceGrew, false); assert.ok(Array.isArray(searched.guidance));",
   "assert.ok(searched.nextCursor); assert.equal(searched.status,'partial');",
+  "assert.equal(searched.limitsApplied.maxResultBytes,32768); assert.ok(searched.resultBytes <= 32768);",
+  "assert.ok(Object.keys(searched).indexOf('nextCursor') < Object.keys(searched).indexOf('matches'));",
   "const next = await operations.searchLogs({projectId:'package',environmentId:'test',pluginInstanceId:'server'}, {path:'/logs/packaged.zip',queries:['PACKAGED_ZIP_OK'],maxMatches:1,cursor:searched.nextCursor});",
   "assert.equal(next.matchCount,1); assert.equal(next.status,'complete'); assert.equal(next.cache.hits,1);",
   "const { ConfirmationManager } = await import(pathToFileURL(process.env.AI_OPS_CONFIRMATION_MODULE).href);",

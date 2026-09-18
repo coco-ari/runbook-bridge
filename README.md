@@ -123,8 +123,10 @@ macOS 数据保存在 `~/.ai-ops-tool`，密码由系统钥匙串加密。两个
 ## Codex 查询与排障效率
 
 - 日志支持 ZIP/GZIP、多关键词和有界续查。返回 `nextCursor` 时保持其他参数一致继续，结合 `status`、`conclusion`、`coverage` 判断范围；`inconclusive` 不能解释成没有异常。目录短期复用，`refresh:true` 发起最新搜索。见 [日志读取与排障](docs/mcp-log-reading.md)。
-- MySQL Schema 默认先匹配表，未命中再查字段；可指定 `searchIn`、准确 `table`、`includeIndexes:true`。元数据缓存 60 秒，业务查询仍逐次执行和校验，`refresh:true` 可更新元数据。
+- 日志正文默认按 32 KiB 分页（`maxResultBytes`），状态、遗漏原因与游标先于正文返回；归档只因本页剩余预算不足时自动保留到下一页，单文件超限时返回调整建议。
+- MySQL Schema 默认先匹配表，未命中再查字段；可指定 `searchIn`、准确 `table`、`includeIndexes:true`。元数据缓存 60 秒，业务查询仍逐次执行和校验，`refresh:true` 可更新元数据。相同连接、配置和表集合的同时检查只合并在途请求，完成后不缓存；重连后必须重新检查。超时 `details.operation` 区分表检查、结构搜索与 SQL 执行。
 - 变更待确认时，使用 `get_confirmation_status`（`waitMs` 最长 10 秒）查询当前会话状态。只有 `approved` 时原参数重试一次；`running/succeeded` 不要重发。
+- 已认证连接不会因为凭据摘要尚未读取而被误报为 Agent 不可用；明确的凭据缺失或不可读、资源未验证和断连仍会阻断。
 - `open_environment` 返回桌面 `runtime`、`mcpRuntime` 和 MySQL 能力说明。相同版本号也能通过 `buildId`、`gitCommit`、`startedAt` 判断运行的是哪份构建。
 - 查询按插件限制并发，并设全局排队与内存预算；压缩处理在本地工作线程执行。`READ_BUSY` 表示排队繁忙，先等待再重试。
 

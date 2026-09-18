@@ -135,7 +135,8 @@ function assessAgent({persistence,configuration,credential,dependency,resourceSc
   }
   if (credential.state === 'missing') issues.push(agentIssue('PLUGIN_CREDENTIAL_MISSING','插件凭据缺失。'));
   if (credential.state === 'unreadable') issues.push(agentIssue('PLUGIN_CREDENTIAL_UNREADABLE','插件凭据不可读。'));
-  if (credential.state === 'unknown') issues.push(agentIssue('PLUGIN_CREDENTIAL_UNKNOWN','尚未确认插件凭据状态。'));
+  // 已建立的会话已完成认证；未读取保险库摘要不应把该会话误报为不可用。
+  if (credential.state === 'unknown' && runtime.phase !== 'connected') issues.push(agentIssue('PLUGIN_CREDENTIAL_UNKNOWN','尚未确认插件凭据状态。'));
   if (dependency.state !== 'ready') issues.push(agentIssue('PLUGIN_DEPENDENCY_BLOCKED','插件依赖尚未就绪。'));
   if (providerBlock) issues.push(agentIssue('PLUGIN_PROVIDER_RUNTIME_BLOCKED','Provider 当前未连接。'));
   if (resourceScope.state === 'missing') issues.push(agentIssue('PLUGIN_RESOURCE_SELECTION_REQUIRED','请选择固定资源。'));

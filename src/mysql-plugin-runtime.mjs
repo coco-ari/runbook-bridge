@@ -161,6 +161,7 @@ export class MysqlPluginRuntime extends EventEmitter {
     this.readScheduler = new BoundedReadScheduler({ maxConcurrent:4, maxQueued:32, queueTimeoutMs });
     this.metadataCache = new BoundedReadCache({ now, ttlMs:metadataTtlMs });
     this.sessionIds = new WeakMap();
+    this.pendingTableChecks = new WeakMap();
     this.nextSessionId = 0;
     this.schemaReader = new MysqlSchemaReader({
       querySession:(plugin, request, options) => this.querySession(plugin, request, { ...options, phase:'metadata' }),
@@ -196,8 +197,9 @@ export class MysqlPluginRuntime extends EventEmitter {
     await this.routeManager.closeRelay(plugin, session.routeGeneration).catch(() => undefined);
   }
 
-  async querySession(plugin, request, { invalidateOnAnyError = false, fallbackMessage, phase = 'query' } = {}) {
+  async querySession(plugin, request, { invalidateOnAnyError = false, fallbackMessage, phase = 'query', operation = phase, expectedSession } = {}) {
     const session = this.require(plugin);
+    if (expectedSession && session !== expectedSession) throw new AppError('PLUGIN_RECONNECTING', '表访问检查后数据库连接已更新，请重新查询。', { phase:'metadata', operation:'table_check' });
     return this.readScheduler.run(key(plugin), 1, async () => {
       if (this.require(plugin) !== session) throw new AppError('PLUGIN_RECONNECTING', '排队期间数据库连接已更新，请重新发起查询。', { phase:'queue' });
       try {
@@ -205,7 +207,10 @@ export class MysqlPluginRuntime extends EventEmitter {
       } catch (error) {
         const mapped = mysqlError(error, fallbackMessage);
         if (mapped.code === 'DATABASE_QUERY_TIMEOUT') {
-          mapped.details = { phase, timeoutMs:request.timeout, retryable:false, guidance:phase === 'metadata' ? '指定准确表名，或先仅搜索表名；避免反复扫描全库字段。' : '先调用 mysql_explain 检查执行计划，缩小时间范围或筛选条件后再查询。' };
+          const guidance = operation === 'table_check'
+            ? '查询尚未执行，超时发生在基础表访问检查；等待连接恢复后重试，持续出现时检查数据库元数据访问和网络延迟。'
+            : phase === 'metadata' ? '指定准确表名，或先仅搜索表名；避免反复扫描全库字段。' : '先调用 mysql_explain 检查执行计划，缩小时间范围或筛选条件后再查询。';
+          mapped.details = { phase, operation, timeoutMs:request.timeout, retryable:false, guidance };
         }
         if (invalidateOnAnyError || invalidatesSession(error) || invalidatesSession(mapped)) {
           await this.invalidateSession(plugin, session, mapped);
@@ -393,12 +398,31 @@ export class MysqlPluginRuntime extends EventEmitter {
 
   async assertBaseTables(plugin, tables) {
     if (!tables.length) return;
+    const session = this.sessions.get(key(plugin));
+    if (!session) return this.checkBaseTables(plugin, tables);
+    this.require(plugin);
+    let pending = this.pendingTableChecks.get(session);
+    if (!pending) this.pendingTableChecks.set(session, pending = new Map());
+    const names = [...new Set(tables)].sort();
+    const signature = JSON.stringify([plugin.revision, plugin.target.database, plugin.limits, names]);
+    let check = pending.get(signature);
+    if (!check) {
+      // 只合并同一连接内尚未完成的检查，完成后立即移除，后续查询仍重新验证表类型。
+      check = this.checkBaseTables(plugin, names).finally(() => pending.delete(signature));
+      pending.set(signature, check);
+    }
+    await check;
+    if (this.require(plugin) !== session) throw new AppError('PLUGIN_RECONNECTING', '表访问检查期间数据库连接已更新，请重新查询。', { phase:'metadata', operation:'table_check' });
+    return session;
+  }
+
+  async checkBaseTables(plugin, tables) {
     const placeholders = tables.map(() => '?').join(',');
     const [rows] = await this.querySession(plugin, {
       sql: `SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME IN (${placeholders})`,
       timeout: plugin.limits.timeoutMs,
       values: [plugin.target.database, ...tables],
-    }, { fallbackMessage:'MySQL 表访问检查失败。', phase:'metadata' });
+    }, { fallbackMessage:'MySQL 表访问检查失败。', phase:'metadata', operation:'table_check' });
     const types = new Map(rows.map((row) => [String(row.TABLE_NAME), String(row.TABLE_TYPE)]));
     for (const table of tables) {
       const type = types.get(table);
@@ -422,13 +446,13 @@ export class MysqlPluginRuntime extends EventEmitter {
 
   async queryReadonly(plugin, sql, params) {
     const validated = validateMysqlSelect(sql);
-    await this.assertBaseTables(plugin, validated.tables);
+    const checkedSession = await this.assertBaseTables(plugin, validated.tables);
     const statement = applyMysqlRowLimit(validated, plugin.limits.maxRows);
     const started = Date.now();
     const [rows, fields] = await this.querySession(
       plugin,
       { sql: statement, timeout: plugin.limits.timeoutMs, values: normalizeParams(params) },
-      { fallbackMessage:'MySQL 只读查询执行失败。' },
+      { fallbackMessage:'MySQL 只读查询执行失败。', expectedSession:checkedSession },
     );
     const capped = capRows(rows, plugin.limits.maxRows, plugin.limits.maxBytes);
     return {
@@ -442,11 +466,11 @@ export class MysqlPluginRuntime extends EventEmitter {
 
   async explain(plugin, sql, params) {
     const validated = validateMysqlExplain(sql);
-    await this.assertBaseTables(plugin, validated.tables);
+    const checkedSession = await this.assertBaseTables(plugin, validated.tables);
     const [rows] = await this.querySession(
       plugin,
       { sql: validated.statement, timeout: plugin.limits.timeoutMs, values: normalizeParams(params) },
-      { fallbackMessage:'MySQL 执行计划读取失败。' },
+      { fallbackMessage:'MySQL 执行计划读取失败。', operation:'explain', expectedSession:checkedSession },
     );
     return { plan: capRows(rows, 200, plugin.limits.maxBytes), fingerprint: validated.fingerprint };
   }

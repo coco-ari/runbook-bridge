@@ -298,7 +298,7 @@ test('普通日志按完整行向前续查，不漏掉窗口边界和历史命�
   const lines = Array.from({length:7000},(_,index) => `MARK-${index} 中文日志 ${'x'.repeat(13)}\n`);
   const {runtime} = createRemoteLogRuntime({files:{'/logs/large.log':{content:Buffer.from(lines.join('')),mtime:1}}});
   const operations = new ServerOperations(runtime,{});
-  const args = {path:'/logs/large.log',queries:['MARK-'],maxMatches:500,maxScanBytes:65536,maxExpandedBytes:65536,beforeLines:0,afterLines:0};
+  const args = {path:'/logs/large.log',queries:['MARK-'],maxMatches:500,maxScanBytes:65536,maxExpandedBytes:65536,maxResultBytes:2*1024*1024,beforeLines:0,afterLines:0};
   let cursor;
   const returned = [];
   let last;
@@ -768,7 +768,8 @@ test('maxArchiveEntries is a total request budget across multiple archives', asy
   assert.equal(result.archivesScanned,1);
   assert.equal(result.archiveEntriesScanned,1);
   assert.equal(result.matchCount,1);
-  assert.ok(result.skipped.some(({code})=>code==='ARCHIVE_ENTRY_BUDGET_EXHAUSTED'));
+  assert.ok(result.nextCursor);
+  assert.ok(!result.skipped.some(({code})=>code==='ARCHIVE_ENTRY_BUDGET_EXHAUSTED'));
   assert.ok(result.truncationReasons.includes('maxArchiveEntries'));
 });
 
@@ -802,7 +803,8 @@ test('failed ZIP work consumes the total archive-entry budget before the next ar
   assert.equal(result.archiveEntriesScanned,2);
   assert.equal(result.matchCount,0);
   assert.ok(result.skipped.some(({code})=>code==='LOG_ARCHIVE_COMPRESSION_RATIO'));
-  assert.ok(result.skipped.some(({code})=>code==='ARCHIVE_ENTRY_BUDGET_EXHAUSTED'));
+  assert.ok(result.nextCursor);
+  assert.ok(!result.skipped.some(({code})=>code==='ARCHIVE_ENTRY_BUDGET_EXHAUSTED'));
   assert.ok(result.truncationReasons.includes('maxArchiveEntries'));
 });
 
@@ -879,8 +881,8 @@ test('a magic-only archive cannot bypass an exhausted request entry budget', asy
   assert.equal(result.archiveEntriesScanned,1);
   assert.equal(result.matchCount,1);
   assert.equal(result.matches[0].path,'/logs/known.log.gz');
-  assert.ok(result.skipped.some(({path,code})=>
-    path==='/logs/disguised.log' && code==='ARCHIVE_ENTRY_BUDGET_EXHAUSTED'));
+  assert.deepEqual(result.skipped,[]);
+  assert.ok(result.nextCursor);
   assert.deepEqual(calls.reads.map(({remotePath,start,maxBytes})=>({remotePath,start,maxBytes})),[
     {remotePath:'/logs/known.log.gz',start:0,maxBytes:known.length},
     {remotePath:'/logs/disguised.log',start:0,maxBytes:4},
@@ -1095,4 +1097,166 @@ test('a changed magic-only archive cannot reuse a fresh path cache through an ol
   const fresh=await operations.searchLogs(scopedPlugin,{path:'/logs/archive.log',contains:'needle'});
   assert.equal(fresh.matchCount,2);
   await assert.rejects(operations.searchLogs(scopedPlugin,{fileIds:[fileId],contains:'needle'}),{code:'SOURCE_CHANGED'});
+});
+
+function fixtureLogNoise(length) {
+  let seed = 0x12345678;
+  return Array.from({length},() => {
+    seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+    return String.fromCharCode(33 + ((seed >>> 0) % 90));
+  }).join('');
+}
+
+test('多个归档仅剩余展开预算不足时保留到下一页，缓存输入且不遗失匹配', async () => {
+  const first = createZip([{name:'first.log',content:'needle first\n' + fixtureLogNoise(45000)}]);
+  const second = createZip([{name:'second.log',content:'needle second\n' + fixtureLogNoise(45000)}]);
+  const files = {'/logs/first.zip':{content:first,mtime:2},'/logs/second.zip':{content:second,mtime:1}};
+  const directories = {'/logs':Object.entries(files).map(([name,item]) => remoteFile(name.split('/').at(-1),name,item.content,item.mtime))};
+  const {runtime,calls} = createRemoteLogRuntime({files,directories});
+  const operations = new ServerOperations(runtime,{});
+  const args = {path:'/logs',queries:['needle'],maxScanBytes:131072,maxExpandedBytes:65536,beforeLines:0,afterLines:0};
+  const a = await operations.searchLogs(plugin,args);
+  assert.deepEqual(a.skipped,[]);
+  assert.ok(a.nextCursor);
+  assert.equal(a.progress.filesFinished,1);
+  assert.ok(a.truncationReasons.includes('maxExpandedBytes'));
+  const b = await operations.searchLogs(plugin,{...args,cursor:a.nextCursor});
+  assert.equal(b.status,'complete');
+  assert.equal(b.nextCursor,null);
+  assert.deepEqual([...a.matches,...b.matches].map(match => match.text),['needle first','needle second']);
+  assert.equal(b.remoteBytesRead,0);
+  assert.equal(calls.reads.length,2);
+});
+
+test('归档压缩输入仅超出剩余预算时留到下一页，整页超限给出重试参数', async () => {
+  const plain = 'needle first\n' + fixtureLogNoise(40000);
+  const archive = createZip([{name:'second.log',content:'needle second\n' + fixtureLogNoise(45000)}]);
+  const files = {'/logs/first.log':{content:plain,mtime:2},'/logs/second.zip':{content:archive,mtime:1}};
+  const directories = {'/logs':Object.entries(files).map(([name,item]) => remoteFile(name.split('/').at(-1),name,item.content,item.mtime))};
+  const {runtime} = createRemoteLogRuntime({files,directories});
+  const operations = new ServerOperations(runtime,{});
+  const args = {path:'/logs',queries:['needle'],maxScanBytes:65536,maxExpandedBytes:131072,beforeLines:0,afterLines:0};
+  const a = await operations.searchLogs(plugin,args);
+  assert.ok(a.nextCursor);
+  assert.deepEqual(a.skipped,[]);
+  const b = await operations.searchLogs(plugin,{...args,cursor:a.nextCursor});
+  assert.equal(b.status,'complete');
+  assert.deepEqual([...a.matches,...b.matches].map(match => match.text),['needle first','needle second']);
+
+  const big = createZip([{name:'large.log',content:fixtureLogNoise(100000)}]);
+  const isolated = new ServerOperations(createRemoteLogRuntime({files:{'/logs/large.zip':big}}).runtime,{});
+  const rejected = await isolated.searchLogs(plugin,{path:'/logs/large.zip',queries:['needle'],maxScanBytes:65536});
+  assert.equal(rejected.nextCursor,null);
+  assert.equal(rejected.skipped[0].code,'ARCHIVE_INPUT_LIMIT');
+  assert.equal(rejected.skipped[0].retryable,true);
+  assert.equal(rejected.skipped[0].suggestedArguments.maxScanBytes,big.length);
+});
+
+test('单个归档展开超限不会产生空页死循环，提供单文件重试预算', async () => {
+  const archive = createZip([{name:'large.log',content:fixtureLogNoise(100000)}]);
+  const operations = new ServerOperations(createRemoteLogRuntime({files:{'/logs/large.zip':archive}}).runtime,{});
+  const args = {path:'/logs/large.zip',queries:['needle'],maxScanBytes:131072,maxExpandedBytes:65536};
+  const result = await operations.searchLogs(plugin,args);
+  assert.equal(result.nextCursor,null);
+  assert.equal(result.conclusion,'inconclusive');
+  assert.equal(result.skipped[0].code,'LOG_ARCHIVE_ENTRY_TOO_LARGE');
+  assert.equal(result.skipped[0].retryable,true);
+  const retried = await operations.searchLogs(plugin,{...args,...result.skipped[0].suggestedArguments});
+  assert.equal(retried.status,'complete');
+});
+
+test('正文按字节分页且跨 ZIP 成员续查不重复、不漏匹配，状态先于正文返回', async () => {
+  const lines = Array.from({length:40},(_,index) => 'needle ' + index + ' 中文 ' + fixtureLogNoise(1800) + '\n');
+  for (const compressed of [false,true]) {
+    const name = compressed ? '/logs/page.zip' : '/logs/page.log';
+    const content = compressed ? createZip([{name:'a.log',content:lines.slice(0,20).join('')},{name:'b.log',content:lines.slice(20).join('')}]) : Buffer.from(lines.join(''));
+    const operations = new ServerOperations(createRemoteLogRuntime({files:{[name]:content}}).runtime,{});
+    const args = {path:name,queries:['needle'],beforeLines:0,afterLines:0,maxMatches:100};
+    const matches = [];
+    let cursor;
+    let last;
+    for (let page = 0; page < 20; page += 1) {
+      last = await operations.searchLogs(plugin,{...args,...(cursor ? {cursor} : {})});
+      assert.ok(last.resultBytes <= 32768);
+      assert.equal(last.resultBytes,Buffer.byteLength(JSON.stringify({matches:last.matches,contexts:last.contexts}),'utf8'));
+      const keys = Object.keys(last);
+      assert.ok(keys.indexOf('nextCursor') < keys.indexOf('matches'));
+      assert.ok(keys.indexOf('skipped') < keys.indexOf('matches'));
+      matches.push(...last.matches.map(match => match.text));
+      cursor = last.nextCursor;
+      if (!cursor) break;
+    }
+    assert.equal(cursor,null);
+    assert.equal(last.status,'complete');
+    assert.deepEqual(matches,lines.map(line => line.trimEnd()));
+    assert.equal(last.progress.matchedSoFar,40);
+  }
+});
+
+test('正文预算参数越界在远端读取前拒绝，修改预算不能复用游标', async () => {
+  const operations = new ServerOperations({},{});
+  await assert.rejects(operations.searchLogs(plugin,{path:'/logs/a.log',queries:['hit'],maxResultBytes:1}),error =>
+    error.code === 'INVALID_ARGUMENT' && error.details.field === 'maxResultBytes');
+  const bounded = new ServerOperations(createRemoteLogRuntime({files:{'/logs/a.log':'hit one\nhit two\n'}}).runtime,{});
+  const args = {path:'/logs/a.log',queries:['hit'],maxMatches:1};
+  const first = await bounded.searchLogs(plugin,args);
+  await assert.rejects(bounded.searchLogs(plugin,{...args,cursor:first.nextCursor,maxResultBytes:65536}),{code:'LOG_CURSOR_MISMATCH'});
+});
+
+test('单条上下文过大仍返回命中并结束，增大预算可以取得上下文', async () => {
+  const content = Array.from({length:25},(_,index) => (index === 12 ? 'needle ' : '') + fixtureLogNoise(1500) + '\n').join('');
+  const operations = new ServerOperations(createRemoteLogRuntime({files:{'/logs/a.log':content}}).runtime,{});
+  const args = {path:'/logs/a.log',queries:['needle'],beforeLines:12,afterLines:12,maxResultBytes:16384};
+  const page = await operations.searchLogs(plugin,args);
+  assert.equal(page.matchCount,1);
+  assert.equal(page.nextCursor,null);
+  assert.deepEqual(page.contexts,[]);
+  assert.ok(page.truncationReasons.includes('contextOmitted'));
+  const full = await operations.searchLogs(plugin,{...args,maxResultBytes:65536});
+  assert.equal(full.contexts[0].lines.length,25);
+  assert.ok(!full.truncationReasons.includes('contextOmitted'));
+});
+
+test('归档条目预算跨页重置且压缩比限制仍不能绕过', async () => {
+  const files = Object.fromEntries(['a','b','c'].map((name,index) => ['/logs/'+name+'.zip',{content:createZip([{name:name+'.log',content:'needle '+name+'\n'}]),mtime:3-index}]));
+  const directories = {'/logs':Object.entries(files).map(([name,item]) => remoteFile(name.split('/').at(-1),name,item.content,item.mtime))};
+  const operations = new ServerOperations(createRemoteLogRuntime({files,directories}).runtime,{});
+  const args = {path:'/logs',queries:['needle'],maxArchiveEntries:1};
+  const returned = [];
+  let cursor;
+  for(let index=0;index<3;index+=1){
+    const page = await operations.searchLogs(plugin,{...args,...(cursor ? {cursor} : {})});
+    assert.deepEqual(page.skipped,[]);
+    returned.push(...page.matches.map(match=>match.text));
+    cursor=page.nextCursor;
+  }
+  assert.equal(cursor,null);
+  assert.deepEqual(returned,['needle a','needle b','needle c']);
+  const dangerous = createZip([{name:'large.log',content:'x'.repeat(100000)}]);
+  const rejected = await new ServerOperations(createRemoteLogRuntime({files:{'/logs/ratio.zip':dangerous}}).runtime,{}).searchLogs(plugin,{path:'/logs/ratio.zip',queries:['x'],maxExpandedBytes:134217728});
+  assert.equal(rejected.skipped[0].code,'LOG_ARCHIVE_COMPRESSION_RATIO');
+  assert.equal(rejected.skipped[0].suggestedArguments,undefined);
+});
+
+test('无压缩后缀归档的探测开销计入整页预算，边界处不产生空页续查', async () => {
+  const expanded = Buffer.alloc(65536);
+  let seed = 0x12345678;
+  for(let index=0;index<expanded.length;index+=1){
+    seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
+    expanded[index] = seed & 0xff;
+  }
+  const content = gzipSync(expanded,{level:1});
+  assert.ok(content.length > 65536);
+  const {runtime,calls} = createRemoteLogRuntime({files:{'/logs/disguised.log':content}});
+  const operations = new ServerOperations(runtime,{});
+  const args = {path:'/logs/disguised.log',queries:['fixture'],maxScanBytes:content.length,maxExpandedBytes:65536};
+  const first = await operations.searchLogs(plugin,args);
+  assert.equal(first.nextCursor,null);
+  assert.equal(first.skipped[0].code,'ARCHIVE_INPUT_LIMIT');
+  assert.equal(first.skipped[0].suggestedArguments.maxScanBytes,content.length+4);
+  assert.equal(calls.reads.length,1);
+  const second = await operations.searchLogs(plugin,{...args,...first.skipped[0].suggestedArguments});
+  assert.equal(second.status,'complete');
+  assert.equal(second.nextCursor,null);
+  assert.equal(second.scannedBytes,content.length+4);
 });

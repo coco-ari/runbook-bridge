@@ -41,6 +41,7 @@
 | `maxScanBytes` | 远端输入字节；默认 16 MiB，兼容 `fileIds+contains` 默认为 4 MiB，最大 64 MiB。ZIP/GZIP 必须完整容纳压缩文件。 |
 | `maxExpandedBytes` | 本次解压后总预算，也约束单个条目；默认是扫描预算的 4 倍，最大 128 MiB。单个条目不再额外限制为 32 MiB。 |
 | `maxArchiveEntries` | 所有归档合计条目预算，默认及最大 128。 |
+| `maxResultBytes` | `matches` 与 `contexts` 的 UTF-8 JSON 正文预算，默认 32 KiB，最小 16 KiB，最大 2 MiB；覆盖范围等元数据另计。 |
 | 压缩比 | 仍限制为 100 倍；不能通过调大预算绕过。 |
 
 压缩内容只在内存中处理。加密条目、嵌套归档、危险路径、符号链接等限制继续生效；这不表示支持任意压缩格式或无限大小日志。超过 128 MiB 的展开内容仍会被拒绝，应改选更小的轮转文件。
@@ -48,8 +49,9 @@
 ## 结果与错误的处理
 
 - 先检查 `coverage`、`truncated`、`skipped` 和 `guidance`。`matchCount:0` 只能说明已扫描范围没有匹配。
-- `ARCHIVE_INPUT_LIMIT`：压缩输入超过剩余扫描预算。指定单个文件并在 64 MiB 上限内调整 `maxScanBytes`。
-- `LOG_ARCHIVE_ENTRY_TOO_LARGE` / `LOG_ARCHIVE_EXPANDED_LIMIT`：展开预算不足，在 128 MiB 上限内调整 `maxExpandedBytes`。增加输入预算不能替代展开预算。
+- `ARCHIVE_INPUT_LIMIT`：单个压缩文件超过整页输入预算。只超过本页剩余预算的文件会保留到 `nextCursor`，不会因此永久跳过。
+- `LOG_ARCHIVE_ENTRY_TOO_LARGE` / `LOG_ARCHIVE_EXPANDED_LIMIT`：单个归档在完整页预算下仍无法展开，在 128 MiB 上限内调整 `maxExpandedBytes`。只因前面的文件消耗了展开预算而失败的归档会留到下一页；条目数预算同样按页续查。增加输入预算不能替代展开预算。
+- 预算错误的 `skipped[].retryable` 表示能否在上限内调整预算；为 `true` 时 `suggestedArguments` 给出单文件新搜索的参数片段。保留原查询条件，移除旧 `cursor`、`fileIds`、`sourceId`，再合并建议的 `path` 和预算。损坏、危险条目和压缩比限制不会因调大预算而放行。
 - `SOURCE_CHANGED`：文件缩短、轮转、改写或归档变化。刷新发现结果；历史问题优先选择已完成的轮转归档。
 - `SFTP_OPERATION_TIMEOUT`：达到 SFTP 会话总时限；`LOG_SCAN_TIMEOUT`：单个读取请求 30 秒没有响应。错误 `details` 提供阶段、时限以及已读取和请求字节数（进入读取阶段后），不含文件内容。
 - 超时后若目录和 `server_stat` 正常，不必反复重连。先使用单个文件、缩小普通日志的尾部范围，并把多个关键词合并进一次 `queries`。归档需要完整输入，不能靠截断压缩包来查询。
@@ -77,6 +79,14 @@ SFTP 读取使用最多 16 个 30 KiB 请求构成的持续流水线，在途窗
 多文件搜索遇到单个文件消失或改写可保留其他文件结果；真实路径越界或安全检查失败仍拒绝。未发现的目录最多返回 32 个导航建议，不会自动扩大搜索范围。每页设 60 秒软预算，目录发现最多 20 秒；在远端请求之间检查预算，正在读取的请求仍受 SFTP 的超时约束。
 
 目录最多缓存 15 秒，按作用域、插件版本、连接代次和目录身份隔离。每次仍核对目录类型/真实路径，新搜索复核缓存文件元数据。SFTP 修改时间精度有限，无法凭元数据证明目录或文件从未变化；要读取最新内容，移除游标并使用 `refresh:true`，重新发现目录和读取文件。
+
+## 正文分页与截断
+
+结果先返回 `nextCursor`、`status`、`conclusion`、`coverage`、`skipped` 等控制信息，再返回 `matches` 和 `contexts`，方便 Agent 先判断范围。`resultBytes` 是两个正文数组的实际 UTF-8 JSON 字节数，不含其余元数据。默认每页 32 KiB，旧的匹配数上限仍是上限，正文预算可能使实际返回数更少。
+
+按字节分页只推进已经返回的匹配数，普通日志和 ZIP/GZIP 跨成员续查均保留剩余命中。`truncationReasons:outputBytes` 表示输出受限；有 `nextCursor` 时继续。单条匹配加上下文仍超过整页预算时保留匹配本身，省略该条上下文并标记 `contextOmitted`；若匹配本身也过大，允许该单条超过正文预算以保证游标推进。需要完整上下文时增大 `maxResultBytes` 并从对应文件发起新搜索。单行原有 4 KiB 文本上限保持不变。
+
+正文预算不保证 Codex 的整个并行调用输出不会截断；避免一次打印多页完整日志。续查参数仍须完全相同，调整 `maxResultBytes` 时应移除旧游标重新搜索。
 
 ## 参数及下载体验
 

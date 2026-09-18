@@ -366,3 +366,21 @@ test('assessment whitelists credential state and persistence blocking controls p
     kind:'persistence-blocked',label:'配置存储需要恢复',action:'view-recovery',
   });
 });
+
+test('已认证会话不会因缺少凭据摘要误报不可用，显式凭据错误仍阻断', () => {
+  const plugin = server();
+  const connected = assessPlugin({plugin,runtimeSnapshot:runtime(plugin,'connected')});
+  assert.equal(connected.runtime.phase,'connected');
+  assert.equal(connected.credential.state,'unknown');
+  assert.equal(connected.agent.availability,'ready');
+  assert.deepEqual(connected.agent.issues,[]);
+  for (const state of ['missing','unreadable']) {
+    const blocked = assessPlugin({plugin,credentialSummary:{state},runtimeSnapshot:runtime(plugin,'connected')});
+    assert.equal(blocked.agent.availability,'unavailable');
+  }
+  for (const phase of ['disconnected','connecting','reconnecting','error']) {
+    const blocked = assessPlugin({plugin,runtimeSnapshot:runtime(plugin,phase)});
+    assert.equal(blocked.agent.availability,'unavailable');
+    assert.ok(blocked.agent.issues.some(issue => issue.code === 'PLUGIN_CREDENTIAL_UNKNOWN'));
+  }
+});

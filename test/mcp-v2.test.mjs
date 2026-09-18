@@ -92,6 +92,7 @@ test('V2 MCP exposes unrestricted bounded reads and confirmation-gated server ch
   assert.deepEqual([searchProperties.maxScanBytes.minimum,searchProperties.maxScanBytes.maximum], [65_536,64 * 1024 * 1024]);
   assert.deepEqual([searchProperties.maxExpandedBytes.minimum,searchProperties.maxExpandedBytes.maximum], [65_536,128 * 1024 * 1024]);
   assert.deepEqual([searchProperties.maxArchiveEntries.minimum,searchProperties.maxArchiveEntries.maximum], [1,128]);
+  assert.deepEqual([searchProperties.maxResultBytes.minimum,searchProperties.maxResultBytes.maximum], [16 * 1024,2 * 1024 * 1024]);
   assert.equal(capabilityRule('server','logs').label, '有界搜索服务器日志');
 
   const offsetCursorToolNames = [

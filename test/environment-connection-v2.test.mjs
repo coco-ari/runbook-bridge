@@ -125,3 +125,17 @@ test('a stalled single-plugin connection times out and releases the environment 
   assert.equal(disconnected.phase,'disconnected','the timeout must release the environment queue');
   assert.equal(disconnectCalls,1);
 });
+
+test('正式连接的状态摘要可供 Agent 使用，断开后恢复不可用', async () => {
+  const server = {...plugin('server','server'),target:{host:'example.invalid',port:22,addressFamily:'ipv4Only'},auth:{type:'password',username:'fixture'},uplink:{type:'direct'},tunnelProvider:true,policy:{status:'auto'},limits:{timeoutMs:1000}};
+  const store = {getEnvironment:async()=>({revision:1}),listPlugins:async()=>[server],getPlugin:async()=>server,appendAudit:async()=>{}};
+  const runtime = {connect:async()=>({connectedAt:'fixture'}),disconnect:async()=>{},closeAll:async()=>{}};
+  const manager = new EnvironmentConnectionManager(store,runtime,{retryDelays:[]});
+  assert.equal((await manager.status('p1','e1')).plugins.server.assessment.agent.availability,'unavailable');
+  const connected = await manager.connect('p1','e1');
+  assert.equal(connected.plugins.server.assessment.runtime.phase,'connected');
+  assert.equal(connected.plugins.server.assessment.agent.availability,'ready');
+  assert.deepEqual(connected.plugins.server.assessment.agent.issues,[]);
+  await manager.disconnect('p1','e1');
+  assert.equal((await manager.status('p1','e1')).plugins.server.assessment.agent.availability,'unavailable');
+});

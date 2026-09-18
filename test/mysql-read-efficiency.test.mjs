@@ -75,7 +75,7 @@ test('缓存只用于展示元数据，业务查询仍重新验证基础表且�
 
 test('元数据超时返回阶段和下一步，错误不包含驱动文本', async () => {
   const runtime = fixture(async () => { throw Object.assign(new Error('private-driver-text'), {code:'ETIMEDOUT'}); });
-  await assert.rejects(runtime.searchSchema(plugin,{keywords:['order']}), error => error.code === 'DATABASE_QUERY_TIMEOUT' && error.details.phase === 'metadata' && !JSON.stringify(error).includes('private-driver-text'));
+  await assert.rejects(runtime.searchSchema(plugin,{keywords:['order']}), error => error.code === 'DATABASE_QUERY_TIMEOUT' && error.details.phase === 'metadata' && error.details.operation === 'search_tables' && !JSON.stringify(error).includes('private-driver-text'));
   assert.equal(runtime.sessions.size,0);
 });
 
@@ -87,4 +87,88 @@ test('同一连接的查询并发受限，排队超时不触发额外数据库�
   await first;
   assert.equal(queries,1);
   assert.equal(runtime.sessions.size,1);
+});
+
+test('同时查询同一张表仅合并在途检查，后续查询仍重新验证', async () => {
+  let checks = 0;
+  let queries = 0;
+  const runtime = fixture(async request => {
+    if (request.sql.includes('TABLE_TYPE FROM')) {
+      checks += 1;
+      await delay(10);
+      return [[{TABLE_NAME:'orders',TABLE_TYPE:'BASE TABLE'}]];
+    }
+    queries += 1;
+    return [[{id:1}],[]];
+  });
+  await Promise.all([runtime.queryReadonly(plugin,'SELECT id FROM orders'),runtime.queryReadonly(plugin,'SELECT id FROM orders')]);
+  assert.equal(checks,1);
+  assert.equal(queries,2);
+  await runtime.queryReadonly(plugin,'SELECT id FROM orders');
+  assert.equal(checks,2);
+  assert.equal(queries,3);
+});
+
+test('在途检查拒绝视图且失败后不缓存，重连后的查询不能复用旧检查', async () => {
+  let allow = false;
+  let checks = 0;
+  let queries = 0;
+  const runtime = fixture(async request => {
+    if (request.sql.includes('TABLE_TYPE FROM')) {
+      checks += 1;
+      await delay(10);
+      return [[{TABLE_NAME:'orders',TABLE_TYPE:allow ? 'BASE TABLE' : 'VIEW'}]];
+    }
+    queries += 1;
+    return [[{id:1}],[]];
+  });
+  const rejected = await Promise.allSettled([runtime.queryReadonly(plugin,'SELECT id FROM orders'),runtime.queryReadonly(plugin,'SELECT id FROM orders')]);
+  assert.ok(rejected.every(result => result.status === 'rejected' && result.reason.code === 'HARD_POLICY_DENIED'));
+  assert.equal(checks,1);
+  assert.equal(queries,0);
+  allow = true;
+  await runtime.queryReadonly(plugin,'SELECT id FROM orders');
+  assert.equal(checks,2);
+  let release;
+  const previous = runtime.sessions.get(sessionKey);
+  previous.connection.query = async () => { await new Promise(resolve => { release = resolve; }); return [[{TABLE_NAME:'orders',TABLE_TYPE:'BASE TABLE'}]]; };
+  const stale = runtime.queryReadonly(plugin,'SELECT id FROM orders');
+  while (!release) await delay(1);
+  runtime.sessions.set(sessionKey,{connection:{query:async () => { queries += 1; return [[]]; }},closing:false});
+  release();
+  await assert.rejects(stale,{code:'PLUGIN_RECONNECTING'});
+  assert.equal(queries,1);
+});
+
+test('查询前表检查超时明确指出业务 SQL 尚未执行', async () => {
+  let calls = 0;
+  const runtime = fixture(async () => { calls += 1; throw Object.assign(new Error('private-driver-text'),{code:'ETIMEDOUT'}); });
+  await assert.rejects(runtime.queryReadonly(plugin,'SELECT id FROM orders'), error =>
+    error.code === 'DATABASE_QUERY_TIMEOUT' && error.details.phase === 'metadata'
+    && error.details.operation === 'table_check' && /查询尚未执行/.test(error.details.guidance)
+    && !JSON.stringify(error).includes('private-driver-text'));
+  assert.equal(calls,1);
+});
+
+test('表检查完成后连接再次切换时也不会执行 SQL', async () => {
+  let queries = 0;
+  const runtime = fixture(async () => [[{TABLE_NAME:'orders',TABLE_TYPE:'BASE TABLE'}]]);
+  const check = runtime.assertBaseTables.bind(runtime);
+  runtime.assertBaseTables = async (...args) => {
+    const session = await check(...args);
+    runtime.sessions.set(sessionKey,{connection:{query:async () => { queries += 1; return [[]]; }},closing:false});
+    return session;
+  };
+  await assert.rejects(runtime.queryReadonly(plugin,'SELECT id FROM orders'),{code:'PLUGIN_RECONNECTING'});
+  assert.equal(queries,0);
+});
+
+test('实际 SQL 超时保留执行计划建议，不误报成表检查超时', async () => {
+  const runtime = fixture(async request => {
+    if (request.sql.includes('TABLE_TYPE FROM')) return [[{TABLE_NAME:'orders',TABLE_TYPE:'BASE TABLE'}]];
+    throw Object.assign(new Error('private-driver-text'),{code:'ETIMEDOUT'});
+  });
+  await assert.rejects(runtime.queryReadonly(plugin,'SELECT id FROM orders'), error =>
+    error.code === 'DATABASE_QUERY_TIMEOUT' && error.details.operation === 'query'
+    && /mysql_explain/.test(error.details.guidance) && !/查询尚未执行/.test(error.details.guidance));
 });
