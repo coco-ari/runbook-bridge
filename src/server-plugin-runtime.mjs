@@ -270,6 +270,10 @@ export class ServerPluginRuntime extends EventEmitter {
     return this.broker.execute(resource, authorization.contextToken, command);
   }
 
+  readWorkspaceMetrics(plugin, kind, options = {}) {
+    return this.broker.readWorkspaceMetrics(this.key(plugin), kind, { ...options, timeoutMs:Math.min(3000, plugin.limits?.timeoutMs ?? 3000) });
+  }
+
   openTerminal(plugin, options = {}) {
     return this.broker.openTerminal(this.key(plugin), options);
   }

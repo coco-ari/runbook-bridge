@@ -2,10 +2,12 @@ import { AppError, toPublicError } from './errors.mjs';
 
 const SCOPE_KEYS = ['projectId', 'environmentId', 'pluginInstanceId'];
 const CALLS = [
+  ['server-workspace-metrics', 'serverWorkspaceManager', 'readMetrics', ['kind']],
+  ['server-workspace-stop-metrics', 'serverWorkspaceManager', 'stopMetrics', []],
   ['server-workspace-pause-upload', 'serverWorkspaceFiles', 'pauseUpload', ['jobId']],
   ['server-workspace-clear-transfers', 'serverWorkspaceFiles', 'clearTransfers', ['jobId']],
   ['server-workspace-prepare-upload-resume', 'serverWorkspaceFiles', 'prepareUploadResume', ['jobId']],
-  ['server-terminal-open', 'serverWorkspaceManager', 'openTerminal', ['cols', 'rows', 'tabId', 'defaultColors']],
+  ['server-terminal-open', 'serverWorkspaceManager', 'openTerminal', ['cols', 'rows', 'tabId', 'defaultColors', 'recoveryOf']],
   ['server-terminal-read', 'serverWorkspaceManager', 'readTerminal', ['sessionId']],
   ['server-terminal-write', 'serverWorkspaceManager', 'writeTerminal', ['sessionId', 'data', 'encoding']],
   ['server-terminal-resize', 'serverWorkspaceManager', 'resizeTerminal', ['sessionId', 'cols', 'rows']],
@@ -59,9 +61,13 @@ export function registerServerWorkspaceIpc(ipcMain, services) {
     } catch (error) { return { ok: false, error: toPublicError(error) }; }
   });
   for (const [name, serviceName, method, extra] of CALLS) {
-    handle(name, extra, (ownerId, payload) => {
+    handle(name, extra, (ownerId, payload, event) => {
       const manager = services[serviceName];
       if (!manager) throw new AppError('WORKSPACE_UNAVAILABLE', '服务器工作区暂不可用。');
+      if (method === 'readMetrics' && event.sender.getOwnerBrowserWindow?.()?.isMinimized?.()) {
+        manager.stopMetrics(ownerId, payload);
+        throw new AppError('METRICS_PAUSED', '窗口最小化期间暂停资源采集。');
+      }
       return manager[method](ownerId, payload);
     });
   }

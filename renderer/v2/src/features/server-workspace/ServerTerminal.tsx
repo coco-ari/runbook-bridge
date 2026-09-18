@@ -2,13 +2,18 @@ import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
+import { SearchAddon } from "@xterm/addon-search"
+import { TerminalSearch, type TerminalSearchHandle, type TerminalSearchEngine } from "./TerminalSearch"
 import { Copy, ClipboardText, Plus, Stop, TerminalWindow } from "@phosphor-icons/react"
 import type { AiOpsV2Api, PluginScope } from "@/bridge/ai-ops-v2"
 import { useTheme } from "@/app/theme-provider"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu"
-import { unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
+import { quoteRemotePath, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
+import { terminalOpenQueue, type TerminalConnection } from "./terminal-recovery"
+import { resetTerminalForReconnect } from "./terminal-history"
+import type { WorkspacePathDrag } from "./workspace-path-drag"
 import "@xterm/xterm/css/xterm.css"
 
 const TERMINAL_FONT_FAMILY = "\"Cascadia Mono\", \"Cascadia Code\", Consolas, Menlo, Monaco, \"Noto Sans Mono CJK SC\", \"Microsoft YaHei UI\", \"PingFang SC\", \"Noto Sans CJK SC\", monospace"
@@ -25,15 +30,18 @@ export interface ServerTerminalProps {
   readonly scope: PluginScope
   readonly visible: boolean
   readonly connected: boolean
+  readonly connection: TerminalConnection
   readonly maximized: boolean
   readonly onMaximize: () => void
-  readonly insertion: Readonly<{ text: string; id: number }> | null
+  readonly pathDrag: WorkspacePathDrag
 }
 
-export function ServerTerminal({ tabId, api, scope, visible, connected, maximized, onMaximize, insertion }: ServerTerminalProps) {
+export function ServerTerminal({ tabId, api, scope, visible, connected, connection, maximized, onMaximize, pathDrag }: ServerTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  const searchRef = useRef<TerminalSearchHandle>(null)
+  const [searchEngine, setSearchEngine] = useState<TerminalSearchEngine | null>(null)
   const sessionRef = useRef<string | null>(null)
   const clipboardSessionRef = useRef<string | null>(null)
   const clipboardPendingRef = useRef(false)
@@ -43,20 +51,29 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, maximize
   const mountedRef = useRef(false)
   const visibleRef = useRef(visible)
   const connectedRef = useRef(connected)
+  const connectionRef = useRef(connection)
+  const recoveryRef = useRef<{ sessionId: string; eligible: boolean; waitForSequence?: number } | null>(null)
+  const recoveryEnabledRef = useRef(true)
+  const recoveryAttemptsRef = useRef(0)
+  const stableTimerRef = useRef(0)
+  const hasOpenedRef = useRef(false)
+  const [reconnected, setReconnected] = useState(false)
   const writeChainRef = useRef(Promise.resolve())
   const queuedBytesRef = useRef(0)
-  const [status, setStatus] = useState<"idle" | "opening" | "open" | "closed">("idle")
+  const [status, setStatus] = useState<"idle" | "opening" | "open" | "closed" | "waiting">("idle")
   const [defaultColors, setDefaultColors] = useState(readDefaultColors)
   const [colorHelp, setColorHelp] = useState(false)
   const [colorPlatform, setColorPlatform] = useState("linux")
   const [error, setError] = useState("")
   const [paste, setPaste] = useState("")
   const [hasSelection, setHasSelection] = useState(false)
+  const [pathDragOver, setPathDragOver] = useState(false)
   const isMac = /Mac/u.test(navigator.platform)
   const { theme } = useTheme()
   if (visibleRef.current !== visible) interactionEpochRef.current += 1
   visibleRef.current = visible
   connectedRef.current = connected
+  connectionRef.current = connection
 
   const insertPaste = useCallback((text: string) => {
     const terminal = terminalRef.current
@@ -105,58 +122,121 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, maximize
     if (sessionId) void api.serverTerminalResize({ ...scope, sessionId, cols: terminal.cols, rows: terminal.rows })
   }, [api, scope])
 
-  const finish = useCallback((message: string) => {
+  const finish = useCallback((message: string, recovery: { sessionId: string; eligible: boolean; waitForSequence?: number } | null = null) => {
     sessionRef.current = null
     openingRef.current = false
     generationRef.current += 1
-    setStatus("closed")
+    interactionEpochRef.current += 1
+    queuedBytesRef.current = 0
+    writeChainRef.current = Promise.resolve()
+    recoveryRef.current = recoveryEnabledRef.current && (connectionRef.current.allowRecovery || connectionRef.current.pauseRecovery) ? recovery : null
+    setStatus(recoveryRef.current?.eligible ? "waiting" : "closed")
     setPaste("")
     if (terminalRef.current) {
       terminalRef.current.options.disableStdin = true
-      terminalRef.current.writeln(`\r\n\x1b[90m${message}\x1b[0m`)
+      terminalRef.current.writeln("\r\n\x1b[90m" + message + "\x1b[0m")
     }
   }, [])
 
-  const open = useCallback(async () => {
+  const stop = useCallback(() => {
+    const sessionId = sessionRef.current ?? recoveryRef.current?.sessionId
+    const recovering = Boolean(recoveryRef.current)
+    recoveryEnabledRef.current = false
+    recoveryRef.current = null
+    finish(recovering ? "已停止此终端的自动恢复。" : "人工终端会话已结束。")
+    if (sessionId) void api.serverTerminalClose({ ...scope, sessionId }).then((result) => {
+      if (!result.ok && mountedRef.current) setError(result.error.message)
+    }).catch((failure) => { if (mountedRef.current) setError(workspaceErrorMessage(failure)) })
+  }, [api, finish, scope])
+
+  const open = useCallback(async (automatic = false) => {
     if (!connectedRef.current || openingRef.current || sessionRef.current || !terminalRef.current) return
+    const recoveryOf = automatic ? recoveryRef.current?.sessionId : undefined
+    if (automatic && (!recoveryOf || !recoveryEnabledRef.current || !connectionRef.current.allowRecovery)) return
+    if (!automatic) {
+      recoveryEnabledRef.current = true
+      recoveryRef.current = null
+      recoveryAttemptsRef.current = 0
+    } else recoveryAttemptsRef.current += 1
     openingRef.current = true
     const generation = ++generationRef.current
+    const focusAtStart = document.activeElement
     setStatus("opening")
     setError("")
     resize()
     const terminal = terminalRef.current
+    let readingSession: string | null = null
     try {
-      const session = unwrapWorkspaceResult(await api.serverTerminalOpen({ ...scope, tabId, defaultColors: readDefaultColors(), cols: terminal.cols, rows: terminal.rows }))
-      if (!mountedRef.current || generation !== generationRef.current || !connectedRef.current) {
+      const session = await terminalOpenQueue.run(async () => {
+        if (!mountedRef.current || generation !== generationRef.current || !connectedRef.current) return null
+        const result = unwrapWorkspaceResult(await api.serverTerminalOpen({
+          ...scope, tabId, defaultColors: readDefaultColors(), cols: terminal.cols, rows: terminal.rows,
+          ...(recoveryOf ? { recoveryOf } : {}),
+        }))
+        if (!mountedRef.current || generation !== generationRef.current) {
+          await api.serverTerminalClose({ ...scope, sessionId: result.sessionId })
+          return null
+        }
+        return result
+      }, () => visibleRef.current ? 1 : 0)
+      if (!session) return
+      readingSession = session.sessionId
+      sessionRef.current = session.sessionId
+      clipboardSessionRef.current = session.sessionId
+      if (hasOpenedRef.current) await resetTerminalForReconnect(terminal, automatic)
+      if (!mountedRef.current || generation !== generationRef.current) {
         void api.serverTerminalClose({ ...scope, sessionId: session.sessionId })
         return
       }
-      sessionRef.current = session.sessionId
-      clipboardSessionRef.current = session.sessionId
+      hasOpenedRef.current = true
+      recoveryRef.current = null
       openingRef.current = false
-      terminal.options.disableStdin = false
+      terminal.options.disableStdin = !connectedRef.current
       setStatus("open")
-      if (visibleRef.current) terminal.focus()
+      setReconnected(automatic)
+      // 自动恢复不改变焦点；手动打开也不抢走等待期间用户移到其他控件的焦点。
+      if (!automatic && connectedRef.current && visibleRef.current && document.activeElement === focusAtStart) terminal.focus()
+      window.clearTimeout(stableTimerRef.current)
+      stableTimerRef.current = window.setTimeout(() => {
+        if (generation === generationRef.current && sessionRef.current === session.sessionId) recoveryAttemptsRef.current = 0
+      }, 30_000)
       while (mountedRef.current && generation === generationRef.current && sessionRef.current === session.sessionId) {
         const chunk = unwrapWorkspaceResult(await api.serverTerminalRead({ ...scope, sessionId: session.sessionId }))
         if (!mountedRef.current || generation !== generationRef.current) break
         // 等待 xterm 消化本批输出，再读取下一批，避免高频日志挤满渲染内存。
         if (chunk.data.byteLength) await new Promise<void>((resolve) => terminal.write(new Uint8Array(chunk.data), resolve))
+        if (!mountedRef.current || generation !== generationRef.current) break
         if (chunk.status === "closed") {
-          finish(`终端会话已结束${chunk.exitCode === undefined ? "" : `（退出码 ${chunk.exitCode}）`}。`)
+          const recovery = chunk.recoverable || chunk.closeReason === "channel-closed"
+            ? { sessionId: session.sessionId, eligible: chunk.recoverable === true } : null
+          if (chunk.closeReason === "user-disconnected") recoveryAttemptsRef.current = 0
+          finish(chunk.recoverable && chunk.closeReason === "user-disconnected" ? "服务器已断开，重新连接后将恢复此终端；未发送的输入不会重放。"
+            : chunk.recoverable ? "连接中断，保留历史并等待恢复；未发送的输入不会重放。"
+            : "终端会话已结束" + (chunk.exitCode == null ? "" : "（退出码 " + chunk.exitCode + "）") + "。", recovery)
           break
         }
         if (!chunk.data.byteLength) await new Promise<void>((resolve) => window.setTimeout(resolve, 20))
       }
     } catch (failure) {
       if (mountedRef.current && generation === generationRef.current) {
-        const sessionId = sessionRef.current
-        if (sessionId) void api.serverTerminalClose({ ...scope, sessionId })
-        finish("终端连接已结束。重新打开终端后可继续操作。")
+        if (readingSession) {
+          void api.serverTerminalClose({ ...scope, sessionId: readingSession })
+          finish("终端读取失败，请手动打开新终端。")
+        } else {
+          const code = (failure as { code?: string })?.code
+          const waitingForConnection = code === "SSH_NOT_CONNECTED"
+          if (waitingForConnection) recoveryAttemptsRef.current = Math.max(0, recoveryAttemptsRef.current - 1)
+          const stopped = ["TERMINAL_RECOVERY_STOPPED", "TERMINAL_SCOPE_MISMATCH", "TERMINAL_LIMIT_REACHED", "TERMINAL_AUDIT_UNAVAILABLE"].includes(code ?? "")
+            || (code === "WORKSPACE_CLOSED" && !connectionRef.current.pauseRecovery)
+          finish("终端暂时无法打开。", automatic && !stopped && recoveryOf ? { sessionId: recoveryOf, eligible: true, ...(waitingForConnection ? { waitForSequence: connectionRef.current.sequence } : {}) } : null)
+        }
         setError(workspaceErrorMessage(failure))
       }
     } finally {
-      if (generation === generationRef.current) openingRef.current = false
+      if (generation === generationRef.current) {
+        openingRef.current = false
+        if (!sessionRef.current) setStatus("closed")
+      }
     }
   }, [api, finish, resize, scope, tabId])
 
@@ -172,7 +252,8 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, maximize
       scrollback: 5000,
       screenReaderMode: true,
       minimumContrastRatio: 4.5,
-      allowProposedApi: false,
+      // 官方搜索扩展使用装饰 API 在本地绘制匹配高亮。
+      allowProposedApi: true,
       disableStdin: true,
       convertEol: false,
     })
@@ -181,6 +262,9 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, maximize
     terminal.open(container)
     terminalRef.current = terminal
     fitRef.current = fit
+    const searchAddon = new SearchAddon({ highlightLimit: 1000 })
+    terminal.loadAddon(searchAddon)
+    setSearchEngine({ terminal, addon: searchAddon })
     const sendInput = (data: string, encoding: "utf8" | "binary" = "utf8") => {
       const sessionId = sessionRef.current
       if (!sessionId || !connectedRef.current) return
@@ -197,11 +281,10 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, maximize
           unwrapWorkspaceResult(await api.serverTerminalWrite({ ...scope, sessionId, data, encoding }))
         } catch (failure) {
           if (generation === generationRef.current && mountedRef.current) {
-            void api.serverTerminalClose({ ...scope, sessionId })
-            finish("输入发送失败，会话已结束；未发送的输入不会重放。")
+            setPaste("")
             setError(workspaceErrorMessage(failure))
           }
-        } finally { queuedBytesRef.current -= inputBytes }
+        } finally { if (generation === generationRef.current) queuedBytesRef.current -= inputBytes }
       })
     }
     const input = terminal.onData((data) => sendInput(data))
@@ -236,7 +319,9 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, maximize
       mountedRef.current = false
       generationRef.current += 1
       openingRef.current = false
-      const sessionId = sessionRef.current
+      const sessionId = sessionRef.current ?? recoveryRef.current?.sessionId
+      recoveryRef.current = null
+      window.clearTimeout(stableTimerRef.current)
       sessionRef.current = null
       if (sessionId) void api.serverTerminalClose({ ...scope, sessionId })
       window.clearTimeout(initialOpen)
@@ -255,8 +340,47 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, maximize
   }, [acceptPaste, api, clipboardAction, finish, isMac, open, resize, scope])
 
   useEffect(() => {
-    if (!connected && (sessionRef.current || openingRef.current)) finish("服务器连接已断开。返回详情重新连接后，请手动打开新终端。")
-  }, [connected, finish])
+    if (!connected) {
+      interactionEpochRef.current += 1
+      setPaste("")
+      if (terminalRef.current) terminalRef.current.options.disableStdin = true
+    }
+    if (!connection.allowRecovery) {
+      // 主动断开仅暂停恢复，等待用户重新连接；结束会话和停止恢复仍由各标签单独控制。
+      if (connection.pauseRecovery) {
+        recoveryAttemptsRef.current = 0
+        return
+      }
+      recoveryEnabledRef.current = false
+      recoveryRef.current = null
+      if (status === "waiting" || (status === "opening" && !sessionRef.current)) finish("自动恢复已停止，请连接服务器后手动打开终端。")
+      return
+    }
+    const recovery = recoveryRef.current
+    if (!recovery || !connected || openingRef.current || sessionRef.current || !recoveryEnabledRef.current) return
+    if (recovery.waitForSequence === connection.sequence) return
+    if (recoveryAttemptsRef.current >= 3) {
+      recoveryRef.current = null
+      setStatus("closed")
+      setError("终端连续恢复失败，已停止自动尝试。可手动打开终端。")
+      return
+    }
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        // 通道关闭可能早于 SSH 丢失事件，只有后台明确授予恢复资格后才打开新终端。
+        if (!recovery.eligible) {
+          try {
+            const result = unwrapWorkspaceResult(await api.serverTerminalRead({ ...scope, sessionId: recovery.sessionId }))
+            if (!result.recoverable) return
+          } catch { return }
+        }
+        if (!cancelled && recoveryRef.current === recovery && recoveryEnabledRef.current) void open(true)
+      })()
+    }, [0, 1000, 3000][recoveryAttemptsRef.current] ?? 3000)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [api, connected, connection.allowRecovery, connection.pauseRecovery, connection.sequence, finish, open, scope, status])
+
 
   useEffect(() => {
     const terminal = terminalRef.current
@@ -269,10 +393,15 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, maximize
     return () => cancelAnimationFrame(frame)
   }, [resize, theme, visible])
 
+  const acceptsPathDrop = visible && connected && status === "open" && !paste && !colorHelp
+  useEffect(() => { if (!acceptsPathDrop) setPathDragOver(false) }, [acceptsPathDrop])
   useEffect(() => {
-    if (!insertion || !visibleRef.current || !sessionRef.current) return
-    acceptPaste(insertion.text)
-  }, [acceptPaste, insertion])
+    if (!pathDragOver) return
+    const clear = () => setPathDragOver(false)
+    window.addEventListener("dragend", clear)
+    window.addEventListener("blur", clear)
+    return () => { window.removeEventListener("dragend", clear); window.removeEventListener("blur", clear) }
+  }, [pathDragOver])
 
   useEffect(() => { if (!visible) setPaste("") }, [visible])
 
@@ -282,26 +411,49 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, maximize
   const colorCommand = `${directoryColorCommand}; ${PASTE_COLORS_COMMAND}`
   const lines = paste.replace(/\r\n?/gu, "\n").split("\n")
   return (
-    <section className="server-terminal-pane" aria-label="交互式 SSH 终端" data-testid="server-terminal">
+    <section className="server-terminal-pane" aria-label="交互式 SSH 终端" data-testid="server-terminal" onKeyDownCapture={event => {
+      const modifier = isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey
+      if (!visible || !searchEngine || !modifier || event.altKey || event.shiftKey || event.nativeEvent.isComposing || event.key.toLowerCase() !== "f") return
+      // 仅处理当前终端面板内的快捷键，兼容断线与搜索框聚焦，不拦截弹窗输入。
+      if (!event.currentTarget.contains(event.target as Node)) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (!event.repeat) searchRef.current?.open()
+    }}>
       <div className="server-workspace-toolbar">
-        <div className="flex min-w-0 items-center gap-2"><TerminalWindow size={16} className="text-primary" /><span className="font-medium">终端</span><span className="text-xs text-muted-foreground">{status === "open" ? "人工会话" : status === "opening" ? "正在打开…" : "会话已结束"}</span></div>
+        <div className="flex min-w-0 items-center gap-2"><TerminalWindow size={16} className="text-primary" /><span className="font-medium">终端</span><span className="text-xs text-muted-foreground" role="status" aria-live="polite">{status === "open" ? reconnected ? "已重新连接 · 新会话" : "人工会话" : status === "opening" ? recoveryRef.current ? "正在恢复终端…" : "正在打开…" : status === "waiting" ? connected ? "等待恢复终端…" : "等待服务器连接…" : "会话已结束"}</span></div>
         <div className="flex items-center gap-1">
           <Button size="sm" variant="ghost" disabled={!hasSelection} title={isMac ? "复制选中内容（⌘C）" : "复制选中内容（Ctrl+Shift+C）"} onClick={() => { void clipboardAction("copy") }}><Copy />复制</Button>
-          <Button size="sm" variant="ghost" disabled={status !== "open"} title={isMac ? "粘贴（⌘V）" : "粘贴（Ctrl+V / Ctrl+Shift+V）"} onClick={() => { void clipboardAction("paste") }}><ClipboardText />粘贴</Button>
+          <Button size="sm" variant="ghost" disabled={status !== "open" || !connected} title={isMac ? "粘贴（⌘V）" : "粘贴（Ctrl+V / Ctrl+Shift+V）"} onClick={() => { void clipboardAction("paste") }}><ClipboardText />粘贴</Button>
           <Button size="sm" variant="ghost" onClick={() => { setDefaultColors(readDefaultColors()); setColorHelp(true) }}>目录配色</Button>
-          {status === "open" ? <Button size="sm" variant="ghost" onClick={async () => {
-            const sessionId = sessionRef.current
-            if (!sessionId) return
-            try { unwrapWorkspaceResult(await api.serverTerminalClose({ ...scope, sessionId })); finish("人工终端会话已结束，文件传输继续。") } catch (failure) { setError(workspaceErrorMessage(failure)) }
-          }}><Stop />结束会话</Button> : <Button size="sm" variant="ghost" disabled={!connected || status === "opening"} onClick={() => { void open() }}><Plus />打开终端</Button>}
+          {status === "open" ? <Button size="sm" variant="ghost" onClick={stop}><Stop />结束会话</Button>
+            : status === "waiting" || (status === "opening" && recoveryRef.current) ? <Button size="sm" variant="ghost" onClick={stop}><Stop />停止恢复</Button>
+            : <Button size="sm" variant="ghost" disabled={!connected || status === "opening"} onClick={() => { void open() }}><Plus />打开终端</Button>}
           <WorkspaceIconButton action={maximized ? "restore" : "maximize"} label={maximized ? "恢复分栏" : "最大化终端"} onClick={onMaximize} />
         </div>
       </div>
+      <TerminalSearch ref={searchRef} engine={searchEngine} visible={visible} theme={theme} />
       {error ? <div role="alert" className="server-workspace-error">{error}<Button size="sm" variant="ghost" aria-label="收起终端提示" onClick={() => setError("")}>收起</Button></div> : null}
-      <ContextMenu><ContextMenuTrigger asChild><div className="server-terminal-container" ref={containerRef} /></ContextMenuTrigger>
+      <ContextMenu><ContextMenuTrigger asChild><div className="server-terminal-container" ref={containerRef} data-path-drag-over={pathDragOver || undefined}
+        onDragOverCapture={event => {
+          event.preventDefault()
+          event.stopPropagation()
+          const accepted = acceptsPathDrop && Boolean(sessionRef.current) && pathDrag.accepts(event.dataTransfer)
+          event.dataTransfer.dropEffect = accepted ? "copy" : "none"
+          setPathDragOver(accepted)
+        }} onDragLeaveCapture={event => {
+          if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setPathDragOver(false)
+        }} onDropCapture={event => {
+          event.preventDefault()
+          event.stopPropagation()
+          setPathDragOver(false)
+          if (!acceptsPathDrop || !sessionRef.current) return
+          const path = pathDrag.take(event.dataTransfer)
+          if (path !== null) insertPaste(quoteRemotePath(path))
+        }} /></ContextMenuTrigger>
         <ContextMenuContent onCloseAutoFocus={(event) => { event.preventDefault(); if (visibleRef.current) terminalRef.current?.focus() }}>
           <ContextMenuItem disabled={!hasSelection} onSelect={() => { void clipboardAction("copy") }}>复制选中内容</ContextMenuItem>
-          <ContextMenuItem disabled={status !== "open"} onSelect={() => { void clipboardAction("paste") }}>粘贴</ContextMenuItem>
+          <ContextMenuItem disabled={status !== "open" || !connected} onSelect={() => { void clipboardAction("paste") }}>粘贴</ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
       <Dialog open={colorHelp} onOpenChange={setColorHelp}>
@@ -315,7 +467,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, maximize
           <label className="flex items-center gap-3 text-sm">服务器类型<select className="rounded border bg-background px-2 py-1" aria-label="配色服务器类型" value={colorPlatform} onChange={(event) => setColorPlatform(event.target.value)}><option value="linux">Linux / GNU ls</option><option value="bsd">macOS / BSD ls</option></select></label>
           <p className="text-xs text-muted-foreground">目录：蓝色 · 软链接：青色 · 可执行文件：绿色。同时提供 ll 别名；Bash 粘贴高亮与鼠标选区分别配色。</p>
           <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded border bg-surface-inset p-3 font-mono text-xs">{colorCommand}</pre>
-          <DialogFooter><Button variant="outline" onClick={() => setColorHelp(false)}>取消</Button><Button disabled={status !== "open"} onClick={() => { terminalRef.current?.paste(colorCommand); setColorHelp(false) }}>填入配色命令</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setColorHelp(false)}>取消</Button><Button disabled={status !== "open" || !connected} onClick={() => { terminalRef.current?.paste(colorCommand); setColorHelp(false) }}>填入配色命令</Button></DialogFooter>
         </DialogContent>
       </Dialog>
       <Dialog open={Boolean(paste)} onOpenChange={(value) => { if (!value) setPaste("") }}>
@@ -323,7 +475,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, maximize
           <DialogHeader><DialogTitle>确认粘贴到终端</DialogTitle><DialogDescription>确认后整段发送到当前终端。部分 Shell 会立即执行其中的换行，请检查内容和当前程序状态。</DialogDescription></DialogHeader>
           <pre style={{ fontFamily: TERMINAL_FONT_FAMILY }} className="max-h-64 overflow-auto rounded-md border bg-surface-inset p-3 text-sm leading-6 whitespace-pre-wrap break-all">{paste}</pre>
           <p className="text-xs text-muted-foreground">共 {lines.length} 行，保留缩进和空行。</p>
-          <DialogFooter><Button variant="outline" onClick={() => setPaste("")}>取消</Button><Button disabled={status !== "open"} onClick={() => {
+          <DialogFooter><Button variant="outline" onClick={() => setPaste("")}>取消</Button><Button disabled={status !== "open" || !connected} onClick={() => {
             if (insertPaste(paste)) setPaste("")
           }}>确认粘贴整段</Button></DialogFooter>
         </DialogContent>

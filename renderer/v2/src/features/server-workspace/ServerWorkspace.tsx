@@ -10,10 +10,15 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { usePluginConnection } from "@/features/connections/use-plugin-connection"
 import { pluginDraftFromRecord, type PluginConfigurationRecord } from "@/features/plugins/plugin-types"
 import { ServerFileTree } from "./ServerFileTree"
+import { ServerMetrics } from "./ServerMetrics"
+import { createWorkspacePathDrag } from "./workspace-path-drag"
 import { CopyUploadPath, ServerUploadDialog, UploadFileIcon } from "./ServerUploadDialog"
 import { ServerTerminalTabs } from "./ServerTerminalTabs"
+import { ServerConnectionNotice } from "./ServerConnectionNotice"
+import { terminalConnection } from "./terminal-recovery"
+import { RuntimeHostKeyDialog } from "@/features/connections/RuntimeHostKeyDialog"
 import { ServerFilePreviews } from "./ServerFilePreviews"
-import { formatTransferBytes, formatTransferEta, parentRemotePath, quoteRemotePath, serverEntryType, serverWorkspaceKey, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
+import { formatTransferBytes, formatTransferEta, parentRemotePath, serverEntryType, serverWorkspaceKey, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
 import "./server-workspace.css"
 
 export interface ServerWorkspaceEntry {
@@ -41,12 +46,18 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
   const sshIdentity = draft.auth.username + "@" + draft.target.host + ":" + draft.target.port
   const [runtime, setRuntime] = useState(entry.runtime)
   const connection = usePluginConnection({ api, plugin: scope, runtime, onRuntime: setRuntime })
+  const terminalState = terminalConnection(connection.state.runtime, scope.pluginInstanceId, connection.state.phase)
   const connected = connection.state.phase === "connected"
+  const reconnectFocusRef = useRef<HTMLElement | null>(null)
   const [path, setPath] = useState("/")
   const [maximized, setMaximized] = useState(false)
   const [previewRequest, setPreviewRequest] = useState<Readonly<{ file: ServerDirectoryEntry; id: number }> | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
-  const [insertion, setInsertion] = useState<Readonly<{ text: string; id: number }> | null>(null)
+  const pathDrag = useMemo(() => createWorkspacePathDrag(), [scope])
+  useEffect(() => {
+    if (!connected || !visible) pathDrag.clear()
+    return () => pathDrag.clear()
+  }, [pathDrag, connected, visible])
   const [jobs, setJobs] = useState<readonly ServerUploadJob[]>([])
   const [trayOpen, setTrayOpen] = useState(false)
   const [uploadPreparing, setUploadPreparing] = useState(false)
@@ -316,18 +327,22 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
     <header className="server-workspace-header">
       <WorkspaceBackButton label="返回服务器详情" testId="server-workspace-back" onClick={onBack} />
       <span className="h-5 w-px bg-border" />
-      <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-sm font-semibold">{entry.plugin.displayName}</h1><Badge variant={connected ? "success" : "outline"}>{connected ? "已连接" : "已断开"}</Badge></div><p className="truncate text-[11px] text-muted-foreground">{entry.projectName} / {entry.environmentName}<span className="server-workspace-identity"> · {sshIdentity}</span></p></div>
+      <div className="server-workspace-heading"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-sm font-semibold">{entry.plugin.displayName}</h1><Badge variant={connected ? "success" : "outline"}>{connected ? "已连接" : terminalState.phase === "waiting" || terminalState.phase === "connecting" ? "正在重连" : terminalState.phase === "action-required" ? "需要处理" : "已断开"}</Badge></div><p className="truncate text-[11px] text-muted-foreground">{entry.projectName} / {entry.environmentName}<span className="server-workspace-identity"> · {sshIdentity}</span></p></div>
+      <ServerMetrics api={api} scope={scope} connected={connected} visible={visible} />
       <WorkspaceHeaderActions connected={connected} busy={Boolean(connection.state.operation)} onDisconnect={() => { void connection.disconnect() }} onClose={() => setCloseDialog(true)} prefix="server-workspace" closeLabel="关闭工作区" closeTitle="关闭工作区并结束终端" />
     </header>
-    {!connected ? <div className="server-workspace-connection-notice" role="status">服务器连接已断开。返回详情连接后，请手动打开终端。<Button size="sm" variant="ghost" onClick={onBack}>返回详情</Button></div> : null}
-    {connection.state.error ? <div role="alert" className="server-workspace-error">{connection.state.error.message}</div> : null}
+    <ServerConnectionNotice connection={terminalState} busy={Boolean(connection.state.operation)} error={connection.state.error?.message ?? ""} onSettings={onBack} onRetry={() => {
+      reconnectFocusRef.current = document.activeElement as HTMLElement | null
+      void connection.retry()
+    }} />
+    <RuntimeHostKeyDialog state={connection.state} onReject={connection.rejectHostKey} onTrust={connection.trustHostKey} returnFocusRef={reconnectFocusRef} testId="workspace-host-key-confirmation" />
     {uploadError && !preparation ? <div role="alert" className="server-workspace-error">{uploadError}<Button size="icon-sm" variant="ghost" aria-label="收起上传提示" onClick={() => setUploadError("")}><X /></Button></div> : null}
     {uploadJobError ? <div role="alert" className="server-workspace-error" data-testid="upload-job-error">{uploadJobError}<Button size="icon-sm" variant="ghost" aria-label="收起传输提示" onClick={() => setUploadJobError("")}><X /></Button></div> : null}
     {uploadPollError ? <div role="alert" className="server-workspace-error" data-testid="upload-poll-error">{uploadPollError}<Button size="icon-sm" variant="ghost" aria-label="收起传输状态提示" onClick={() => setUploadPollError("")}><X /></Button></div> : null}
     <div className="server-workspace-body">
       <ResizablePanelGroup orientation="horizontal" id={`${panelId}-panels`}>
         <ResizablePanel id={`${panelId}-files`} defaultSize="320px" minSize="240px" maxSize="50%" collapsible collapsedSize={0} panelRef={treePanelRef}>
-          <ServerFileTree api={api} scope={scope} connected={connected} visible={visible} path={path} onPath={setPath} onPreview={(file) => { void openPreview(file) }} onUpload={() => { void pickUpload() }} onDownload={file => { void downloadFile(file) }} downloadBusy={downloadPicking} onInsertPath={(value) => setInsertion({ text: quoteRemotePath(value), id: Date.now() })} refreshEpoch={refreshEpoch} refreshPaths={refreshPaths} invalidatedPath={invalidatedPath} locateFile={fileLocation} />
+          <ServerFileTree api={api} scope={scope} connected={connected} visible={visible} path={path} onPath={setPath} onPreview={(file) => { void openPreview(file) }} onUpload={() => { void pickUpload() }} onDownload={file => { void downloadFile(file) }} downloadBusy={downloadPicking} pathDrag={pathDrag} refreshEpoch={refreshEpoch} refreshPaths={refreshPaths} invalidatedPath={invalidatedPath} locateFile={fileLocation} />
         </ResizablePanel>
         <ResizableHandle className={maximized ? "hidden" : ""} aria-label="调整文件树宽度" />
         <ResizablePanel id={`${panelId}-console`} minSize="280px">
@@ -337,7 +352,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
             </ResizablePanel>
             <ResizableHandle className={!previewOpen || maximized ? "hidden" : ""} aria-label="调整文件预览高度" />
             <ResizablePanel id={`${panelId}-terminal`} minSize="180px">
-              <ServerTerminalTabs api={api} scope={scope} visible={visible} connected={connected} maximized={maximized} onMaximize={() => setMaximized((value) => !value)} insertion={insertion} />
+              <ServerTerminalTabs api={api} scope={scope} visible={visible} connected={connected} connection={terminalState} maximized={maximized} onMaximize={() => setMaximized((value) => !value)} pathDrag={pathDrag} />
             </ResizablePanel>
           </ResizablePanelGroup>
         </ResizablePanel>

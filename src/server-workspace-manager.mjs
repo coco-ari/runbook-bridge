@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { ServerWorkspaceMetrics } from './server-workspace-metrics.mjs';
 import { createTerminalStartup } from './server-terminal-startup.mjs';
 import { AppError } from './errors.mjs';
 import { pluginConnectionFingerprint } from './plugin-change-classifier.mjs';
@@ -8,6 +9,9 @@ const OUTPUT_HIGH_WATER = 512 * 1024;
 const OUTPUT_LOW_WATER = 128 * 1024;
 const INPUT_QUEUE_BYTES = 256 * 1024;
 const MAX_SESSIONS = 8;
+const RECOVERABLE_CLOSE_REASONS = new Set(['connection-lost', 'channel-error', 'input-timeout', 'user-disconnected']);
+const MANUAL_DISCONNECT_REASONS = new Set(['user', 'user-plugin-disconnect']);
+const NETWORK_RECONNECT_REASONS = new Set(['network-change', 'network-interface-change', 'system-resume']);
 
 function normalizeScope(payload) {
   const scope = {};
@@ -50,15 +54,22 @@ export class ServerWorkspaceManager {
     this.workspaceStore = workspaceStore;
     this.serverRuntime = serverRuntime;
     this.serverOperations = serverOperations;
+    this.metrics = new ServerWorkspaceMetrics({ workspaceStore, serverRuntime, requirePlugin:scope => this.requirePlugin(scope) });
     this.sessions = new Map();
     this.ownerEpochs = new Map();
     this.scopeEpochs = new Map();
     this.disposed = false;
     this.lifecycleHandler = (event) => {
-      if (event.type !== 'connected') this.closeScope(event, event.type === 'lost' ? 'connection-lost' : 'disconnected');
+      if (event.type !== 'connected') this.closeScope(event,
+        event.type === 'lost' || NETWORK_RECONNECT_REASONS.has(event.reason) ? 'connection-lost'
+          : MANUAL_DISCONNECT_REASONS.has(event.reason) ? 'user-disconnected' : 'disconnected');
     };
     serverRuntime.on('lifecycle', this.lifecycleHandler);
   }
+
+  readMetrics(ownerId, payload) { return this.metrics.read(ownerKey(ownerId), normalizeScope(payload), payload.kind); }
+
+  stopMetrics(ownerId, payload) { return this.metrics.stop(ownerKey(ownerId), normalizeScope(payload)); }
 
   async requirePlugin(scope) {
     if (this.disposed) throw new AppError('WORKSPACE_CLOSED', '服务器工作区已经关闭。');
@@ -87,6 +98,8 @@ export class ServerWorkspaceManager {
     if (payload?.defaultColors !== undefined && typeof payload.defaultColors !== 'boolean') throw new AppError('INVALID_ARGUMENT', '默认配色设置无效。');
     const tabId = payload?.tabId ?? 'default';
     if (typeof tabId !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/u.test(tabId)) throw new AppError('INVALID_ARGUMENT', '终端标签标识无效。');
+    const recoveryOf = payload?.recoveryOf;
+    if (recoveryOf !== undefined && (typeof recoveryOf !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/u.test(recoveryOf))) throw new AppError('INVALID_ARGUMENT', '终端恢复标识无效。');
     const ownerEpoch = this.ownerEpochs.get(owner) ?? 0;
     const scope = normalizeScope(payload);
     const scopeKeys = [scope.projectId, `${scope.projectId}/${scope.environmentId}`, scopeKey(scope)];
@@ -98,6 +111,12 @@ export class ServerWorkspaceManager {
     const key = scopeKey(scope);
     const fingerprint = pluginConnectionFingerprint(plugin);
     const generation = this.serverRuntime.status(plugin).generation;
+    const previous = recoveryOf ? this.sessions.get(recoveryOf) : null;
+    // 恢复必须沿用原窗口、标签和连接配置，不能将断线前的授权带到其他服务器。
+    if (recoveryOf && (!previous || previous.owner !== owner || scopeKey(previous.scope) !== key
+      || previous.tabId !== tabId || previous.fingerprint !== fingerprint || !this.canRecover(previous))) {
+      throw new AppError('TERMINAL_RECOVERY_STOPPED', '原终端已结束或连接配置已变化，请手动打开新终端。');
+    }
     for (const record of this.sessions.values()) {
       if (record.owner !== owner || scopeKey(record.scope) !== key || record.tabId !== tabId) continue;
       if (['opening', 'open'].includes(record.status) && record.fingerprint === fingerprint && record.generation === generation) {
@@ -106,17 +125,18 @@ export class ServerWorkspaceManager {
         record.nextValidationAt = Date.now() + 1000;
         return record.initializing ? record.opening : publicSession(record);
       }
+      if (record === previous) continue;
       this.finish(record, 'replaced');
       this.release(record);
     }
     const owned = [...this.sessions.values()].filter((record) => record.owner === owner && record.status !== 'closed');
     if (owned.length >= MAX_SESSIONS) throw new AppError('TERMINAL_LIMIT_REACHED', '单个窗口最多同时打开 8 个服务器终端。');
     // 已关闭会话只保留有限条，避免反复打开服务器造成内存持续增长。
-    const retired = [...this.sessions.values()].filter((record) => record.owner === owner && record.status === 'closed');
+    const retired = [...this.sessions.values()].filter((record) => record.owner === owner && record.status === 'closed' && record !== previous);
     for (const record of retired.slice(0, Math.max(0, retired.length - MAX_SESSIONS + 1))) this.release(record);
     const record = {
       owner, scope, tabId, defaultColors, initializing: true, ...size, sessionId: crypto.randomUUID(), status: 'opening',
-      revision: plugin.revision, fingerprint, generation,
+      revision: plugin.revision, fingerprint, generation, recoveryOf: recoveryOf ?? null, closeReason: null, remoteExited: false,
       plugin, nextValidationAt: Date.now() + 1000, validation: null,
       channel: null, chunks: [], queuedBytes: 0, inputBytes: 0, paused: false,
       waiter: null, reading: false, pendingWrites: new Set(), exitCode: null,
@@ -154,11 +174,15 @@ export class ServerWorkspaceManager {
       };
       channel.on('data', record.onData);
       channel.stderr?.on('data', (chunk) => record.onData(chunk, true));
-      channel.on('exit', (code) => { if (Number.isInteger(code)) record.exitCode = code; });
-      channel.once('end', () => this.finish(record, 'remote-exit', false));
-      channel.once('close', (code) => {
+      channel.on('exit', (code) => {
+        record.remoteExited = true;
         if (Number.isInteger(code)) record.exitCode = code;
-        this.finish(record, 'remote-exit', false);
+        if (record.closeReason === 'channel-closed') record.closeReason = 'remote-exit';
+      });
+      channel.once('end', () => this.finish(record, record.remoteExited ? 'remote-exit' : 'channel-closed', false));
+      channel.once('close', (code) => {
+        if (Number.isInteger(code)) { record.exitCode = code; record.remoteExited = true; }
+        this.finish(record, record.remoteExited ? 'remote-exit' : 'channel-closed', false);
       });
       channel.on('error', () => this.finish(record, 'channel-error'));
       channel.resume();
@@ -168,6 +192,10 @@ export class ServerWorkspaceManager {
       record.startup = null;
       if (record.status === 'closed') throw new AppError('TERMINAL_CLOSED', '终端打开操作已取消。');
       record.initializing = false;
+      if (record.recoveryOf) {
+        const previous = this.sessions.get(record.recoveryOf);
+        if (previous) this.release(previous);
+      }
       return publicSession(record);
     } catch (error) {
       this.finish(record, 'open-failed');
@@ -188,14 +216,19 @@ export class ServerWorkspaceManager {
       try {
         const connection = this.serverRuntime.status(record.plugin);
         if (!connection.connected || connection.generation !== record.generation) {
+          this.finish(record, 'connection-lost');
           throw new AppError('TERMINAL_CLOSED', '服务器连接已经变化，请重新打开终端。');
         }
         if (Date.now() >= record.nextValidationAt) {
           record.validation ??= this.requirePlugin(scope).finally(() => { record.validation = null; });
           const plugin = await record.validation;
           const currentConnection = this.serverRuntime.status(plugin);
-          if (pluginConnectionFingerprint(plugin) !== record.fingerprint
-            || !currentConnection.connected || currentConnection.generation !== record.generation) {
+          if (pluginConnectionFingerprint(plugin) !== record.fingerprint) {
+            this.finish(record, 'scope-invalidated');
+            throw new AppError('TERMINAL_CLOSED', '服务器连接配置已经变化，请重新打开终端。');
+          }
+          if (!currentConnection.connected || currentConnection.generation !== record.generation) {
+            this.finish(record, 'connection-lost');
             throw new AppError('TERMINAL_CLOSED', '服务器连接配置已经变化，请重新打开终端。');
           }
           // 名称和 Agent 策略更新不改变人工会话，仅刷新当前插件记录。
@@ -240,7 +273,9 @@ export class ServerWorkspaceManager {
         record.channel?.stderr?.resume();
       }
       // 先排空 SSH 原始字节，再报告 EOF；UTF-8 的跨包字符由终端解码器拼接。
-      return { data, status: record.status === 'closed' && !record.queuedBytes ? 'closed' : 'open', ...(record.exitCode !== null ? { exitCode: record.exitCode } : {}) };
+      const closed = record.status === 'closed' && !record.queuedBytes;
+      return { data, status: closed ? 'closed' : 'open', ...(record.exitCode !== null ? { exitCode: record.exitCode } : {}),
+        ...(closed ? { closeReason: record.closeReason, recoverable: this.canRecover(record) } : {}) };
     } finally {
       record.reading = false;
     }
@@ -272,7 +307,10 @@ export class ServerWorkspaceManager {
           settled = true;
           clearTimeout(timer);
           record.pendingWrites.delete(complete);
-          if (error) reject(new AppError('TERMINAL_WRITE_FAILED', '终端输入未能完整发送；请检查会话状态后重试。'));
+          if (error) {
+            this.finish(record, 'channel-error');
+            reject(new AppError('TERMINAL_WRITE_FAILED', '终端输入未能完整发送；请检查会话状态后重试。'));
+          }
           else resolve();
         };
         record.pendingWrites.add(complete);
@@ -298,12 +336,27 @@ export class ServerWorkspaceManager {
   async closeTerminal(ownerId, payload) {
     const record = await this.requireRecord(ownerId, payload, { allowClosed: true });
     this.finish(record, 'user-closed');
+    record.closeReason = 'user-closed';
+    for (const pending of this.sessions.values()) {
+      if (pending.recoveryOf === record.sessionId) this.finish(pending, 'user-closed');
+    }
     return {};
+  }
+
+  canRecover(record) {
+    return record.status === 'closed' && !record.remoteExited && RECOVERABLE_CLOSE_REASONS.has(record.closeReason);
   }
 
   finish(record, reason, destroy = true) {
     if (record.status === 'closed') return;
     record.status = 'closed';
+    record.closeReason = reason;
+    if (reason === 'channel-closed') {
+      // 只关联同一轮关闭事件，避免未来断线复活早已结束但没有退出码的 Shell。
+      record.pendingConnectionLoss = true;
+      record.closeSettlement = setImmediate(() => { record.pendingConnectionLoss = false; record.closeSettlement = null; });
+      record.closeSettlement.unref?.();
+    }
     record.waiter?.();
     for (const complete of [...record.pendingWrites]) complete(true);
     record.startup?.cancel();
@@ -314,6 +367,7 @@ export class ServerWorkspaceManager {
   }
 
   release(record) {
+    if (record.closeSettlement) clearImmediate(record.closeSettlement);
     record.waiter?.();
     for (const chunk of record.chunks) chunk.fill(0);
     record.chunks = [];
@@ -322,17 +376,26 @@ export class ServerWorkspaceManager {
   }
 
   closeScope(scope, reason = 'scope-invalidated') {
+    this.metrics.closeScope(scope);
     const key = [scope.projectId, scope.environmentId, scope.pluginInstanceId].filter(Boolean).join('/');
     this.scopeEpochs.set(key, (this.scopeEpochs.get(key) ?? 0) + 1);
     for (const record of this.sessions.values()) {
       if (record.scope.projectId === scope.projectId
         && (!scope.environmentId || record.scope.environmentId === scope.environmentId)
-        && (!scope.pluginInstanceId || record.scope.pluginInstanceId === scope.pluginInstanceId)) this.finish(record, reason);
+        && (!scope.pluginInstanceId || record.scope.pluginInstanceId === scope.pluginInstanceId)) {
+        // SSH 关闭与通道关闭的事件顺序不固定；只保留活动或待恢复会话，不能复活已经退出或主动结束的终端。
+        const resumable = RECOVERABLE_CLOSE_REASONS.has(reason);
+        if (resumable && !record.remoteExited
+          && (this.canRecover(record) || (record.closeReason === 'channel-closed' && record.pendingConnectionLoss))) record.closeReason = reason;
+        if (!resumable && record.status === 'closed') record.closeReason = reason;
+        this.finish(record, reason);
+      }
     }
   }
 
   closeOwner(ownerId) {
     const owner = ownerKey(ownerId);
+    this.metrics.closeOwner(owner);
     this.ownerEpochs.set(owner, (this.ownerEpochs.get(owner) ?? 0) + 1);
     for (const record of this.sessions.values()) {
       if (record.owner !== owner) continue;
@@ -343,6 +406,7 @@ export class ServerWorkspaceManager {
 
   dispose() {
     this.disposed = true;
+    this.metrics.dispose();
     this.serverRuntime.removeListener('lifecycle', this.lifecycleHandler);
     for (const record of this.sessions.values()) {
       this.finish(record, 'application-closed');

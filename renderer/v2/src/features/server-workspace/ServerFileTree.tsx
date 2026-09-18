@@ -1,9 +1,12 @@
 import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowUp, DownloadSimple, CaretDown, CaretRight, CaretUpDown, Eye, EyeSlash, File, FileCode, FileText, FileZip, FolderSimple, FolderOpen, Link, PencilSimple, SpinnerGap, TerminalWindow, TreeStructure, UploadSimple } from "@phosphor-icons/react"
+import { ArrowUp, DownloadSimple, CaretDown, CaretRight, CaretUpDown, Eye, EyeSlash, File, FileCode, FileText, FileZip, FolderSimple, FolderOpen, Link, PencilSimple, SpinnerGap, TreeStructure, UploadSimple } from "@phosphor-icons/react"
 import type { AiOpsV2Api, PluginScope, ServerDirectoryEntry, ServerDirectoryPage } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { DirectoryBookmarks } from "./DirectoryBookmarks"
+import { directoryBookmarksKey } from "./directory-bookmarks"
+import { canDragWorkspacePath, type WorkspacePathDrag } from "./workspace-path-drag"
 import { isWorkspacePathStale, parentRemotePath, serverEntryType, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
 
 interface DirectoryState { readonly page?: ServerDirectoryPage; readonly loading: boolean; readonly loadedAt?: number; readonly error?: string; readonly metadataError?: string | undefined; readonly startCursor?: string; readonly history?: readonly string[] }
@@ -23,14 +26,14 @@ interface ServerFileTreeProps {
   readonly onDownload: (entry: ServerDirectoryEntry) => void
   readonly downloadBusy: boolean
   readonly onUpload: () => void
-  readonly onInsertPath: (path: string) => void
+  readonly pathDrag: WorkspacePathDrag
   readonly invalidatedPath: Readonly<{ path: string; id: number }> | null
   readonly locateFile?: Readonly<{ path: string; id: number }> | null
   readonly refreshEpoch: number
   readonly refreshPaths: readonly string[]
 }
 
-export function ServerFileTree({ api, scope, connected, visible, path, onPath, onPreview, onUpload, onDownload, downloadBusy, onInsertPath, refreshEpoch, refreshPaths, invalidatedPath, locateFile }: ServerFileTreeProps) {
+export function ServerFileTree({ api, scope, connected, visible, path, onPath, onPreview, onUpload, onDownload, downloadBusy, pathDrag, refreshEpoch, refreshPaths, invalidatedPath, locateFile }: ServerFileTreeProps) {
   const [refreshing, setRefreshing] = useState(false)
   const refreshingRef = useRef(false)
   const connectedRef = useRef(connected)
@@ -43,12 +46,12 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set(["/"]))
   const [showHidden, setShowHidden] = useState(false)
   const [selected, setSelected] = useState("/")
-  const [reveal, setReveal] = useState<Readonly<{ path: string; id: number }> | null>(null)
+  const [reveal, setReveal] = useState<Readonly<{ path: string; id: number; openDirectory?: boolean }> | null>(null)
   const [revealError, setRevealError] = useState("")
   const revealSequenceRef = useRef(0)
   const [viewport, setViewport] = useState({ scrollTop: 0, height: 500 })
   const metadataRequestsRef = useRef(new Set<string>())
-  const pendingOpenRef = useRef<string | null>(null)
+  const pendingOpenRef = useRef<{ path: string; previewFile: boolean } | null>(null)
   const requestsRef = useRef(new Map<string, number>())
   const requestSequenceRef = useRef(0)
   const mountedRef = useRef(true)
@@ -201,7 +204,7 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
     if (normalized === root && needsDirectoryRead(directories[normalized]) && !requestsRef.current.has(normalized)) void load(normalized)
   }
 
-  const toggle = (entry: ServerDirectoryEntry) => {
+  const toggle = (entry: ServerDirectoryEntry, previewFile = true) => {
     pendingOpenRef.current = null
     revealSequenceRef.current += 1
     setReveal(null)
@@ -217,7 +220,7 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
       })
       if (!expanded.has(entry.path) && needsDirectoryRead(directories[entry.path]) && !requestsRef.current.has(entry.path)) void load(entry.path)
       else setDirectories((current) => { const value = current[entry.path]; if (!value) return current; const next = { ...current }; delete next[entry.path]; return { ...next, [entry.path]: value } })
-    } else if (serverEntryType(entry) === "file") onPreview(entry)
+    } else if (previewFile && serverEntryType(entry) === "file") onPreview(entry)
   }
 
   useEffect(() => {
@@ -230,16 +233,52 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
     void load(directory)
   }, [locateFile])
 
-  const revealDirectory = (target: string) => {
+  const revealDirectory = (target: string, openDirectory = false) => {
     if (!connected) return
+    revealSequenceRef.current += 1
+    setReveal(null)
+    if (openDirectory) {
+      // 与后台的路径规范化保持一致，保留目录名称中的空格。
+      const parts: string[] = []
+      for (const part of target.split("/")) {
+        if (part === "..") parts.pop()
+        else if (part && part !== ".") parts.push(part)
+      }
+      target = "/" + parts.join("/")
+    }
     if (target === "/") { navigate("/"); pendingScrollRef.current = 0; return }
-    // 面包屑定位目录节点；只有节点位于当前浏览根之外时才回到它的父级。
-    const nextRoot = target === root || !target.startsWith(root.replace(/\/$/u, "") + "/") ? parentRemotePath(target) : root
+    // 收藏从根目录展开完整路径；面包屑沿用当前浏览范围。
+    const nextRoot = openDirectory ? "/" : target === root || !target.startsWith(root.replace(/\/$/u, "") + "/") ? parentRemotePath(target) : root
     const ancestors: string[] = []
-    for (let current = parentRemotePath(target); current !== nextRoot && current !== "/"; current = parentRemotePath(current)) ancestors.push(current)
+    for (let current = parentRemotePath(target); current !== nextRoot && current !== "/"; current = parentRemotePath(current)) {
+      ancestors.push(current)
+      // 收藏祖先链与目标共用最多 32 个目录缓存，避免定位期间反复淘汰祖先。
+      if (ancestors.length >= (openDirectory ? 31 : 64)) {
+        setRevealError("目录层级过深，请输入更近的父目录路径。")
+        return
+      }
+    }
+    pendingOpenRef.current = null
+    if (openDirectory) {
+      // 将定位路径上的缓存移到最近使用位置；旧分页未含目标节点时从第一页重新定位。
+      const chain = [nextRoot, ...[...ancestors].reverse(), target]
+      setDirectories(current => {
+        const next = { ...current }
+        for (const [index, directory] of chain.entries()) {
+          const state = current[directory]
+          if (!state) continue
+          delete next[directory]
+          const child = chain[index + 1]
+          if (child && state.startCursor && state.startCursor !== "0" && !state.page?.entries.some(item => item.path === child)) {
+            requestsRef.current.delete(directory)
+          } else next[directory] = state
+        }
+        return next
+      })
+    }
     const parent = parentRemotePath(target)
     const parentPage = directories[parent]
-    if (parentPage?.startCursor && parentPage.startCursor !== "0" && !parentPage.page?.entries.some((item) => item.path === target) && !requestsRef.current.has(parent)) void load(parent)
+    if (!openDirectory && parentPage?.startCursor && parentPage.startCursor !== "0" && !parentPage.page?.entries.some((item) => item.path === target) && !requestsRef.current.has(parent)) void load(parent)
     pendingScrollRef.current = null
     setRoot(nextRoot)
     setExpanded((current) => new Set([...current, ...ancestors, nextRoot]))
@@ -249,12 +288,13 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
     setRevealError("")
     if (target.split("/").some((part) => part.startsWith("."))) setShowHidden(true)
     onPath(target)
-    setReveal({ path: target, id: ++revealSequenceRef.current })
+    setReveal({ path: target, id: ++revealSequenceRef.current, openDirectory })
   }
 
   useEffect(() => {
-    const target = pendingOpenRef.current
-    if (!target) return
+    const pending = pendingOpenRef.current
+    if (!pending) return
+    const target = pending.path
     if (selected !== target) { pendingOpenRef.current = null; return }
     const entry = directories[parentRemotePath(target)]?.page?.entries.find((item) => item.path === target)
     if (!entry?.linkTargetType) return
@@ -267,7 +307,7 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
         ancestor = parentRemotePath(ancestor)
       }
     }
-    if (connected && ["directory", "file"].includes(serverEntryType(entry))) toggle(entry)
+    if (connected && ["directory", "file"].includes(serverEntryType(entry))) toggle(entry, pending.previewFile)
   }, [directories, connected, selected])
 
   const rows = useMemo(() => {
@@ -346,7 +386,12 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
       if (seen.has(canonical)) { setRevealError("循环链接，无法继续定位。"); setReveal(null); return }
       seen.add(canonical)
       const child = chain[index + 1] ?? reveal.path
-      if (state.page.entries.some((entry) => entry.path === child && (serverEntryType(entry) === "directory" || child === reveal.path))) continue
+      const entry = state.page.entries.find(item => item.path === child)
+      if (entry?.type === "symlink" && !entry.linkTargetType) {
+        if (state.metadataError) { setRevealError(state.metadataError); setReveal(null) }
+        return
+      }
+      if (entry && (serverEntryType(entry) === "directory" || child === reveal.path)) continue
       if (state.page.nextCursor) { void load(directory, state.page.nextCursor, state.page.entries.length >= 2000); return }
       setRevealError("当前目录列表中未找到该项，请刷新后重试。")
       setReveal(null)
@@ -359,6 +404,22 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
     if (!element || !reveal || !connected) return
     const index = rows.findIndex((row) => row.kind === "entry" && row.entry.path === reveal.path)
     if (index < 0) return
+    if (reveal.openDirectory) {
+      const row = rows[index]!
+      if (row.kind !== "entry") return
+      if (row.entry.type === "symlink" && !row.entry.linkTargetType) {
+        const message = directories[parentRemotePath(reveal.path)]?.metadataError
+        if (message) { setRevealError(message); setReveal(null) }
+        return
+      }
+      if (row.cycle || serverEntryType(row.entry) !== "directory") {
+        setRevealError(row.cycle ? "循环链接，无法打开收藏目录。" : "收藏路径已不是可打开的目录，请刷新后重试。")
+        setReveal(null)
+        return
+      }
+      setExpanded(current => new Set([...current, reveal.path]))
+      if (needsDirectoryRead(directories[reveal.path]) && !requestsRef.current.has(reveal.path)) void load(reveal.path)
+    }
     // 先滚动虚拟列表，再将焦点交给挂载后的目标行，保留目录上下文。
     element.scrollTop = Math.max(0, index * rowHeight - Math.min(rowHeight * 3, element.clientHeight / 4))
     setViewport({ scrollTop: element.scrollTop, height: element.clientHeight })
@@ -367,7 +428,7 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
       if (mountedRef.current && revealSequenceRef.current === id) element.querySelector<HTMLButtonElement>('[data-tree-index="' + index + '"]')?.focus({ preventScroll: true })
     }))
     setReveal(null)
-  }, [reveal, connected, rows, rowHeight])
+  }, [reveal, connected, rows, rowHeight, directories, load])
 
   useLayoutEffect(() => {
     const element = scrollRef.current
@@ -394,6 +455,7 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
     <div className="server-file-toolbar">
       <div className="server-file-heading"><TreeStructure size={19} weight="duotone" /><span>文件工作区</span></div>
       <div className="server-file-actions">
+        <DirectoryBookmarks key={directoryBookmarksKey(scope)} scope={scope} path={path} connected={connected} visible={visible} onNavigate={target => revealDirectory(target, true)} />
         <Button size="icon-sm" variant="ghost" aria-label="收起所有目录" title="收起所有目录" onClick={() => { setExpanded(new Set()); if (scrollRef.current) scrollRef.current.scrollTop = 0 }}><CaretUpDown /></Button>
         <Button size="icon-sm" variant="ghost" aria-label="显示隐藏文件" title={showHidden ? "隐藏点文件" : "显示隐藏文件"} aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}>{showHidden ? <Eye /> : <EyeSlash />}</Button>
         <WorkspaceIconButton action="refresh" label="刷新目录" disabled={!connected || refreshing} busy={refreshing} onClick={() => { void refreshVisibleDirectories() }} />
@@ -432,20 +494,34 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
           const isDirectory = targetType === "directory"
           const open = expanded.has(entry.path)
           const supported = !row.cycle && (isDirectory || targetType === "file")
-          return <div key={`entry:${entry.path}`} data-tree-index={index} tabIndex={0} className={"server-tree-row" + (entry.type === "symlink" ? " server-tree-link" : "")} role="treeitem" aria-level={row.depth + 1} aria-selected={selected === entry.path} {...(isDirectory ? { "aria-expanded": open } : {})} aria-disabled={(!supported && !pending) || !connected} style={style} title={entry.type === "symlink" ? `${entry.path}${entry.linkTarget ? " → " + entry.linkTarget : ""}${row.cycle ? "（循环链接）" : pending ? metadataError ? "（链接信息读取失败，点击重试）" : "（正在读取链接信息）" : supported ? "" : "（目标不可用或不支持打开）"}` : entry.path} onClick={() => {
+          const activate = (previewFile: boolean) => {
             if (!connected) return
             if (pending) {
-              pendingOpenRef.current = entry.path
+              pendingOpenRef.current = { path: entry.path, previewFile }
+              revealSequenceRef.current += 1
+              setReveal(null)
+              setRevealError("")
               setSelected(entry.path)
               const directory = parentRemotePath(entry.path)
-              setDirectories((current) => ({ ...current, [directory]: { ...current[directory]!, metadataError: undefined } }))
-              return
-            }
+              setDirectories(current => ({ ...current, [directory]: { ...current[directory]!, metadataError: undefined } }))
+            } else if (supported) toggle(entry, previewFile)
+          }
+          return <div key={`entry:${entry.path}`} data-tree-index={index} tabIndex={0} className={"server-tree-row" + (entry.type === "symlink" ? " server-tree-link" : "")} role="treeitem" aria-level={row.depth + 1} aria-selected={selected === entry.path} {...(isDirectory ? { "aria-expanded": open } : {})} aria-disabled={(!supported && !pending) || !connected} style={style} title={entry.type === "symlink" ? `${entry.path}${entry.linkTarget ? " → " + entry.linkTarget : ""}${row.cycle ? "（循环链接）" : pending ? metadataError ? "（链接信息读取失败，点击重试）" : "（正在读取链接信息）" : supported ? "" : "（目标不可用或不支持打开）"}` : entry.path} draggable={connected && (supported || pending) && canDragWorkspacePath(entry.path)} onDragStart={event => {
+            if (!connected || !(supported || pending) || (event.target as Element).closest("button") || !pathDrag.begin(event.dataTransfer, entry.path)) { event.preventDefault(); return }
             pendingOpenRef.current = null
-            if (supported) toggle(entry)
+            revealSequenceRef.current += 1
+            setReveal(null)
+            setRevealError("")
+            setSelected(entry.path)
+          }} onDragEnd={() => pathDrag.clear()} onClick={event => {
+            if (!(event.target as Element).closest("button")) activate(false)
+          }} onDoubleClick={event => {
+            if ((event.target as Element).closest("button") || isDirectory) return
+            event.preventDefault()
+            activate(true)
           }} onKeyDown={(event) => {
             if (event.target !== event.currentTarget) return
-            if ((event.key === "Enter" || event.key === " ") && supported && connected) { event.preventDefault(); toggle(entry); return }
+            if ((event.key === "Enter" || event.key === " ") && (supported || pending) && connected) { event.preventDefault(); activate(event.key === "Enter"); return }
             if (event.key === "ArrowRight" && isDirectory && !open && supported && connected) { event.preventDefault(); toggle(entry) }
             if (event.key === "ArrowLeft" && isDirectory && open && supported && connected) { event.preventDefault(); toggle(entry) }
             if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return
@@ -464,6 +540,6 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
         })}
       </div>
     </div>
-    <div className="server-file-footer"><span className="server-file-current-path" title={path}>{path}</span><Button size="sm" variant="ghost" disabled={!connected} onClick={() => onInsertPath(path)} title="只填入带引号的路径，不执行命令"><TerminalWindow size={15} />填入终端</Button></div>
+    <div className="server-file-footer"><span className="server-file-current-path" title={path}>{path}</span></div>
   </section>
 }

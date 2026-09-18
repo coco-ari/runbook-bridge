@@ -139,3 +139,67 @@ test('正式连接的状态摘要可供 Agent 使用，断开后恢复不可用'
   await manager.disconnect('p1','e1');
   assert.equal((await manager.status('p1','e1')).plugins.server.assessment.agent.availability,'unavailable');
 });
+
+async function reconnectFixture(t, retryDelays) {
+  const server=plugin('server','server');
+  let failure=null;
+  let attempts=0;
+  const store={getEnvironment:async()=>({revision:1}),listPlugins:async()=>[server],getPlugin:async()=>server,appendAudit:async()=>{}};
+  const runtime={connect:async()=>{attempts++;if(failure)throw Object.assign(new Error('模拟连接故障'),{code:failure});return{connectedAt:'now'};},disconnect:async()=>{},closeAll:async()=>{}};
+  const manager=new EnvironmentConnectionManager(store,runtime,{retryDelays});
+  t.after(()=>manager.closeAll());
+  await manager.connect('p1','e1');
+  return {manager,fail:code=>{failure=code;},attempts:()=>attempts};
+}
+async function waitForReconnect(check) {
+  for(let index=0;index<500;index++) {
+    if(check())return;
+    await new Promise(resolve=>setTimeout(resolve,2));
+  }
+  assert.fail('重连状态未在预期时间内到达');
+}
+
+test('自动重连发布真实等待时间、执行次数和耗尽状态', async (t) => {
+  const f=await reconnectFixture(t,[15,20]);
+  f.fail('ROUTE_UNAVAILABLE');
+  const snapshots=[];
+  f.manager.on('changed',snapshot=>snapshots.push(snapshot));
+  await f.manager.pluginLost('p1','e1','server',Object.assign(new Error('模拟断线'),{code:'ROUTE_UNAVAILABLE'}));
+  const waiting=f.manager.snapshot('p1','e1').reconnect;
+  assert.equal(waiting.phase,'waiting');
+  assert.equal(waiting.attempt,1);
+  assert.equal(waiting.maxAttempts,2);
+  assert.ok(waiting.nextRetryAt>0);
+  assert.deepEqual(waiting.pluginInstanceIds,['server']);
+  await waitForReconnect(()=>f.manager.snapshot('p1','e1').reconnect?.phase==='exhausted');
+  assert.equal(f.attempts(),3);
+  assert.equal(f.manager.snapshot('p1','e1').reconnect.attempt,2);
+  assert.equal(f.manager.snapshot('p1','e1').reconnect.nextRetryAt,null);
+  assert.deepEqual(snapshots.filter(item=>item.reconnect?.phase==='waiting').map(item=>item.reconnect.attempt),[1,2]);
+  assert.ok(snapshots.some(item=>item.reconnect?.phase==='connecting'));
+  assert.equal(f.manager.retryTimers.size,0);
+});
+
+test('自动重连成功清理进度，认证错误立即停止后续重试', async (t) => {
+  for(const code of [null,'SSH_AUTH_FAILED','SSH_HOST_KEY_CHANGED']) {
+    await t.test(String(code),async child=>{
+      const f=await reconnectFixture(child,[5,10]);
+      f.fail(code);
+      await f.manager.pluginLost('p1','e1','server');
+      await waitForReconnect(()=>f.attempts()===2 && !f.manager.snapshot('p1','e1').reconnect);
+      await new Promise(resolve=>setTimeout(resolve,25));
+      assert.equal(f.attempts(),2);
+      assert.equal(f.manager.snapshot('p1','e1').plugins.server.phase,code?'error':'connected');
+    });
+  }
+});
+
+test('主动断开取消重试倒计时，恢复计数不会重新建立连接', async (t) => {
+  const f=await reconnectFixture(t,[40,50]);
+  f.fail('ROUTE_UNAVAILABLE');
+  await f.manager.pluginLost('p1','e1','server');
+  await f.manager.disconnect('p1','e1');
+  assert.equal(f.manager.snapshot('p1','e1').reconnect,null);
+  await new Promise(resolve=>setTimeout(resolve,70));
+  assert.equal(f.attempts(),1);
+});

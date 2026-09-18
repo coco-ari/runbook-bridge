@@ -744,13 +744,22 @@ async function main() {
     assert.equal(inspection.noPageOverflow, true);
     assert.equal(inspection.overviewOk, true);
     assert.equal(inspection.projectCount, 0);
-    assert.equal(inspection.apiCount, 81);
+    assert.equal(inspection.apiCount, 83);
+    const metricsContract = await running.cdp.evaluate("(async () => { const scope = {projectId:'metrics-probe',environmentId:'probe',pluginInstanceId:'probe'}; return {read:await window.aiOps.v2.serverWorkspaceMetrics(scope),invalid:await window.aiOps.v2.serverWorkspaceMetrics({...scope,command:'arbitrary'}),invalidKind:await window.aiOps.v2.serverWorkspaceMetrics({...scope,kind:'arbitrary'}),disks:await window.aiOps.v2.serverWorkspaceMetrics({...scope,kind:'disks'}),stop:await window.aiOps.v2.serverWorkspaceStopMetrics(scope)}; })()");
+    assert.equal(metricsContract.read.ok, false);
+    assert.ok(['PROJECT_NOT_FOUND','ENVIRONMENT_NOT_FOUND','PLUGIN_NOT_FOUND'].includes(metricsContract.read.error.code));
+    assert.equal(metricsContract.invalid.error.code, 'INVALID_ARGUMENT');
+    assert.equal(metricsContract.invalidKind.error.code, 'INVALID_ARGUMENT');
+    assert.ok(['PROJECT_NOT_FOUND','ENVIRONMENT_NOT_FOUND','PLUGIN_NOT_FOUND'].includes(metricsContract.disks.error.code));
+    assert.deepEqual(metricsContract.stop, {ok:true,data:{stopped:true}});
     // 在隔离的空工作区验证标签参数，不连接任何服务器。
-    const terminalContract = await running.cdp.evaluate("(async () => { const scope = { projectId:'packaged-tab-probe', environmentId:'probe', pluginInstanceId:'probe', cols:80, rows:24 }; return { valid:await window.aiOps.v2.serverTerminalOpen({...scope, tabId:'valid-tab', defaultColors:false}), invalidColors:await window.aiOps.v2.serverTerminalOpen({...scope,defaultColors:'yes'}), invalid:await window.aiOps.v2.serverTerminalOpen({...scope, tabId:'../invalid'}) }; })()");
+    const terminalContract = await running.cdp.evaluate("(async () => { const scope = { projectId:'packaged-tab-probe', environmentId:'probe', pluginInstanceId:'probe', cols:80, rows:24 }; return { valid:await window.aiOps.v2.serverTerminalOpen({...scope, tabId:'valid-tab', defaultColors:false}), invalidRecovery:await window.aiOps.v2.serverTerminalOpen({...scope,recoveryOf:'../invalid'}), recovery:await window.aiOps.v2.serverTerminalOpen({...scope,recoveryOf:'missing-session'}), invalidColors:await window.aiOps.v2.serverTerminalOpen({...scope,defaultColors:'yes'}), invalid:await window.aiOps.v2.serverTerminalOpen({...scope, tabId:'../invalid'}) }; })()");
     assert.equal(terminalContract.valid.ok, false);
     assert.ok(['PROJECT_NOT_FOUND', 'ENVIRONMENT_NOT_FOUND', 'PLUGIN_NOT_FOUND'].includes(terminalContract.valid.error.code));
     assert.equal(terminalContract.invalid.error.code, 'INVALID_ARGUMENT');
     assert.equal(terminalContract.invalidColors.error.code, 'INVALID_ARGUMENT');
+    assert.equal(terminalContract.invalidRecovery.error.code, 'INVALID_ARGUMENT');
+    assert.ok(['PROJECT_NOT_FOUND', 'ENVIRONMENT_NOT_FOUND', 'PLUGIN_NOT_FOUND'].includes(terminalContract.recovery.error.code));
     // 空工作区不能读取剪贴板；这里只验证正式桥接和会话边界。
     const clipboardContract = await running.cdp.evaluate("window.aiOps.v2.serverTerminalClipboard({projectId:'clipboard-probe',environmentId:'probe',pluginInstanceId:'probe',sessionId:'missing',action:'paste'})");
     assert.equal(clipboardContract.ok, false);
@@ -832,7 +841,7 @@ async function main() {
       return {ok: overview?.ok === true, projectCount: Array.isArray(overview?.data) ? overview.data.length : -1,
         apiCount: Object.keys(window.aiOps.v2).length};
     })()`);
-    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 81});
+    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 83});
     assert.deepEqual(running.httpRequests, []);
     await selectThemePreference(running.cdp, 'system');
     await emulateSystemTheme(running.cdp, 'dark');
@@ -852,7 +861,7 @@ async function main() {
         availableWidth: compactSearch.availableWidth, nativeTextBox: compactSearch.nativeBox?.source ?? 'conservative-cancel-budget'},
     })}\n`);
     process.stdout.write(
-      `Packaged React UI smoke passed (81 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
+      `Packaged React UI smoke passed (83 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
     );
   } catch (error) {
     if (running) {

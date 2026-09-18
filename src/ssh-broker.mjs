@@ -1,4 +1,5 @@
 import { DEFAULT_TERMINAL_COLORS, probeTerminalShell } from './server-terminal-startup.mjs';
+import { metricsCommand, readMetricsChannel } from './server-metrics-reader.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -1127,6 +1128,17 @@ export class SshBroker {
         reject(new AppError('TERMINAL_OPEN_FAILED', '服务器未能建立交互终端。'));
       }
     });
+  }
+
+  async readWorkspaceMetrics(projectId, kind, options = {}) {
+    const command = metricsCommand(kind);
+    const session = this.requireSession(projectId);
+    const config = await this.store.get(projectId);
+    if (!evaluateCommandPolicy(command, config.commandPolicy).allowed) throw new AppError('COMMAND_BLOCKED', '资源采集被当前命令策略禁止。');
+    if (this.requireSession(projectId) !== session || options.signal?.aborted) throw new AppError('METRICS_CANCELLED', '服务器连接已更新。');
+    const result = await readMetricsChannel(session.client, kind, options);
+    if (this.requireSession(projectId) !== session) throw new AppError('METRICS_CANCELLED', '服务器连接已更新。');
+    return result;
   }
 
   async openForward(projectId, targetHost, targetPort) {

@@ -134,6 +134,9 @@ test('桌面 IPC 拒绝子框架、非可信页面、任意路径和凭据字段
   assert.equal((await open(event, { ...payload, password: 'example' })).error.code, 'INVALID_ARGUMENT');
   assert.equal((await open(event, payload)).ok, true);
   assert.equal(calls[0][0], owner);
+  const recovering = { ...payload, tabId:'tab-a', recoveryOf:'previous-session' };
+  assert.equal((await open(event, recovering)).ok, true);
+  assert.deepEqual(calls.pop(), [owner, recovering]);
   sender.emit('did-start-navigation', {}, 'file:///example.html', false, true);
   assert.deepEqual(calls[1], ['close', owner]);
   sender.emit('destroyed');

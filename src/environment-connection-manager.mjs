@@ -78,6 +78,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
     this.queues = new Map();
     this.retryDelays = [...retryDelays];
     this.retryTimers = new Map();
+    this.reconnectProgress = new Map();
     this.networkEpoch = 0;
     this.maxConcurrency = Math.max(1, Number(maxConcurrency) || 4);
     this.connectDeadlineMs = Number.isFinite(connectDeadlineMs) && connectDeadlineMs > 0 ? connectDeadlineMs : null;
@@ -250,6 +251,8 @@ export class EnvironmentConnectionManager extends EventEmitter {
   assessedState(projectId, environmentId, state = this.state(projectId,environmentId), plugins = null) {
     const catalog = plugins ?? this.pluginCatalogs.get(this.key(projectId,environmentId));
     const snapshot = structuredClone(state);
+    const reconnect = this.reconnectProgress.get(this.key(projectId, environmentId));
+    snapshot.reconnect = reconnect ? structuredClone(reconnect) : null;
     if (!catalog) return snapshot;
     const assessed = assessEnvironmentSnapshot({plugins:catalog,runtimeSnapshot:snapshot});
     // Stage 3 adds a derived response only. Connection eligibility remains on
@@ -400,6 +403,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
 
   async forgetProject(projectId) {
     this.connectionIntentCoordinator.forgetProject(projectId);
+    for (const key of this.reconnectProgress.keys()) if (key.startsWith(projectId + '/')) this.reconnectProgress.delete(key);
     const prefix = `${projectId}/`;
     await Promise.allSettled([...this.queues.entries()].filter(([key]) => key.startsWith(prefix)).map(([,pending]) => pending));
     for (const key of this.states.keys()) if (key.startsWith(prefix)) this.states.delete(key);
@@ -444,6 +448,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
   }
 
   publish(state) {
+    if (!state.desiredConnected) this.clearRetry(state.projectId, state.environmentId);
     this.publishSequence += 1;
     state.sequence = this.publishSequence;
     state.updatedAt = new Date().toISOString();
@@ -794,23 +799,48 @@ export class EnvironmentConnectionManager extends EventEmitter {
     const timer = this.retryTimers.get(key);
     if (timer) clearTimeout(timer);
     this.retryTimers.delete(key);
+    this.reconnectProgress.delete(key);
   }
 
-  scheduleReconnect(projectId, environmentId, attempt = 0) {
+  scheduleReconnect(projectId, environmentId, attempt = 0, previousProgress = null) {
     const state = this.state(projectId, environmentId);
-    if (!state.desiredConnected || attempt >= this.retryDelays.length) return;
     const key = this.key(projectId, environmentId);
     if (this.retryTimers.has(key)) return;
+    const activeProgress = this.reconnectProgress.get(key);
+    if (activeProgress?.phase === 'connecting' && activeProgress !== previousProgress) return;
+    const pluginInstanceIds = Object.values(state.plugins)
+      .filter((item) => !state.manualDisconnected?.[item.pluginInstanceId]
+        && (item.phase === 'reconnecting' || (['error', 'blocked'].includes(item.phase) && item.retryable)))
+      .map((item) => item.pluginInstanceId);
+    if (!state.desiredConnected || !pluginInstanceIds.length) {
+      if (this.reconnectProgress.delete(key)) this.publish(structuredClone(state));
+      return;
+    }
+    const exhausted = attempt >= this.retryDelays.length;
+    const progress = {
+      phase: exhausted ? 'exhausted' : 'waiting',
+      attempt: exhausted ? this.retryDelays.length : attempt + 1,
+      maxAttempts: this.retryDelays.length,
+      nextRetryAt: exhausted ? null : Date.now() + this.retryDelays[attempt],
+      pluginInstanceIds,
+    };
+    this.reconnectProgress.set(key, progress);
+    this.publish(structuredClone(state));
+    if (exhausted) return;
     const timer = setTimeout(async () => {
       this.retryTimers.delete(key);
+      if (this.reconnectProgress.get(key) !== progress) return;
       const current = this.state(projectId, environmentId);
-      if (!current.desiredConnected) return;
+      if (!current.desiredConnected) { this.clearRetry(projectId, environmentId); return; }
+      progress.phase = 'connecting';
+      progress.nextRetryAt = null;
+      this.publish(structuredClone(current));
       try {
-        const result = await this.retryFailed(projectId, environmentId, { retryableOnly: true, actor: 'system' });
-        if (!['connected', 'partial'].includes(result.phase) || result.errorCount + result.blockedCount > 0) this.scheduleReconnect(projectId, environmentId, attempt + 1);
+        await this.retryFailed(projectId, environmentId, { retryableOnly: true, actor: 'system' });
       } catch {
-        this.scheduleReconnect(projectId, environmentId, attempt + 1);
+        // 失败后仍由同一重试链检查剩余资格，不绕过认证或配置错误。
       }
+      if (this.reconnectProgress.get(key) === progress) this.scheduleReconnect(projectId, environmentId, attempt + 1, progress);
     }, this.retryDelays[attempt]);
     timer.unref?.();
     this.retryTimers.set(key, timer);
@@ -887,6 +917,7 @@ export class EnvironmentConnectionManager extends EventEmitter {
     closeEnvironments.catch(() => undefined);
     for (const timer of this.retryTimers.values()) clearTimeout(timer);
     this.retryTimers.clear();
+    this.reconnectProgress.clear();
     let runtimeTimer;
     const closeRuntimes = Promise.resolve().then(() => this.pluginManager.closeAll()).catch(() => undefined);
     await Promise.race([

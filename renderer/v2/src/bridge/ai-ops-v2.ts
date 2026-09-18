@@ -450,6 +450,8 @@ export interface ServerTerminalRead {
   readonly data: Uint8Array
   readonly status: "open" | "closed"
   readonly exitCode?: number | null
+  readonly closeReason?: string | null
+  readonly recoverable?: boolean
 }
 
 export interface ServerDirectoryEntry {
@@ -523,8 +525,28 @@ export interface ServerUploadJob {
   readonly message?: string
 }
 
+export interface ServerMetricCapacity {
+  readonly total: number
+  readonly used: number
+  readonly available: number
+  readonly percent: number
+}
+export interface ServerMetricsSnapshot {
+  readonly cpu: { readonly percent: number | null; readonly cores: number | null } | null
+  readonly memory: ServerMetricCapacity | null
+  readonly disks: readonly (ServerMetricCapacity & { readonly mount: string })[]
+  readonly sampledAt: number | null
+  readonly diskSampledAt: number | null
+  readonly error: string | null
+  readonly diskError: string | null
+  readonly unsupported: boolean
+  readonly disksTruncated: boolean
+}
+
 export interface AiOpsV2Api {
-  serverTerminalOpen(payload: PluginScope & { cols: number; rows: number; tabId?: string; defaultColors?: boolean }): Promise<IpcResult<ServerTerminalSession>>
+  serverWorkspaceMetrics(payload: PluginScope & { kind?: "system" | "disks" }): Promise<IpcResult<ServerMetricsSnapshot & { retryAfterMs: number }>>
+  serverWorkspaceStopMetrics(payload: PluginScope): Promise<IpcResult<{ stopped: boolean }>>
+  serverTerminalOpen(payload: PluginScope & { cols: number; rows: number; tabId?: string; defaultColors?: boolean; recoveryOf?: string }): Promise<IpcResult<ServerTerminalSession>>
   serverTerminalRead(payload: PluginScope & { sessionId: string }): Promise<IpcResult<ServerTerminalRead>>
   serverTerminalWrite(payload: PluginScope & { sessionId: string; data: string; encoding?: "utf8" | "binary" }): Promise<IpcResult<OpaqueData>>
   serverTerminalClipboard(payload: PluginScope & { sessionId: string } & ({ action: "copy"; text: string } | { action: "paste" })): Promise<IpcResult<{ text?: string }>>
@@ -608,6 +630,8 @@ export interface AiOpsV2Api {
 }
 
 export const AI_OPS_V2_API_NAMES = [
+  "serverWorkspaceMetrics",
+  "serverWorkspaceStopMetrics",
   "serverTerminalOpen",
   "serverTerminalRead",
   "serverTerminalWrite",

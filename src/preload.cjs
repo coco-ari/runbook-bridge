@@ -7,6 +7,8 @@ const legacyConnectionSnapshot = (payload) => requestConnectionIntent(payload).t
 
 contextBridge.exposeInMainWorld('aiOps', {
   v2: {
+    serverWorkspaceMetrics: payload => ipcRenderer.invoke('v2:server-workspace-metrics', payload),
+    serverWorkspaceStopMetrics: payload => ipcRenderer.invoke('v2:server-workspace-stop-metrics', payload),
     serverTerminalOpen: (payload) => ipcRenderer.invoke('v2:server-terminal-open', payload),
     serverTerminalRead: (payload) => ipcRenderer.invoke('v2:server-terminal-read', payload),
     serverTerminalWrite: (payload) => ipcRenderer.invoke('v2:server-terminal-write', payload),
