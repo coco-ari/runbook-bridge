@@ -290,6 +290,7 @@ export function registerV2Ipc(ipcMain, services) {
     return result;
   };
   const invalidateServerWorkspace = (scope) => {
+    services.serverDocker?.closeScope(scope);
     services.serverWorkspaceManager?.closeScope(scope, 'configuration-changed');
     services.serverWorkspaceFiles?.closeScope(scope);
   };

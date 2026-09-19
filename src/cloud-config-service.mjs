@@ -14,8 +14,8 @@ async function deadline(promise,ms = 10_000) {
 }
 
 export class CloudConfigService {
-  constructor({workspace,mutationCoordinator,connectionManager,pluginManager,v2Service,contextManager,confirmationManager,configTransactionJournal,pluginEditSessionManager,serverWorkspaceManager,serverWorkspaceFiles,broadcast,client = new CloudConfigClient()}) {
-    Object.assign(this,{workspace,mutationCoordinator,connectionManager,pluginManager,v2Service,contextManager,confirmationManager,configTransactionJournal,pluginEditSessionManager,serverWorkspaceManager,serverWorkspaceFiles,broadcast,client});
+  constructor({workspace,mutationCoordinator,connectionManager,pluginManager,v2Service,contextManager,confirmationManager,configTransactionJournal,pluginEditSessionManager,serverWorkspaceManager,serverWorkspaceFiles,serverDocker,broadcast,client = new CloudConfigClient()}) {
+    Object.assign(this,{workspace,mutationCoordinator,connectionManager,pluginManager,v2Service,contextManager,confirmationManager,configTransactionJournal,pluginEditSessionManager,serverWorkspaceManager,serverWorkspaceFiles,serverDocker,broadcast,client});
     this.store = workspace.store;
     this.vault = workspace.vault;
     this.state = emptyState();
@@ -198,6 +198,7 @@ export class CloudConfigService {
       }
     }
     this.v2Service?.redisWorkspaceManager?.invalidate({projectId});
+    this.serverDocker?.closeScope({projectId});
     this.serverWorkspaceManager?.closeScope({projectId});
     this.serverWorkspaceFiles?.closeScope({projectId});
     this.pluginEditSessionManager?.invalidateProject(projectId);

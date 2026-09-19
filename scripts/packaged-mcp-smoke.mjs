@@ -18,11 +18,16 @@ const client = new Client({ name: 'packaged-mcp-smoke', version: '1.0.0' });
 try {
   await client.connect(transport);
   const result = await client.listTools();
-  assert.equal(result.tools.length, 36);
+  assert.equal(result.tools.length, 40);
   assert.ok(result.tools.some((tool) => tool.name === 'open_environment'));
   assert.ok(result.tools.some((tool) => tool.name === 'mysql_search_schema'));
   assert.ok(!result.tools.some((tool) => tool.name === 'execute'));
   assert.ok(!result.tools.some((tool) => /cloud|credential|private_key/i.test(tool.name)),'云配置和凭据不得暴露为 MCP 工具');
+  for (const name of ['server_docker_list_containers','server_docker_inspect_container','server_docker_read_logs','server_docker_container_stats']) {
+    const tool = result.tools.find(item => item.name === name);
+    assert.equal(tool.annotations.readOnlyHint, true);
+    assert.ok(tool.inputSchema.required.includes('contextToken'));
+  }
   const logSearch = result.tools.find((tool) => tool.name === 'server_search_logs');
   assert.equal(logSearch.inputSchema.properties.queries.maxItems, 10);
   assert.equal(logSearch.inputSchema.properties.maxLines, undefined);
@@ -92,4 +97,4 @@ const archiveResult = await execFileAsync(executable, ['--input-type=module', '-
   windowsHide: true,
 });
 assert.match(archiveResult.stdout, /archive-ok/u);
-console.log('Packaged MCP smoke passed (36 structured tools; archive runtime available)');
+console.log('Packaged MCP smoke passed (40 structured tools; archive runtime available)');

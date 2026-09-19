@@ -2,7 +2,7 @@ import { WorkspaceBackButton, WorkspaceHeaderActions } from "@/components/worksp
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { CaretDown, CaretUp, CheckCircle, MapPin, Pause, SpinnerGap, Trash, TerminalWindow, UploadSimple, X } from "@phosphor-icons/react"
 import { usePanelRef } from "react-resizable-panels"
-import type { AiOpsV2Api, EnvironmentRuntime, PluginScope, ServerDirectoryEntry, ServerUploadJob, ServerUploadReview } from "@/bridge/ai-ops-v2"
+import type { AiOpsV2Api, DockerContainer, EnvironmentRuntime, PluginScope, ServerDirectoryEntry, ServerUploadJob, ServerUploadReview } from "@/bridge/ai-ops-v2"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -10,6 +10,8 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { usePluginConnection } from "@/features/connections/use-plugin-connection"
 import { pluginDraftFromRecord, type PluginConfigurationRecord } from "@/features/plugins/plugin-types"
 import { ServerFileTree } from "./ServerFileTree"
+import { ServerResourceRail, type ServerResource } from "./ServerResourceRail"
+import { ServerDockerTree } from "./ServerDockerTree"
 import { ServerMetrics } from "./ServerMetrics"
 import { createWorkspacePathDrag } from "./workspace-path-drag"
 import { CopyUploadPath, ServerUploadDialog, UploadFileIcon } from "./ServerUploadDialog"
@@ -20,6 +22,7 @@ import { RuntimeHostKeyDialog } from "@/features/connections/RuntimeHostKeyDialo
 import { ServerFilePreviews } from "./ServerFilePreviews"
 import { formatTransferBytes, formatTransferEta, parentRemotePath, serverEntryType, serverWorkspaceKey, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
 import "./server-workspace.css"
+import "./docker-workspace.css"
 
 export interface ServerWorkspaceEntry {
   readonly plugin: PluginConfigurationRecord
@@ -49,6 +52,13 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
   const terminalState = terminalConnection(connection.state.runtime, scope.pluginInstanceId, connection.state.phase)
   const connected = connection.state.phase === "connected"
   const reconnectFocusRef = useRef<HTMLElement | null>(null)
+  const [resource, setResource] = useState<ServerResource>("files")
+  const [dockerTabs, setDockerTabs] = useState<readonly DockerContainer[]>([])
+  const [activeDocker, setActiveDocker] = useState<string | null>(null)
+  const [dockerTabError, setDockerTabError] = useState("")
+  const [activeTerminalLabel, setActiveTerminalLabel] = useState("")
+  const dockerTarget = JSON.stringify([scope, entry.plugin.target, entry.plugin.auth, entry.plugin.uplink])
+  const dockerBinding = dockerTarget + ":" + entry.plugin.revision + ":" + connected
   const [path, setPath] = useState("/")
   const [activeTerminalSessionId, setActiveTerminalSessionId] = useState<string | null>(null)
   const [maximized, setMaximized] = useState(false)
@@ -91,6 +101,30 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
   const visibleRef = useRef(visible)
   const treePanelRef = usePanelRef()
   const previewPanelRef = usePanelRef()
+  const selectResource = (next:ServerResource) => {
+    setResource(next)
+    setMaximized(false)
+    treePanelRef.current?.expand()
+  }
+  const openContainer = (container:DockerContainer) => {
+    if (!dockerTabs.some(item => item.id === container.id)) {
+      if (dockerTabs.length >= 6) { setDockerTabError("最多保留 6 个容器标签，请先关闭一个。"); return }
+      setDockerTabs(current => [...current, container])
+    }
+    setDockerTabError("")
+    setActiveDocker(container.id)
+  }
+  const closeContainer = (id:string) => {
+    const index = dockerTabs.findIndex(item => item.id === id)
+    const remaining = dockerTabs.filter(item => item.id !== id)
+    setDockerTabs(remaining)
+    if (activeDocker === id) setActiveDocker((remaining[index] ?? remaining[index - 1])?.id ?? null)
+    setDockerTabError("")
+  }
+  useEffect(() => { setDockerTabs([]); setActiveDocker(null); setDockerTabError("") }, [dockerTarget])
+  useEffect(() => {
+    if (fileLocation) { setResource("files"); setMaximized(false); treePanelRef.current?.expand() }
+  }, [fileLocation, treePanelRef])
   jobsRef.current = jobs
   visibleRef.current = visible
   const activeJobs = jobs.filter((job) => ACTIVE_UPLOAD_STATUSES.has(job.status))
@@ -150,6 +184,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
   const openPreview = useCallback((file: ServerDirectoryEntry) => {
     if (!connected || serverEntryType(file) !== "file") return
     setMaximized(false)
+    setActiveDocker(null)
     setPreviewRequest({ file, id: ++previewGenerationRef.current })
   }, [connected])
   const invalidatePreviewPath = useCallback((path: string) => setInvalidatedPath({ path, id: ++previewGenerationRef.current }), [])
@@ -340,27 +375,25 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
     {uploadError && !preparation ? <div role="alert" className="server-workspace-error">{uploadError}<Button size="icon-sm" variant="ghost" aria-label="收起上传提示" onClick={() => setUploadError("")}><X /></Button></div> : null}
     {uploadJobError ? <div role="alert" className="server-workspace-error" data-testid="upload-job-error">{uploadJobError}<Button size="icon-sm" variant="ghost" aria-label="收起传输提示" onClick={() => setUploadJobError("")}><X /></Button></div> : null}
     {uploadPollError ? <div role="alert" className="server-workspace-error" data-testid="upload-poll-error">{uploadPollError}<Button size="icon-sm" variant="ghost" aria-label="收起传输状态提示" onClick={() => setUploadPollError("")}><X /></Button></div> : null}
+    {dockerTabError ? <div className="server-workspace-error" role="alert">{dockerTabError}<Button size="icon-sm" variant="ghost" aria-label="关闭容器标签提示" onClick={() => setDockerTabError("")}><X /></Button></div> : null}
     <div className="server-workspace-body">
+      <ServerResourceRail active={resource} onSelect={selectResource} />
       <ResizablePanelGroup orientation="horizontal" id={`${panelId}-panels`}>
         <ResizablePanel id={`${panelId}-files`} defaultSize="320px" minSize="240px" maxSize="50%" collapsible collapsedSize={0} panelRef={treePanelRef}>
-          <ServerFileTree terminalSessionId={activeTerminalSessionId} api={api} scope={scope} connected={connected} visible={visible} path={path} onPath={setPath} onPreview={(file) => { void openPreview(file) }} onUpload={() => { void pickUpload() }} onDownload={file => { void downloadFile(file) }} downloadBusy={downloadPicking} pathDrag={pathDrag} refreshEpoch={refreshEpoch} refreshPaths={refreshPaths} invalidatedPath={invalidatedPath} locateFile={fileLocation} />
+          <div className="server-resource-panel" hidden={resource !== "files"}><ServerFileTree terminalLabel={activeTerminalLabel} terminalSessionId={activeTerminalSessionId} api={api} scope={scope} connected={connected} visible={visible && resource === "files"} path={path} onPath={setPath} onPreview={(file) => { void openPreview(file) }} onUpload={() => { void pickUpload() }} onDownload={file => { void downloadFile(file) }} downloadBusy={downloadPicking} pathDrag={pathDrag} refreshEpoch={refreshEpoch} refreshPaths={refreshPaths} invalidatedPath={invalidatedPath} locateFile={fileLocation} /></div>
+          <div className="server-resource-panel" hidden={resource !== "docker"}><ServerDockerTree api={api} scope={scope} connected={connected} visible={visible && resource === "docker"} binding={dockerBinding} onOpen={openContainer} selected={activeDocker} /></div>
         </ResizablePanel>
         <ResizableHandle className={maximized ? "hidden" : ""} aria-label="调整文件树宽度" />
         <ResizablePanel id={`${panelId}-console`} minSize="280px">
-          <ResizablePanelGroup orientation="vertical">
-            <ResizablePanel id={`${panelId}-preview`} defaultSize={0} minSize="160px" maxSize="60%" collapsible collapsedSize={0} panelRef={previewPanelRef}>
-              <ServerFilePreviews api={api} scope={scope} connected={connected} request={previewRequest} onOpenChange={setPreviewOpen} onStale={invalidatePreviewPath} />
-            </ResizablePanel>
-            <ResizableHandle className={!previewOpen || maximized ? "hidden" : ""} aria-label="调整文件预览高度" />
-            <ResizablePanel id={`${panelId}-terminal`} minSize="180px">
-              <ServerTerminalTabs onActiveSessionChange={setActiveTerminalSessionId} api={api} scope={scope} visible={visible} connected={connected} connection={terminalState} maximized={maximized} onMaximize={() => setMaximized((value) => !value)} pathDrag={pathDrag} />
-            </ResizablePanel>
-          </ResizablePanelGroup>
+          <ServerTerminalTabs onActiveSessionChange={setActiveTerminalSessionId} onActiveTerminalLabel={setActiveTerminalLabel} api={api} scope={scope} visible={visible} connected={connected} connection={terminalState} maximized={maximized} onMaximize={() => setMaximized(value => !value)} pathDrag={pathDrag}
+            dockerTabs={dockerTabs} activeDocker={activeDocker} onDockerSelect={setActiveDocker} onDockerClose={closeContainer} binding={dockerBinding}
+            previewOpen={previewOpen} previewPanelRef={previewPanelRef}
+            preview={<ServerFilePreviews api={api} scope={scope} connected={connected} request={previewRequest} onOpenChange={setPreviewOpen} onStale={invalidatePreviewPath} />} />
         </ResizablePanel>
       </ResizablePanelGroup>
     </div>
     <section className="server-upload-tray" aria-label="文件传输任务">
-      <div className="server-upload-tray-header"><button className="flex min-w-0 flex-1 items-center gap-2 text-xs" type="button" onClick={() => setTrayOpen((value) => !value)} aria-expanded={trayOpen}><UploadSimple size={15} />文件传输<span className={failedJobs.length ? "text-danger" : "text-muted-foreground"}>{activeJobs.length ? `${activeJobs.length} 项进行中` : jobs.length ? `${completedJobs.length} 项完成${failedJobs.length ? ` · ${failedJobs.length} 项失败` : ""}` : "暂无任务"}{interruptedJobs.length ? ` · ${interruptedJobs.length} 项可继续` : ""}</span>{trayOpen ? <CaretDown size={12} /> : <CaretUp size={12} />}</button>{jobs.some(job => job.canRemove) ? <Button size="sm" variant="ghost" onClick={() => { void clearTransfers() }} title="只清除结束记录，保留本地和服务器文件"><Trash />清除已结束</Button> : null}<span className="server-upload-target truncate text-[11px] text-muted-foreground" title={`新上传目标：${path}`}>新上传目标 {path}</span><Button size="sm" variant="ghost" disabled={!connected || uploadPreparing} onClick={() => { void pickUpload() }}>{uploadPreparing ? <SpinnerGap className="animate-spin" /> : <UploadSimple />}上传文件</Button></div>
+      <div className="server-upload-tray-header"><button className="flex min-w-0 flex-1 items-center gap-2 text-xs" type="button" onClick={() => setTrayOpen((value) => !value)} aria-expanded={trayOpen}><UploadSimple size={15} />文件传输<span className={failedJobs.length ? "text-danger" : "text-muted-foreground"}>{activeJobs.length ? `${activeJobs.length} 项进行中` : jobs.length ? `${completedJobs.length} 项完成${failedJobs.length ? ` · ${failedJobs.length} 项失败` : ""}` : "暂无任务"}{interruptedJobs.length ? ` · ${interruptedJobs.length} 项可继续` : ""}</span>{trayOpen ? <CaretDown size={12} /> : <CaretUp size={12} />}</button>{jobs.some(job => job.canRemove) ? <Button size="sm" variant="ghost" onClick={() => { void clearTransfers() }} title="只清除结束记录，保留本地和服务器文件"><Trash />清除已结束</Button> : null}<span hidden={resource !== "files"} className="server-upload-target truncate text-[11px] text-muted-foreground" title={`新上传目标：${path}`}>新上传目标 {path}</span><Button hidden={resource !== "files"} size="sm" variant="ghost" disabled={!connected || uploadPreparing} onClick={() => { void pickUpload() }}>{uploadPreparing ? <SpinnerGap className="animate-spin" /> : <UploadSimple />}上传文件</Button></div>
       {trayOpen ? <div className="server-upload-list">{jobs.length ? jobs.map((job) => <div className="server-upload-row" key={job.jobId}>
         <div className="server-upload-task-icon"><UploadFileIcon name={job.name} /></div>
         <div className="min-w-0 flex-1"><div className="server-upload-task-heading"><strong title={job.name}>{job.name}</strong>{job.status === "completed" ? <CheckCircle className="text-success" size={14} /> : null}<span className={job.status === "error" ? "text-danger" : "text-muted-foreground"}>{UPLOAD_STATUS_LABELS[job.status]}</span></div><div className="server-upload-task-target"><span>{job.direction === "download" ? "下载到" : "上传到"}</span><code title={job.localPath ?? job.path}>{job.localPath ?? job.path}</code><CopyUploadPath path={job.localPath ?? job.path} label={`复制 ${job.name} 的${job.direction === "download" ? "下载" : "上传"}路径`} /></div>{job.message ? <p className={(job.status === "interrupted" || job.status === "paused" || job.status === "pausing") ? "text-xs text-muted-foreground" : "text-xs text-danger"}>{job.message}</p> : null}</div>

@@ -545,8 +545,66 @@ export interface ServerMetricsSnapshot {
   readonly disksTruncated: boolean
 }
 
+export interface DockerContainer {
+  readonly id: string
+  readonly name: string
+  readonly image: string
+  readonly state: string
+  readonly status: string
+  readonly ports: string
+  readonly project: string
+  readonly service: string
+}
+export interface DockerContainerPage {
+  readonly items: readonly DockerContainer[]
+  readonly total: number
+  readonly sampledAt: string
+  readonly truncated: boolean
+  readonly nextCursor: string | null
+}
+export interface DockerContainerDetails {
+  readonly id: string
+  readonly name: string
+  readonly image: string
+  readonly state: string
+  readonly running: boolean
+  readonly exitCode: number
+  readonly restartCount: number
+  readonly startedAt: string
+  readonly finishedAt: string
+  readonly health: string | null
+  readonly ports: Readonly<Record<string, readonly { HostIp: string; HostPort: string }[] | null>>
+  readonly mounts: readonly { Type: string; Source: string; Destination: string; RW: boolean }[]
+  readonly sampledAt: string
+}
+export interface DockerLogs {
+  readonly content: string
+  readonly truncated: boolean
+  readonly sampledAt: string
+  readonly lines: number
+  readonly maxBytes: number
+}
+export interface DockerStats {
+  readonly available: boolean
+  readonly sampledAt: string
+  readonly cpu?: string
+  readonly memory?: string
+  readonly memoryPercent?: string
+  readonly network?: string
+  readonly block?: string
+  readonly pids?: string
+}
+export type DockerReadRequest = PluginScope & { readonly requestId: string } & (
+  { readonly kind: "list"; readonly cursor?: string; readonly limit?: number }
+  | { readonly kind: "inspect" | "stats"; readonly containerId: string }
+  | { readonly kind: "logs"; readonly containerId: string; readonly lines?: number; readonly maxBytes?: number; readonly since?: string; readonly until?: string }
+)
+export type DockerReadResult = DockerContainerPage | DockerContainerDetails | DockerLogs | DockerStats
+
 export interface AiOpsV2Api {
   cloudConfig(payload: CloudConfigRequest): Promise<IpcResult<CloudConfigData>>
+  serverDockerRead(payload: DockerReadRequest): Promise<IpcResult<DockerReadResult>>
+  serverDockerCancel(payload: PluginScope & { requestId?: string }): Promise<IpcResult<{ stopped: boolean }>>
   serverWorkspaceMetrics(payload: PluginScope & { kind?: "system" | "disks" }): Promise<IpcResult<ServerMetricsSnapshot & { retryAfterMs: number }>>
   serverWorkspaceStopMetrics(payload: PluginScope): Promise<IpcResult<{ stopped: boolean }>>
   serverTerminalOpen(payload: PluginScope & { cols: number; rows: number; tabId?: string; defaultColors?: boolean; recoveryOf?: string }): Promise<IpcResult<ServerTerminalSession>>
@@ -635,6 +693,8 @@ export interface AiOpsV2Api {
 
 export const AI_OPS_V2_API_NAMES = [
   "cloudConfig",
+  "serverDockerRead",
+  "serverDockerCancel",
   "serverWorkspaceMetrics",
   "serverWorkspaceStopMetrics",
   "serverTerminalOpen",

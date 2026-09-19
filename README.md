@@ -53,6 +53,12 @@ MySQL 连接后，在插件详情的「连接 / 修改配置」旁点击「打�
 
 人工终端由你直接操作，按 SSH 登录账号的权限执行，打开会话后不逐条弹出命令确认。Agent 不能访问或接管这条终端，原有 MCP Shell 和文件变更仍按单次操作确认。设计与边界见 [服务器工作区说明](docs/server-workspace-design.md)。
 
+## Server 工作区 Docker
+
+工作区左侧增加 36px 图标资源栏，可在服务器文件与 Docker 容器之间切换，保留原有六个文件操作按钮。容器与终端共用右侧标签栏，支持 Compose 分组、概览、最近日志和可见时的资源采样。切换资源不结束终端或传输。
+
+Docker 复用当前 SSH 连接；Server 编辑页可配置 Docker Socket，默认 `/var/run/docker.sock`。首版只读，不自动提权。Agent 新增 `server_docker_list_containers`、`server_docker_inspect_container`、`server_docker_read_logs`、`server_docker_container_stats` 四个工具，沿用环境上下文和权限检查。详见 [Docker 工作区设计与接口](docs/docker-workspace-design.md)。
+
 ## 快速开始
 
 1. 日常使用安装 [稳定版](https://github.com/coco-ari/runbook-bridge/releases/latest)；体验人工服务器工作区选择上方的 2.0 预发布版。安装后保持桌面端运行。

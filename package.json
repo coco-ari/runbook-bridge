@@ -35,7 +35,7 @@
     "test:ui:business": "corepack pnpm run build:renderer && electron scripts/ui-react-business-smoke.cjs",
     "test:ui:plugins": "corepack pnpm run build:renderer && electron scripts/ui-react-plugin-operations-smoke.cjs",
     "test:ui:database": "corepack pnpm run build:renderer && electron scripts/ui-react-database-smoke.cjs",
-    "test:ui:all": "corepack pnpm run test:ui && corepack pnpm run test:ui:business && corepack pnpm run test:ui:plugins && corepack pnpm run test:ui:plugin-matrix && corepack pnpm run test:ui:server-workspace && corepack pnpm run test:ui:database && corepack pnpm run test:ui:cloud",
+    "test:ui:all": "corepack pnpm run test:ui && corepack pnpm run test:ui:business && corepack pnpm run test:ui:plugins && corepack pnpm run test:ui:plugin-matrix && corepack pnpm run test:ui:server-workspace && corepack pnpm run test:ui:database && corepack pnpm run test:ui:docker && corepack pnpm run test:ui:cloud",
     "check:renderer": "tsc --project renderer/v2/tsconfig.json --noEmit",
     "build:renderer": "vite build --config renderer/v2/vite.config.ts",
     "test:ui:packaged": "node scripts/packaged-ui-smoke.cjs",
@@ -46,7 +46,8 @@
     "dist:mac": "corepack pnpm run build:renderer && corepack pnpm run build:metadata && node scripts/build-mac.mjs",
     "dist:mac:arm64": "corepack pnpm run build:renderer && corepack pnpm run build:metadata && node scripts/build-mac.mjs arm64",
     "dist:mac:x64": "corepack pnpm run build:renderer && corepack pnpm run build:metadata && node scripts/build-mac.mjs x64",
-    "build:metadata": "node scripts/build-metadata.mjs"
+    "build:metadata": "node scripts/build-metadata.mjs",
+    "test:ui:docker": "corepack pnpm run build:renderer && electron scripts/ui-react-docker-smoke.cjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.4",

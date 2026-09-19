@@ -31,11 +31,12 @@ interface ServerFileTreeProps {
   readonly invalidatedPath: Readonly<{ path: string; id: number }> | null
   readonly locateFile?: Readonly<{ path: string; id: number }> | null
   readonly terminalSessionId: string | null
+  readonly terminalLabel?: string
   readonly refreshEpoch: number
   readonly refreshPaths: readonly string[]
 }
 
-export function ServerFileTree({ api, scope, connected, visible, path, onPath, onPreview, onUpload, onDownload, downloadBusy, pathDrag, refreshEpoch, refreshPaths, invalidatedPath, locateFile, terminalSessionId }: ServerFileTreeProps) {
+export function ServerFileTree({ api, scope, connected, visible, path, onPath, onPreview, onUpload, onDownload, downloadBusy, pathDrag, refreshEpoch, refreshPaths, invalidatedPath, locateFile, terminalSessionId, terminalLabel }: ServerFileTreeProps) {
   const [refreshing, setRefreshing] = useState(false)
   const refreshingRef = useRef(false)
   const connectedRef = useRef(connected)
@@ -489,7 +490,7 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
         <DirectoryBookmarks key={directoryBookmarksKey(scope)} scope={scope} path={path} connected={connected} visible={visible} onNavigate={target => revealPath(target, true)} />
         <Button size="icon-sm" variant="ghost" aria-label="收起所有目录" title="收起所有目录" onClick={() => { revealSequenceRef.current += 1; cancelPendingReveal(); setExpanded(new Set()); if (scrollRef.current) scrollRef.current.scrollTop = 0 }}><CaretUpDown /></Button>
         <Button size="icon-sm" variant="ghost" aria-label="显示隐藏文件" title={showHidden ? "隐藏点文件" : "显示隐藏文件"} aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}>{showHidden ? <Eye /> : <EyeSlash />}</Button>
-        <Button size="icon-sm" variant="ghost" aria-label="定位终端当前目录" title="定位当前终端的工作目录" disabled={!connected || !terminalSessionId || locatingTerminal} onClick={() => { void locateTerminalDirectory() }}>{locatingTerminal ? <SpinnerGap className="animate-spin" /> : <Crosshair />}</Button>
+        <Button size="icon-sm" variant="ghost" aria-label="定位终端当前目录" title={terminalLabel ? "定位 " + terminalLabel + " 的工作目录" : "定位当前终端的工作目录"} disabled={!connected || !terminalSessionId || locatingTerminal} onClick={() => { void locateTerminalDirectory() }}>{locatingTerminal ? <SpinnerGap className="animate-spin" /> : <Crosshair />}</Button>
         <WorkspaceIconButton action="refresh" label="刷新目录" disabled={!connected || refreshing} busy={refreshing} onClick={() => { void refreshVisibleDirectories() }} />
         <Button size="icon-sm" variant="ghost" title="上传文件" aria-label="上传文件" disabled={!connected} onClick={onUpload}><UploadSimple /></Button>
       </div>

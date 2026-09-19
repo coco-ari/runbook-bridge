@@ -441,6 +441,7 @@ export class V2Service {
     if (capability === 'status' || capability === 'diagnostics') return this.serverOperations.runAction(plugin, args.actionId, args.parameters ?? {});
     if (capability === 'service.inspect') return this.serverOperations.inspectService(plugin, args);
     if (capability === 'journal.read') return this.serverOperations.queryJournal(plugin, args);
+    if (['docker.list','docker.inspect','docker.logs','docker.stats'].includes(capability)) return this.serverOperations.docker.read('mcp:' + scope.clientInstanceId, { projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, kind:capability.slice(7), ...args });
     if (capability === 'container.inspect') return this.serverOperations.inspectContainer(plugin, args);
     if (capability === 'logs') {
       if (args.operation === 'list') return this.serverOperations.listFiles(plugin, args);

@@ -25,6 +25,7 @@ export interface PluginTargetDraft {
   readonly database?: string
   readonly db?: number
   readonly hostKeyFingerprint?: string
+  readonly dockerSocket?: string
 }
 
 export interface PluginAuthDraft {
@@ -214,6 +215,7 @@ export function pluginDraftFromRecord(record: PluginConfigurationRecord): Plugin
       target: {
         ...common.target,
         ...(hostKeyFingerprint ? { hostKeyFingerprint } : {}),
+        ...(readString(target, "dockerSocket") ? { dockerSocket:readString(target, "dockerSocket") } : {}),
       },
       auth: {
         ...common.auth,
@@ -288,6 +290,7 @@ export function normalizePluginDraft(draft: PluginFormDraft): PluginFormDraft {
   const target = {
     ...draft.target,
     host: draft.target.host.trim(),
+    ...(draft.target.dockerSocket !== undefined ? { dockerSocket:draft.target.dockerSocket.trim() } : {}),
   }
   const auth = {
     ...draft.auth,
@@ -342,6 +345,9 @@ export function validatePluginDraft(draft: PluginFormDraft, purpose = "validate"
     issues.push({ field: "username", message: "请填写用户名。" })
   }
   if (draft.pluginType === "server") {
+    if (draft.target.dockerSocket && (!draft.target.dockerSocket.startsWith("/") || /[\u0000-\u0020\u007f]/u.test(draft.target.dockerSocket) || draft.target.dockerSocket.length > 4096 || draft.target.dockerSocket.includes("://"))) {
+      issues.push({ field: "dockerSocket", message: "Docker Socket 必须是服务器上的绝对路径，不能包含空白字符。" })
+    }
     if (draft.auth.type === "privateKey" && draft.auth.privateKeySource !== "vault" && !draft.auth.privateKeyPath?.trim()) {
       issues.push({ field: "privateKeyPath", message: "请填写 SSH 私钥文件。" })
     }

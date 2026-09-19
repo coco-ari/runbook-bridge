@@ -8,6 +8,7 @@ import { parseOffsetCursor } from './pagination-cursor.mjs';
 import { globMatches, withinRoot, capText, normalizeRemotePath, namePattern, archiveSuffix, assertLogReadIdentity } from './server-read-utils.mjs';
 import { ServerLogSearch } from './server-log-search.mjs';
 import { ServerFileDiscovery } from './server-file-discovery.mjs';
+import { ServerDockerManager } from './server-docker-manager.mjs';
 
 const FILE_ID_TTL_MS = 10 * 60 * 1000;
 const MAX_FILE_IDS = 2000;
@@ -37,6 +38,7 @@ export class ServerOperations {
   constructor(serverRuntime, workspaceStore, options = {}) {
     this.serverRuntime = serverRuntime;
     this.workspaceStore = workspaceStore;
+    this.docker = new ServerDockerManager({ workspaceStore, serverRuntime });
     this.files = new Map();
     this.discovery = new ServerFileDiscovery(options);
     this.logSearch = new ServerLogSearch(this, options);

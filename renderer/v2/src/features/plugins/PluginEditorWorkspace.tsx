@@ -474,6 +474,12 @@ export function PluginEditorWorkspace({
                         <FieldError id="plugin-port-error">{issueFor(state.issues, "port")}</FieldError>
                       </Field>
                     </div>
+                    {draft.pluginType === "server" ? <Field data-invalid={Boolean(fieldErrors.dockerSocket)}>
+                      <FieldLabel htmlFor="plugin-docker-socket">Docker Socket（可选）</FieldLabel>
+                      <Input id="plugin-docker-socket" value={draft.target.dockerSocket ?? ""} placeholder="/var/run/docker.sock" maxLength={4096} onChange={event => updateTarget("dockerSocket", event.target.value)} />
+                      <FieldDescription>通过当前 SSH 连接访问；留空使用默认 Socket，不自动提权。</FieldDescription>
+                      <FieldError>{issueFor(state.issues, "dockerSocket")}</FieldError>
+                    </Field> : null}
                   </FieldSet>
 
                   <FieldSet className="gap-3 rounded-xl border border-border/70 bg-surface/40 p-4" disabled={saveBlocked}>

@@ -15,6 +15,7 @@ import { WorkspaceMutationCoordinator } from '../src/workspace-mutation-coordina
 import { newCloudMeta, deriveCloudKeys, encryptCloudSnapshot, decryptCloudSnapshot, cloudHash, validateCloudMeta } from '../src/cloud-config-crypto.mjs';
 import { exportCloudProject, snapshotDigest, normalizeCloudSnapshot, cloudBackupDiff, cloudProjectDiff } from '../src/cloud-config-snapshot.mjs';
 import { EnvironmentConnectionManager } from '../src/environment-connection-manager.mjs';
+import { ServerDockerManager } from '../src/server-docker-manager.mjs';
 import { registerCloudConfigIpc } from '../src/cloud-config-ipc.mjs';
 
 const PASSWORD = 'synthetic-cloud-password-for-tests';
@@ -57,7 +58,7 @@ async function cloud(t,retention = 20) {
 }
 async function project(device,projectId = 'project-test') {
   const p = await device.store.createProject({projectId,name:'合成测试项目',environmentId:'env-test'});
-  const server = await device.store.createPlugin(p.projectId,'env-test',{pluginType:'server',pluginInstanceId:'server-test',displayName:'合成服务器',target:{host:'server.example.invalid',hostKeyFingerprint:'SHA256:synthetic'},auth:{type:'password',username:'tester'}});
+  const server = await device.store.createPlugin(p.projectId,'env-test',{pluginType:'server',pluginInstanceId:'server-test',displayName:'合成服务器',target:{host:'server.example.invalid',hostKeyFingerprint:'SHA256:synthetic',dockerSocket:'/run/user/1000/docker.sock'},auth:{type:'password',username:'tester'}});
   await device.vault.save(server,{password:'synthetic-ssh-secret',proxyPassword:'synthetic-proxy-secret'});
   const mysql = await device.store.createPlugin(p.projectId,'env-test',{pluginType:'mysql',pluginInstanceId:'mysql-test',displayName:'合成数据库',target:{host:'db.example.invalid',database:'sample'},auth:{username:'tester'},transport:{kind:'serverTunnel',serverPluginInstanceId:'server-test'},tls:{mode:'verifyIdentity'}});
   await device.vault.save(mysql,{password:'synthetic-mysql-secret',clientKeyPem:'synthetic-client-key',caPem:'synthetic-ca',clientCertPem:'synthetic-cert'});
@@ -112,6 +113,41 @@ test('真实连接管理器按依赖断开并清除浏览会话，断开失败�
   assert.equal(snapshotDigest(await a.workspace.capture(p.projectId)),before);
 });
 
+test('云导入取消同项目的 Docker 读取并清除分页快照，保留其他项目会话',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client);
+  const p = await project(a), other = await project(a,'other-project');
+  await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  await upload(a,p.projectId);
+  const container = index => ({id:index.toString(16).padStart(64,'0'),name:'synthetic-'+index,image:'example.invalid/test:latest',state:'running',status:'Up',ports:'',project:'',service:''});
+  const runtime = {
+    status:() => ({connected:true,generation:1}),
+    readDocker:async () => ({stdout:[container(1),container(2)].map(value => JSON.stringify(value)).join('\n'),stderr:'',exitCode:0,truncated:false}),
+  };
+  const docker = new ServerDockerManager({workspaceStore:a.store,serverRuntime:runtime});
+  t.after(() => docker.dispose());
+  a.service.serverDocker = docker;
+  const scope = {projectId:p.projectId,environmentId:'env-test',pluginInstanceId:'server-test'};
+  const otherScope = {...scope,projectId:other.projectId};
+  const first = await docker.read('renderer:test',{...scope,kind:'list',limit:1});
+  const otherFirst = await docker.read('renderer:test',{...otherScope,kind:'list',limit:1});
+  let started, signal;
+  const ready = new Promise(resolve => { started = resolve; });
+  runtime.readDocker = async (_plugin,_request,options) => {
+    signal = options.signal;
+    started();
+    return new Promise(resolve => signal.addEventListener('abort',() => resolve({stdout:'',stderr:'',exitCode:0,truncated:false}),{once:true}));
+  };
+  const pending = docker.read('renderer:test',{...scope,kind:'logs',containerId:container(1).id});
+  const cancelled = assert.rejects(pending,{code:'DOCKER_CANCELLED'});
+  await ready;
+  assert.equal((await download(a,p.projectId)).results[0].status,'imported');
+  await cancelled;
+  assert.equal(signal.aborted,true);
+  await assert.rejects(docker.read('renderer:test',{...scope,kind:'list',cursor:first.nextCursor,limit:1}),{code:'DOCKER_CURSOR_EXPIRED'});
+  const otherPage = await docker.read('renderer:test',{...otherScope,kind:'list',cursor:otherFirst.nextCursor,limit:1});
+  assert.equal(otherPage.items.length,1);
+});
+
 test('云同步禁止并发写入，但不阻止已持有删除门禁的项目删除',async t => {
   const a = await device(t,new CloudConfigClient()), p = await project(a);
   a.coordinator.cloudProjects.add(p.projectId);
@@ -144,6 +180,9 @@ test('跨设备同步配置、密码、TLS、依赖及历史版本，不同步�
   await b.call('bind',{url:created.url,password:PASSWORD});
   const result = await download(b,p.projectId);
   assert.equal(result.results[0].status,'imported');
+  const importedServer = await b.store.getPlugin(p.projectId,'env-test','server-test');
+  assert.equal(importedServer.target.dockerSocket,'/run/user/1000/docker.sock');
+  assert.equal((await b.vault.load(importedServer)).password,'synthetic-ssh-secret');
   const imported = await b.store.getPlugin(p.projectId,'env-test','mysql-test');
   assert.equal(imported.transport.serverPluginInstanceId,'server-test');
   assert.equal((await b.vault.load(imported)).password,'synthetic-mysql-secret');
