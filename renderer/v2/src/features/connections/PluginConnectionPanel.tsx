@@ -262,7 +262,7 @@ export function PluginConnectionPanel({
               <GearSix aria-hidden="true" />
               修改配置
             </Button>
-            {(plugin.pluginType === "server" || plugin.pluginType === "mysql") && onOpenWorkspace ? (
+            {(plugin.pluginType === "server" || plugin.pluginType === "mysql" || plugin.pluginType === "redis") && onOpenWorkspace ? (
               <Button
                 data-testid={plugin.pluginType === "server" ? "plugin-open-workspace" : "plugin-workspace-open"}
                 disabled={editingBlocked || connection.state.phase !== "connected"}
@@ -270,12 +270,13 @@ export function PluginConnectionPanel({
                 size="sm"
                 title={plugin.pluginType === "server"
                   ? connection.state.phase === "connected" ? "打开目录树、终端和文件上传" : "请先连接服务器"
-                  : connection.state.phase === "connected" ? "进入数据库工作区" : "请先连接数据库"}
+                  : plugin.pluginType === "redis" ? connection.state.phase === "connected" ? "搜索 Key 并只读查看内容" : "请先连接 Redis"
+                    : connection.state.phase === "connected" ? "进入数据库工作区" : "请先连接数据库"}
                 type="button"
                 variant={connection.state.phase === "connected" ? "default" : "outline"}
               >
                 {plugin.pluginType === "server" ? <TerminalWindow aria-hidden="true" /> : <ArrowsOutSimple aria-hidden="true" />}
-                {workspaceRetained ? "继续工作区" : "打开工作区"}
+                {plugin.pluginType === "redis" ? workspaceRetained ? "返回 Redis 工作区" : "打开 Redis 工作区" : workspaceRetained ? "继续工作区" : "打开工作区"}
               </Button>
             ) : null}
           </ButtonGroup>

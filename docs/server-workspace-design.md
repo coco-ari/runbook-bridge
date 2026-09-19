@@ -130,7 +130,7 @@ Tabby 当前主分支的 SSH 已采用 `russh`，不能据此认为本项目需�
 corepack pnpm run test:ui:server-workspace
 ```
 
-该命令构建正式 Renderer，再运行 `scripts/ui-react-server-workspace-smoke.cjs`，使用真实 Electron/xterm 渲染与 mock IPC 验证详情入口、目录预览、连续输入、多行粘贴、中文超限粘贴、返回保留、上传目标固定、完整路径复制、文件重新检查失败重试、移除文件后覆盖重选、多文件与长路径布局、上传后文件定位、目录链接展开、文件链接预览、循环链接停止、链接上传的实际目标提示、多文件切换与关闭竞态、多终端输入与后台输出隔离、ANSI 分类颜色、新终端自动配色开关及手动配色命令不自动回车、缓存导航零重复请求、视口外目录定位与高亮、同级及展开状态保留、文件及父目录删除恢复、权限失败不清缓存、虚拟列表及窄窗口布局。`corepack pnpm run test:ui:all` 已串联该专项和其他桌面 UI smoke。本次工作区专项 UI、`corepack pnpm run test:ui`、`corepack pnpm run dist` 均已通过；正式安装包的 `verify-package.mjs`、`packaged-mcp-smoke.mjs` 和 `packaged-ui-smoke.cjs` 也已通过，包含 84 个桌面 preload API 和现有 36 个 MCP 工具的兼容性验证。
+该命令构建正式 Renderer，再运行 `scripts/ui-react-server-workspace-smoke.cjs`，使用真实 Electron/xterm 渲染与 mock IPC 验证详情入口、目录预览、连续输入、多行粘贴、中文超限粘贴、返回保留、上传目标固定、完整路径复制、文件重新检查失败重试、移除文件后覆盖重选、多文件与长路径布局、上传后文件定位、目录链接展开、文件链接预览、循环链接停止、链接上传的实际目标提示、多文件切换与关闭竞态、多终端输入与后台输出隔离、ANSI 分类颜色、新终端自动配色开关及手动配色命令不自动回车、缓存导航零重复请求、视口外目录定位与高亮、同级及展开状态保留、文件及父目录删除恢复、权限失败不清缓存、虚拟列表及窄窗口布局。`corepack pnpm run test:ui:all` 已串联该专项和其他桌面 UI smoke。本次工作区专项 UI、`corepack pnpm run test:ui`、`corepack pnpm run dist` 均已通过；正式安装包的 `verify-package.mjs`、`packaged-mcp-smoke.mjs` 和 `packaged-ui-smoke.cjs` 也已通过，包含 90 个桌面 preload API 和现有 40 个 MCP 工具的兼容性验证。
 
 后续修改至少保持以下回归：
 

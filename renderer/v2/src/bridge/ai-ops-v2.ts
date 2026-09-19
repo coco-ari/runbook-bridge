@@ -599,9 +599,66 @@ export type DockerReadRequest = PluginScope & { readonly requestId: string } & (
 )
 export type DockerReadResult = DockerContainerPage | DockerContainerDetails | DockerLogs | DockerStats
 
+export interface RedisValuePreview {
+  readonly text: string | null
+  readonly hex: string
+  readonly bytes: number
+  readonly shownBytes: number
+  readonly truncated: boolean
+}
+export interface RedisKeyInfo {
+  readonly key: string
+  readonly type: string
+  readonly exists: boolean
+  readonly ttlSeconds: number
+  readonly length: number | null
+  readonly cardinality: number | null
+  readonly readAt: string
+  readonly auditWarning?: boolean
+}
+export interface RedisContentRow {
+  readonly id: string
+  readonly value: RedisValuePreview
+  readonly field?: string | null
+  readonly fieldLabel?: string
+  readonly index?: number
+  readonly score?: string
+}
+export interface RedisContentPage {
+  readonly key: string
+  readonly type: string
+  readonly exists: boolean
+  readonly value?: RedisValuePreview | null
+  readonly valueBytes?: number
+  readonly field?: string
+  readonly fieldExists?: boolean
+  readonly rows: readonly RedisContentRow[]
+  readonly nextCursor: string | null
+  readonly complete: boolean
+  readonly truncated: boolean
+  readonly unsupported?: boolean
+  readonly readAt: string
+  readonly auditWarning?: boolean
+}
+export interface RedisKeyPage {
+  readonly keys: readonly string[]
+  readonly nextCursor: string | null
+  readonly complete: boolean
+  readonly unsupportedKeys: number
+  readonly readAt: string
+  readonly auditWarning?: boolean
+}
+export type RedisKeyPayload = PluginScope & { patternId: string; key: string }
+
 export interface AiOpsV2Api {
   serverDockerRead(payload: DockerReadRequest): Promise<IpcResult<DockerReadResult>>
   serverDockerCancel(payload: PluginScope & { requestId?: string }): Promise<IpcResult<{ stopped: boolean }>>
+
+  redisWorkspaceScan(payload: PluginScope & { patternId: string; keyword?: string; cursor?: string | null; limit?: number }): Promise<IpcResult<RedisKeyPage>>
+  redisWorkspaceInspect(payload: RedisKeyPayload): Promise<IpcResult<RedisKeyInfo>>
+  redisWorkspaceRead(payload: RedisKeyPayload & { cursor?: string | null; limit?: number; field?: string; expectedType?: string }): Promise<IpcResult<RedisContentPage>>
+  redisWorkspaceRelease(payload: PluginScope): Promise<IpcResult<{ released: boolean }>>
+
   serverWorkspaceMetrics(payload: PluginScope & { kind?: "system" | "disks" }): Promise<IpcResult<ServerMetricsSnapshot & { retryAfterMs: number }>>
   serverWorkspaceStopMetrics(payload: PluginScope): Promise<IpcResult<{ stopped: boolean }>>
   serverTerminalOpen(payload: PluginScope & { cols: number; rows: number; tabId?: string; defaultColors?: boolean; recoveryOf?: string }): Promise<IpcResult<ServerTerminalSession>>
@@ -691,6 +748,10 @@ export interface AiOpsV2Api {
 export const AI_OPS_V2_API_NAMES = [
   "serverDockerRead",
   "serverDockerCancel",
+  "redisWorkspaceScan",
+  "redisWorkspaceInspect",
+  "redisWorkspaceRead",
+  "redisWorkspaceRelease",
   "serverWorkspaceMetrics",
   "serverWorkspaceStopMetrics",
   "serverTerminalOpen",
