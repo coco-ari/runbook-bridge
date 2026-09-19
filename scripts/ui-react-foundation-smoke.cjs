@@ -701,6 +701,14 @@ async function setTheme(win,theme) {
 }
 
 async function clickThemeControl(win,testId) {
+  const settings = await win.webContents.executeJavaScript('Boolean(document.querySelector("[data-testid=settings-page]"))');
+  if (testId === 'theme-menu-trigger' && !settings) {
+    await clickThemeControl(win,'settings-open');
+    await waitFor(win,'Boolean(document.querySelector("[data-testid=settings-page]"))','open settings page');
+  } else if (settings && !testId.startsWith('theme-') && !testId.startsWith('settings-')) {
+    await clickThemeControl(win,'settings-back');
+    await waitFor(win,'!document.querySelector("[data-testid=settings-page]")','return from settings');
+  }
   win.webContents.focus();
   // Floating UI can expose a focused menu before its first positioned frame.
   // Native input must use the painted target, never the initial offscreen rect.
@@ -788,9 +796,13 @@ async function assertThemeState(win,preference,actual,label,{persisted = true,to
 }
 
 async function assertThemeControlGeometry(win,{compact = false} = {}) {
+  if (await win.webContents.executeJavaScript('Boolean(document.querySelector("[data-testid=settings-page]"))')) {
+    await clickThemeControl(win,'settings-back');
+    await waitFor(win,'!document.querySelector("[data-testid=settings-page]")','return before sidebar geometry');
+  }
   const snapshot = await win.webContents.executeJavaScript(`(() => {
     const rail = document.querySelector('[data-testid="project-rail"]');
-    const trigger = document.querySelector('[data-testid="theme-menu-trigger"]');
+    const trigger = document.querySelector('[data-testid="settings-open"]');
     const footer = document.querySelector('[data-testid="add-project-footer"]');
     const rect = trigger?.getBoundingClientRect();
     const railRect = rail?.getBoundingClientRect();
@@ -1339,6 +1351,8 @@ async function assertCompactProjectRail(win,theme) {
       await openThemeMenu(win);
       await pressKey(win,'ESCAPE');
       await assertThemeMenuClosed(win,'compact theme menu');
+      await clickThemeControl(win,'settings-back');
+      await waitFor(win,'!document.querySelector("[data-testid=settings-page]")','return from compact settings');
       await focusSeparator();
     }
     await assertProjectSearchPlaceholder(win,`compact ${theme} ${width}x${height}`);
@@ -2561,21 +2575,18 @@ async function openProjectSettings(win) {
 async function openDeleteProjectAlert(win) {
   await selectVisualScope(win,'project');
   const opened = await win.webContents.executeJavaScript(`(() => {
-    const trigger = document.querySelector('[data-project-id="project-operations"]');
-    if (!(trigger instanceof HTMLElement)) return false;
-    trigger.setAttribute('data-smoke-alert-opener','true');
+    const row = document.querySelector('[data-project-id="project-operations"]');
+    const trigger = row?.closest('li')?.querySelector('[data-sidebar="menu-action"]');
+    if (!(row instanceof HTMLElement) || !(trigger instanceof HTMLElement)) return false;
+    row.setAttribute('data-smoke-alert-opener','true');
     trigger.focus();
-    const rect = trigger.getBoundingClientRect();
-    trigger.dispatchEvent(new MouseEvent('contextmenu',{
-      bubbles:true,cancelable:true,button:2,
-      clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2,
-    }));
     return true;
   })()`,true);
-  assert.equal(opened,true,'delete-project context-menu trigger missing');
+  assert.equal(opened,true,'delete-project actions-menu trigger missing');
+  await pressKey(win,'ENTER');
   await waitFor(win,
     `[...document.querySelectorAll('[role="menuitem"]')].some((item) => item.textContent?.trim() === '删除项目' && item.getClientRects().length > 0)`,
-    'direct delete-project menu item');
+    'delete-project actions-menu item');
   const selected = await win.webContents.executeJavaScript(`(() => {
     const item = [...document.querySelectorAll('[role="menuitem"]')]
       .find((candidate) => candidate.textContent?.trim() === '删除项目' && candidate.getClientRects().length > 0);
@@ -2583,7 +2594,7 @@ async function openDeleteProjectAlert(win) {
     item.click();
     return true;
   })()`,true);
-  assert.equal(selected,true,'direct delete-project menu selection failed');
+  assert.equal(selected,true,'delete-project actions-menu selection failed');
   await waitFor(
     win,
     `document.querySelector('[data-testid="delete-project-dialog"]') !== null`,
@@ -2596,7 +2607,7 @@ async function openDeleteProjectAlert(win) {
   assert.equal(modalCount,1,'project deletion must open one standalone AlertDialog, not stacked settings');
   assert.equal(await win.webContents.executeJavaScript(
     `document.querySelector('[data-testid="project-settings-dialog"]') === null`,true,
-  ),true,'direct deletion must not open project settings');
+  ),true,'actions-menu deletion must not open project settings');
 }
 
 async function assertCreatePluginWorkspace(win,theme) {
@@ -2842,9 +2853,14 @@ async function assertEnvironmentShortSurfaces(win,theme) {
     await win.webContents.executeJavaScript(`(() => {
       const trigger = document.querySelector(${JSON.stringify(opener)});
       if (!(trigger instanceof HTMLElement)) throw new Error('environment surface trigger missing');
-      trigger.focus();
       if (${JSON.stringify(kind)} === 'create') trigger.click();
+      else if (${JSON.stringify(kind)} === 'delete') {
+        const menuTrigger = document.querySelector('[data-testid="environment-actions-env-production-east"] button[aria-label$="更多操作"]');
+        if (!(menuTrigger instanceof HTMLElement)) throw new Error('environment actions-menu trigger missing');
+        menuTrigger.focus();
+      }
       else {
+        trigger.focus();
         const rect = trigger.getBoundingClientRect();
         trigger.dispatchEvent(new MouseEvent('contextmenu',{
           bubbles:true,cancelable:true,button:2,
@@ -2852,11 +2868,12 @@ async function assertEnvironmentShortSurfaces(win,theme) {
         }));
       }
     })()`,true);
+    if (kind === 'delete') await pressKey(win,'ENTER');
     if (kind !== 'create') {
       const action = kind === 'settings' ? '环境设置' : '删除环境';
       await waitFor(win,
         `[...document.querySelectorAll('[role="menuitem"]')].some((item) => item.textContent?.trim() === ${JSON.stringify(action)} && item.getClientRects().length > 0)`,
-        `${kind} environment context-menu item`);
+        `${kind} environment menu item`);
       await win.webContents.executeJavaScript(`(() => {
         const item = [...document.querySelectorAll('[role="menuitem"]')]
           .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(action)} && candidate.getClientRects().length > 0);
@@ -3628,6 +3645,22 @@ async function run() {
     assert.equal(initial.selected,'project-operations');
     assert.equal(initial.confirmationAboveProjects,true);
     assert.equal(initial.addProjectBelowProjects,true);
+    if (app.commandLine.hasSwitch('delete-actions-menu-only')) {
+      await openDeleteProjectAlert(win);
+      await assertEscapeFocusRestore(win,{
+        containerSelector:'[data-testid="delete-project-dialog"]',
+        label:'delete-project actions-menu AlertDialog',
+        restoreSelector:'[data-smoke-alert-opener="true"]',
+      });
+      await assertEnvironmentShortSurfaces(win,nativeTheme.shouldUseDarkColors ? 'dark' : 'light');
+      await collectWindowErrorDiagnostics(win);
+      assert.deepEqual(mutationCalls,[]);
+      assert.deepEqual(externalRequests,[]);
+      assert.deepEqual(rendererErrors,[]);
+      assert.deepEqual(rendererWindowErrors,[]);
+      process.stdout.write('Focused project and environment delete actions-menu smoke passed; no mutations or external requests\n');
+      return;
+    }
     if (app.commandLine.hasSwitch('project-drag-regression-only')) {
       await assertProjectDragSorting(win);
       await collectWindowErrorDiagnostics(win);

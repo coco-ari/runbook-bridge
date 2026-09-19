@@ -1,5 +1,6 @@
 import { shortcutLabel } from "@/lib/platform"
-import { CloudConfigDialog } from "@/features/cloud-config/CloudConfigDialog"
+import { SettingsPage } from "@/features/settings/SettingsPage"
+import { SettingsNavigationContext } from "@/features/settings/SettingsButton"
 import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import { useGroupRef, usePanelRef, type Layout, type LayoutChangedMeta, type PanelSize } from "react-resizable-panels"
 import { toast } from "sonner"
@@ -172,7 +173,10 @@ export function AppShell() {
   const [detailDraftEpoch, setDetailDraftEpoch] = useState(0)
   const [pendingSelection, setPendingSelection] = useState<PendingSelection | null>(null)
   const [projectSurface, setProjectSurface] = useState<ProjectMutationSurface>(null)
-  const [cloudConfigOpen, setCloudConfigOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsOpenRef = useRef(settingsOpen)
+  settingsOpenRef.current = settingsOpen
+  const settingsReturnFocusRef = useRef<HTMLElement | null>(null)
   const [environmentSurface, setEnvironmentSurface] = useState<EnvironmentMutationSurface>(null)
   const [pluginSurface, setPluginSurface] = useState<PluginSurface>(null)
   const [pluginWorkMode, setPluginWorkMode] = useState<PluginWorkMode | null>(null)
@@ -204,7 +208,7 @@ export function AppShell() {
   const scheduleWorkspaceFocus = useCallback((resolveTarget: () => HTMLElement | null = () => document.getElementById("detail-main")) => {
     const generation = ++focusGenerationRef.current
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (focusGenerationRef.current === generation) focusWorkspaceElement(resolveTarget())
+      if (focusGenerationRef.current === generation) focusWorkspaceElement(settingsOpenRef.current ? document.getElementById("settings-heading") : resolveTarget())
     }))
   }, [])
   useEffect(() => () => { focusGenerationRef.current += 1 }, [])
@@ -613,6 +617,22 @@ export function AppShell() {
       : null
   }, [])
 
+  const openSettings = useCallback(() => {
+    settingsReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    requestNavigation(() => {
+      setCommandOpen(false)
+      setSettingsOpen(true)
+    })
+  }, [requestNavigation])
+
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(false)
+    scheduleWorkspaceFocus(() => {
+      const trigger = settingsReturnFocusRef.current
+      return trigger?.isConnected && !trigger.closest('[hidden],[inert]') ? trigger : document.querySelector<HTMLElement>('[data-testid="settings-open"]')
+    })
+  }, [scheduleWorkspaceFocus])
+
   const commitLayoutState = useCallback(
     (update: (current: AppShellLayoutState) => AppShellLayoutState) => {
       setLayoutState((current) => {
@@ -955,8 +975,7 @@ export function AppShell() {
 
   const openProjectAction = useCallback((action: ProjectRailAction) => {
     rememberFocus()
-    if (action.type === "cloud-config") requestNavigation(() => setCloudConfigOpen(true))
-    else if (action.type === "create-project") requestNavigation(() => setProjectSurface({ kind: "create" }))
+    if (action.type === "create-project") requestNavigation(() => setProjectSurface({ kind: "create" }))
     else if (action.type === "create-environment") {
       requestNavigation(() => setEnvironmentSurface({ kind: "create", project: action.project }))
     } else if (action.type === "edit-project" || action.type === "delete-project") {
@@ -1145,10 +1164,11 @@ export function AppShell() {
     : `拖动调整项目栏宽度，双击恢复默认宽度（224 像素，受窗口空间限制）。聚焦分隔线后，按左右方向键调整宽度，按 Enter 折叠或展开；在非输入区域也可按 ${shortcutLabel("B")}。`
 
   return (
+    <SettingsNavigationContext.Provider value={openSettings}>
     <div className="h-full max-h-full min-h-0 relative w-full min-w-0 overflow-hidden bg-background text-foreground" data-shell-ready="true" data-testid="react-app-shell">
       <a
         className="fixed left-3 top-2 z-[70] -translate-y-14 rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground shadow-sm outline-none transition-transform focus:translate-y-0 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background"
-        hidden={workspaceVisible}
+        hidden={workspaceVisible || settingsOpen}
         href="#detail-main"
         onClick={(event) => {
           event.preventDefault()
@@ -1163,10 +1183,10 @@ export function AppShell() {
       <ProjectOrderAnnouncement announcement={projectOrder.announcement} />
       <EnvironmentOrderAnnouncement announcement={environmentOrder.announcement} />
 
-      <ResizablePanelGroup inert={workspaceVisible} aria-label="三栏工作台" className="app-shell-grid" defaultLayout={layoutState.layout} elementRef={panelGroupElementRef} groupRef={panelGroupRef} id="app-shell-panels" onLayoutChanged={handleLayoutChanged} orientation="horizontal">
+      <ResizablePanelGroup inert={workspaceVisible || settingsOpen} style={settingsOpen ? { visibility: "hidden" } : undefined} aria-hidden={settingsOpen || undefined} aria-label="三栏工作台" className="app-shell-grid" defaultLayout={layoutState.layout} elementRef={panelGroupElementRef} groupRef={panelGroupRef} id="app-shell-panels" onLayoutChanged={handleLayoutChanged} orientation="horizontal">
         <ResizablePanel collapsedSize={PROJECT_RAIL_COLLAPSED_SIZE} collapsible defaultSize="224px" groupResizeBehavior="preserve-pixel-size" id={APP_SHELL_PANEL_IDS.project} maxSize={viewportWidth < 720 ? PROJECT_RAIL_COLLAPSED_SIZE : "300px"} minSize={viewportWidth < 720 ? PROJECT_RAIL_COLLAPSED_SIZE : "176px"} onResize={syncProjectSize} panelRef={projectPanelRef}>
           <ProjectRail
-            shortcutsDisabled={workspaceVisible}
+            shortcutsDisabled={workspaceVisible || settingsOpen}
             collapsed={compactProjectRail}
             expandDisabled={viewportWidth < 720}
             error={workspace.error}
@@ -1282,15 +1302,15 @@ export function AppShell() {
       {serverWorkspaces.map((entry) => {
         const key = serverWorkspaceKey(entry.plugin)
         const back = () => { setActiveServerWorkspace(null); scheduleWorkspaceFocus(() => document.querySelector<HTMLElement>('[data-testid="plugin-open-workspace"]')) }
-        return <Suspense key={key} fallback={key === activeServerWorkspace ? <div className="absolute inset-0 z-30 grid place-items-center bg-background text-sm text-muted-foreground">正在打开服务器工作区…</div> : null}><ServerWorkspace api={api} entry={entry} visible={key === activeServerWorkspace} onBack={back} onClose={() => { setServerWorkspaces((current) => current.filter((item) => serverWorkspaceKey(item.plugin) !== key)); back() }} /></Suspense>
+        return <Suspense key={key} fallback={key === activeServerWorkspace && !settingsOpen ? <div className="absolute inset-0 z-30 grid place-items-center bg-background text-sm text-muted-foreground">正在打开服务器工作区…</div> : null}><ServerWorkspace api={api} entry={entry} visible={key === activeServerWorkspace && !settingsOpen} onBack={back} onClose={() => { setServerWorkspaces((current) => current.filter((item) => serverWorkspaceKey(item.plugin) !== key)); back() }} /></Suspense>
       })}
 
       {databaseWorkspaceRetained && databaseScope && selectedPluginRecord && selectedProject && selectedEnvironment ? (
         <div
           className="absolute inset-0 z-40 min-h-0 min-w-0 bg-background"
           data-testid="mysql-full-window-workspace"
-          hidden={!databaseWorkspaceVisible}
-          inert={!databaseWorkspaceVisible}
+          hidden={!databaseWorkspaceVisible || settingsOpen}
+          inert={!databaseWorkspaceVisible || settingsOpen}
         >
           <MysqlDatabaseWorkspace
             api={api}
@@ -1307,15 +1327,15 @@ export function AppShell() {
       ) : null}
 
       {redisWorkspaceRetained && redisScope && selectedPluginRecord && selectedProject && selectedEnvironment ? (
-        <div className="absolute inset-0 z-40 min-h-0 min-w-0 bg-background" data-testid="redis-full-window-workspace" hidden={!redisWorkspaceVisible} inert={!redisWorkspaceVisible}>
+        <div className="absolute inset-0 z-40 min-h-0 min-w-0 bg-background" data-testid="redis-full-window-workspace" hidden={!redisWorkspaceVisible || settingsOpen} inert={!redisWorkspaceVisible || settingsOpen}>
           <RedisWorkspace api={api} scope={redisScope} plugin={selectedPluginRecord} key={redisSessionKey}
-            projectName={selectedProject.name} environmentName={selectedEnvironment.name} visible={redisWorkspaceVisible}
+            projectName={selectedProject.name} environmentName={selectedEnvironment.name} visible={redisWorkspaceVisible && !settingsOpen}
             onBack={closeRedisWorkspace} onClose={() => { setRedisSession(null); closeRedisWorkspace() }} />
         </div>
       ) : null}
 
       <GlobalCommand
-        disabled={workspaceVisible}
+        disabled={workspaceVisible || settingsOpen}
         onCreateEnvironment={selectedProject ? () => {
           rememberFocus()
           requestNavigation(() => setEnvironmentSurface({ kind: "create", project: selectedProject }))
@@ -1333,7 +1353,7 @@ export function AppShell() {
         projects={navigationProjects}
       />
 
-      <CloudConfigDialog api={api} open={cloudConfigOpen} onOpenChange={setCloudConfigOpen} onChanged={workspace.reload} />
+      {settingsOpen ? <SettingsPage api={api} onBack={closeSettings} onChanged={workspace.reload} /> : null}
       <ProjectMutationSurfaces
         action={projectSurface}
         api={api}
@@ -1423,5 +1443,6 @@ export function AppShell() {
       }} />
       <span className="sr-only">当前范围：{shellLabel}</span>
     </div>
+    </SettingsNavigationContext.Provider>
   )
 }

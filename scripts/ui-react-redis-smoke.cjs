@@ -304,11 +304,15 @@ async function run() {
     await menuAction(win, 'redis-browser-menu', 'redis-tree-expand-all');
     await click(win, active('redis-view-json'));
     for (const theme of ['dark', 'light']) {
-      await win.webContents.executeJavaScript(`document.querySelector('[data-testid="redis-workspace"] [data-testid="theme-menu-trigger"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`, true);
+      await click(win, '[data-testid="redis-workspace"] [data-testid="settings-open"]');
+      await waitFor(win, 'Boolean(document.querySelector("[data-testid=theme-menu-trigger]"))', '进入配置页面');
+      await win.webContents.executeJavaScript(`document.querySelector('[data-testid="theme-menu-trigger"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`, true);
       await click(win, testId('theme-option-' + theme));
       await waitFor(win, `document.documentElement.dataset.theme === ${JSON.stringify(theme)}`, '主题切换');
       await win.webContents.executeJavaScript('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))', true);
       await waitFor(win, '!document.querySelector("[role=menu]")', '主题菜单关闭');
+      await click(win, testId('settings-back'));
+      await waitFor(win, '!document.querySelector("[data-testid=settings-page]")', '返回 Redis 工作区');
       await waitFor(win, 'document.querySelectorAll("[data-sonner-toast]").length === 0', '复制提示消退');
       await wait(250); await shot(win, 'redis-' + theme);
     }
