@@ -34,6 +34,9 @@ test('固定命令绑定 Unix Socket，只接受完整容器 ID、有界参数�
   assert.doesNotMatch(command, /sudo|--follow|--details/u);
   const quoted = dockerCommand("/run/a'b.sock", dockerRequest('list'));
   assert.ok(quoted.includes("'unix:///run/a'\"'\"'b.sock'"));
+  // Docker 的 inspect 模板会将缺失的 Health 键视为错误，需通过 index 安全读取。
+  const inspect = dockerCommand(undefined, dockerRequest('inspect', {containerId:id}));
+  assert.match(inspect, /\{\{with index \.State "Health"\}\}/u);
   assert.throws(() => dockerRequest('exec', {}), {code:'INVALID_ARGUMENT'});
 });
 

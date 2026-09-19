@@ -42,7 +42,7 @@ export function dockerRequest(kind, input = {}) {
 
 const LIST_FORMAT = '{"id":{{json .ID}},"name":{{json .Names}},"image":{{json .Image}},"state":{{json .State}},"status":{{json .Status}},"ports":{{json .Ports}},"project":{{json (.Label "com.docker.compose.project")}},"service":{{json (.Label "com.docker.compose.service")}}}';
 // 只读取概览字段，不把容器环境变量、完整标签或健康检查日志带入响应。
-const INSPECT_FORMAT = '{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Config.Image}},"state":{{json .State.Status}},"running":{{json .State.Running}},"exitCode":{{json .State.ExitCode}},"startedAt":{{json .State.StartedAt}},"finishedAt":{{json .State.FinishedAt}},"restartCount":{{json .RestartCount}},"ports":{{json .NetworkSettings.Ports}},"mounts":{{json .Mounts}},"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}}';
+const INSPECT_FORMAT = '{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Config.Image}},"state":{{json .State.Status}},"running":{{json .State.Running}},"exitCode":{{json .State.ExitCode}},"startedAt":{{json .State.StartedAt}},"finishedAt":{{json .State.FinishedAt}},"restartCount":{{json .RestartCount}},"ports":{{json .NetworkSettings.Ports}},"mounts":{{json .Mounts}},"health":{{with index .State "Health"}}{{json .Status}}{{else}}null{{end}}}';
 
 export function dockerCommand(socket, request) {
   const { kind, ...input } = request;
