@@ -7,6 +7,20 @@ import { createCloudServer } from '../services/cloud-config/server.mjs';
 import { CloudConfigClient } from '../src/cloud-config-client.mjs';
 import { CLOUD_MAX_BYTES, newCloudMeta, cloudHash, encryptCloudSnapshot } from '../src/cloud-config-crypto.mjs';
 
+test('云仓库允许私网 HTTP，拒绝公网 HTTP、伪装域名及地址附加凭证',() => {
+  const client = new CloudConfigClient(), repo = crypto.randomUUID();
+  for (const host of ['10.1.2.3','172.16.1.2','172.31.255.254','192.168.1.2','127.0.0.1','localhost','[::1]']) {
+    assert.equal(client.repository(`http://${host}:18083/r/${repo}`).repoId,repo);
+  }
+  for (const host of ['172.15.1.2','172.32.1.2','192.169.1.2','169.254.169.254','0.0.0.0','8.8.8.8','192.168.1.2.example.invalid','example.invalid','[2001:db8::1]']) {
+    assert.throws(() => client.repository(`http://${host}/r/${repo}`),{code:'CLOUD_URL_INVALID'});
+  }
+  for (const value of [`http://synthetic:secret@10.1.2.3/r/${repo}`,`http://10.1.2.3/r/${repo}?token=synthetic`,`ftp://10.1.2.3/r/${repo}`]) {
+    assert.throws(() => client.repository(value),{code:'CLOUD_URL_INVALID'});
+  }
+  assert.equal(client.repository(`https://example.invalid/r/${repo}`).repoId,repo);
+});
+
 test('托管 SSH 私钥实际通过回环 SSH 认证，并继续拒绝未知和变化指纹',async t => {
   const privateKey = crypto.generateKeyPairSync('rsa',{modulusLength:2048,privateKeyEncoding:{type:'pkcs1',format:'pem'},publicKeyEncoding:{type:'spki',format:'pem'}}).privateKey;
   const parsed = ssh2.utils.parseKey(privateKey);
@@ -41,7 +55,7 @@ test('云服务条件提交、历史清理、认证、请求限额与错误响�
   await new Promise(resolve => server.listen(0,'127.0.0.1',resolve));
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const client = new CloudConfigClient({allowTestHttp:true});
+  const client = new CloudConfigClient();
   const meta = newCloudMeta(), auth = crypto.randomBytes(32).toString('base64url'), key = crypto.randomBytes(32);
   await client.request(origin,'/api/v1/repos',{method:'POST',token:adminToken,body:{metadata:meta,authHash:cloudHash(auth)}});
   const session = {origin,repoId:meta.repoId,keys:{auth,encryption:key}};

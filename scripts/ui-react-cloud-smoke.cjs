@@ -49,7 +49,7 @@ async function run() {
   const project = await store.createProject({projectId:'cloud-demo',name:'云配置演示项目',environmentId:'demo-env'});
   const plugin = await store.createPlugin(project.projectId,'demo-env',{pluginType:'server',pluginInstanceId:'demo-server',displayName:'演示服务器',target:{host:'demo.example.invalid'},auth:{type:'password',username:'demo'}});
   await vault.save(plugin,{password:'synthetic-ui-only-secret'});
-  const service = new CloudConfigService({workspace:new CloudConfigWorkspace(store,vault,encryption),mutationCoordinator:new WorkspaceMutationCoordinator(),client:new CloudConfigClient({allowTestHttp:true}),connectionManager:{disconnect:async () => {},forgetProject:async () => {}},contextManager:{invalidateProject(){}},confirmationManager:{invalidateProject(){}}});
+  const service = new CloudConfigService({workspace:new CloudConfigWorkspace(store,vault,encryption),mutationCoordinator:new WorkspaceMutationCoordinator(),client:new CloudConfigClient(),connectionManager:{disconnect:async () => {},forgetProject:async () => {}},contextManager:{invalidateProject(){}},confirmationManager:{invalidateProject(){}}});
   await service.init();
   registerCloudConfigIpc(ipcMain,{cloudConfigService:service,isWorkspaceRenderer:sender => sender === window?.webContents});
   for (const name of ['workspace-overview','project-list','confirmation-list']) ipcMain.handle('v2:'+name,() => ({ok:true,data:[]}));
@@ -64,6 +64,7 @@ async function run() {
   await clickText('创建新仓库');
   assert.equal(await window.webContents.executeJavaScript('document.getElementById("cloud-password").value.length'),48);
   await fill('cloud-url',`http://127.0.0.1:${server.address().port}`);
+  assert.equal(await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-config-dialog]").textContent.includes("仓库访问凭证会明文传输")'),true);
   await fill('cloud-admin-token',admin);
   await fill('cloud-password','synthetic-ui-password-long-enough');
   await clickText('创建仓库');

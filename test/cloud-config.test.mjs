@@ -53,7 +53,7 @@ async function cloud(t,retention = 20) {
   const server = createCloudServer({adminToken:ADMIN,retention});
   server.listen(0,'127.0.0.1'); await once(server,'listening');
   t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
-  return {origin:`http://127.0.0.1:${server.address().port}`,client:new CloudConfigClient({allowTestHttp:true})};
+  return {origin:`http://127.0.0.1:${server.address().port}`,client:new CloudConfigClient()};
 }
 async function project(device,projectId = 'project-test') {
   const p = await device.store.createProject({projectId,name:'合成测试项目',environmentId:'env-test'});
@@ -236,7 +236,7 @@ test('错误密码、链接协议、恶意本机路径、未知插件与缺失�
   const p = await project(a);
   const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
   await assert.rejects(b.call('bind',{url:created.url,password:'incorrect-password-long-enough'}),{code:'CLOUD_AUTH_FAILED'});
-  assert.throws(() => new CloudConfigClient().repository(created.url),{code:'CLOUD_URL_INVALID'});
+  assert.equal(new CloudConfigClient().repository(created.url).url,created.url);
   assert.throws(() => new CloudConfigClient().repository('https://user:password@example.invalid/r/'+crypto.randomUUID()),{code:'CLOUD_URL_INVALID'});
   const snapshot = {schemaVersion:1,projects:[await exportCloudProject(a.store,a.vault,p.projectId)]};
   const badPath = structuredClone(snapshot); badPath.projects[0].environments[0].plugins[0].config.auth.privateKeyPath = '/local/secret';

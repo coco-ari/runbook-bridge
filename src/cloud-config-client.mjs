@@ -1,21 +1,27 @@
 import { CLOUD_MAX_BYTES, cloudError, cloudId, validateCloudMeta } from './cloud-config-crypto.mjs';
 
+function allowsInternalHttp(hostname) {
+  if (hostname === 'localhost' || hostname === '[::1]') return true;
+  const parts = hostname.split('.').map(Number);
+  if (parts.length !== 4 || parts.some(value => !Number.isInteger(value) || value < 0 || value > 255)) return false;
+  return parts[0] === 127 || parts[0] === 10 || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) || (parts[0] === 192 && parts[1] === 168);
+}
+
 export class CloudConfigClient {
-  constructor({fetchImpl = globalThis.fetch,allowTestHttp = false} = {}) {
+  constructor({fetchImpl = globalThis.fetch} = {}) {
     this.fetch = fetchImpl;
-    this.allowTestHttp = allowTestHttp;
   }
   origin(value) {
     let url;
-    try { url = new URL(value); } catch { throw cloudError('URL_INVALID','请输入有效的 HTTPS 仓库链接。'); }
-    const testHttp = this.allowTestHttp && url.protocol === 'http:' && ['127.0.0.1','localhost','[::1]'].includes(url.hostname);
-    if ((url.protocol !== 'https:' && !testHttp) || url.username || url.password || url.search || url.hash) throw cloudError('URL_INVALID','仓库链接必须使用 HTTPS，且不能包含凭证或附加参数。');
+    try { url = new URL(value); } catch { throw cloudError('URL_INVALID','请输入有效的仓库链接。'); }
+    const internalHttp = url.protocol === 'http:' && allowsInternalHttp(url.hostname);
+    if ((url.protocol !== 'https:' && !internalHttp) || url.username || url.password || url.search || url.hash) throw cloudError('URL_INVALID','公网仓库必须使用 HTTPS；HTTP 仅支持内网 IPv4 地址或回环地址，且链接不能包含凭证或附加参数。');
     return url;
   }
   repository(value) {
     const url = this.origin(value);
     const match = /^\/r\/([^/]+)\/?$/.exec(url.pathname);
-    if (!match) throw cloudError('URL_INVALID','仓库链接格式应为 https://服务域名/r/仓库标识。');
+    if (!match) throw cloudError('URL_INVALID','仓库链接应包含协议、服务地址和 /r/仓库标识。');
     return {origin:url.origin,repoId:cloudId(match[1]),url:`${url.origin}/r/${match[1]}`};
   }
   async request(origin,route,{method = 'GET',token,body,parentId} = {}) {

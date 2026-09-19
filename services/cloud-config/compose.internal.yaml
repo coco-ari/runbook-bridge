@@ -1,0 +1,19 @@
+services:
+  cloud:
+    build:
+      context: ../..
+      dockerfile: services/cloud-config/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${CLOUD_BIND_IP:?请设置服务器私网地址}:${CLOUD_HTTP_PORT:-18083}:3000"
+    volumes:
+      - cloud-data:/data
+    secrets:
+      - cloud_admin_token
+    security_opt:
+      - no-new-privileges:true
+secrets:
+  cloud_admin_token:
+    file: ${CLOUD_ADMIN_TOKEN_FILE:?请指定仓库创建管理员令牌文件}
+volumes:
+  cloud-data:

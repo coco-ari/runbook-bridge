@@ -72,7 +72,8 @@ export function CloudConfigDialog({ api, open, onOpenChange, onChanged }: { api:
       {notice ? <div role="status" className="rounded-lg border bg-muted/40 p-3 whitespace-pre-line">{notice}</div> : null}
       <fieldset disabled={busy} className="space-y-3 rounded-lg border p-4">
         <legend className="px-1 font-medium">{creating ? "创建仓库" : status.unlocked ? "已连接的仓库" : "连接云仓库"}</legend>
-        <label className="grid gap-1.5 text-xs font-medium">{creating ? "云服务地址" : "仓库链接"}<Input id="cloud-url" readOnly={Boolean(status.unlocked && !creating)} autoComplete="off" value={url} onChange={e => { setUrl(e.target.value); setPlan(null) }} placeholder={creating ? "请输入 HTTPS 云服务根地址" : "请输入完整的 HTTPS 仓库链接"} /></label>
+        <label className="grid gap-1.5 text-xs font-medium">{creating ? "云服务地址" : "仓库链接"}<Input id="cloud-url" readOnly={Boolean(status.unlocked && !creating)} autoComplete="off" value={url} onChange={e => { setUrl(e.target.value); setPlan(null) }} placeholder={creating ? "请输入云服务根地址" : "请输入完整的仓库链接"} /></label>
+        {url.trim().toLowerCase().startsWith("http:") ? <p className="text-xs text-amber-700 dark:text-amber-400">HTTP 仅用于可信内网。配置内容仍加密，但仓库访问凭证会明文传输。</p> : null}
         {status.unlocked && !creating ? <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="outline" onClick={() => void run(async () => { await navigator.clipboard.writeText(status.url ?? ""); setNotice("已复制仓库链接。") })}><Copy />复制链接</Button>
           <span className="text-xs text-muted-foreground">{status.remembered ? "已在本机安全保存访问凭据" : "仅当前会话解锁"}</span>

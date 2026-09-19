@@ -25,6 +25,21 @@ docker compose -f services/cloud-config/compose.yaml up -d --build
 
 第一版没有管理网站、公开注册、团队成员或权限分级。一个客户端绑定一个仓库，知道密码的人拥有该仓库读写权限。密码更换使用新密码创建新仓库并重新上传；旧仓库停止使用或由部署管理员停止对应服务。忘记密码无法在服务端找回，可从仍保存本地配置的电脑创建新仓库。
 
+## 可信内网 HTTP 部署
+
+没有证书时，可使用独立的 HTTP Compose 文件，仅将服务端口绑定到内网网卡。以下为示例私网地址，需要替换为服务器实际的私网 IPv4：
+
+```sh
+export CLOUD_BIND_IP=192.168.0.10
+export CLOUD_HTTP_PORT=18083
+export CLOUD_ADMIN_TOKEN_FILE=/srv/runbook-cloud-admin-token
+docker compose -p runbook-cloud -f services/cloud-config/compose.internal.yaml up -d --build
+```
+
+桌面创建仓库时填写 `http://内网IP:18083`，绑定时填写 `http://内网IP:18083/r/仓库标识`。HTTP 仅允许 IPv4 私网（10/8、172.16/12、192.168/16）及回环地址，公网地址与普通域名仍要求 HTTPS；不跟随重定向。客户端不需要证书或关闭证书校验。
+
+这是用户选择的传输安全边界调整：快照仍在客户端端到端加密，原始仓库密码和数据密钥仍不发送给服务器，但管理员令牌和仓库访问凭证在 HTTP 上传输时可能被监听、复用，攻击者也可能阻断或替换响应。仅用于可信内网，不应把端口映射到公网。原有服务器 SSH 指纹验证与其他插件 TLS 校验不受影响。
+
 ## 同步内容和操作
 
 每个项目包含环境、服务器/MySQL/Redis 插件、操作规则、Redis Key 范围、环境 Runbook、环境快捷提问，以及已保存的密码、代理密码、SSH 私钥和口令、TLS CA/客户端证书/私钥。不会上传整个应用目录；审计日志、编辑草稿、连接状态、审批、Broker 令牌、全局快捷提问开场白和界面布局均不参与同步。
@@ -47,7 +62,7 @@ docker compose -f services/cloud-config/compose.yaml up -d --build
 
 系统 VPN、SSH Agent 和硬件密钥仍依赖目标机器，预览会提示。未保存密码、配置不完整也会提示；仓库同步不保证网络可达。原有 SSH 主机指纹校验不变，首次信任仍需确认，指纹改变仍被拒绝。MySQL 固定数据库、Redis 范围及操作审批继续生效。
 
-云配置不增加 MCP 工具，不向 Agent 返回凭据。新增桌面 IPC `v2:cloud-config` 仅允许受信任 Renderer 主框架调用；动作包括 `status/bind/create/unbind/catalog/prepare/confirm/prepareRestore`，上传下载预览不包含凭据值。Renderer 的 `connect-src 'none'` 保持不变，HTTPS 请求由主进程发起并拒绝重定向。
+云配置不增加 MCP 工具，不向 Agent 返回凭据。新增桌面 IPC `v2:cloud-config` 仅允许受信任 Renderer 主框架调用；动作包括 `status/bind/create/unbind/catalog/prepare/confirm/prepareRestore`，上传下载预览不包含凭据值。Renderer 的 `connect-src 'none'` 保持不变，云服务请求由主进程发起并拒绝重定向。
 
 ## 云 API 与验证
 
@@ -63,4 +78,4 @@ corepack pnpm run test:ui
 corepack pnpm run test:ui:cloud
 ```
 
-测试只使用临时数据目录、合成凭据、回环 HTTP/SSH 服务。生产客户端仅接受 HTTPS，回环 HTTP 例外只能由测试代码显式注入，桌面设置不提供绕过选项。
+测试只使用临时数据目录、合成凭据、回环 HTTP/SSH 服务，同时验证私网 HTTP 地址范围、公网 HTTP 拒绝和重定向限制。
