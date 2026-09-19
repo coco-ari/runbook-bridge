@@ -1,0 +1,31 @@
+services:
+  cloud:
+    build:
+      context: ../..
+      dockerfile: services/cloud-config/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - cloud-data:/data
+    secrets:
+      - cloud_admin_token
+    security_opt:
+      - no-new-privileges:true
+  https:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "80:80"
+    environment:
+      CLOUD_DOMAIN: ${CLOUD_DOMAIN:?请设置云服务域名}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - cloud
+secrets:
+  cloud_admin_token:
+    file: ${CLOUD_ADMIN_TOKEN_FILE:?请指定仓库创建管理员令牌文件}
+volumes:
+  cloud-data:
+  caddy-data:

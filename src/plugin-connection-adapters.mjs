@@ -127,7 +127,7 @@ const serverAdapter = Object.freeze({
       !['password','privateKey','agent'].includes(authType)
         ? issue('auth.type','INVALID_AUTH_TYPE','SSH 认证方式无效。')
         : null,
-      authType === 'privateKey' && !hasText(plugin?.auth?.privateKeyPath)
+      authType === 'privateKey' && plugin?.auth?.privateKeySource !== 'vault' && !hasText(plugin?.auth?.privateKeyPath)
         ? issue('auth.privateKeyPath','REQUIRED','请选择 SSH 私钥文件。')
         : null,
       !UPLINKS.has(uplinkType) ? issue('uplink.type','INVALID_TRANSPORT','SSH 上行路径无效。') : null,
@@ -156,6 +156,7 @@ const serverAdapter = Object.freeze({
       username:plugin?.auth?.username ?? '',
       authType:plugin?.auth?.type ?? 'password',
       privateKeyPath:plugin?.auth?.privateKeyPath,
+      ...(plugin?.auth?.privateKeySource === 'vault' ? {privateKeySource:'vault'} : {}),
       agentSocket:plugin?.auth?.agentSocket,
       uplink:plugin?.uplink ?? {type:'direct'},
     });

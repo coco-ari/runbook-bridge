@@ -1,4 +1,5 @@
 import { shortcutLabel } from "@/lib/platform"
+import { CloudConfigDialog } from "@/features/cloud-config/CloudConfigDialog"
 import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import { useGroupRef, usePanelRef, type Layout, type LayoutChangedMeta, type PanelSize } from "react-resizable-panels"
 import { toast } from "sonner"
@@ -168,6 +169,7 @@ export function AppShell() {
   const [detailDraftEpoch, setDetailDraftEpoch] = useState(0)
   const [pendingSelection, setPendingSelection] = useState<PendingSelection | null>(null)
   const [projectSurface, setProjectSurface] = useState<ProjectMutationSurface>(null)
+  const [cloudConfigOpen, setCloudConfigOpen] = useState(false)
   const [environmentSurface, setEnvironmentSurface] = useState<EnvironmentMutationSurface>(null)
   const [pluginSurface, setPluginSurface] = useState<PluginSurface>(null)
   const [pluginWorkMode, setPluginWorkMode] = useState<PluginWorkMode | null>(null)
@@ -907,7 +909,8 @@ export function AppShell() {
 
   const openProjectAction = useCallback((action: ProjectRailAction) => {
     rememberFocus()
-    if (action.type === "create-project") requestNavigation(() => setProjectSurface({ kind: "create" }))
+    if (action.type === "cloud-config") requestNavigation(() => setCloudConfigOpen(true))
+    else if (action.type === "create-project") requestNavigation(() => setProjectSurface({ kind: "create" }))
     else if (action.type === "create-environment") {
       requestNavigation(() => setEnvironmentSurface({ kind: "create", project: action.project }))
     } else if (action.type === "edit-project" || action.type === "delete-project") {
@@ -1274,6 +1277,7 @@ export function AppShell() {
         projects={navigationProjects}
       />
 
+      <CloudConfigDialog api={api} open={cloudConfigOpen} onOpenChange={setCloudConfigOpen} onChanged={workspace.reload} />
       <ProjectMutationSurfaces
         action={projectSurface}
         api={api}

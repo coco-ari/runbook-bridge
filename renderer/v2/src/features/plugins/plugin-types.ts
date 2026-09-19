@@ -31,6 +31,7 @@ export interface PluginAuthDraft {
   readonly username: string
   readonly type?: ServerAuthType
   readonly privateKeyPath?: string
+  readonly privateKeySource?: "file" | "vault"
 }
 
 export interface ServerUplinkDraft {
@@ -217,6 +218,7 @@ export function pluginDraftFromRecord(record: PluginConfigurationRecord): Plugin
       auth: {
         ...common.auth,
         type: authType,
+        ...(auth.privateKeySource === "vault" ? { privateKeySource: "vault" as const } : {}),
         ...(privateKeyPath ? { privateKeyPath } : {}),
       },
       uplink: {
@@ -340,7 +342,7 @@ export function validatePluginDraft(draft: PluginFormDraft, purpose = "validate"
     issues.push({ field: "username", message: "请填写用户名。" })
   }
   if (draft.pluginType === "server") {
-    if (draft.auth.type === "privateKey" && !draft.auth.privateKeyPath?.trim()) {
+    if (draft.auth.type === "privateKey" && draft.auth.privateKeySource !== "vault" && !draft.auth.privateKeyPath?.trim()) {
       issues.push({ field: "privateKeyPath", message: "请填写 SSH 私钥文件。" })
     }
     const uplink = draft.uplink ?? { type: "direct" as const }

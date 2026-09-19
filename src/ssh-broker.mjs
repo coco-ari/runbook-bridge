@@ -781,13 +781,13 @@ export class SshBroker {
     let publishedRecord;
     try {
       if (config.auth.type === 'privateKey') {
-        if (!config.auth.privateKeyPath) {
-          throw new AppError('SSH_IDENTITY_UNAVAILABLE', '项目没有配置私钥文件。');
-        }
-        try {
-          privateKey = await fsp.readFile(config.auth.privateKeyPath);
-        } catch {
-          throw new AppError('SSH_IDENTITY_UNAVAILABLE', '无法读取配置的 SSH 私钥文件。');
+        if (config.auth.privateKeySource === 'vault') {
+          if (!secrets.privateKeyPem) throw new AppError('SSH_IDENTITY_UNAVAILABLE','已保存的 SSH 私钥不可用。');
+          privateKey = Buffer.from(secrets.privateKeyPem,'utf8');
+        } else {
+          if (!config.auth.privateKeyPath) throw new AppError('SSH_IDENTITY_UNAVAILABLE', '项目没有配置私钥文件。');
+          try { privateKey = await fsp.readFile(config.auth.privateKeyPath); }
+          catch { throw new AppError('SSH_IDENTITY_UNAVAILABLE', '无法读取配置的 SSH 私钥文件。'); }
         }
         const parsedKey = ssh2.utils.parseKey(
           privateKey,

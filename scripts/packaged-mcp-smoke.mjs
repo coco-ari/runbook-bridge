@@ -22,6 +22,7 @@ try {
   assert.ok(result.tools.some((tool) => tool.name === 'open_environment'));
   assert.ok(result.tools.some((tool) => tool.name === 'mysql_search_schema'));
   assert.ok(!result.tools.some((tool) => tool.name === 'execute'));
+  assert.ok(!result.tools.some((tool) => /cloud|credential|private_key/i.test(tool.name)),'云配置和凭据不得暴露为 MCP 工具');
   const logSearch = result.tools.find((tool) => tool.name === 'server_search_logs');
   assert.equal(logSearch.inputSchema.properties.queries.maxItems, 10);
   assert.equal(logSearch.inputSchema.properties.maxLines, undefined);

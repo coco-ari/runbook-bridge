@@ -2,6 +2,7 @@ import { shortcutLabel } from "@/lib/platform"
 import { useEffect, useMemo, useState } from "react"
 import {
   ArrowClockwise,
+  Cloud,
   DotsThree,
   FolderSimple,
   GearSix,
@@ -94,6 +95,7 @@ function normalizeProjectQuery(value: string): string {
 
 export type ProjectRailAction =
   | Readonly<{ type: "create-project" }>
+  | Readonly<{ type: "cloud-config" }>
   | Readonly<{ type: "create-environment"; project: WorkspaceProjectReadModel }>
   | Readonly<{ type: "edit-project"; project: WorkspaceProjectReadModel }>
   | Readonly<{ type: "delete-project"; project: WorkspaceProjectReadModel }>
@@ -552,6 +554,7 @@ export function ProjectRail({
           </nav>
         </SidebarContent>
 
+        <Button className="mx-2 mb-1 justify-start gap-2" variant="ghost" onClick={() => onAction({ type: "cloud-config" })} aria-label="云配置" data-testid="cloud-config-open"><Cloud size={16} /><span className="text-xs">云配置</span></Button>
         <ThemeMenu />
 
         <SidebarFooter

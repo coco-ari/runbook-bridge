@@ -46,6 +46,7 @@ class ScopedServerStoreAdapter {
       },
       auth: {
         type: plugin.auth.type,
+        ...(plugin.auth.privateKeySource === 'vault' ? {privateKeySource:'vault'} : {}),
         ...(plugin.auth.privateKeyPath ? { privateKeyPath: plugin.auth.privateKeyPath } : {}),
         ...(plugin.auth.agentSocket ? { agentSocket: plugin.auth.agentSocket } : {}),
       },

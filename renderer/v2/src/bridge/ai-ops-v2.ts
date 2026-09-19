@@ -1,3 +1,5 @@
+import type { CloudConfigData, CloudConfigRequest } from "@/features/cloud-config/cloud-types"
+
 export interface PublicError {
   readonly code: string
   readonly message: string
@@ -544,6 +546,7 @@ export interface ServerMetricsSnapshot {
 }
 
 export interface AiOpsV2Api {
+  cloudConfig(payload: CloudConfigRequest): Promise<IpcResult<CloudConfigData>>
   serverWorkspaceMetrics(payload: PluginScope & { kind?: "system" | "disks" }): Promise<IpcResult<ServerMetricsSnapshot & { retryAfterMs: number }>>
   serverWorkspaceStopMetrics(payload: PluginScope): Promise<IpcResult<{ stopped: boolean }>>
   serverTerminalOpen(payload: PluginScope & { cols: number; rows: number; tabId?: string; defaultColors?: boolean; recoveryOf?: string }): Promise<IpcResult<ServerTerminalSession>>
@@ -631,6 +634,7 @@ export interface AiOpsV2Api {
 }
 
 export const AI_OPS_V2_API_NAMES = [
+  "cloudConfig",
   "serverWorkspaceMetrics",
   "serverWorkspaceStopMetrics",
   "serverTerminalOpen",

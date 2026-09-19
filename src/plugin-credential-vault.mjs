@@ -4,7 +4,7 @@ import path from 'node:path';
 import { AppError } from './errors.mjs';
 
 const SECRET_KEYS = Object.freeze({
-  server: new Set(['password', 'privateKeyPassphrase', 'proxyPassword']),
+  server: new Set(['password', 'privateKeyPassphrase', 'proxyPassword', 'privateKeyPem']),
   mysql: new Set(['password', 'tlsPassphrase', 'caPem', 'clientCertPem', 'clientKeyPem']),
   redis: new Set(['password', 'tlsPassphrase', 'caPem', 'clientCertPem', 'clientKeyPem']),
 });
@@ -29,6 +29,7 @@ function bindingProjection(plugin) {
     target,
     username: plugin.auth?.username ?? null,
     authType: plugin.auth?.type ?? null,
+    ...(plugin.auth?.privateKeySource === 'vault' ? {privateKeySource:'vault'} : {}),
     transport: plugin.transport ?? null,
     uplink: plugin.uplink ?? null,
     tls: plugin.tls ?? null,
@@ -364,6 +365,48 @@ export class PluginCredentialVault {
       throw new AppError('CREDENTIAL_STORE_INVALID', '无法确认插件凭据存储中是否已有历史条目，本次配置保存已取消。');
     }
     return false;
+  }
+
+  async captureProjectEntries(projectId) {
+    const slots = await this.readEnvelopeSlots();
+    const select = envelope => Object.fromEntries(Object.entries(envelope?.entries ?? {}).filter(([key]) => key.startsWith(`${projectId}/`)));
+    for (const slot of [slots.primary,slots.backup]) {
+      if (!slot.envelope && slot.error?.code !== 'ENOENT') throw new AppError('CREDENTIAL_STORE_INVALID','凭据库无法完整备份，已停止云配置导入。');
+    }
+    return {primary:select(slots.primary.envelope),backup:select(slots.backup.envelope)};
+  }
+
+  async encryptProjectEntries(plugins) {
+    if (!this.encryption?.isEncryptionAvailable?.()) throw new AppError('CREDENTIAL_ENCRYPTION_UNAVAILABLE','系统安全存储当前不可用。');
+    const entries = {};
+    for (const {plugin,secrets} of plugins) {
+      const normalized = this.normalizeSecrets(plugin,secrets);
+      if (!Object.keys(normalized).length) continue;
+      const encrypted = await maybeAwait(this.encryption.encryptString(JSON.stringify({schemaVersion:1,secrets:normalized})));
+      entries[resourceKey(plugin)] = {pluginType:plugin.pluginType,bindingHash:bindingHash(plugin),ciphertext:Buffer.from(encrypted).toString('base64'),updatedAt:new Date().toISOString()};
+    }
+    return {primary:entries,backup:structuredClone(entries)};
+  }
+
+  async restoreProjectEntries(projectId, saved) {
+    return this.enqueue(async () => {
+      const slots = await this.readEnvelopeSlots();
+      const replace = (slot, fallback, entries) => {
+        if (!slot.envelope && slot.error?.code !== 'ENOENT') throw new AppError('CREDENTIAL_STORE_INVALID','凭据库无法安全更新。');
+        const result = cloneEnvelope(slot.envelope ?? fallback.envelope ?? emptyEnvelope());
+        for (const key of Object.keys(result.entries)) if (key.startsWith(`${projectId}/`)) delete result.entries[key];
+        for (const [key,value] of Object.entries(entries)) {
+          if (!key.startsWith(`${projectId}/`)) throw new AppError('SCOPE_MISMATCH','凭据备份不属于当前项目。');
+          result.entries[key] = value;
+        }
+        return result;
+      };
+      const primary = replace(slots.primary,slots.backup,saved.primary);
+      const backup = replace(slots.backup,slots.primary,saved.backup);
+      // 两个槽位都必须成功写入，否则项目事务负责恢复原始配置与凭据。
+      await this.atomicWrite(this.file,JSON.stringify(primary));
+      await this.atomicWrite(this.backupFile,JSON.stringify(backup));
+    });
   }
 
   async clear(plugin) {

@@ -77,7 +77,7 @@ codex mcp add --env ELECTRON_RUN_AS_NODE=1 agent-ops -- `
 
 ## 操作边界
 
-- **凭据留在本机**：应用管理的密码、私钥口令和代理凭据本地加密保存，不返回给 Agent。
+- **凭据加密保存**：应用管理的密码、私钥口令和代理凭据在本机加密保存，不返回给 Agent；主动使用云配置时，所选项目的凭据在客户端加密后上传，服务端不接收解密密钥。
 - **连接由你发起**：Agent 只能使用当前环境中已连接的插件，不会自行建立首次连接。
 - **Agent 读取优先，变更确认**：Agent 普通读取直接执行；上传、写入、移动、删除和服务控制逐次确认，任意 Shell 需要强确认。确认绑定具体参数，且只能使用一次；人工终端采用上文说明的会话级授权。
 
@@ -120,7 +120,7 @@ codex mcp add --env ELECTRON_RUN_AS_NODE=1 agent-ops -- "/Applications/Agent运�
 codex mcp get agent-ops
 ```
 
-macOS 数据保存在 `~/.ai-ops-tool`，密码由系统钥匙串加密。两个平台使用同一套项目/环境/插件格式，但 Windows 密文不能直接搬到 Mac 解密；迁移配置后重新填写凭据和本机私钥路径。自定义 `AI_OPS_DATA_DIR` 时，桌面与 MCP 必须使用同一个绝对路径。
+macOS 数据保存在 `~/.ai-ops-tool`，密码由系统钥匙串加密。两个平台使用同一套项目/环境/插件格式，但 Windows 密文不能直接搬到 Mac 解密；可以使用[云配置仓库](docs/cloud-config.md)迁移项目和凭据，由目标设备重新加密保存。直接复制应用数据目录仍需重新填写凭据和本机私钥路径。自定义 `AI_OPS_DATA_DIR` 时，桌面与 MCP 必须使用同一个绝对路径。
 
 “系统 VPN”要求先在操作系统连接 VPN，再填写实际网卡名称（例如 Mac 的 `utunN`）。工作台会验证目标 IP 的实际出口，验证失败就拒绝连接；旧配置和 MCP 的 `windowsVpn` 标识继续兼容。Mac 使用 Command 快捷键，仍支持原有 Ctrl 快捷键。最后一个窗口关闭时，应用退出并断开连接，与 Windows 保持一致。
 

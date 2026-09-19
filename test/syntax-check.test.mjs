@@ -8,7 +8,7 @@ import test from 'node:test';
 test('syntax checks discover nested source, scripts and tests and reject invalid files', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'runbook-syntax-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  for (const directory of ['src', 'scripts', 'test/helpers']) {
+  for (const directory of ['src', 'scripts', 'test/helpers', 'services/cloud-config']) {
     await fs.mkdir(path.join(root, directory), { recursive: true });
   }
   const script = path.join(root, 'scripts/check-syntax.mjs');
@@ -23,7 +23,7 @@ test('syntax checks discover nested source, scripts and tests and reject invalid
   assert.equal(valid.status, 0, valid.stderr);
   assert.match(valid.stdout, /Syntax checked 3 source, script and test files/u);
 
-  for (const relative of ['src/main.mjs', 'scripts/extra.cjs', 'test/helpers/fixture.cjs']) {
+  for (const relative of ['src/main.mjs', 'scripts/extra.cjs', 'test/helpers/fixture.cjs', 'services/cloud-config/fixture.mjs']) {
     const file = path.join(root, relative);
     await fs.writeFile(file, 'const = ;');
     const invalid = run();

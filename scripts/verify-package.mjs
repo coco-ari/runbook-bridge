@@ -71,6 +71,7 @@ try {
       `packaged renderer differs from verified build: ${relative}`);
   }
   assert.ok(Object.hasOwn(renderer.sourceHashes, 'plugin-creation-identity.mjs'));
+  for (const module of ['cloud-config-crypto.mjs','cloud-config-service.mjs','cloud-config-workspace.mjs','cloud-config-ipc.mjs']) assert.ok(Object.hasOwn(renderer.sourceHashes,module),'安装包缺少云配置模块');
   for (const module of ['server-workspace-manager.mjs', 'server-workspace-files.mjs', 'server-workspace-directory-cache.mjs', 'server-workspace-ipc.mjs']) {
     assert.ok(Object.hasOwn(renderer.sourceHashes, module), '安装包缺少服务器工作区模块：' + module);
   }

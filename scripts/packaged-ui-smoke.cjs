@@ -744,7 +744,16 @@ async function main() {
     assert.equal(inspection.noPageOverflow, true);
     assert.equal(inspection.overviewOk, true);
     assert.equal(inspection.projectCount, 0);
-    assert.equal(inspection.apiCount, 84);
+    assert.equal(inspection.apiCount, 85);
+    const cloudContract = await running.cdp.evaluate("(async () => ({status:await window.aiOps.v2.cloudConfig({action:'status'}),invalid:await window.aiOps.v2.cloudConfig({action:'status',password:'synthetic-rejected'})}))()");
+    assert.equal(cloudContract.status.ok,true);
+    assert.deepEqual(cloudContract.status.data.projects,[]);
+    assert.equal(cloudContract.invalid.error.code,'CLOUD_INVALID_ARGUMENT');
+    await running.cdp.evaluate('document.querySelector("[data-testid=cloud-config-open]").click()');
+    await delay(250);
+    assert.equal(await running.cdp.evaluate('Boolean(document.querySelector("[data-testid=cloud-config-dialog]"))'),true);
+    await running.cdp.evaluate('document.querySelector("[data-testid=cloud-config-dialog] [data-slot=dialog-close]").click()');
+    await delay(150);
     const metricsContract = await running.cdp.evaluate("(async () => { const scope = {projectId:'metrics-probe',environmentId:'probe',pluginInstanceId:'probe'}; return {read:await window.aiOps.v2.serverWorkspaceMetrics(scope),invalid:await window.aiOps.v2.serverWorkspaceMetrics({...scope,command:'arbitrary'}),invalidKind:await window.aiOps.v2.serverWorkspaceMetrics({...scope,kind:'arbitrary'}),disks:await window.aiOps.v2.serverWorkspaceMetrics({...scope,kind:'disks'}),stop:await window.aiOps.v2.serverWorkspaceStopMetrics(scope)}; })()");
     assert.equal(metricsContract.read.ok, false);
     assert.ok(['PROJECT_NOT_FOUND','ENVIRONMENT_NOT_FOUND','PLUGIN_NOT_FOUND'].includes(metricsContract.read.error.code));
@@ -841,7 +850,7 @@ async function main() {
       return {ok: overview?.ok === true, projectCount: Array.isArray(overview?.data) ? overview.data.length : -1,
         apiCount: Object.keys(window.aiOps.v2).length};
     })()`);
-    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 84});
+    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 85});
     assert.deepEqual(running.httpRequests, []);
     await selectThemePreference(running.cdp, 'system');
     await emulateSystemTheme(running.cdp, 'dark');
@@ -861,7 +870,7 @@ async function main() {
         availableWidth: compactSearch.availableWidth, nativeTextBox: compactSearch.nativeBox?.source ?? 'conservative-cancel-budget'},
     })}\n`);
     process.stdout.write(
-      `Packaged React UI smoke passed (84 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
+      `Packaged React UI smoke passed (85 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
     );
   } catch (error) {
     if (running) {

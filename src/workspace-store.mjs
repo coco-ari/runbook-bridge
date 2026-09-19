@@ -35,7 +35,7 @@ const PLUGIN_CONNECTION_FIELDS = Object.freeze({
 const PLUGIN_CONNECTION_NESTED_FIELDS = Object.freeze({
   server:Object.freeze({
     target:new Set(['host', 'port', 'addressFamily', 'hostKeyFingerprint']),
-    auth:new Set(['type', 'username', 'privateKeyPath', 'agentSocket']),
+    auth:new Set(['type', 'username', 'privateKeyPath', 'privateKeySource', 'agentSocket']),
     uplink:new Set(['type', 'host', 'port', 'username', 'remoteDns', 'interfaceAlias']),
   }),
   mysql:Object.freeze({
@@ -358,6 +358,7 @@ function normalizePlugin(input, scope, existing = null) {
     const target = { ...(existing?.target ?? {}), ...(input.target ?? {}) };
     const auth = { ...(existing?.auth ?? {}), ...(input.auth ?? {}) };
     const uplink = { ...(existing?.uplink ?? {}), ...(input.uplink ?? {}) };
+    if (auth.privateKeySource !== undefined && !['file','vault'].includes(auth.privateKeySource)) throw new AppError('INVALID_ARGUMENT','SSH 私钥来源无效。');
     const host = normalizeHost(target.host, { required: false });
     const username = String(auth.username ?? '').trim();
     if (username.length > 128 || CONTROL_RE.test(username)) throw new AppError('INVALID_ARGUMENT', 'SSH 用户名无效。');
@@ -366,7 +367,7 @@ function normalizePlugin(input, scope, existing = null) {
     const proxyHost = uplinkType === 'socks5' || uplinkType === 'http' ? normalizeHost(uplink.host, { required:false }) : '';
     const vpnAlias = uplinkType === 'windowsVpn' ? String(uplink.interfaceAlias ?? '').trim() : '';
     if (vpnAlias.length > 128 || CONTROL_RE.test(vpnAlias)) throw new AppError('INVALID_ARGUMENT', '系统 VPN 网卡名称无效。');
-    const authReady = Boolean(username) && (authType !== 'privateKey' || Boolean(auth.privateKeyPath));
+    const authReady = Boolean(username) && (authType !== 'privateKey' || auth.privateKeySource === 'vault' || Boolean(auth.privateKeyPath));
     const uplinkReady = uplinkType === 'direct' || (['socks5','http'].includes(uplinkType) ? Boolean(proxyHost) : Boolean(vpnAlias));
     const port = normalizePort(target.port, 22);
     const addressUnchanged = !existing
@@ -385,7 +386,8 @@ function normalizePlugin(input, scope, existing = null) {
       auth: {
         type: authType,
         username,
-        ...(authType === 'privateKey' && auth.privateKeyPath ? { privateKeyPath: String(auth.privateKeyPath) } : {}),
+        ...(authType === 'privateKey' && auth.privateKeySource === 'vault' ? {privateKeySource:'vault'} : {}),
+        ...(authType === 'privateKey' && auth.privateKeySource !== 'vault' && auth.privateKeyPath ? { privateKeyPath: String(auth.privateKeyPath) } : {}),
         ...(authType === 'agent' && auth.agentSocket ? { agentSocket: String(auth.agentSocket) } : {}),
       },
       uplink: {
@@ -745,8 +747,13 @@ export class WorkspaceStore {
   }
 
   enqueue(key, operation) {
+    const projectId = /^(?:project|environment|plugin|quick-questions):([^:]+)/.exec(key)?.[1];
+    if (projectId) this.cloudMutationGuard?.(projectId);
     const previous = this.writeQueues.get(key) ?? Promise.resolve();
-    const current = previous.catch(() => undefined).then(operation);
+    const current = previous.catch(() => undefined).then(() => {
+      if (projectId) this.cloudMutationGuard?.(projectId);
+      return operation();
+    });
     this.writeQueues.set(key, current);
     return current.finally(() => {
       if (this.writeQueues.get(key) === current) this.writeQueues.delete(key);

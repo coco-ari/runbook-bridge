@@ -7,6 +7,7 @@ const legacyConnectionSnapshot = (payload) => requestConnectionIntent(payload).t
 
 contextBridge.exposeInMainWorld('aiOps', {
   v2: {
+    cloudConfig: (payload) => ipcRenderer.invoke('v2:cloud-config',payload),
     serverWorkspaceMetrics: payload => ipcRenderer.invoke('v2:server-workspace-metrics', payload),
     serverWorkspaceStopMetrics: payload => ipcRenderer.invoke('v2:server-workspace-stop-metrics', payload),
     serverTerminalOpen: (payload) => ipcRenderer.invoke('v2:server-terminal-open', payload),

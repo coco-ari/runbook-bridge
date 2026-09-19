@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const files = [];
-for (const directory of ['src', 'scripts', 'test']) {
+for (const directory of ['src', 'scripts', 'test', 'services']) {
   const entries = await fs.readdir(path.join(root, directory), { recursive: true });
   files.push(...entries
     .filter((entry) => /\.(?:mjs|cjs)$/u.test(entry))

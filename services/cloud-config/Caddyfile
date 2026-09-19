@@ -1,0 +1,3 @@
+{$CLOUD_DOMAIN} {
+    reverse_proxy cloud:3000
+}

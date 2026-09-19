@@ -353,6 +353,10 @@ export class ServerWorkspaceFiles {
     return { jobs: [...this.jobs.values()].filter((job) => job.ownerId === ownerId && sameScope(job.scope, scope)).map(publicJob) };
   }
 
+  activeProjectTransfers(projectId) {
+    return [...this.jobs.values()].some(job => job.scope?.projectId === projectId && (job.inFlight || ACTIVE.has(job.status)));
+  }
+
   exitSummary() {
     let active = 0;
     let resumable = 0;

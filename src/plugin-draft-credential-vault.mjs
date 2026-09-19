@@ -5,7 +5,7 @@ import { AppError } from './errors.mjs';
 import { getPluginConnectionAdapter } from './plugin-connection-adapters.mjs';
 
 const SECRET_KEYS = Object.freeze({
-  server:new Set(['password','privateKeyPassphrase','proxyPassword']),
+  server:new Set(['password','privateKeyPassphrase','proxyPassword','privateKeyPem']),
   mysql:new Set(['password','tlsPassphrase','caPem','clientCertPem','clientKeyPem']),
   redis:new Set(['password','tlsPassphrase','caPem','clientCertPem','clientKeyPem']),
 });

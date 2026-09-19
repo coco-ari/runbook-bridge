@@ -515,7 +515,11 @@ export function PluginEditorWorkspace({
                       />
                       <FieldError id="plugin-username-error">{issueFor(state.issues, "username")}</FieldError>
                     </Field>
-                    {draft.pluginType === "server" && draft.auth.type === "privateKey" ? (
+                    {draft.pluginType === "server" && draft.auth.type === "privateKey" && draft.auth.privateKeySource === "vault" ? (
+                      <div className="rounded-md border p-3 text-sm text-muted-foreground">SSH 私钥已加密保存在本机凭据库，无需配置文件路径。
+                        <Button type="button" variant="link" onClick={() => updateAuth("privateKeySource", "file")}>改用本机文件</Button>
+                      </div>
+                    ) : draft.pluginType === "server" && draft.auth.type === "privateKey" ? (
                       <Field data-invalid={Boolean(fieldErrors.privateKeyPath)}>
                         <FieldLabel htmlFor="plugin-private-key">SSH 私钥文件</FieldLabel>
                         <Input

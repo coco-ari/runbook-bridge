@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { registerCloudConfigIpc } from './cloud-config-ipc.mjs';
 import { registerServerWorkspaceIpc } from './server-workspace-ipc.mjs';
 import { AppError, toPublicError } from './errors.mjs';
 import { legacyCredentialConfigForPlugin } from './credential-store.mjs';
@@ -75,6 +76,7 @@ const SECRET_DRAFT_FIELDS = new Set([
   'password',
   'proxypassword',
   'privatekeypassphrase',
+  'privatekeypem',
   'tlspassphrase',
   'capem',
   'clientcertpem',
@@ -141,6 +143,7 @@ function assertExactQuickQuestionPayload(payload, allowedFields, label) {
 
 export function registerV2Ipc(ipcMain, services) {
   registerServerWorkspaceIpc(ipcMain, services);
+  registerCloudConfigIpc(ipcMain, services);
   const { workspaceStore: store, connectionManager, credentialVault, legacyCredentialStore, configTransactionJournal, contextManager, confirmationManager, pluginManager, mysqlRuntime, pluginEditSessionManager, pluginProbeManager } = services;
   const credentialUseResolver = services.credentialUseResolver ?? new CredentialUseResolver(credentialVault);
   const handle = (name, fn) => ipcMain.handle(`v2:${name}`, resultHandler(fn));
@@ -971,7 +974,7 @@ export function registerV2Ipc(ipcMain, services) {
     const secrets = await credentialVault.load(plugin) ?? {};
     const primaryKey = plugin.pluginType === 'server' && plugin.auth?.type === 'privateKey' ? 'privateKeyPassphrase' : 'password';
     const fields = { primary: Boolean(secrets[primaryKey]), proxy: plugin.pluginType === 'server' && Boolean(secrets.proxyPassword) };
-    const saved = fields.primary || fields.proxy;
+    const saved = fields.primary || fields.proxy || Boolean(plugin.auth?.privateKeySource === 'vault' && secrets.privateKeyPem);
     let migration = legacyCredentialStore?.migrationStatus(plugin) ?? null;
     if (migration && ['confirmation-required','import-pending'].includes(migration.status)) {
       if (legacyCredentialStore.migrationComplete(migration,secrets)) {

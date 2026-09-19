@@ -10,9 +10,12 @@ export class WorkspaceMutationCoordinator {
     this.environmentActivity = new Map();
     this.environmentFences = new Map();
     this.projectsDeleting = new Set();
+    this.cloudProjects = new Set();
   }
 
   assertProjectAvailable(projectId) {
+    this.cloudRecoveryGuard?.(projectId);
+    if (this.cloudProjects.has(projectId)) throw new AppError('CLOUD_PROJECT_BUSY','项目正在同步云配置，请稍后重试。');
     if (this.projectsDeleting.has(projectId)) {
       throw new AppError('PROJECT_DELETING', '项目正在删除，当前操作已取消。');
     }
@@ -188,6 +191,7 @@ export class WorkspaceMutationCoordinator {
   }
 
   beginProjectDelete(projectId) {
+    this.assertProjectAvailable(projectId);
     if (this.projectsDeleting.has(projectId)) throw new AppError('PROJECT_DELETING', '项目正在删除。');
     this.projectsDeleting.add(projectId);
   }
