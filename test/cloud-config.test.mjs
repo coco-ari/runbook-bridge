@@ -15,6 +15,7 @@ import { WorkspaceMutationCoordinator } from '../src/workspace-mutation-coordina
 import { newCloudMeta, deriveCloudKeys, encryptCloudSnapshot, decryptCloudSnapshot, cloudHash, validateCloudMeta } from '../src/cloud-config-crypto.mjs';
 import { exportCloudProject, snapshotDigest, normalizeCloudSnapshot, cloudBackupDiff, cloudProjectDiff } from '../src/cloud-config-snapshot.mjs';
 import { EnvironmentConnectionManager } from '../src/environment-connection-manager.mjs';
+import { RedisWorkspaceManager } from '../src/redis-workspace-manager.mjs';
 import { ServerDockerManager } from '../src/server-docker-manager.mjs';
 import { registerCloudConfigIpc } from '../src/cloud-config-ipc.mjs';
 
@@ -146,6 +147,47 @@ test('云导入取消同项目的 Docker 读取并清除分页快照，保留其
   await assert.rejects(docker.read('renderer:test',{...scope,kind:'list',cursor:first.nextCursor,limit:1}),{code:'DOCKER_CURSOR_EXPIRED'});
   const otherPage = await docker.read('renderer:test',{...otherScope,kind:'list',cursor:otherFirst.nextCursor,limit:1});
   assert.equal(otherPage.items.length,1);
+});
+
+test('云导入使当前项目的 Redis 浏览游标失效，并保留其他项目与 Key 范围',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client);
+  const p = await project(a), other = await project(a,'other-project');
+  await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  await upload(a,p.projectId);
+  const sessions = new Map(), closed = [];
+  const runtime = {
+    require(plugin) {
+      if (!sessions.has(plugin.projectId)) sessions.set(plugin.projectId,{});
+      return sessions.get(plugin.projectId);
+    },
+    workspaceReader(plugin) {
+      return {
+        closed:false,open:async () => {},
+        command:async args => {
+          assert.equal(args[0],'SCAN');
+          assert.equal(args[3],'sample:*');
+          return [Buffer.from('0'),['sample:first','outside:denied','sample:second'].map(key => Buffer.from(key))];
+        },
+        close() { this.closed = true; closed.push(plugin.projectId); },
+      };
+    },
+  };
+  const manager = new RedisWorkspaceManager(runtime);
+  t.after(() => manager.dispose());
+  a.service.v2Service = {redisWorkspaceManager:manager};
+  const plugin = await a.store.getPlugin(p.projectId,'env-test','redis-test');
+  const otherPlugin = await a.store.getPlugin(other.projectId,'env-test','redis-test');
+  const query = {patternId:'sample-range',limit:1};
+  const first = await manager.execute('renderer:test',plugin,'scan',query);
+  const otherFirst = await manager.execute('renderer:test',otherPlugin,'scan',query);
+  assert.deepEqual(first.keys,['sample:first']);
+  assert.equal((await download(a,p.projectId)).results[0].status,'imported');
+  assert.deepEqual(closed,[p.projectId]);
+  const imported = await a.store.getPlugin(p.projectId,'env-test','redis-test');
+  assert.equal((await a.vault.load(imported)).password,'synthetic-redis-secret');
+  await assert.rejects(manager.execute('renderer:test',imported,'scan',{...query,cursor:first.nextCursor}),{code:'INVALID_CURSOR'});
+  const otherPage = await manager.execute('renderer:test',otherPlugin,'scan',{...query,cursor:otherFirst.nextCursor});
+  assert.deepEqual(otherPage.keys,['sample:second']);
 });
 
 test('云同步禁止并发写入，但不阻止已持有删除门禁的项目删除',async t => {

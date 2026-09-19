@@ -79,6 +79,8 @@ export type WorkspaceDetailAction =
 
 export interface WorkspaceDetailProps {
   readonly serverWorkspaceRetained?: boolean
+  readonly onOpenRedisWorkspace?: () => void
+  readonly redisWorkspaceRetained?: boolean
   readonly onOpenDatabaseWorkspace: () => void
   readonly databaseWorkspaceRetained: boolean
   readonly activeTab: string
@@ -223,6 +225,8 @@ function SelectionActions({
 
 export function WorkspaceDetail({
   serverWorkspaceRetained = false,
+  onOpenRedisWorkspace,
+  redisWorkspaceRetained = false,
   onOpenDatabaseWorkspace,
   databaseWorkspaceRetained,
   api,
@@ -542,8 +546,8 @@ export function WorkspaceDetail({
                       api={api}
                       onOpenWorkspace={supportedPlugin.pluginType === "server"
                         ? () => onAction({ type: "open-server-workspace", plugin: supportedPlugin })
-                        : supportedPlugin.pluginType === "mysql" ? onOpenDatabaseWorkspace : undefined}
-                      workspaceRetained={supportedPlugin.pluginType === "server" ? serverWorkspaceRetained : databaseWorkspaceRetained}
+                        : supportedPlugin.pluginType === "mysql" ? onOpenDatabaseWorkspace : supportedPlugin.pluginType === "redis" ? onOpenRedisWorkspace : undefined}
+                      workspaceRetained={supportedPlugin.pluginType === "server" ? serverWorkspaceRetained : supportedPlugin.pluginType === "redis" ? redisWorkspaceRetained : databaseWorkspaceRetained}
                       onEdit={() => onAction({ type: "edit-plugin", plugin: supportedPlugin, returnFocus: "plugin-action-edit" })}
                       onRuntime={onReloadEnvironment}
                       plugin={supportedPlugin}

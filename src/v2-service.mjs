@@ -9,6 +9,7 @@ import { isolateNewPluginIdentity } from './plugin-creation-identity.mjs';
 import { prepareDesktopMysqlOperation } from './desktop-mysql-operation.mjs';
 import { RUNTIME_INFO } from './package-metadata.mjs';
 import { MYSQL_READ_CAPABILITIES } from './mysql-policy.mjs';
+import { RedisWorkspaceManager, prepareRedisWorkspaceRequest } from './redis-workspace-manager.mjs';
 
 const MAX_RUNBOOK_BYTES = 64 * 1024;
 const AGENT_PLUGIN_FIELDS = {
@@ -93,6 +94,7 @@ function agentPluginInput(params) {
 export class V2Service {
   constructor({ workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, operationGate = null, serverOperations, credentialVault, mutationCoordinator = null, workspaceChanged = null }) {
     Object.assign(this, { workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault, mutationCoordinator, workspaceChanged });
+    this.redisWorkspaceManager = new RedisWorkspaceManager(pluginManager?.runtimes?.redis);
     this.operationGate = operationGate ?? new OperationGate(confirmationManager);
   }
 
@@ -326,6 +328,35 @@ export class V2Service {
     }
   }
 
+  async invokeDesktopRedis(ownerId, payload, operation, assertOwner = () => {}) {
+    const { scope, capability } = prepareRedisWorkspaceRequest(payload, operation);
+    assertOwner();
+    const execute = async () => {
+      this.connectionManager.assertConfigurationStable?.(scope.projectId, scope.environmentId);
+      let original;
+      const resolve = async () => {
+        assertOwner();
+        const plugin = await this.workspaceStore.getPlugin(scope.projectId, scope.environmentId, scope.pluginInstanceId);
+        if (plugin.pluginType !== 'redis') throw new AppError('PLUGIN_TYPE_MISMATCH', '目标不是 Redis 插件。');
+        if (['projectId', 'environmentId', 'pluginInstanceId'].some((name) => plugin[name] !== scope[name])) throw new AppError('SCOPE_MISMATCH', 'Redis 插件不属于当前范围。');
+        assertPluginConfigurationReady(plugin);
+        this.assertPluginConnected(scope, plugin);
+        return { plugin };
+      };
+      return this.#invokeWithCallable(scope, capability, payload, async () => {
+        const callable = await resolve();
+        original = callable.plugin;
+        return callable;
+      }, 'user', (plugin) => this.redisWorkspaceManager.execute(ownerId, plugin, operation, payload, async () => {
+        const current = (await resolve()).plugin;
+        if (current.revision !== original.revision) throw new AppError('REDIS_WORKSPACE_STALE', 'Redis 配置已经变化，请重新打开工作区。');
+      }, assertOwner));
+    };
+    return this.mutationCoordinator
+      ? this.mutationCoordinator.runEnvironmentOperation(scope.projectId, scope.environmentId, execute)
+      : execute();
+  }
+
   async invokeDesktopMysql(payload, operation) {
     const {scope, capability, args, preview} = prepareDesktopMysqlOperation(payload, operation);
     const execute = async () => {
@@ -362,7 +393,7 @@ export class V2Service {
     return this.#invokeWithCallable(params, capability, args, () => this.requireCallable(params), 'agent');
   }
 
-  async #invokeWithCallable(params, capability, args, resolveCallable, actor) {
+  async #invokeWithCallable(params, capability, args, resolveCallable, actor, desktopExecute = null) {
     const requestId = String(params.requestId ?? crypto.randomUUID()).slice(0, 128);
     let plugin;
     let operationArgs = args;
@@ -420,7 +451,8 @@ export class V2Service {
     if (confirmationId) this.workspaceChanged?.({ type:'confirmation-execution', status:'running', confirmationId, projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId });
     try {
       let result;
-      if (plugin.pluginType === 'server') result = await this.invokeServer(plugin, capability, operationArgs, scopeOf(params));
+      if (desktopExecute) result = await desktopExecute(plugin);
+      else if (plugin.pluginType === 'server') result = await this.invokeServer(plugin, capability, operationArgs, scopeOf(params));
       else result = await this.pluginManager.invoke(plugin, capability, { ...operationArgs, policyApproved: true });
       const durationMs = Date.now() - started;
       const auditFailed = await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor, capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'success', durationMs, confirmationId }).then(() => false, () => true);

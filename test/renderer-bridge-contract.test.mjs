@@ -6,6 +6,10 @@ const EXPECTED_API_NAMES = [
   'cloudConfig',
   'serverDockerRead',
   'serverDockerCancel',
+  'redisWorkspaceScan',
+  'redisWorkspaceInspect',
+  'redisWorkspaceRead',
+  'redisWorkspaceRelease',
   'serverWorkspaceMetrics',
   'serverWorkspaceStopMetrics',
   'serverTerminalOpen',
@@ -117,14 +121,14 @@ function runtimeApiNames(source) {
     .map((entry) => entry[1]);
 }
 
-test('React 桥接固定 87 个 preload API 名称和严格签名', async () => {
+test('React 桥接固定 91 个 preload API 名称和严格签名', async () => {
   const [preload,bridge,globalTypes] = await Promise.all([
     fs.readFile('src/preload.cjs','utf8'),
     fs.readFile('renderer/v2/src/bridge/ai-ops-v2.ts','utf8'),
     fs.readFile('renderer/v2/src/types/global.d.ts','utf8'),
   ]);
 
-  assert.equal(EXPECTED_API_NAMES.length,87);
+  assert.equal(EXPECTED_API_NAMES.length,91);
   assert.deepEqual(sorted(preloadApiNames(preload)),sorted(EXPECTED_API_NAMES));
   assert.deepEqual(sorted(interfaceApiNames(bridge)),sorted(EXPECTED_API_NAMES));
   assert.deepEqual(sorted(runtimeApiNames(bridge)),sorted(EXPECTED_API_NAMES));

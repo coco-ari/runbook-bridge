@@ -15,9 +15,10 @@ const scope = { projectId: 'project-workspace-smoke', environmentId: 'env-worksp
 const plugin = { ...scope, pluginType: 'server', displayName: '工作区验证服务器', revision: 1, configState: 'ready', target: { host: 'server.example.invalid', port: 22 }, auth: { username: 'operator', type: 'agent' }, uplink: { type: 'direct' }, sources: [], assessment: { phase: 'connected', primaryStatus: { kind: 'connected', label: '已连接' } } };
 const mysqlScope = { ...scope, pluginInstanceId: 'mysql-workspace-coexistence' };
 const mysqlPlugin = { ...mysqlScope, pluginType: 'mysql', displayName: '并存验证数据库', revision: 1, configState: 'ready', target: { host: 'database.example.invalid', port: 3306, database: 'workspace_fixture' }, auth: { username: 'readonly' }, transport: { kind: 'direct' }, tls: { mode: 'required' }, limits: { maxRows: 100, maxBytes: 65536, timeoutMs: 2500 }, assessment: plugin.assessment };
-const redisPlugin = { ...mysqlPlugin, pluginInstanceId: 'redis-workspace-coexistence', pluginType: 'redis', displayName: '并存验证缓存', target: { host: 'cache.example.invalid', port: 6379, db: 0 }, keyPatterns: ['fixture:*'] };
+const redisPlugin = { ...mysqlPlugin, pluginInstanceId: 'redis-workspace-coexistence', pluginType: 'redis', displayName: '并存验证缓存', target: { host: 'cache.example.invalid', port: 6379, db: 0 }, patterns: [{ patternId: 'fixture', pattern: 'fixture:*', displayName: '验证缓存' }], limits: { maxKeys: 100, maxValueBytes: 65536, timeoutMs: 2500 } };
 const plugins = [plugin, mysqlPlugin, redisPlugin];
 const mysqlCalls = [];
+const redisCalls = [];
 let sequence = 1;
 let connected = true;
 let recoveryPhase = null;
@@ -148,6 +149,15 @@ function register() {
     return { available:true,sampledAt,cpu:'5.2%',memory:'64 MiB / 2 GiB',memoryPercent:'3.1%',network:'2 MB / 1 MB',block:'0 B / 0 B',pids:'8' };
   });
   handle('server-docker-cancel', input => { dockerState.cancels.push(input); return {stopped:true}; });
+  handle('redis-workspace-scan', input => {
+    assert.deepEqual(input, { ...scope, pluginInstanceId: redisPlugin.pluginInstanceId, patternId: 'fixture', keyword: '' });
+    redisCalls.push(input);
+    return { keys: [], nextCursor: null, complete: true, unsupportedKeys: 0, readAt: new Date().toISOString() };
+  });
+  handle('redis-workspace-release', input => {
+    assert.deepEqual(input, { ...scope, pluginInstanceId: redisPlugin.pluginInstanceId });
+    return { released: true };
+  });
   handle('workspace-overview', () => [project()]);
   handle('project-list', () => [project()]);
   handle('environment-list', () => project().environments);
@@ -548,7 +558,18 @@ async function assertWorkspaceCoexistence() {
   await click('[data-testid="mysql-workspace-back"]');
   await click('[data-testid="plugin-trigger-redis-workspace-coexistence"]');
   await until('document.querySelector("[data-testid=detail-workspace] h1")?.textContent.includes("并存验证缓存")', 'Redis 详情');
-  assert.ok(await evaluate('document.querySelector("[data-testid=plugin-open-workspace], [data-testid=plugin-workspace-open]") === null'), 'Redis 详情没有无效工作区入口');
+  assert.ok(await evaluate('document.querySelector("[data-testid=plugin-open-workspace]") === null'), 'Redis 详情不显示服务器入口');
+  await until('document.querySelector("[data-testid=plugin-workspace-open]")?.disabled === false', 'Redis 工作区入口');
+  assert.equal(redisCalls.length, 0, '切换到 Redis 详情不读取数据');
+  await click('[data-testid="plugin-workspace-open"]');
+  await until('document.querySelector("[data-testid=redis-key-list]")?.textContent.includes("没有匹配")', 'Redis 范围扫描完成');
+  assert.ok(await evaluate('document.querySelector("[data-testid=server-workspace]").hidden'), 'Redis 前台保留隐藏的服务器工作区');
+  assert.equal(writes.length, writesBefore, 'Redis 操作不会发送给隐藏终端');
+  assert.equal(closed.length, closedBefore, 'Redis 浏览不会关闭服务器会话');
+  await click('[data-testid="redis-workspace-back"]');
+  await click('[data-testid="plugin-workspace-open"]');
+  assert.equal(redisCalls.length, 1, '返回 Redis 工作区复用当前列表');
+  await click('[data-testid="redis-workspace-back"]');
   assert.ok(await evaluate('document.querySelector("[data-testid=mysql-full-window-workspace]") === null'), '切换插件清除数据库旧结果');
   await click('[data-testid="plugin-trigger-server-workspace-smoke"]');
   await until('document.querySelector("[data-testid=plugin-open-workspace]")?.textContent.includes("继续工作区")', '继续服务器工作区');

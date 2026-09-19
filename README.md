@@ -27,7 +27,9 @@ RunbookBridge（Agent运维工作台）是面向个人开发者和运维人员�
 | --- | --- |
 | **Server** | 查看系统、服务与容器状态，读取文件，搜索日志及 `.gz` / `.zip` 轮转归档 |
 | **MySQL** | 搜索表与字段、查看结构，在固定数据库内执行策略允许的 `SELECT` / `EXPLAIN SELECT` |
-| **Redis** | 在配置的 Key pattern 范围内扫描 Key、有界读取数据、查询 TTL |
+| **Redis** | 在配置的 Key pattern 范围内扫描 Key、有界读取数据、查询 TTL；桌面工作区支持五种常用类型浏览、搜索和多标签查看 |
+
+Redis 插件连接后可打开独立的只读工作区，支持 String、Hash、List、Set、ZSet，并按冒号前缀显示 Key 目录树；树上方采用两行紧凑布局，搜索框内可勾选「精确匹配」，更多目录操作收进工具菜单。详见 [Redis 工作区使用说明](docs/redis-workspace-design.md)。
 
 按 **项目 → 环境 → 插件** 组织资源，统一管理环境运维说明、快捷提问和操作记录。MySQL、Redis 可直连，也可通过同环境的 Server 建立 SSH 隧道。
 

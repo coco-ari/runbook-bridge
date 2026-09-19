@@ -270,6 +270,7 @@ if (process.argv.includes('--mcp')) {
       app.__aiOpsClosing = true;
       v2?.networkWatcher?.stop();
       v2?.serverDocker?.dispose();
+      v2?.v2Service?.redisWorkspaceManager?.dispose();
       v2?.serverWorkspaceManager?.dispose();
       v2?.serverWorkspaceFiles?.dispose();
       v2?.pluginProbeManager?.invalidateAll?.();

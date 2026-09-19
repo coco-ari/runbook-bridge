@@ -9,6 +9,13 @@ const mysql = require('mysql2');
 // These are bounded loopback protocol fixtures, not production services. The
 // packaged app still runs its actual preload, IPC, stores, DPAPI vault, network
 // drivers, probes, edit sessions and connection coordinator without replacement.
+function redisFixtureReply(value) {
+  if (Array.isArray(value)) return Buffer.concat([Buffer.from('*' + value.length + '\r\n'), ...value.map(redisFixtureReply)]);
+  if (Number.isInteger(value)) return Buffer.from(':' + value + '\r\n');
+  const bytes = Buffer.from(String(value));
+  return Buffer.concat([Buffer.from('$' + bytes.length + '\r\n'), bytes, Buffer.from('\r\n')]);
+}
+
 async function startLoopbackFixtures() {
   const password = crypto.randomBytes(24).toString('hex');
   const replacement = crypto.randomBytes(24).toString('hex');
@@ -146,6 +153,11 @@ async function startLoopbackFixtures() {
           else if (command === 'PING') { counts.redisPing += 1; socket.write('+PONG\r\n'); }
           else if (command === 'SELECT' && ['0','3'].includes(args[1])) socket.write('+OK\r\n');
           else if (command === 'CLIENT' && args[1]?.toUpperCase() === 'SETINFO') socket.write('+OK\r\n');
+          else if (command === 'SCAN') socket.write(redisFixtureReply(['0',['cache:fixture']]));
+          else if (command === 'TYPE') socket.write(redisFixtureReply(args[1] === 'cache:fixture' ? 'string' : 'none'));
+          else if (command === 'TTL') socket.write(redisFixtureReply(3600));
+          else if (command === 'STRLEN') socket.write(redisFixtureReply(13));
+          else if (command === 'GETRANGE') socket.write(redisFixtureReply('fixture-value'.slice(Number(args[2]), Number(args[3]) + 1)));
           else if (command === 'QUIT') socket.end('+OK\r\n');
           else socket.write('-ERR command outside bounded fixture contract\r\n');
         }
@@ -250,6 +262,51 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
         assert.ok(['PLUGIN_NOT_CONNECTED','PLUGIN_RESOURCE_VALIDATION_REQUIRED'].includes(disconnected.error.code));
         assert.equal(fixture.counts.mysqlQueries, beforeDisconnectedQuery, '断连请求不得进入数据库连接');
         await success('connectPlugin', databaseScope);
+      }
+      if (pluginType === 'redis') {
+        const redisScope = {...scope,pluginInstanceId:plugin.pluginInstanceId};
+        const patternId = plugin.patterns[0].patternId;
+        const scanned = await success('redisWorkspaceScan', {...redisScope,patternId});
+        assert.deepEqual(scanned.keys, ['cache:fixture']);
+        const info = await success('redisWorkspaceInspect', {...redisScope,patternId,key:'cache:fixture'});
+        assert.equal(info.type, 'string');
+        assert.equal(info.ttlSeconds, 3600);
+        const content = await success('redisWorkspaceRead', {...redisScope,patternId,key:'cache:fixture'});
+        assert.equal(content.value.text, 'fixture-value');
+        const denied = await invoke('redisWorkspaceRead', {...redisScope,patternId,key:'cache:fixture',command:'SET'});
+        assert.equal(denied.error.code, 'INVALID_ARGUMENT');
+        await success('redisWorkspaceRelease', redisScope);
+        const waitUi = async (expression, label) => {
+          const deadline = Date.now() + 10000;
+          while (Date.now() < deadline) {
+            if (await cdp.evaluate('Boolean(' + expression + ')')) return;
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          throw new Error('Redis 正式包界面验证超时：' + label);
+        };
+        const clickUi = async (selector) => {
+          await waitUi('document.querySelector(' + JSON.stringify(selector) + ')?.getClientRects().length > 0', '控件可见');
+          await cdp.evaluate('document.querySelector(' + JSON.stringify(selector) + ').click()');
+        };
+        await clickUi('[data-project-id="' + project.projectId + '"]');
+        await clickUi('[data-testid="environment-trigger-' + environment.environmentId + '"]');
+        await clickUi('[data-testid="plugin-trigger-' + plugin.pluginInstanceId + '"]');
+        await waitUi('document.querySelector("[data-testid=plugin-workspace-open]")?.disabled === false', '入口已连接');
+        await clickUi('[data-testid=plugin-workspace-open]');
+        await waitUi('document.querySelector("[data-redis-key=\\"cache:fixture\\"]")', 'Key 列表');
+        await waitUi('document.querySelector(' + JSON.stringify('[data-redis-folder="cache:"]') + ')?.getAttribute("aria-expanded") === "true"', 'Key 目录层级');
+        await clickUi('[data-redis-folder="cache:"]');
+        await waitUi('!document.querySelector(' + JSON.stringify('[data-redis-key="cache:fixture"]') + ')', '目录折叠');
+        await clickUi('[data-redis-folder="cache:"]');
+        await clickUi('[data-redis-key="cache:fixture"]');
+        await waitUi('document.querySelector("[data-testid=redis-value]")?.textContent.includes("fixture-value")', '内容展示');
+        await clickUi('[data-testid=redis-workspace-close]');
+        await clickUi('[data-testid=redis-workspace-confirm-close]');
+        await waitUi('!document.querySelector("[data-testid=redis-workspace]")', '关闭清空');
+        await success('disconnectPlugin', redisScope);
+        const disconnected = await invoke('redisWorkspaceScan', {...redisScope,patternId});
+        assert.equal(disconnected.ok, false);
+        await success('connectPlugin', redisScope);
       }
       const session = await begin(plugin);
       const validation = await success('validatePluginDraft', {

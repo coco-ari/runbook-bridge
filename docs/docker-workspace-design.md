@@ -39,7 +39,7 @@ Socket 属于连接目标配置，保存时沿用现有连接编辑事务和断�
 
 桌面新增 `serverDockerRead` 与 `serverDockerCancel`，只接受当前登记窗口的主框架。取消绑定窗口、作用域和请求 ID。桌面与 MCP 共用读取管理器，读取结束前重新核对连接代次与目标指纹。错误不携带原始远端错误正文。审计记录作用域、操作和结果，不保存日志或详情正文；正文仅驻留内存。
 
-既有 `server_container_inspect` 的 Docker/Podman 契约保留。当前共 40 个 MCP 工具、86 个桌面 preload API。
+既有 `server_container_inspect` 的 Docker/Podman 契约保留。当前共 40 个 MCP 工具、90 个桌面 preload API。
 
 ## 验证
 

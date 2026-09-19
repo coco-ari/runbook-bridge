@@ -744,7 +744,7 @@ async function main() {
     assert.equal(inspection.noPageOverflow, true);
     assert.equal(inspection.overviewOk, true);
     assert.equal(inspection.projectCount, 0);
-    assert.equal(inspection.apiCount, 87);
+    assert.equal(inspection.apiCount, 91);
     const cloudContract = await running.cdp.evaluate("(async () => ({status:await window.aiOps.v2.cloudConfig({action:'status'}),invalid:await window.aiOps.v2.cloudConfig({action:'status',password:'synthetic-rejected'})}))()");
     assert.equal(cloudContract.status.ok,true);
     assert.deepEqual(cloudContract.status.data.projects,[]);
@@ -849,7 +849,7 @@ async function main() {
       return {ok: overview?.ok === true, projectCount: Array.isArray(overview?.data) ? overview.data.length : -1,
         apiCount: Object.keys(window.aiOps.v2).length};
     })()`);
-    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 87});
+    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 91});
     assert.deepEqual(running.httpRequests, []);
     await selectThemePreference(running.cdp, 'system');
     await emulateSystemTheme(running.cdp, 'dark');
@@ -869,7 +869,7 @@ async function main() {
         availableWidth: compactSearch.availableWidth, nativeTextBox: compactSearch.nativeBox?.source ?? 'conservative-cancel-budget'},
     })}\n`);
     process.stdout.write(
-      `Packaged React UI smoke passed (87 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
+      `Packaged React UI smoke passed (91 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
     );
   } catch (error) {
     if (running) {

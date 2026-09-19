@@ -2,6 +2,7 @@ import redisPackage from 'redis';
 import { EventEmitter } from 'node:events';
 import { AppError } from './errors.mjs';
 import { normalizeRedisCursor } from './pagination-cursor.mjs';
+import { RedisWorkspaceReader } from './redis-workspace-reader.mjs';
 
 const { createClient } = redisPackage;
 
@@ -9,15 +10,15 @@ function key(plugin) {
   return `${plugin.projectId}/${plugin.environmentId}/${plugin.pluginInstanceId}`;
 }
 
-function findPattern(plugin, patternId) {
+export function findRedisPattern(plugin, patternId) {
   const pattern = plugin.patterns.find((item) => item.patternId === patternId);
   if (!pattern) throw new AppError('POLICY_DENIED', 'Key patternId 未登记。');
   return pattern;
 }
 
-function keyAllowed(pattern, value) {
+export function redisKeyAllowed(pattern, value) {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
-  return new RegExp(`^${escaped}$`, 'u').test(value);
+  return new RegExp(`^${escaped}$`, 'u').exec(value)?.[0] === value;
 }
 
 async function withTimeout(plugin, operation) {
@@ -56,6 +57,14 @@ export class RedisPluginRuntime extends EventEmitter {
     return session;
   }
 
+  workspaceReader(plugin) {
+    const session = this.require(plugin);
+    const reader = new RedisWorkspaceReader(session.workspaceOptions);
+    session.workspaceReaders.add(reader);
+    reader.onClose = () => session.workspaceReaders.delete(reader);
+    return reader;
+  }
+
   async connect(plugin, suppliedSecrets = {}, { signal = null, attemptToken = null } = {}) {
     if (plugin.pluginType !== 'redis' || plugin.configState !== 'ready') throw new AppError('PLUGIN_CONFIG_INCOMPLETE', 'Redis 插件配置不完整。');
     if (signal?.aborted) throw new AppError('CONNECT_CANCELLED', '连接已取消。');
@@ -74,6 +83,7 @@ export class RedisPluginRuntime extends EventEmitter {
       if (managed) {
         this.sessions.delete(resource);
         managed.closing = true;
+        for (const reader of managed.workspaceReaders ?? []) reader.close();
         try { managed.client?.destroy?.(); } catch { /* Driver may already be closed. */ }
         try { void Promise.resolve(managed.client?.disconnect?.()).catch(() => undefined); } catch { /* Already closed. */ }
         void this.routeManager.closeRelay(plugin, managed.routeGeneration).catch(() => undefined);
@@ -98,7 +108,7 @@ export class RedisPluginRuntime extends EventEmitter {
     try {
       relay = await this.routeManager.createRelay(plugin, {signal});
       assertOwned();
-      client = this.factory({
+      const clientOptions = {
       // RESP3 starts with HELLO, which Redis < 6 and some compatible servers
       // do not implement. The exposed operations only need RESP2 semantics.
       RESP: 2,
@@ -125,11 +135,13 @@ export class RedisPluginRuntime extends EventEmitter {
       ...(plugin.auth.username ? { username: plugin.auth.username } : {}),
       ...(secrets.password ? { password: secrets.password } : {}),
       disableOfflineQueue: true,
-      });
+      };
+      client = this.factory(clientOptions);
       let session = null;
       const lost = (error) => {
         if (!session || session.closing || this.sessions.get(key(plugin)) !== session) return;
         this.sessions.delete(key(plugin));
+        for (const reader of session.workspaceReaders ?? []) reader.close();
         if (this.connectAttempts.get(resource) === session.attemptToken) this.connectAttempts.delete(resource);
         this.routeManager.closeRelay(plugin, session.routeGeneration).catch(() => undefined);
         this.emit('lifecycle', { type:'lost', projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, error });
@@ -140,7 +152,8 @@ export class RedisPluginRuntime extends EventEmitter {
       assertOwned();
       await client.ping();
       assertOwned();
-      session = { client, connectedAt: new Date().toISOString(), routeGeneration: relay.generation, closing:false, attemptToken:owner };
+      session = { client, connectedAt: new Date().toISOString(), routeGeneration: relay.generation, closing:false, attemptToken:owner,
+        workspaceOptions:clientOptions, workspaceReaders:new Set() };
       this.sessions.set(key(plugin), session);
       connected = true;
       return { connected: true, connectedAt: this.sessions.get(key(plugin)).connectedAt, routeGeneration: relay.generation };
@@ -171,6 +184,7 @@ export class RedisPluginRuntime extends EventEmitter {
     if (preserveAttemptToken === null) this.connectAttempts.delete(key(plugin));
     const session = this.sessions.get(key(plugin));
     if (session) session.closing = true;
+    for (const reader of session?.workspaceReaders ?? []) reader.close();
     try {
       if (session?.client) {
         if (session.client.isOpen) await session.client.quit().catch(() => session.client.disconnect?.());
@@ -189,6 +203,7 @@ export class RedisPluginRuntime extends EventEmitter {
     this.sessions.delete(key(plugin));
     if (attemptToken === null || this.connectAttempts.get(key(plugin)) === attemptToken) this.connectAttempts.delete(key(plugin));
     if (session) session.closing = true;
+    for (const reader of session?.workspaceReaders ?? []) reader.close();
     try { session?.client?.destroy?.(); } catch { /* Driver may already be closed. */ }
     try { void Promise.resolve(session?.client?.disconnect?.()).catch(() => undefined); }
     catch { /* Driver may already be closed. */ }
@@ -205,7 +220,7 @@ export class RedisPluginRuntime extends EventEmitter {
   async scan(plugin, { patternId, cursor = '0', limit } = {}) {
     const scanCursor = normalizeRedisCursor(cursor);
     const session = this.require(plugin);
-    const pattern = findPattern(plugin, patternId);
+    const pattern = findRedisPattern(plugin, patternId);
     const count = Math.min(Math.max(Number(limit) || plugin.limits.maxKeys, 1), plugin.limits.maxKeys);
     const result = await withTimeout(plugin, session.client.scan(scanCursor, { MATCH: pattern.pattern, COUNT: count }));
     const returnedCursor = normalizeRedisCursor(result.cursor);
@@ -221,9 +236,9 @@ export class RedisPluginRuntime extends EventEmitter {
 
   async read(plugin, { patternId, key: redisKey, field = null } = {}) {
     const session = this.require(plugin);
-    const pattern = findPattern(plugin, patternId);
+    const pattern = findRedisPattern(plugin, patternId);
     const target = String(redisKey ?? '');
-    if (!target || Buffer.byteLength(target) > 1024 || !keyAllowed(pattern.pattern, target)) throw new AppError('POLICY_DENIED', 'Redis Key 不在允许范围内。');
+    if (!target || Buffer.byteLength(target) > 1024 || !redisKeyAllowed(pattern.pattern, target)) throw new AppError('POLICY_DENIED', 'Redis Key 不在允许范围内。');
     const type = await withTimeout(plugin, session.client.type(target));
     if (type === 'none') return { key: target, type, exists: false };
     if (type === 'string') {
@@ -254,15 +269,19 @@ export class RedisPluginRuntime extends EventEmitter {
 
   async ttl(plugin, { patternId, key: redisKey } = {}) {
     const session = this.require(plugin);
-    const pattern = findPattern(plugin, patternId);
+    const pattern = findRedisPattern(plugin, patternId);
     const target = String(redisKey ?? '');
-    if (!target || !keyAllowed(pattern.pattern, target)) throw new AppError('POLICY_DENIED', 'Redis Key 不在允许范围内。');
+    if (!target || !redisKeyAllowed(pattern.pattern, target)) throw new AppError('POLICY_DENIED', 'Redis Key 不在允许范围内。');
     return { key: target, ttlSeconds: await withTimeout(plugin, session.client.ttl(target)) };
   }
 
   async closeAll() {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
-    await Promise.all(sessions.map(async (session) => { session.closing = true; await session.client.disconnect?.().catch(() => undefined); }));
+    await Promise.all(sessions.map(async (session) => {
+      session.closing = true;
+      for (const reader of session.workspaceReaders ?? []) reader.close();
+      await session.client.disconnect?.().catch(() => undefined);
+    }));
   }
 }

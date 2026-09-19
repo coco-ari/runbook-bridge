@@ -11,6 +11,8 @@ import {
 } from "@/bridge/ai-ops-v2"
 import type { ServerWorkspaceEntry } from "@/features/server-workspace/ServerWorkspace"
 import { serverWorkspaceKey } from "@/features/server-workspace/workspace-model"
+import { RedisWorkspace } from "@/features/redis/RedisWorkspace"
+import { redisWorkspaceSessionKey } from "@/features/redis/redis-workspace-model"
 import { MysqlDatabaseWorkspace } from "@/features/database/MysqlDatabaseWorkspace"
 import { mysqlDatabaseName, mysqlWorkspaceMatchesScope, mysqlWorkspaceSessionKey } from "@/features/database/mysql-workspace-model"
 import { normalizeEnvironmentRuntime } from "@/features/workspace/workspace-read-model"
@@ -157,6 +159,7 @@ export function AppShell() {
     if (["project-deleted", "environment-deleted", "plugin-deleted"].includes(change.type) && change.projectId) removeServerWorkspaces({ projectId: change.projectId, ...(change.environmentId ? { environmentId: change.environmentId } : {}), ...(change.pluginInstanceId ? { pluginInstanceId: change.pluginInstanceId } : {}) })
   }), [api, removeServerWorkspaces])
   const [commandOpen, setCommandOpen] = useState(false)
+  const [redisSession, setRedisSession] = useState<{ key: string; visible: boolean } | null>(null)
   const [databaseSession, setDatabaseSession] = useState<{ key: string; visible: boolean } | null>(null)
   const [detailTab, setDetailTab] = useState("overview")
   const [notice, setNotice] = useState("")
@@ -352,7 +355,50 @@ export function AppShell() {
     ? mysqlWorkspaceSessionKey(databaseScope, selectedPluginRecord) : null
   const databaseWorkspaceRetained = Boolean(databaseSession && databaseSession.key === databaseSessionKey)
   const databaseWorkspaceVisible = databaseWorkspaceRetained && Boolean(databaseSession?.visible) && !activeServerWorkspace
-  const workspaceVisible = Boolean(activeServerWorkspace) || databaseWorkspaceVisible
+  const redisScope = selectedProject && selectedEnvironment && selectedPluginRecord?.pluginType === "redis"
+    ? { projectId: selectedProject.projectId, environmentId: selectedEnvironment.environmentId, pluginInstanceId: selectedPluginRecord.pluginInstanceId }
+    : null
+  const redisConnected = Boolean(redisScope && !environmentStatus.error
+    && scopedRuntime?.plugins.find((plugin) => plugin.pluginInstanceId === redisScope.pluginInstanceId)?.status === "connected")
+  const redisSessionKey = redisScope && selectedPluginRecord && redisConnected
+    && mysqlWorkspaceMatchesScope(redisScope, selectedPluginRecord) ? redisWorkspaceSessionKey(redisScope, selectedPluginRecord) : null
+  const redisWorkspaceRetained = Boolean(redisSession && redisSession.key === redisSessionKey)
+  const redisWorkspaceVisible = redisWorkspaceRetained && Boolean(redisSession?.visible) && !activeServerWorkspace
+  useEffect(() => {
+    if (redisSession && redisSession.key !== redisSessionKey) setRedisSession(null)
+  }, [redisSession, redisSessionKey])
+  useEffect(() => {
+    if (!redisSessionKey || !redisScope) return
+    let latestSequence = rawRuntime?.sequence ?? -1
+    return api.onEnvironmentStatus((event) => {
+      const normalized = normalizeEnvironmentRuntime(event, redisScope)
+      if (!normalized || normalized.sequence <= latestSequence) return
+      latestSequence = normalized.sequence
+      const plugin = normalized.plugins.find((item) => item.pluginInstanceId === redisScope.pluginInstanceId)
+      // 断连与重连事件即使在同一批渲染到达，也不能复用旧内容和游标。
+      if (plugin ? plugin.status !== "connected" : !normalized.pluginsPartial) setRedisSession(null)
+    })
+    // 完整会话键约束订阅作用域，序号只在订阅内递增。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, redisSessionKey])
+  const previousRedisVisible = useRef(false)
+  useEffect(() => {
+    const restore = redisWorkspaceVisible || previousRedisVisible.current
+    previousRedisVisible.current = redisWorkspaceVisible
+    if (!restore) return
+    if (redisWorkspaceVisible) setCommandOpen(false)
+    const timer = window.setTimeout(() => focusWorkspaceElement(document.querySelector<HTMLButtonElement>(
+      redisWorkspaceVisible ? '[data-testid="redis-workspace-back"]' : '[data-testid="plugin-workspace-open"]')), 0)
+    return () => window.clearTimeout(timer)
+  }, [redisWorkspaceVisible])
+  const openRedisWorkspace = () => {
+    if (!redisSessionKey) return
+    setActiveServerWorkspace(null)
+    setDatabaseSession((current) => current ? { ...current, visible: false } : null)
+    setRedisSession({ key: redisSessionKey, visible: true })
+  }
+  const closeRedisWorkspace = () => setRedisSession((current) => current ? { ...current, visible: false } : null)
+  const workspaceVisible = Boolean(activeServerWorkspace) || databaseWorkspaceVisible || redisWorkspaceVisible
   useEffect(() => {
     if (databaseSession && databaseSession.key !== databaseSessionKey) setDatabaseSession(null)
   }, [databaseSession, databaseSessionKey])
@@ -1192,6 +1238,8 @@ export function AppShell() {
             />
           ) : <WorkspaceDetail
             onOpenDatabaseWorkspace={openDatabaseWorkspace}
+            onOpenRedisWorkspace={openRedisWorkspace}
+            redisWorkspaceRetained={redisWorkspaceRetained}
             databaseWorkspaceRetained={databaseWorkspaceRetained}
             activeTab={detailTab}
             api={api}
@@ -1255,6 +1303,14 @@ export function AppShell() {
             projectName={selectedProject.name}
             scope={databaseScope}
           />
+        </div>
+      ) : null}
+
+      {redisWorkspaceRetained && redisScope && selectedPluginRecord && selectedProject && selectedEnvironment ? (
+        <div className="absolute inset-0 z-40 min-h-0 min-w-0 bg-background" data-testid="redis-full-window-workspace" hidden={!redisWorkspaceVisible} inert={!redisWorkspaceVisible}>
+          <RedisWorkspace api={api} scope={redisScope} plugin={selectedPluginRecord} key={redisSessionKey}
+            projectName={selectedProject.name} environmentName={selectedEnvironment.name} visible={redisWorkspaceVisible}
+            onBack={closeRedisWorkspace} onClose={() => { setRedisSession(null); closeRedisWorkspace() }} />
         </div>
       ) : null}
 
