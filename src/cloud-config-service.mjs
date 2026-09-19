@@ -14,8 +14,8 @@ async function deadline(promise,ms = 10_000) {
 }
 
 export class CloudConfigService {
-  constructor({workspace,mutationCoordinator,connectionManager,contextManager,confirmationManager,configTransactionJournal,pluginEditSessionManager,serverWorkspaceManager,serverWorkspaceFiles,broadcast,client = new CloudConfigClient()}) {
-    Object.assign(this,{workspace,mutationCoordinator,connectionManager,contextManager,confirmationManager,configTransactionJournal,pluginEditSessionManager,serverWorkspaceManager,serverWorkspaceFiles,broadcast,client});
+  constructor({workspace,mutationCoordinator,connectionManager,pluginManager,v2Service,contextManager,confirmationManager,configTransactionJournal,pluginEditSessionManager,serverWorkspaceManager,serverWorkspaceFiles,broadcast,client = new CloudConfigClient()}) {
+    Object.assign(this,{workspace,mutationCoordinator,connectionManager,pluginManager,v2Service,contextManager,confirmationManager,configTransactionJournal,pluginEditSessionManager,serverWorkspaceManager,serverWorkspaceFiles,broadcast,client});
     this.store = workspace.store;
     this.vault = workspace.vault;
     this.state = emptyState();
@@ -192,8 +192,12 @@ export class CloudConfigService {
       for (const environmentId of project.environmentOrder) {
         this.configTransactionJournal?.assertEnvironmentAvailable(projectId,environmentId);
         await deadline(this.connectionManager?.disconnect(projectId,environmentId,'cloud-config'),15_000);
+        for (const plugin of await this.store.listPlugins(projectId,environmentId)) {
+          if (this.pluginManager?.status(plugin)?.connected) throw cloudError('PROJECT_BUSY','项目仍有插件连接未断开，请结束后重试。');
+        }
       }
     }
+    this.v2Service?.redisWorkspaceManager?.invalidate({projectId});
     this.serverWorkspaceManager?.closeScope({projectId});
     this.serverWorkspaceFiles?.closeScope({projectId});
     this.pluginEditSessionManager?.invalidateProject(projectId);

@@ -14,6 +14,7 @@ import { PluginCredentialVault, pluginCredentialInternals } from '../src/plugin-
 import { WorkspaceMutationCoordinator } from '../src/workspace-mutation-coordinator.mjs';
 import { newCloudMeta, deriveCloudKeys, encryptCloudSnapshot, decryptCloudSnapshot, cloudHash, validateCloudMeta } from '../src/cloud-config-crypto.mjs';
 import { exportCloudProject, snapshotDigest, normalizeCloudSnapshot, cloudBackupDiff, cloudProjectDiff } from '../src/cloud-config-snapshot.mjs';
+import { EnvironmentConnectionManager } from '../src/environment-connection-manager.mjs';
 import { registerCloudConfigIpc } from '../src/cloud-config-ipc.mjs';
 
 const PASSWORD = 'synthetic-cloud-password-for-tests';
@@ -82,6 +83,33 @@ test('恢复预览区分配置文件类型，并提示删除插件中的凭据�
   assert.equal(diff.credentialsChanged,false);
   const project = {name:'合成项目',environments:[{environmentId:'env-test',name:'测试',runbook:'',questions:[],plugins:[{config:{pluginInstanceId:'server-test'},secrets:{password:'synthetic-removed-password'}}]}]};
   assert.equal(cloudProjectDiff(project,{...project,environments:[]}).credentialsChanged,true);
+});
+
+test('真实连接管理器按依赖断开并清除浏览会话，断开失败时阻止导入',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client);
+  const p = await project(a);
+  await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  await upload(a,p.projectId);
+  const connected = new Set(['server-test','mysql-test','redis-test']), disconnected = [], invalidated = [];
+  const plugins = {
+    status:plugin => ({connected:connected.has(plugin.pluginInstanceId)}),
+    disconnect:async plugin => { disconnected.push(plugin.pluginInstanceId); connected.delete(plugin.pluginInstanceId); },
+  };
+  a.service.pluginManager = plugins;
+  a.service.connectionManager = new EnvironmentConnectionManager(a.store,plugins,{mutationCoordinator:a.coordinator});
+  a.service.v2Service = {redisWorkspaceManager:{invalidate:scope => invalidated.push(scope)}};
+  const imported = await download(a,p.projectId);
+  assert.equal(imported.results[0].status,'imported');
+  assert.equal(connected.size,0);
+  assert.equal(disconnected.at(-1),'server-test');
+  assert.deepEqual(invalidated,[{projectId:p.projectId}]);
+  assert.equal(a.service.connectionManager.snapshot(p.projectId,'env-test').desiredConnected,false);
+  const before = snapshotDigest(await a.workspace.capture(p.projectId));
+  connected.add('server-test');
+  plugins.disconnect = async () => { throw new Error('synthetic disconnect failure'); };
+  const rejected = await download(a,p.projectId);
+  assert.equal(rejected.results[0].error.code,'CLOUD_PROJECT_BUSY');
+  assert.equal(snapshotDigest(await a.workspace.capture(p.projectId)),before);
 });
 
 test('云快照加密认证绑定仓库与父版本并拒绝篡改',async () => {
