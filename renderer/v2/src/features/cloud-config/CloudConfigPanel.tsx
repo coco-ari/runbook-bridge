@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { CaretDown, CheckCircle, ClockCounterClockwise, Cloud, Copy, Info, LinkBreak, LockKey, ShieldCheck, SpinnerGap, WarningCircle } from "@phosphor-icons/react"
+import { CaretDown, CheckCircle, ClockCounterClockwise, Cloud, Copy, Info, LinkBreak, LockKey, ShieldCheck, SpinnerGap, WarningCircle, X } from "@phosphor-icons/react"
 import type { AiOpsV2Api } from "@/bridge/ai-ops-v2"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -22,6 +22,7 @@ function HttpNotice({ url }: { readonly url: string }) {
 }
 
 export function CloudConfigPanel({ api, onChanged, onBusyChange }: { api: AiOpsV2Api; onChanged: () => void; onBusyChange: (busy: boolean) => void }) {
+  const [view, setView] = useState<"sync" | "repository" | "backups">("sync")
   const [status, setStatus] = useState<CloudConfigData>({})
   const [catalog, setCatalog] = useState<CloudConfigData>({})
   const [catalogState, setCatalogState] = useState<"loading" | "ready" | "error">("loading")
@@ -91,6 +92,7 @@ export function CloudConfigPanel({ api, onChanged, onBusyChange }: { api: AiOpsV
   const returnToSelection = () => {
     const restoring = plan?.direction === "restore"
     clearPlan()
+    if (restoring) setView("backups")
     requestAnimationFrame(() => {
       if (restoring) {
         const backups = document.querySelector<HTMLDetailsElement>('[data-testid="cloud-backups"]')
@@ -119,13 +121,13 @@ export function CloudConfigPanel({ api, onChanged, onBusyChange }: { api: AiOpsV
   }
   const bind = () => run(async () => {
     const next = await call(creating ? { action: "create", serviceUrl: url, adminToken, password, remember } : { action: "bind", url, password, remember })
-    setStatus(next); setUrl(next.url ?? ""); setCreating(false); setPassword(""); setAdminToken(""); setShowPassword(false)
+    setStatus(next); setUrl(next.url ?? ""); setCreating(false); setView("sync"); setPassword(""); setAdminToken(""); setShowPassword(false)
     resetSelection(); setSnapshotId(""); await loadCatalog()
     setNotice("仓库已解锁。选择要上传或下载的项目，即可开始同步。")
   }, creating ? "正在创建云仓库…" : "正在解锁云仓库…")
   const unbind = () => run(async () => {
     const next = await call({ action: "unbind" })
-    setStatus(next); setCatalog({}); setUrl(""); resetSelection(); setSnapshotId("")
+    setStatus(next); setView("repository"); setCatalog({}); setUrl(""); resetSelection(); setSnapshotId("")
     setPassword(""); setAdminToken(""); setShowPassword(false); setRemember(false)
     setNotice("已解除本机绑定，云端项目仍会保留。")
   })
@@ -149,38 +151,53 @@ export function CloudConfigPanel({ api, onChanged, onBusyChange }: { api: AiOpsV
   }
   const projects: readonly CloudProject[] = direction === "upload" ? status.projects ?? [] : catalog.projects ?? []
 
-  return <div className="space-y-5 text-sm" data-testid="cloud-config-panel" aria-busy={busy}>
-    {error ? <div role="alert" className="flex items-start gap-2.5 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-destructive"><WarningCircle className="mt-0.5 shrink-0" size={18} aria-hidden="true" /><p className="min-w-0 break-words leading-6">{error}</p></div> : null}
-    {notice ? <div role="status" className="flex items-start gap-2.5 rounded-xl border border-primary/20 bg-primary/5 p-4"><Info className="mt-0.5 shrink-0 text-primary" size={18} aria-hidden="true" /><p className="min-w-0 break-words whitespace-pre-line text-xs leading-6">{notice}</p></div> : null}
+  const activeView = !status.unlocked && view === "sync" ? "repository" : view
+  const changeView = (next: typeof view) => {
+    clearPlan(); setView(next)
+    requestAnimationFrame(() => {
+      const id = next === "sync" ? "cloud-project-selection" : next === "repository" ? "cloud-repository-heading" : "cloud-backups-heading"
+      document.getElementById(id)?.focus({ preventScroll: true })
+    })
+  }
 
+  return <div className="flex min-h-0 flex-1 flex-col gap-3 text-sm" data-testid="cloud-config-panel" aria-busy={busy}>
+    {error || notice ? <div role={error ? "alert" : "status"} className={"flex shrink-0 items-start gap-2 rounded-lg border px-3 py-2 " + (error ? "border-destructive/30 bg-destructive/5 text-destructive" : "border-primary/20 bg-primary/5")}>
+      {error ? <WarningCircle className="mt-1 shrink-0" size={16} aria-hidden="true" /> : <Info className="mt-1 shrink-0 text-primary" size={16} aria-hidden="true" />}
+      <p className="max-h-20 min-w-0 flex-1 overflow-y-auto break-words whitespace-pre-line text-xs leading-6">{[error, notice].filter(Boolean).join("\n")}</p>
+      <Button size="icon-xs" variant="ghost" aria-label="关闭提示" onClick={() => { setError(""); setNotice("") }}><X size={14} /></Button>
+    </div> : null}
+
+    {!initializing && (status.unlocked || (status.backups ?? []).length > 0) ? <div className="shrink-0 space-y-2" data-testid="cloud-workspace-navigation">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <Cloud size={18} className={status.unlocked ? "shrink-0 text-success" : "shrink-0 text-muted-foreground"} aria-hidden="true" />
+          <span className="text-xs font-medium">{status.unlocked ? "仓库已解锁" : "未连接云仓库"}</span>
+          {status.unlocked ? <span className="min-w-0 truncate text-xs text-muted-foreground" data-testid="cloud-repository-host" title={repositoryHost(url)}>{repositoryHost(url)}</span> : null}
+        </div>
+        <nav className="flex gap-1" aria-label="云配置栏目">
+          <Button size="sm" variant={!plan && activeView === "sync" ? "secondary" : "ghost"} className="h-7 text-xs" disabled={busy || !status.unlocked} aria-current={!plan && activeView === "sync" ? "page" : undefined} data-testid="cloud-view-sync" onClick={() => changeView("sync")}>项目同步</Button>
+          <Button size="sm" variant={!plan && activeView === "repository" ? "secondary" : "ghost"} className="h-7 text-xs" disabled={busy} aria-current={!plan && activeView === "repository" ? "page" : undefined} data-testid="cloud-view-repository" onClick={() => changeView("repository")}>仓库设置</Button>
+          {(status.backups ?? []).length ? <Button size="sm" variant={!plan && activeView === "backups" ? "secondary" : "ghost"} className="h-7 text-xs" disabled={busy} aria-current={!plan && activeView === "backups" ? "page" : undefined} data-testid="cloud-view-backups" onClick={() => changeView("backups")}>本地备份（{status.backups?.length}）</Button> : null}
+        </nav>
+      </div>
+      {status.unlocked && activeView !== "repository" ? <HttpNotice url={url} /> : null}
+    </div> : null}
+
+    <div hidden={activeView !== "repository" || Boolean(plan)} className={activeView === "repository" && !plan ? "min-h-0 flex-1 overflow-y-auto" : "hidden"}>
     <fieldset disabled={busy} className="min-w-0 rounded-xl border bg-card shadow-sm" aria-label="云仓库">
       {initializing ? <div className="flex items-center gap-3 p-5 text-muted-foreground"><SpinnerGap className="motion-safe:animate-spin" size={20} aria-hidden="true" /><span>正在加载云仓库…</span></div>
-        : status.unlocked ? <>
-          <div className="flex flex-wrap items-center justify-between gap-4 p-4 sm:p-5">
-            <div className="flex min-w-0 flex-1 items-center gap-3">
-              <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-success/10 text-success"><Cloud size={24} weight="duotone" aria-hidden="true" /></span>
-              <div className="min-w-0 space-y-1.5">
-                <div className="flex flex-wrap items-center gap-2"><h2 className="font-semibold">云配置仓库</h2><Badge variant="success"><CheckCircle size={12} aria-hidden="true" />已解锁</Badge></div>
-                <p className="break-all text-xs text-muted-foreground" data-testid="cloud-repository-host">{repositoryHost(url)}<span className="mx-2 text-border" aria-hidden="true">·</span>{status.remembered ? "已在本机记住" : "仅本次会话"}</p>
-              </div>
-            </div>
+        : status.unlocked ? <div className="space-y-4 p-4 sm:p-5" data-testid="cloud-repository-details">
+          <div className="flex flex-wrap items-center gap-2"><h2 id="cloud-repository-heading" tabIndex={-1} className="font-semibold outline-none">仓库设置</h2><Badge variant="success"><CheckCircle size={12} aria-hidden="true" />已解锁</Badge></div>
+          <p className="flex items-center gap-2 text-xs text-muted-foreground"><ShieldCheck size={15} aria-hidden="true" />配置与凭据均加密保存 · {status.remembered ? "已在本机记住" : "仅本次会话"}</p>
+          <label className="grid gap-2 text-xs font-medium">仓库链接<Input id="cloud-url" readOnly autoComplete="off" value={url} /></label>
+          <HttpNotice url={url} />
+          <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant="outline" onClick={() => void run(async () => { await navigator.clipboard.writeText(status.url ?? ""); setNotice("已复制仓库链接。") })}><Copy size={15} aria-hidden="true" />复制链接</Button>
+            <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void unbind()}><LinkBreak size={15} aria-hidden="true" />解除绑定</Button>
           </div>
-          <div className="space-y-3 border-t px-4 py-3 sm:px-5">
-            <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
-              <p className="flex items-center gap-1.5 text-xs text-muted-foreground"><ShieldCheck size={15} aria-hidden="true" />配置与凭据均加密保存</p>
-              <details className="group min-w-0 open:basis-full" data-testid="cloud-repository-details">
-                <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-sm text-xs text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">仓库设置<CaretDown className="transition-transform group-open:rotate-180" size={12} aria-hidden="true" /></summary>
-                <div className="mt-3 space-y-3 rounded-lg bg-muted/40 p-3">
-                  <label className="grid gap-2 text-xs font-medium">仓库链接<Input id="cloud-url" readOnly autoComplete="off" value={url} /></label>
-                  <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-muted-foreground">解除绑定只移除本机访问，不会删除云端项目。</p><Button size="sm" variant="ghost" className="text-destructive" onClick={() => void unbind()}><LinkBreak size={15} aria-hidden="true" />解除绑定</Button></div>
-                </div>
-              </details>
-            </div>
-            <HttpNotice url={url} />
-          </div>
-        </> : <div className="space-y-5 p-5 sm:p-6">
-          <div className="flex items-start gap-3"><span className="grid size-11 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><LockKey size={22} aria-hidden="true" /></span><div className="space-y-1.5"><h2 className="font-semibold">{creating ? "创建云仓库" : "连接云仓库"}</h2><p className="text-xs leading-5 text-muted-foreground">{creating ? "创建一个属于你的加密仓库，用于多台电脑同步。" : "输入仓库链接和密码，将项目配置带到这台电脑。"}</p></div></div>
+          <p className="text-xs text-muted-foreground">解除绑定只移除本机访问，不会删除云端项目。</p>
+        </div> : <div className="space-y-5 p-5 sm:p-6">
+          <div className="flex items-start gap-3"><span className="grid size-11 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><LockKey size={22} aria-hidden="true" /></span><div className="space-y-1.5"><h2 id="cloud-repository-heading" tabIndex={-1} className="font-semibold outline-none">{creating ? "创建云仓库" : "连接云仓库"}</h2><p className="text-xs leading-5 text-muted-foreground">{creating ? "创建一个属于你的加密仓库，用于多台电脑同步。" : "输入仓库链接和密码，将项目配置带到这台电脑。"}</p></div></div>
           <div className="grid gap-4">
             <label className="grid gap-2 text-xs font-medium">{creating ? "云服务地址" : "仓库链接"}<Input id="cloud-url" autoComplete="off" value={url} onChange={e => { setUrl(e.target.value); clearPlan() }} placeholder={creating ? "请输入云服务根地址" : "粘贴完整的仓库链接"} /></label>
             <HttpNotice url={url} />
@@ -196,19 +213,20 @@ export function CloudConfigPanel({ api, onChanged, onBusyChange }: { api: AiOpsV
           <div className="flex flex-wrap gap-2 border-t pt-4"><Button onClick={() => void bind()} disabled={!url.trim() || [...password].length < 16 || (creating && !adminToken)}>{creating ? "创建仓库" : "解锁仓库"}</Button><Button variant="ghost" onClick={() => { setCreating(!creating); setUrl(""); setPassword(creating ? "" : randomPassword()); setShowPassword(!creating); setAdminToken(""); setError(""); setNotice("") }}>{creating ? "使用已有仓库" : "创建新仓库"}</Button></div>
         </div>}
     </fieldset>
+    </div>
 
-    {busy ? <p role="status" className="flex items-center gap-2 px-1 text-xs text-muted-foreground"><SpinnerGap className="motion-safe:animate-spin" size={16} aria-hidden="true" />{busyLabel}</p> : null}
+    {busy ? <p role="status" className="flex shrink-0 items-center gap-2 px-1 text-xs text-muted-foreground"><SpinnerGap className="motion-safe:animate-spin" size={16} aria-hidden="true" />{busyLabel}</p> : null}
 
-    {plan ? <CloudSyncPreview plan={plan} choices={choices} busy={busy} onChoice={(rowId, choice) => setChoices(current => ({ ...current, [rowId]: choice }))} onBack={returnToSelection} onConfirm={confirm} />
-      : status.unlocked ? <CloudProjectPicker
+    {plan ? <div className="min-h-0 flex-1 overflow-y-auto"><CloudSyncPreview plan={plan} choices={choices} busy={busy} onChoice={(rowId, choice) => setChoices(current => ({ ...current, [rowId]: choice }))} onBack={returnToSelection} onConfirm={confirm} /></div>
+      : status.unlocked && activeView === "sync" ? <CloudProjectPicker
         busy={busy} loading={direction === "download" && catalogState === "loading"} loadError={direction === "download" && catalogState === "error"} direction={direction} projects={projects} selected={selected} query={query} snapshotId={snapshotId} versions={catalog.versions ?? []}
         onDirectionChange={changeDirection} onQueryChange={setQuery} onSelectionChange={next => { clearPlan(); setSelected(next) }} onSnapshotChange={changeSnapshot} onRefresh={refresh}
         onPreview={() => void run(async () => showPlan(await call({ action: "prepare", direction, projectIds: selected, snapshotId: direction === "download" ? snapshotId || null : null })), "正在生成同步预览…")}
       /> : null}
 
-    {(status.backups ?? []).length ? <details className="group rounded-xl border bg-card" data-testid="cloud-backups">
-      <summary className="flex cursor-pointer list-none items-center gap-3 rounded-xl p-4 focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden"><span className="grid size-9 place-items-center rounded-lg bg-muted text-muted-foreground"><ClockCounterClockwise size={19} aria-hidden="true" /></span><span className="min-w-0 flex-1"><span className="block text-sm font-medium">本地加密备份（{status.backups?.length}）</span><span className="mt-1 block text-xs text-muted-foreground">导入前自动保存，可预览并恢复之前的配置。</span></span><CaretDown className="shrink-0 text-muted-foreground transition-transform group-open:rotate-180" size={14} aria-hidden="true" /></summary>
+    {(status.backups ?? []).length ? <div hidden={activeView !== "backups" || Boolean(plan)} className={activeView === "backups" && !plan ? "min-h-0 flex-1 overflow-y-auto" : "hidden"}><details open className="group rounded-xl border bg-card" data-testid="cloud-backups">
+      <summary className="flex cursor-pointer list-none items-center gap-3 rounded-xl p-4 focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden"><span className="grid size-9 place-items-center rounded-lg bg-muted text-muted-foreground"><ClockCounterClockwise size={19} aria-hidden="true" /></span><span className="min-w-0 flex-1"><span id="cloud-backups-heading" tabIndex={-1} className="block text-sm font-medium outline-none">本地加密备份（{status.backups?.length}）</span><span className="mt-1 block text-xs text-muted-foreground">导入前自动保存，可预览并恢复之前的配置。</span></span><CaretDown className="shrink-0 text-muted-foreground transition-transform group-open:rotate-180" size={14} aria-hidden="true" /></summary>
       <div className="divide-y border-t">{status.backups?.map(backup => <div key={backup.backupId} className="flex flex-wrap items-center justify-between gap-3 p-4"><div className="min-w-0 space-y-1"><p className="break-words text-sm font-medium">{backup.name}</p><p className="text-xs text-muted-foreground">{new Date(backup.createdAt).toLocaleString()}</p></div><Button size="sm" variant="outline" disabled={busy} onClick={event => { backupReturnFocusRef.current = event.currentTarget; void run(async () => showPlan(await call({ action: "prepareRestore", backupId: backup.backupId })), "正在生成恢复预览…") }}><ClockCounterClockwise size={14} aria-hidden="true" />预览恢复</Button></div>)}</div>
-    </details> : null}
+    </details></div> : null}
   </div>
 }

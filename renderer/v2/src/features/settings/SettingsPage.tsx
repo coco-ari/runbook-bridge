@@ -4,6 +4,7 @@ import type { AiOpsV2Api } from "@/bridge/ai-ops-v2"
 import { ThemeMenu } from "@/components/app-shell/ThemeMenu"
 import { Button } from "@/components/ui/button"
 import { CloudConfigPanel } from "@/features/cloud-config/CloudConfigPanel"
+import { cn } from "@/lib/utils"
 
 export function SettingsPage({ api, onBack, onChanged }: {
   readonly api: AiOpsV2Api
@@ -26,9 +27,9 @@ export function SettingsPage({ api, onBack, onChanged }: {
         <Button className="flex-1 justify-start sm:flex-none" variant={section === "cloud" ? "secondary" : "ghost"} size="sm" aria-current={section === "cloud" ? "page" : undefined} disabled={busy} data-testid="settings-cloud" onClick={() => { if (!cloudVisited) setBusy(true); setCloudVisited(true); setSection("cloud") }}><Cloud />云配置</Button>
       </nav>
     </aside>
-    <main className="min-h-0 min-w-0 flex-1 overflow-y-auto p-5 sm:p-8" aria-labelledby="settings-heading" data-testid="settings-main">
-      <div className="max-w-5xl space-y-6">
-        <header className="space-y-2">
+    <main className={cn("min-h-0 min-w-0 flex-1 p-4 sm:p-6", section === "cloud" ? "flex flex-col overflow-hidden" : "overflow-y-auto")} aria-labelledby="settings-heading" data-testid="settings-main">
+      <div className={cn("w-full max-w-6xl", section === "cloud" ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-6")}>
+        <header className="shrink-0 space-y-1">
           <h1 className="text-xl font-semibold tracking-tight outline-none" id="settings-heading" ref={headingRef} tabIndex={-1}>{section === "appearance" ? "外观主题" : "云配置"}</h1>
           <p className="text-sm text-muted-foreground">{section === "appearance" ? "选择适合你的界面外观，设置会应用到整个工作台。" : "加密保存项目、插件与凭据，在其他电脑上下载使用。"}</p>
         </header>
@@ -37,7 +38,7 @@ export function SettingsPage({ api, onBack, onChanged }: {
           <ThemeMenu />
           <p className="text-xs text-muted-foreground">更改立即生效，并保存在本机。</p>
         </section> : null}
-        {cloudVisited ? <div hidden={section !== "cloud"}><CloudConfigPanel api={api} onChanged={onChanged} onBusyChange={setBusy} /></div> : null}
+        {cloudVisited ? <div hidden={section !== "cloud"} className={section === "cloud" ? "flex min-h-0 flex-1 flex-col" : "hidden"}><CloudConfigPanel api={api} onChanged={onChanged} onBusyChange={setBusy} /></div> : null}
       </div>
     </main>
   </div>
