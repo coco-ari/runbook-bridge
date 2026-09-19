@@ -1,5 +1,5 @@
-import { useEffect, useId, useRef, useState } from "react"
-import { Copy, Database, List, MagnifyingGlass, PushPin, ShieldCheck, X } from "@phosphor-icons/react"
+import { useId, useRef, useState } from "react"
+import { Copy, Database, MagnifyingGlass, PushPin, ShieldCheck } from "@phosphor-icons/react"
 import { toast } from "sonner"
 import { usePanelRef } from "react-resizable-panels"
 import type { AiOpsV2Api, PluginScope, RedisValuePreview } from "@/bridge/ai-ops-v2"
@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { WorkspaceBackButton, WorkspaceHeaderActions, WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
+import { WorkspaceLayoutControls, WorkspaceTabBar } from "@/components/workspace/WorkspaceLayoutControls"
 import { copyText } from "@/lib/clipboard"
 import { redisBytes, redisTtl, REDIS_MAX_KEYS } from "./redis-workspace-model"
 import { useRedisWorkspace, type RedisTab } from "./use-redis-workspace"
@@ -129,13 +130,6 @@ export function RedisWorkspace({ api, scope, plugin, projectName, environmentNam
   const sidebarRef = usePanelRef()
   const searchRef = useRef<HTMLInputElement>(null)
   const uniqueId = useId()
-  const focusExpandButton = useRef(false)
-  useEffect(() => {
-    if (!sidebar && focusExpandButton.current) {
-      focusExpandButton.current = false
-      document.getElementById(uniqueId + "-expand-keys")?.focus()
-    }
-  }, [sidebar, uniqueId])
   const activeTab = state.tabs.find((tab) => tab.id === state.activeId)
   async function disconnect() {
     setDisconnecting(true)
@@ -171,10 +165,6 @@ export function RedisWorkspace({ api, scope, plugin, projectName, environmentNam
             <RedisKeyBrowser keys={state.keys} activeKey={activeTab?.key} keyword={state.keyword}
               queryKey={JSON.stringify([state.patternId, state.keyword])} loading={state.loading} visible={visible}
               refreshDisabled={!state.patternId} onRefresh={() => void state.scan(false)}
-              onCollapse={() => {
-                focusExpandButton.current = true
-                sidebarRef.current?.collapse()
-              }}
               identity={<RedisScopePicker database={String(plugin.target?.db ?? 0)} patterns={state.patterns} patternId={state.patternId} visible={visible}
                 onChange={(value) => { setSearch(""); state.changePattern(value) }} />}
               search={<form className="redis-searchbox" onSubmit={(event) => { event.preventDefault(); submitSearch() }}>
@@ -195,8 +185,7 @@ export function RedisWorkspace({ api, scope, plugin, projectName, environmentNam
         </ResizablePanel><ResizableHandle aria-label="调整 Key 列表宽度" withHandle />
         <ResizablePanel id={uniqueId + "-content"} minSize="240px">
           <div className="redis-content-pane">
-            <div className="redis-tab-strip">
-              {!sidebar ? <Button id={uniqueId + "-expand-keys"} variant="ghost" size="icon-sm" aria-label="展开 Key 列表" onClick={() => sidebarRef.current?.expand()}><List /></Button> : null}
+            <WorkspaceTabBar className="redis-tab-strip">
               <div className="redis-tabs" role="tablist" aria-label="已打开的 Redis Key">
                 {state.tabs.map((tab, index) => <div key={tab.id} className="redis-tab" data-active={tab.id === state.activeId}>
                   <button type="button" role="tab" id={uniqueId + "-tab-" + tab.id} aria-controls={uniqueId + "-panel-" + tab.id} aria-selected={tab.id === state.activeId} tabIndex={tab.id === state.activeId ? 0 : -1}
@@ -213,10 +202,11 @@ export function RedisWorkspace({ api, scope, plugin, projectName, environmentNam
                     }}>
                     {tab.pinned ? <PushPin size={12} /> : null}<span className={tab.pinned ? "" : "italic"}>{tab.key}</span>
                   </button>
-                  <button type="button" aria-label={"关闭 " + tab.key} className="redis-tab-close" onClick={() => state.closeTab(tab.id)}><X size={12} /></button>
+                  <WorkspaceIconButton action="close" label={"关闭 " + tab.key} className="redis-tab-close" onClick={() => state.closeTab(tab.id)} />
                 </div>)}
               </div>
-            </div>
+              <WorkspaceLayoutControls maximized={!sidebar} onToggle={() => { if (sidebarRef.current?.isCollapsed()) sidebarRef.current.expand(); else sidebarRef.current?.collapse() }} testId="redis-layout-toggle" controls={uniqueId + "-keys"} />
+            </WorkspaceTabBar>
             {!state.tabs.length ? <div className="redis-empty redis-welcome"><Database size={36} /><h2>查看 Redis 数据</h2><p>展开左侧目录查找 Key，或输入完整 Key 精确定位。</p><p>单击预览，双击固定标签；数据仅保留在当前会话。</p></div> : null}
             {state.tabs.map((tab) => <div className="redis-tab-panel" key={tab.id} id={uniqueId + "-panel-" + tab.id} role="tabpanel" aria-labelledby={uniqueId + "-tab-" + tab.id} hidden={tab.id !== state.activeId} inert={tab.id !== state.activeId}>
               <KeyDocument tab={tab} refresh={() => void state.readTab(tab.id)} more={() => void state.readTab(tab.id, true)} field={(name) => void state.readTab(tab.id, false, name)} clearField={() => state.clearField(tab.id)} />

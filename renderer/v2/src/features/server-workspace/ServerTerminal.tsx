@@ -1,4 +1,3 @@
-import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
@@ -32,12 +31,10 @@ export interface ServerTerminalProps {
   readonly visible: boolean
   readonly connected: boolean
   readonly connection: TerminalConnection
-  readonly maximized: boolean
-  readonly onMaximize: () => void
   readonly pathDrag: WorkspacePathDrag
 }
 
-export function ServerTerminal({ tabId, api, scope, visible, connected, connection, maximized, onMaximize, pathDrag, onSessionChange }: ServerTerminalProps) {
+export function ServerTerminal({ tabId, api, scope, visible, connected, connection, pathDrag, onSessionChange }: ServerTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -434,7 +431,6 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
           {status === "open" ? <Button size="sm" variant="ghost" onClick={stop}><Stop />结束会话</Button>
             : status === "waiting" || (status === "opening" && recoveryRef.current) ? <Button size="sm" variant="ghost" onClick={stop}><Stop />停止恢复</Button>
             : <Button size="sm" variant="ghost" disabled={!connected || status === "opening"} onClick={() => { void open() }}><Plus />打开终端</Button>}
-          <WorkspaceIconButton action={maximized ? "restore" : "maximize"} label={maximized ? "恢复分栏" : "最大化终端"} onClick={onMaximize} />
         </div>
       </div>
       <TerminalSearch ref={searchRef} engine={searchEngine} visible={visible} theme={theme} />

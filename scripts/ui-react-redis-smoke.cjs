@@ -190,6 +190,7 @@ async function run() {
     assert.equal(calls.filter((entry) => entry.operation === 'inspect' || entry.operation === 'read').length, 0, '列表不逐项读取元数据');
     assert.equal(await win.webContents.executeJavaScript('document.querySelector("[data-testid=redis-browser-view-toggle]").dataset.view', true), 'tree');
     await assertCompactSearch(win);
+    await require('./workspace-layout-ui.cjs')({evaluate:source=>win.webContents.executeJavaScript(source,true),until:(expression,label)=>waitFor(win,expression,label),win,root:'[data-testid=redis-workspace]'});
     assert.equal(await win.webContents.executeJavaScript('document.querySelector(\'[data-redis-folder="cache:"] .redis-tree-count\').textContent', true), String(keys.length));
     assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector(\'[data-redis-folder="cache:users:"]\') && document.querySelector(\'[data-redis-key="cache:users"]\'))', true), true, '同名 Key 与目录分别保留');
     await click(win, '[data-redis-folder="cache:orders:"]');
@@ -317,11 +318,7 @@ async function run() {
     await captureFrame(win);
     assert.equal(await win.webContents.executeJavaScript('document.documentElement.scrollWidth <= innerWidth', true), true);
     await assertCompactSearch(win);
-    await menuAction(win, 'redis-browser-menu', 'redis-sidebar-collapse');
-    await waitFor(win, 'document.activeElement?.getAttribute("aria-label") === "展开 Key 列表"', '收起后焦点移到展开按钮');
-    await captureFrame(win);
-    await click(win, '[aria-label="展开 Key 列表"]');
-    await captureFrame(win);
+    await require('./workspace-layout-ui.cjs')({evaluate:source=>win.webContents.executeJavaScript(source,true),until:(expression,label)=>waitFor(win,expression,label),win,root:'[data-testid=redis-workspace]'});
     assert.ok(await win.webContents.executeJavaScript('document.querySelector(".redis-key-pane").getBoundingClientRect().width >= 259', true), '展开后保持最小宽度');
     await assertCompactSearch(win);
     await shot(win, 'redis-narrow');

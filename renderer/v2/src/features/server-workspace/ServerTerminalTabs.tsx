@@ -8,8 +8,12 @@ import { WorkspaceTabs } from "./WorkspaceTabs"
 import { Button } from "@/components/ui/button"
 import { DockerIcon } from "./ServerResourceRail"
 import { ServerDockerContainer } from "./ServerDockerContainer"
+import { WorkspaceLayoutControls } from "@/components/workspace/WorkspaceLayoutControls"
 
 interface ContentProps {
+  readonly maximized: boolean
+  readonly onMaximize: () => void
+  readonly layoutControls: string
   readonly onActiveSessionChange:(sessionId:string | null) => void
   readonly onActiveTerminalLabel:(label:string) => void
   readonly dockerTabs:readonly DockerContainer[]
@@ -21,7 +25,7 @@ interface ContentProps {
   readonly previewOpen:boolean
   readonly previewPanelRef:RefObject<PanelImperativeHandle | null>
 }
-export function ServerTerminalTabs({ onActiveSessionChange, onActiveTerminalLabel, dockerTabs, activeDocker, onDockerSelect, onDockerClose, binding, preview, previewOpen, previewPanelRef, ...props }: Omit<ServerTerminalProps, "tabId" | "onSessionChange"> & ContentProps) {
+export function ServerTerminalTabs({ onActiveSessionChange, onActiveTerminalLabel, dockerTabs, activeDocker, onDockerSelect, onDockerClose, binding, preview, previewOpen, previewPanelRef, maximized, onMaximize, layoutControls, ...props }: Omit<ServerTerminalProps, "tabId" | "onSessionChange"> & ContentProps) {
   const groupId = useId()
   const sequence = useRef(1)
   const [tabs, setTabs] = useState([{ id: "default", label: "终端 1", title: "终端 1" }])
@@ -59,11 +63,12 @@ export function ServerTerminalTabs({ onActiveSessionChange, onActiveTerminalLabe
   ]
   const selected = activeDocker ? "docker:" + activeDocker : active
   return <section className="server-terminal-tabs" aria-label="服务器终端标签">
-    <WorkspaceTabs id={groupId} label="终端标签" items={items} active={selected} onSelect={id => { if (id.startsWith("docker:")) onDockerSelect(id.slice(7)); else { setActive(id); onDockerSelect(null) } }} onClose={close} onAdd={add} addDisabled={!props.connected || tabs.length >= 8} />
+    <WorkspaceTabs id={groupId} label="终端标签" items={items} active={selected} onSelect={id => { if (id.startsWith("docker:")) onDockerSelect(id.slice(7)); else { setActive(id); onDockerSelect(null) } }} onClose={close} onAdd={add} addDisabled={!props.connected || tabs.length >= 8}
+      actions={<WorkspaceLayoutControls maximized={maximized} onToggle={onMaximize} testId="server-layout-toggle" controls={`${layoutControls} ${groupId}-preview`} />} />
     <div className="server-content-terminal" hidden={activeDocker !== null}>
       <ResizablePanelGroup orientation="vertical">
         <ResizablePanel id={groupId + "-preview"} defaultSize={0} minSize="160px" maxSize="60%" collapsible collapsedSize={0} panelRef={previewPanelRef}>{preview}</ResizablePanel>
-        <ResizableHandle className={!previewOpen || props.maximized ? "hidden" : ""} aria-label="调整文件预览高度" />
+        <ResizableHandle className={!previewOpen || maximized ? "hidden" : ""} aria-label="调整文件预览高度" />
         <ResizablePanel id={groupId + "-terminal"} minSize="180px">
           {tabs.map(tab => <div key={tab.id} className="server-terminal-tab-panel" role="tabpanel" id={groupId + "-panel-" + tab.id} aria-labelledby={groupId + "-tab-" + tab.id} hidden={active !== tab.id}>
             <ServerTerminal {...props} onSessionChange={onSessionChange} tabId={tab.id} visible={props.visible && activeDocker === null && active === tab.id} />

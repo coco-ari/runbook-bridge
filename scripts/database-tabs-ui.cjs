@@ -63,6 +63,7 @@ module.exports = async function ({win,fill,click,waitFor,textContains,testId,scr
   assert.equal(databaseCalls.length,atLimit,'达到表标签上限不能继续发起请求');
   assert.equal(await evaluate("document.querySelectorAll('[data-testid=mysql-table-document-tab]').length"),6);
   assert.equal(await evaluate("document.querySelectorAll('[data-testid=mysql-preview-result]').length"),1);
+  await require('./workspace-layout-ui.cjs')({evaluate,until:(expression,label)=>waitFor(win,expression,label),win,root:'[data-testid=mysql-database-workspace]'});
   state.extraTables = false;
   await click(win,testId('mysql-workspace-close'));
   await click(win,testId('mysql-workspace-confirm-close'));

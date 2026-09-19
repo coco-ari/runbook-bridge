@@ -1,6 +1,7 @@
 import { WorkspaceBackButton, WorkspaceHeaderActions, WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
+import { WorkspaceLayoutControls, WorkspacePanelToggle, WorkspaceTabBar } from "@/components/workspace/WorkspaceLayoutControls"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
-import { ArrowClockwise, CaretDown, CaretUp, Code, Database, MagnifyingGlass, Plugs, ShieldCheck, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
+import { ArrowClockwise, CaretDown, Code, Database, MagnifyingGlass, Plugs, ShieldCheck, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
 import { toast } from "sonner"
 import { MysqlTableDocument } from "./MysqlTableDocument"
 import { useMysqlSchemaCache } from "./use-mysql-schema-cache"
@@ -177,7 +178,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
           <ResizableHandle aria-label="调整数据表列表宽度" data-testid="mysql-sidebar-resizer" id={`${uniqueId}-sidebar-resizer`} onDoubleClick={() => sidebarRef.current?.resize("224px")} withHandle />
           <ResizablePanel className="min-h-0 min-w-0" id={`${uniqueId}-content`} minSize="360px">
             <Tabs className="mysql-document-workspace" onValueChange={selectDocument} value={documentTab}>
-              <div className="mysql-document-tabs-row">
+              <WorkspaceTabBar className="mysql-document-tabs-row">
                 <TabsList aria-label="数据库工作区" className="mysql-document-tabs" variant="line">
                   {queries.documents.map((document, index) => (
                     <div className="mysql-document-tab-group" key={document.id}>
@@ -191,8 +192,10 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
                   </div>)}
                 </TabsList>
                 <WorkspaceIconButton action="add" label="新建 SQL 查询" className="mysql-new-query" data-testid="mysql-query-new" disabled={queries.documents.length >= MYSQL_MAX_QUERY_DOCUMENTS} onClick={createQuery} title={queries.documents.length >= MYSQL_MAX_QUERY_DOCUMENTS ? `最多打开 ${MYSQL_MAX_QUERY_DOCUMENTS} 个查询标签` : "新建 SQL 查询"} />
-                <div className="mysql-layout-controls"><WorkspaceIconButton action={sidebarCollapsed ? "restore" : "maximize"} label={sidebarCollapsed ? "恢复分栏" : "最大化查询区"} aria-expanded={!sidebarCollapsed} data-testid="mysql-sidebar-toggle" onClick={toggleSidebar} /><Button aria-expanded={!editorCollapsed} aria-label={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} data-testid="mysql-editor-toggle" disabled={documentTab.startsWith("table:")} onClick={toggleEditor} size="icon-sm" title={editorCollapsed ? "展开 SQL 编辑器" : "收起 SQL 编辑器"} type="button" variant="ghost">{editorCollapsed ? <CaretDown aria-hidden="true" /> : <CaretUp aria-hidden="true" />}</Button></div>
-              </div>
+                <WorkspaceLayoutControls maximized={sidebarCollapsed} onToggle={toggleSidebar} testId="mysql-sidebar-toggle" controls={`${uniqueId}-tables`}>
+                  <WorkspacePanelToggle collapsed={editorCollapsed} label="SQL 编辑器" onToggle={toggleEditor} disabled={documentTab.startsWith("table:")} testId="mysql-editor-toggle" controls={`${uniqueId}-editor`} />
+                </WorkspaceLayoutControls>
+              </WorkspaceTabBar>
               <TabsContent className={cn("mysql-document-content", documentTab.startsWith("table:") && "hidden")} forceMount value={activeQueryId}>
                 <ResizablePanelGroup aria-label="SQL 编辑器与查询结果" id={`${uniqueId}-query`} orientation="vertical">
                   <ResizablePanel collapsedSize="42px" collapsible defaultSize="252px" groupResizeBehavior="preserve-pixel-size" id={`${uniqueId}-editor`} maxSize="70%" minSize="150px" onResize={(size) => setEditorCollapsed(size.inPixels < 80)} panelRef={editorRef}>

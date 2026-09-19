@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
-import { CaretDown, CaretRight, Crosshair, DotsThree, SidebarSimple, FolderSimple, FolderOpen, Key, ListBullets, TreeStructure } from "@phosphor-icons/react"
+import { CaretDown, CaretRight, Crosshair, DotsThree, FolderSimple, FolderOpen, Key, ListBullets, TreeStructure } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
@@ -19,7 +19,6 @@ interface Props {
   readonly visible: boolean
   readonly refreshDisabled: boolean
   readonly onRefresh: () => void
-  readonly onCollapse: () => void
 }
 
 function Highlight({ text, keyword }: { readonly text: string; readonly keyword: string }) {
@@ -27,14 +26,14 @@ function Highlight({ text, keyword }: { readonly text: string; readonly keyword:
   return index < 0 ? <>{text}</> : <>{text.slice(0, index)}<mark>{text.slice(index, index + keyword.length)}</mark>{text.slice(index + keyword.length)}</>
 }
 
-export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, complete, error, onOpen, identity, search, visible, refreshDisabled, onRefresh, onCollapse }: Props) {
+export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, complete, error, onOpen, identity, search, visible, refreshDisabled, onRefresh }: Props) {
   const tree = useMemo(() => buildRedisKeyTree(keys), [keys])
   const defaults = useMemo(() => defaultRedisTreeExpansion(tree, Boolean(keyword)), [tree, keyword])
   const [view, setView] = useState<"tree" | "list">("tree")
   const [overrides, setOverrides] = useState<ReadonlyMap<string, boolean>>(new Map())
   const [focusedId, setFocusedId] = useState("")
   const [menuOpen, setMenuOpen] = useState(false)
-  const menuAction = useRef<"locate" | "collapse" | null>(null)
+  const menuAction = useRef<"locate" | null>(null)
   const buttons = useRef(new Map<string, HTMLButtonElement>())
   const scroll = useRef<HTMLDivElement>(null)
   const expanded = (id: string) => overrides.get(id) ?? defaults.has(id)
@@ -116,16 +115,13 @@ export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, c
               if (!visible) { event.preventDefault(); return }
               if (action) {
                 event.preventDefault()
-                if (action === "collapse") onCollapse()
-                else if (activeKey) focus("key:" + activeKey)
+                if (activeKey) focus("key:" + activeKey)
               }
             }}>
               <DropdownMenuItem disabled={!canLocate} data-testid="redis-tree-locate" onSelect={locate}><Crosshair />定位当前 Key</DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem disabled={view !== "tree" || !tree.folders.length} data-testid="redis-tree-expand-all" onSelect={() => setOverrides(new Map(tree.folders.map((node) => [node.id, true])))}><FolderOpen />展开全部目录</DropdownMenuItem>
               <DropdownMenuItem disabled={view !== "tree" || !tree.folders.length} data-testid="redis-tree-collapse-all" onSelect={() => setOverrides(new Map(tree.folders.map((node) => [node.id, false])))}><FolderSimple />折叠全部目录</DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem data-testid="redis-sidebar-collapse" onSelect={() => { menuAction.current = "collapse" }}><SidebarSimple />收起 Key 列表</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

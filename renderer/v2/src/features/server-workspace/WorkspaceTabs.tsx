@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from "react"
 import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
+import { WorkspaceTabBar } from "@/components/workspace/WorkspaceLayoutControls"
 
 interface WorkspaceTabsProps {
   readonly id: string
@@ -10,11 +11,12 @@ interface WorkspaceTabsProps {
   readonly onClose: (id: string) => void
   readonly onAdd?: () => void
   readonly addDisabled?: boolean
+  readonly actions?: ReactNode
 }
 
-export function WorkspaceTabs({ id, label, items, active, onSelect, onClose, onAdd, addDisabled }: WorkspaceTabsProps) {
+export function WorkspaceTabs({ id, label, items, active, onSelect, onClose, onAdd, addDisabled, actions }: WorkspaceTabsProps) {
   useEffect(() => { if (active) document.getElementById(id + "-tab-" + active)?.scrollIntoView({ block: "nearest", inline: "nearest" }) }, [id, active])
-  return <div className="server-tabs-toolbar">
+  return <WorkspaceTabBar className="server-tabs-toolbar">
     <div className="server-tabs" role="tablist" aria-label={label}>
       {items.map((item, index) => <div className="server-tab-item" key={item.id} data-active={active === item.id}>
         <button type="button" role="tab" id={id + "-tab-" + item.id} aria-controls={id + "-panel-" + item.id} aria-selected={active === item.id} tabIndex={active === item.id ? 0 : -1} title={item.title} onClick={() => onSelect(item.id)} onKeyDown={(event) => {
@@ -28,5 +30,6 @@ export function WorkspaceTabs({ id, label, items, active, onSelect, onClose, onA
       </div>)}
     </div>
     {onAdd ? <WorkspaceIconButton action="add" className="server-tab-add" label="新增终端" title={addDisabled ? "每个工作区最多保留 8 个终端标签" : "新增独立终端"} disabled={addDisabled} onClick={onAdd} /> : null}
-  </div>
+    {actions}
+  </WorkspaceTabBar>
 }

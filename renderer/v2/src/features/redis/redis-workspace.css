@@ -35,13 +35,13 @@
 .redis-tree-count { flex-shrink: 0; min-width: 22px; padding: 0 4px; border-radius: 4px; background: var(--surface-inset); color: var(--muted-foreground); font-size: 10px; text-align: right; font-variant-numeric: tabular-nums; }
 .redis-browser-path { flex-shrink: 0; overflow: hidden; padding: 6px 10px; border-top: 1px solid var(--border); color: var(--muted-foreground); font-family: var(--font-mono); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .redis-key-footer { display: flex; flex-shrink: 0; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); padding: 9px 12px; color: var(--muted-foreground); font-size: 11px; overflow-wrap: anywhere; }
-.redis-tab-strip { display: flex; min-height: 37px; flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--surface); }
 .redis-tabs { display: flex; min-width: 0; overflow: auto; }
-.redis-tab { display: flex; min-width: 90px; max-width: 260px; flex-shrink: 0; border-right: 1px solid var(--border); border-bottom: 2px solid transparent; }
+.redis-tab { display: flex; align-items: center; min-width: 90px; max-width: 260px; flex-shrink: 0; border-right: 1px solid var(--border); border-bottom: 2px solid transparent; }
 .redis-tab[data-active=true] { border-bottom-color: var(--primary); background: var(--background); }
 .redis-tab [role=tab] { display: flex; min-width: 0; flex: 1; align-items: center; gap: 5px; padding: 8px 6px 8px 10px; font-family: var(--font-mono); font-size: 11px; }
 .redis-tab [role=tab] span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.redis-tab-close { flex-shrink: 0; padding: 0 7px; color: var(--muted-foreground); }
+.redis-tab-close { flex-shrink: 0; width: 26px; height: 26px; color: var(--muted-foreground); }
+.redis-tab-close > svg { width: 12px; height: 12px; }
 .redis-tab-panel { flex: 1; min-height: 0; overflow: hidden; }
 .redis-tab-panel[hidden] { display: none; }
 .redis-key-heading { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; padding: 10px 14px 6px; background: var(--surface); }

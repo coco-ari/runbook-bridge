@@ -21,6 +21,7 @@ module.exports = async ({evaluate,click,clickText,until,wait,win,setViewport,sna
   assert.equal(opened.length,initialSessions);
   await click('[aria-label="打开容器 fixture-api"]');
   await until("document.querySelector('.server-docker-overview')?.textContent.includes('fixture-api')",'容器概览');
+  await require('./workspace-layout-ui.cjs')({evaluate,until,win,root:'[data-testid=server-workspace]'});
   assert.ok(!(await evaluate(visible('.server-content-terminal'))));
   await click('[aria-label="服务器文件"]');
   assert.ok(await evaluate(visible('.server-docker-tab-panel:not([hidden])')),'资源切回文件不关闭容器内容');
@@ -63,7 +64,7 @@ module.exports = async ({evaluate,click,clickText,until,wait,win,setViewport,sna
   else assert.ok(narrow.inside,'窄侧栏按钮完整可见');
   assert.equal(narrow.rail,36,'窄窗口资源栏仍可见');
   assert.equal(await evaluate("[...document.querySelectorAll('.server-file-actions button')].filter(item=>item.getClientRects().length).length"),6);
-  await click('[aria-label="最大化终端"]');
+  await click('[aria-label="最大化工作区"]');
   assert.ok(await evaluate(visible('.server-resource-rail')),'侧栏折叠后资源栏保留');
   await click('[aria-label="Docker 容器"]');
   await until(visible('.server-docker-tree'),'点击图标恢复侧栏');
@@ -87,5 +88,10 @@ module.exports = async ({evaluate,click,clickText,until,wait,win,setViewport,sna
   await wait(450);
   assert.ok(dockerState.cancels.length > 0,'关闭标签取消仍在执行的读取');
   assert.equal(await evaluate('document.querySelectorAll(\'[role="tab"][title="容器 fixture-api"]\').length'),0,'迟到结果不重开标签');
+  await setViewport(960,640);
+  await require('./workspace-layout-ui.cjs')({evaluate,until,win,root:'[data-testid=server-workspace]'});
+  await click('[aria-label="关闭终端 1"]');
+  await until("document.querySelectorAll('.server-terminal-tab-panel').length === 0",'关闭全部终端');
+  await require('./workspace-layout-ui.cjs')({evaluate,until,win,root:'[data-testid=server-workspace]'});
   assert.deepEqual(errors,[]);
 };

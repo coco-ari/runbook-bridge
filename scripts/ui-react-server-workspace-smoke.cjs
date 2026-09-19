@@ -664,6 +664,7 @@ async function run() {
   }
 
   await require('./workspace-controls-ui.cjs')({evaluate,click,until,win,root:'[data-testid=server-workspace]'});
+  await require('./workspace-layout-ui.cjs')({evaluate,until,win,root:'[data-testid=server-workspace]'});
   assert.equal(opened.length,1,'工作区主题切换不得重建终端');
   assert.ok(await evaluate(`document.querySelector('[aria-label="三栏工作台"]').closest('[inert]') !== null`), '工作区禁用背景导航');
   await until(`document.querySelector('[role="treeitem"][title="/srv"]')`, '文件目录');
@@ -1014,7 +1015,7 @@ async function run() {
   await clickText('清除已结束');
   await until("document.querySelectorAll('.server-upload-row').length===0",'批量清除结束记录');
 
-  await click('[aria-label="最大化终端"]');
+  await click('[aria-label="最大化工作区"]');
   await wait(150);
   assert.ok(await evaluate(`document.querySelector('.server-terminal-container').getBoundingClientRect().width > window.innerWidth - 60`), '最大化终端获得完整宽度');
   await click('[aria-label="恢复分栏"]');

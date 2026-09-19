@@ -72,7 +72,6 @@
 
 .server-terminal-tabs, .server-terminal-tab-panel, .server-preview-tab-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; height: 100%; overflow: hidden; }
 .server-terminal-tab-panel[hidden], .server-preview-tab-panel[hidden] { display: none; }
-.server-tabs-toolbar { display: flex; align-items: center; min-height: 36px; flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--surface); padding: 3px 6px 0; gap: 3px; }
 .server-tabs { display: flex; min-width: 0; overflow-x: auto; scrollbar-width: thin; gap: 4px; }
 .server-tab-item { display: flex; flex: 0 0 auto; align-items: center; max-width: 240px; border: 1px solid transparent; border-radius: 5px 5px 0 0; color: var(--muted-foreground); }
 .server-tab-item[data-active=true] { border-color: var(--border); border-bottom-color: var(--primary); background: var(--background); color: var(--primary); }

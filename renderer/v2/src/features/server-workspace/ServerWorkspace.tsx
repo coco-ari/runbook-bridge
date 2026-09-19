@@ -385,7 +385,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
         </ResizablePanel>
         <ResizableHandle className={maximized ? "hidden" : ""} aria-label="调整文件树宽度" />
         <ResizablePanel id={`${panelId}-console`} minSize="280px">
-          <ServerTerminalTabs onActiveSessionChange={setActiveTerminalSessionId} onActiveTerminalLabel={setActiveTerminalLabel} api={api} scope={scope} visible={visible} connected={connected} connection={terminalState} maximized={maximized} onMaximize={() => setMaximized(value => !value)} pathDrag={pathDrag}
+          <ServerTerminalTabs onActiveSessionChange={setActiveTerminalSessionId} onActiveTerminalLabel={setActiveTerminalLabel} api={api} scope={scope} visible={visible} connected={connected} connection={terminalState} maximized={maximized} onMaximize={() => setMaximized(value => !value)} layoutControls={`${panelId}-files`} pathDrag={pathDrag}
             dockerTabs={dockerTabs} activeDocker={activeDocker} onDockerSelect={setActiveDocker} onDockerClose={closeContainer} binding={dockerBinding}
             previewOpen={previewOpen} previewPanelRef={previewPanelRef}
             preview={<ServerFilePreviews api={api} scope={scope} connected={connected} request={previewRequest} onOpenChange={setPreviewOpen} onStale={invalidatePreviewPath} />} />

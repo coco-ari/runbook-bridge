@@ -8,7 +8,6 @@
 .server-resource-button:focus-visible { outline:2px solid var(--ring); outline-offset:-3px; }
 .server-resource-panel, .server-content-terminal, .server-docker-tab-panel { display:flex; flex:1; height:100%; min-width:0; min-height:0; flex-direction:column; overflow:hidden; }
 .server-resource-panel[hidden], .server-content-terminal[hidden], .server-docker-tab-panel[hidden], .server-docker-scroll[hidden], .server-docker-log-panel[hidden], .server-upload-tray-header [hidden] { display:none; }
-.server-terminal-tabs > .server-tabs-toolbar { height:43px; min-height:43px; }
 .server-tab-item [role="tab"] { display:flex; align-items:center; gap:5px; }
 .server-tab-item [role="tab"] > svg { flex-shrink:0; }
 .server-docker-tree, .server-docker-detail { display:flex; flex-direction:column; height:100%; min-height:0; min-width:0; overflow:hidden; background:var(--background); }
