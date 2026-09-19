@@ -1,6 +1,6 @@
 import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowUp, DownloadSimple, CaretDown, CaretRight, CaretUpDown, Eye, EyeSlash, File, FileCode, FileText, FileZip, FolderSimple, FolderOpen, Link, PencilSimple, SpinnerGap, TreeStructure, UploadSimple } from "@phosphor-icons/react"
+import { ArrowUp, DownloadSimple, CaretDown, CaretRight, CaretUpDown, Eye, EyeSlash, File, FileCode, FileText, FileZip, FolderSimple, FolderOpen, Link, PencilSimple, SpinnerGap, UploadSimple } from "@phosphor-icons/react"
 import type { AiOpsV2Api, PluginScope, ServerDirectoryEntry, ServerDirectoryPage } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -453,7 +453,6 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
 
   return <section className="server-file-tree" aria-label="服务器目录树">
     <div className="server-file-toolbar">
-      <div className="server-file-heading"><TreeStructure size={19} weight="duotone" /><span>文件工作区</span></div>
       <div className="server-file-actions">
         <DirectoryBookmarks key={directoryBookmarksKey(scope)} scope={scope} path={path} connected={connected} visible={visible} onNavigate={target => revealDirectory(target, true)} />
         <Button size="icon-sm" variant="ghost" aria-label="收起所有目录" title="收起所有目录" onClick={() => { setExpanded(new Set()); if (scrollRef.current) scrollRef.current.scrollTop = 0 }}><CaretUpDown /></Button>
@@ -540,6 +539,5 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
         })}
       </div>
     </div>
-    <div className="server-file-footer"><span className="server-file-current-path" title={path}>{path}</span></div>
   </section>
 }

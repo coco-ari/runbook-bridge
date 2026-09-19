@@ -78,7 +78,7 @@ module.exports = async function testWorkspaceFileInteractions({evaluate,click,do
     await debuggerApi.sendCommand('Input.setInterceptDrags',{enabled:true});
     const currentSession = opened.at(-1);
     const previewCount = previewReads.length;
-    const currentDirectory = await evaluate("document.querySelector('.server-file-current-path').textContent");
+    const currentDirectory = await evaluate("document.querySelector('.server-path-breadcrumbs').title");
     for (const path of ['/srv/example.conf','/srv/config','/srv/带空格目录 ',"/srv/带 空格'$(echo literal).conf"]) {
       const before = writes.length;
       await dragPath(path);
@@ -86,7 +86,7 @@ module.exports = async function testWorkspaceFileInteractions({evaluate,click,do
     }
     assert.equal(previewReads.length, previewCount, '拖拽不打开文件内容');
     assert.equal(await evaluate(has(row('/srv/config')) + ".getAttribute('aria-expanded')"), 'false', '拖拽不展开目录');
-    assert.equal(await evaluate("document.querySelector('.server-file-current-path').textContent"), currentDirectory, '拖拽不改变浏览路径或上传目标');
+    assert.equal(await evaluate("document.querySelector('.server-path-breadcrumbs').title"), currentDirectory, '拖拽不改变浏览路径或上传目标');
 
     const beforeCancel = writes.length;
     await dragPath('/srv/example.conf',{cancel:true});

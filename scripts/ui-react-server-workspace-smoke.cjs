@@ -348,6 +348,33 @@ async function setViewport(width, height) {
   await until(`innerWidth === ${width} && innerHeight === ${height}`, '固定内容区尺寸');
   await wait(250);
 }
+async function assertFileSidebarLayout() {
+  for (const zoom of [1, 1.25, 1.5]) {
+    win.webContents.setZoomFactor(zoom);
+    await until('Math.abs(innerWidth - ' + 1440 / zoom + ') <= 1', '文件侧栏缩放');
+    await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    const layout = await evaluate(`(() => {
+      const sidebar = document.querySelector('.server-file-tree');
+      const toolbar = sidebar.querySelector('.server-file-toolbar');
+      const bounds = toolbar.getBoundingClientRect();
+      const buttons = [...toolbar.querySelectorAll('button')].map(button => {
+        const rect = button.getBoundingClientRect();
+        return { name: button.getAttribute('aria-label'), centerY: rect.top + rect.height / 2, inside: rect.left >= bounds.left && rect.right <= bounds.right && rect.top >= bounds.top && rect.bottom <= bounds.bottom };
+      });
+      return {
+        height: bounds.height,
+        buttons,
+        unusedBottom: sidebar.getBoundingClientRect().bottom - sidebar.querySelector('.server-tree-scroll').getBoundingClientRect().bottom,
+      };
+    })()`);
+    assert.equal(layout.buttons.length, 5, '目录工具栏保留五个操作按钮');
+    assert.ok(layout.buttons.every(button => button.inside && Math.abs(button.centerY - layout.buttons[0].centerY) <= 1), zoom + ' 倍缩放下按钮保持单行且完整可见：' + JSON.stringify(layout));
+    assert.ok(Math.abs(layout.height - 43) <= 1, zoom + ' 倍缩放下工具栏不增加空白行');
+    assert.ok(Math.abs(layout.unusedBottom) <= 1, '文件列表使用底部释放的空间');
+  }
+  win.webContents.setZoomFactor(1);
+  await until('innerWidth === 1440 && innerHeight === 920', '恢复文件侧栏缩放');
+}
 async function assertTransferActionLayout(label) {
   const layout = await evaluate(`(() => {
     const row = document.querySelector('.server-upload-row');
@@ -540,6 +567,7 @@ async function run() {
   await click('[data-testid="plugin-open-workspace"]');
   await until(`document.querySelector('.xterm-rows')?.textContent.includes('operator@demo')`, '真实 xterm 收到输出');
   assert.equal(opened.length, 1, '首次点击只创建一个会话');
+  await assertFileSidebarLayout();
   if (process.env.RUNBOOK_BRIDGE_METRICS_SMOKE === '1') {
     releaseRootMetadata();
     await require('./workspace-metrics-ui.cjs')({evaluate,click,clickText,until,wait,win,setViewport,snapshot,metricsState,writes,errors});
@@ -1301,7 +1329,7 @@ async function testWorkspaceConveniences() {
   await click('[aria-label="编辑目录路径"]');
   await setInput('[aria-label="目录路径"]','/srv');
   await clickText('转到');
-  await until("document.querySelector('.server-file-current-path')?.textContent==='/srv'",'收藏当前目录');
+  await until("document.querySelector('.server-path-breadcrumbs')?.title==='/srv'",'收藏当前目录');
   await click('[aria-label="常用目录"]');
   await clickText('收藏当前目录');
   await until("document.querySelector('[aria-label=\"打开收藏目录 /srv\"]')",'收藏保存到列表');
@@ -1312,7 +1340,7 @@ async function testWorkspaceConveniences() {
   await click('[aria-label="根目录"]');
   await click('[aria-label="常用目录"]');
   await click('[aria-label="打开收藏目录 /srv"]');
-  await until("document.querySelector('.server-file-current-path')?.textContent==='/srv'",'点击收藏更新当前目录');
+  await until("document.querySelector('.server-path-breadcrumbs')?.title==='/srv'",'点击收藏更新当前目录');
   await until("document.querySelector('[role=treeitem][title=\"/srv\"][aria-selected=true][aria-expanded=true]')",'收藏展开并高亮目录节点');
   await until("document.querySelector('[role=treeitem][title=\"/srv/config\"]')",'收藏目录显示子项');
   assert.equal(await evaluate("document.querySelector('[role=treeitem][title=\"/srv\"]').getAttribute('aria-level')"),'1','收藏仍位于根目录层级');
@@ -1325,7 +1353,7 @@ async function testWorkspaceConveniences() {
   const spacedPath='/srv/带空格目录 ';
   await evaluate('localStorage.setItem('+JSON.stringify(bookmarkKey)+',JSON.stringify(["/srv",'+JSON.stringify(spacedPath)+'])); window.dispatchEvent(new StorageEvent("storage",{key:'+JSON.stringify(bookmarkKey)+'}))');
   await click('[aria-label="打开收藏目录 '+spacedPath+'"]');
-  await until("document.querySelector('.server-file-current-path')?.textContent==="+JSON.stringify(spacedPath),'收藏跳转保留目录名末尾空格');
+  await until("document.querySelector('.server-path-breadcrumbs')?.title==="+JSON.stringify(spacedPath),'收藏跳转保留目录名末尾空格');
   await until("document.querySelector('[role=treeitem][aria-selected=true]')?.getAttribute('title')==="+JSON.stringify(spacedPath),"带空格收藏仍能定位到真实节点");
   await until("document.querySelector('[role=treeitem][title="+JSON.stringify(spacedPath+"/config")+"]')","带空格收藏展开内容");
   await click('[aria-label="常用目录"]');
