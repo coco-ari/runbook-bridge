@@ -93,5 +93,9 @@ module.exports = async ({evaluate,click,clickText,until,wait,win,setViewport,sna
   await click('[aria-label="关闭终端 1"]');
   await until("document.querySelectorAll('.server-terminal-tab-panel').length === 0",'关闭全部终端');
   await require('./workspace-layout-ui.cjs')({evaluate,until,win,root:'[data-testid=server-workspace]'});
+  const remainingContainers = await evaluate("[...document.querySelectorAll('.server-tabs [aria-label^=\"关闭容器 \"]')].map(button=>button.getAttribute('aria-label'))");
+  for (const label of remainingContainers) await click('[aria-label=' + JSON.stringify(label) + ']');
+  await until("document.querySelector('.server-tabs-empty')?.getClientRects().length > 0",'空终端工作区');
+  await require('./workspace-layout-ui.cjs')({evaluate,until,win,root:'[data-testid=server-workspace]'});
   assert.deepEqual(errors,[]);
 };
