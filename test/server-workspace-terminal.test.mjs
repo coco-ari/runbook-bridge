@@ -351,7 +351,7 @@ test('默认配色先于人工输入发送，新标签执行一次，复用与�
   const { manager } = fixture(t, { openTerminal: async (_plugin, option) => {
     options.push(option);
     const channel = new TerminalChannel();
-    channel.desktopStartupCommand = DEFAULT_TERMINAL_COLORS;
+    channel.desktopStartupCommand = options.at(-1).defaultColors ? DEFAULT_TERMINAL_COLORS : ':';
     channel._write = (chunk, _encoding, done) => {
       channel.writes.push(Buffer.from(chunk));
       const acknowledge = () => { channel.push(startupMarker(chunk.toString())); channel.push('operator@example:~$ '); done(); };
@@ -381,7 +381,9 @@ test('默认配色先于人工输入发送，新标签执行一次，复用与�
   assert.equal(channels[0].writes.length, 1);
   assert.ok(channels[1].writes[0].toString().startsWith(DEFAULT_TERMINAL_COLORS));
   assert.notDeepEqual(startupMarker(channels[0].writes[0].toString()), startupMarker(channels[1].writes[0].toString()));
-  assert.equal(channels[2].writes.length, 0);
+  assert.equal(channels[2].writes.length, 1);
+  assert.ok(channels[2].writes[0].toString().startsWith(':; printf'));
+  assert.ok(!channels[2].writes[0].toString().includes('LS_COLORS'));
   assert.deepEqual(options.map(item => item.defaultColors), [true, true, false]);
   for (const defaultColors of [null, 'true', 1, {}]) await assert.rejects(manager.openTerminal(1, { ...scope, defaultColors }), { code: 'INVALID_ARGUMENT' });
 });
@@ -408,6 +410,59 @@ test('窗口关闭中止未完成配色，迟到通道不能执行启动配置',
   accept(channel);
   await assert.rejects(late, { code: 'TERMINAL_CLOSED' });
   assert.equal(channel.writes.length, 0);
+});
+
+
+test('目录查询按窗口、服务器和终端标签隔离，不写入终端也不记录路径内容', async t => {
+  const { manager, channels, audits } = fixture(t);
+  const first = await manager.openTerminal(1, { ...scope, tabId:'first' });
+  const second = await manager.openTerminal(1, { ...scope, tabId:'second' });
+  const calls = [];
+  for (const [index, session] of [first, second].entries()) {
+    manager.sessions.get(session.sessionId).shellPid = 101 + index;
+    channels[index].desktopReadWorkingDirectory = async pid => { calls.push(pid); return { path:'/fixture/' + pid }; };
+  }
+  assert.deepEqual(await manager.terminalWorkingDirectory(1, { ...scope, sessionId:second.sessionId }), { path:'/fixture/102' });
+  assert.deepEqual(calls, [102]);
+  await assert.rejects(manager.terminalWorkingDirectory(2, { ...scope, sessionId:first.sessionId }), { code:'TERMINAL_SCOPE_MISMATCH' });
+  await assert.rejects(manager.terminalWorkingDirectory(1, { ...scope, environmentId:'other', sessionId:first.sessionId }), { code:'TERMINAL_SCOPE_MISMATCH' });
+  assert.ok(channels.every(channel => channel.writes.length === 0));
+  assert.ok(!JSON.stringify(audits).includes('/fixture/'));
+});
+
+test('目录查询合并并发请求，关闭或连接变化拒绝迟到结果', async t => {
+  for (const mode of ['close', 'generation', 'configuration']) {
+    const { manager, channels, state } = fixture(t);
+    const session = await manager.openTerminal(1, scope);
+    const payload = { ...scope, sessionId:session.sessionId };
+    manager.sessions.get(session.sessionId).shellPid = 42;
+    let resolve, calls = 0, signal;
+    channels[0].desktopReadWorkingDirectory = (_pid, options) => { calls++; signal = options.signal; return new Promise(done => { resolve = done; }); };
+    const first = manager.terminalWorkingDirectory(1, payload);
+    const second = manager.terminalWorkingDirectory(1, payload);
+    const rejectedFirst = assert.rejects(first, { code:'TERMINAL_CLOSED' });
+    const rejectedSecond = assert.rejects(second, { code:'TERMINAL_CLOSED' });
+    await delay(0);
+    assert.equal(calls, 1);
+    if (mode === 'close') { await manager.closeTerminal(1, payload); assert.equal(signal.aborted, true); }
+    else if (mode === 'generation') state.generation++;
+    else state.pluginData = { target:{host:'changed.example.invalid',port:22} };
+    resolve({ path:'/stale' });
+    await Promise.all([rejectedFirst, rejectedSecond]);
+  }
+});
+
+test('不支持目录识别的终端正常保留会话，查询失败后可重试', async t => {
+  const { manager, channels } = fixture(t);
+  const session = await manager.openTerminal(1, scope);
+  const payload = { ...scope, sessionId:session.sessionId };
+  await assert.rejects(manager.terminalWorkingDirectory(1, payload), { code:'TERMINAL_DIRECTORY_UNAVAILABLE' });
+  manager.sessions.get(session.sessionId).shellPid = 42;
+  channels[0].desktopReadWorkingDirectory = () => { throw Error('模拟读取失败'); };
+  await assert.rejects(manager.terminalWorkingDirectory(1, payload));
+  channels[0].desktopReadWorkingDirectory = async () => ({ path:'/srv' });
+  assert.deepEqual(await manager.terminalWorkingDirectory(1, payload), { path:'/srv' });
+  assert.equal(manager.sessions.get(session.sessionId).status, 'open');
 });
 
 function probeClient(output, code = 0) {
@@ -449,15 +504,16 @@ test('Shell 探测有时限，超时和断线后的迟到通道被释放', async
   assert.equal(client.listenerCount('close'), 0);
 });
 
-test('broker 缓存当前连接的 Shell 探测，关闭自动配色不发送探测和配置', async () => {
+test('broker 缓存 Shell 探测，关闭配色仍识别终端进程且不配置颜色', async () => {
   const broker = new SshBroker({});
   const client = probeClient('/bin/bash');
   const channels = [];
   client.shell = (_options, accept) => { const channel = new TerminalChannel(); channels.push(channel); accept(null, channel); };
   broker.sessions.set('scope', { client });
   const disabled = await broker.openTerminal('scope', { defaultColors: false });
-  assert.equal(client.calls.length, 0);
-  assert.equal(disabled.desktopStartupCommand, null);
+  assert.equal(client.calls.length, 1);
+  assert.equal(disabled.desktopStartupCommand, ':');
+  assert.equal(disabled.desktopTrackDirectory, true);
   const [first, second] = await Promise.all([broker.openTerminal('scope'), broker.openTerminal('scope')]);
   assert.equal(client.calls.length, 1);
   assert.equal(first.desktopStartupCommand, DEFAULT_TERMINAL_COLORS);

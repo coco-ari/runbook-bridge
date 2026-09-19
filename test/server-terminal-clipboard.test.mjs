@@ -25,8 +25,25 @@ async function fixture(t) {
   const session = await manager.openTerminal('renderer:1', { ...scope, defaultColors: false });
   const payload = { ...scope, sessionId: session.sessionId, action: 'paste' };
   const invoke = (input = payload, source = event) => handlers.get('v2:server-terminal-clipboard')(source, input);
-  return { state, manager, sender, event, adapter, payload, invoke };
+  return { state, manager, sender, event, adapter, payload, invoke, handlers };
 }
+
+test('目录定位 IPC 绑定人工会话，禁止客户端传入进程、命令和额外参数', async t => {
+  const h = await fixture(t);
+  const { action, ...payload } = h.payload;
+  const record = await h.manager.requireRecord('renderer:1', payload);
+  record.shellPid = 1234;
+  let queries = 0;
+  record.channel.desktopReadWorkingDirectory = async pid => { assert.equal(pid, 1234); queries++; return { path: '/srv' }; };
+  const invoke = (input = payload, event = h.event) => h.handlers.get('v2:server-terminal-working-directory')(event, input);
+  assert.deepEqual(await invoke(), { ok: true, data: { path: '/srv' } });
+  for (const input of [
+    { ...payload, pid: 1 }, { ...payload, command: 'pwd' }, { ...payload, path: '/' },
+    { ...payload, sessionId: 'other' }, { ...payload, environmentId: 'other' },
+  ]) assert.equal((await invoke(input)).ok, false);
+  assert.equal((await invoke(payload, { ...h.event, senderFrame: {} })).error.code, 'WORKSPACE_ACCESS_DENIED');
+  assert.equal(queries, 1);
+});
 
 test('终端剪贴板支持多行文本，拒绝跨会话、额外字段及非主框架', async t => {
   const h = await fixture(t);

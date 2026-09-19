@@ -50,6 +50,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
   const connected = connection.state.phase === "connected"
   const reconnectFocusRef = useRef<HTMLElement | null>(null)
   const [path, setPath] = useState("/")
+  const [activeTerminalSessionId, setActiveTerminalSessionId] = useState<string | null>(null)
   const [maximized, setMaximized] = useState(false)
   const [previewRequest, setPreviewRequest] = useState<Readonly<{ file: ServerDirectoryEntry; id: number }> | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
@@ -342,7 +343,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
     <div className="server-workspace-body">
       <ResizablePanelGroup orientation="horizontal" id={`${panelId}-panels`}>
         <ResizablePanel id={`${panelId}-files`} defaultSize="320px" minSize="240px" maxSize="50%" collapsible collapsedSize={0} panelRef={treePanelRef}>
-          <ServerFileTree api={api} scope={scope} connected={connected} visible={visible} path={path} onPath={setPath} onPreview={(file) => { void openPreview(file) }} onUpload={() => { void pickUpload() }} onDownload={file => { void downloadFile(file) }} downloadBusy={downloadPicking} pathDrag={pathDrag} refreshEpoch={refreshEpoch} refreshPaths={refreshPaths} invalidatedPath={invalidatedPath} locateFile={fileLocation} />
+          <ServerFileTree terminalSessionId={activeTerminalSessionId} api={api} scope={scope} connected={connected} visible={visible} path={path} onPath={setPath} onPreview={(file) => { void openPreview(file) }} onUpload={() => { void pickUpload() }} onDownload={file => { void downloadFile(file) }} downloadBusy={downloadPicking} pathDrag={pathDrag} refreshEpoch={refreshEpoch} refreshPaths={refreshPaths} invalidatedPath={invalidatedPath} locateFile={fileLocation} />
         </ResizablePanel>
         <ResizableHandle className={maximized ? "hidden" : ""} aria-label="调整文件树宽度" />
         <ResizablePanel id={`${panelId}-console`} minSize="280px">
@@ -352,7 +353,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
             </ResizablePanel>
             <ResizableHandle className={!previewOpen || maximized ? "hidden" : ""} aria-label="调整文件预览高度" />
             <ResizablePanel id={`${panelId}-terminal`} minSize="180px">
-              <ServerTerminalTabs api={api} scope={scope} visible={visible} connected={connected} connection={terminalState} maximized={maximized} onMaximize={() => setMaximized((value) => !value)} pathDrag={pathDrag} />
+              <ServerTerminalTabs onActiveSessionChange={setActiveTerminalSessionId} api={api} scope={scope} visible={visible} connected={connected} connection={terminalState} maximized={maximized} onMaximize={() => setMaximized((value) => !value)} pathDrag={pathDrag} />
             </ResizablePanel>
           </ResizablePanelGroup>
         </ResizablePanel>

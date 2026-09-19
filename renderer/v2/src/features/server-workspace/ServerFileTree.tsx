@@ -1,6 +1,6 @@
 import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowUp, DownloadSimple, CaretDown, CaretRight, CaretUpDown, Eye, EyeSlash, File, FileCode, FileText, FileZip, FolderSimple, FolderOpen, Link, PencilSimple, SpinnerGap, UploadSimple } from "@phosphor-icons/react"
+import { ArrowUp, Crosshair, DownloadSimple, CaretDown, CaretRight, CaretUpDown, Eye, EyeSlash, File, FileCode, FileText, FileZip, FolderSimple, FolderOpen, Link, PencilSimple, SpinnerGap, UploadSimple } from "@phosphor-icons/react"
 import type { AiOpsV2Api, PluginScope, ServerDirectoryEntry, ServerDirectoryPage } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -8,6 +8,7 @@ import { DirectoryBookmarks } from "./DirectoryBookmarks"
 import { directoryBookmarksKey } from "./directory-bookmarks"
 import { canDragWorkspacePath, type WorkspacePathDrag } from "./workspace-path-drag"
 import { isWorkspacePathStale, parentRemotePath, serverEntryType, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
+import { normalizeWorkspaceLocation, workspaceLocationAncestors } from "./workspace-location"
 
 interface DirectoryState { readonly page?: ServerDirectoryPage; readonly loading: boolean; readonly loadedAt?: number; readonly error?: string; readonly metadataError?: string | undefined; readonly startCursor?: string; readonly history?: readonly string[] }
 const DIRECTORY_TTL_MS = 30_000
@@ -29,16 +30,17 @@ interface ServerFileTreeProps {
   readonly pathDrag: WorkspacePathDrag
   readonly invalidatedPath: Readonly<{ path: string; id: number }> | null
   readonly locateFile?: Readonly<{ path: string; id: number }> | null
+  readonly terminalSessionId: string | null
   readonly refreshEpoch: number
   readonly refreshPaths: readonly string[]
 }
 
-export function ServerFileTree({ api, scope, connected, visible, path, onPath, onPreview, onUpload, onDownload, downloadBusy, pathDrag, refreshEpoch, refreshPaths, invalidatedPath, locateFile }: ServerFileTreeProps) {
+export function ServerFileTree({ api, scope, connected, visible, path, onPath, onPreview, onUpload, onDownload, downloadBusy, pathDrag, refreshEpoch, refreshPaths, invalidatedPath, locateFile, terminalSessionId }: ServerFileTreeProps) {
   const [refreshing, setRefreshing] = useState(false)
   const refreshingRef = useRef(false)
   const connectedRef = useRef(connected)
   connectedRef.current = connected
-  const [root, setRoot] = useState("/")
+  const root = "/"
   const [draft, setDraft] = useState("/")
   const [editingPath, setEditingPath] = useState(false)
   const pathInputRef = useRef<HTMLInputElement>(null)
@@ -46,9 +48,11 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set(["/"]))
   const [showHidden, setShowHidden] = useState(false)
   const [selected, setSelected] = useState("/")
-  const [reveal, setReveal] = useState<Readonly<{ path: string; id: number; openDirectory?: boolean }> | null>(null)
+  const [reveal, setReveal] = useState<Readonly<{ path: string; id: number; expectDirectory?: boolean; terminalSessionId?: string }> | null>(null)
   const [revealError, setRevealError] = useState("")
   const revealSequenceRef = useRef(0)
+  const revealLoadedRef = useRef(new Set<string>())
+  const revealOriginRef = useRef<{ directories: Record<string, DirectoryState>; expanded: ReadonlySet<string>; scrollTop: number; requestSequence: number } | null>(null)
   const [viewport, setViewport] = useState({ scrollTop: 0, height: 500 })
   const metadataRequestsRef = useRef(new Set<string>())
   const pendingOpenRef = useRef<{ path: string; previewFile: boolean } | null>(null)
@@ -56,8 +60,12 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
   const requestSequenceRef = useRef(0)
   const mountedRef = useRef(true)
   const directoriesRef = useRef(directories)
-  const scrollPositionsRef = useRef(new Map<string, number>())
   const pendingScrollRef = useRef<number | null>(null)
+  const [locatingTerminal, setLocatingTerminal] = useState(false)
+  const terminalRequestRef = useRef(0)
+  const terminalSessionRef = useRef(terminalSessionId)
+  terminalSessionRef.current = terminalSessionId
+  useEffect(() => { terminalRequestRef.current += 1; setLocatingTerminal(false) }, [terminalSessionId, connected, visible])
   directoriesRef.current = directories
   const rootRef = useRef(root)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -65,6 +73,20 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
   const rowHeight = 32
   const breadcrumbs = path.split("/").filter(Boolean).map((name, index, parts) => ({ name, path: "/" + parts.slice(0, index + 1).join("/") }))
   useEffect(() => { if (editingPath) { pathInputRef.current?.focus(); pathInputRef.current?.select() } }, [editingPath])
+
+  const cancelPendingReveal = () => {
+    const origin = revealOriginRef.current
+    if (origin) {
+      const cancelled = new Set<string>()
+      for (const [directory, request] of requestsRef.current) if (request > origin.requestSequence) {
+        requestsRef.current.delete(directory)
+        cancelled.add(directory)
+      }
+      if (cancelled.size) setDirectories(current => Object.fromEntries(Object.entries(current).map(([directory, state]) => [directory, cancelled.has(directory) ? { ...state, loading: false } : state])))
+    }
+    setReveal(null)
+    revealOriginRef.current = null
+  }
 
   const invalidate = useCallback((target: string) => {
     const affected = (value: string) => value === target || value.startsWith(target.replace(/\/$/u, "") + "/")
@@ -162,7 +184,7 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
     return () => { mountedRef.current = false; requestsRef.current.clear() }
   }, [])
   useEffect(() => {
-    if (!connected) { requestsRef.current.clear(); setDirectories({}); return }
+    if (!connected) { requestsRef.current.clear(); revealSequenceRef.current += 1; cancelPendingReveal(); setDirectories({}); return }
     if (needsDirectoryRead(directoriesRef.current[root]) && !requestsRef.current.has(root)) void load(root)
   }, [connected, load, root])
   useEffect(() => {
@@ -179,35 +201,10 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
     return () => observer.disconnect()
   }, [])
 
-  const navigate = (next: string) => {
-    pendingOpenRef.current = null
-    revealSequenceRef.current += 1
-    setReveal(null)
-    setRevealError("")
-    const normalized = next.trim()
-    if (!normalized.startsWith("/") || normalized.includes("\0")) return
-    setEditingPath(false)
-    setRoot(normalized)
-    setDraft(normalized)
-    setExpanded((current) => new Set([...current, normalized]))
-    // 导航复用短期缓存，过期后按需刷新，并保留每个浏览位置的滚动距离。
-    scrollPositionsRef.current.set(root, scrollRef.current?.scrollTop ?? 0)
-    while (scrollPositionsRef.current.size > 32) scrollPositionsRef.current.delete(scrollPositionsRef.current.keys().next().value!)
-    pendingScrollRef.current = scrollPositionsRef.current.get(normalized) ?? 0
-    setDirectories((current) => {
-      if (!current[normalized]?.page) return current
-      const next = { ...current }; delete next[normalized]
-      return { ...next, [normalized]: current[normalized] }
-    })
-    setSelected(normalized)
-    onPath(normalized)
-    if (normalized === root && needsDirectoryRead(directories[normalized]) && !requestsRef.current.has(normalized)) void load(normalized)
-  }
-
   const toggle = (entry: ServerDirectoryEntry, previewFile = true) => {
     pendingOpenRef.current = null
     revealSequenceRef.current += 1
-    setReveal(null)
+    cancelPendingReveal()
     setRevealError("")
     setSelected(entry.path)
     if (serverEntryType(entry) === "directory") {
@@ -225,70 +222,98 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
 
   useEffect(() => {
     if (!locateFile || !connected) return
-    const directory = parentRemotePath(locateFile.path)
-    navigate(directory)
-    setSelected(locateFile.path)
-    if (locateFile.path.split("/").some((part) => part.startsWith("."))) setShowHidden(true)
-    setReveal({ path: locateFile.path, id: ++revealSequenceRef.current })
-    void load(directory)
+    revealPath(locateFile.path)
+    void load(parentRemotePath(locateFile.path))
   }, [locateFile])
 
-  const revealDirectory = (target: string, openDirectory = false) => {
+  const beginPathEditing = () => {
+    revealSequenceRef.current += 1
+    cancelPendingReveal()
+    pendingOpenRef.current = null
+    setRevealError("")
+    setDraft(path)
+    setEditingPath(true)
+  }
+
+  const revealPath = (target: string, expectDirectory = false, sourceSessionId?: string) => {
     if (!connected) return
     revealSequenceRef.current += 1
-    setReveal(null)
-    if (openDirectory) {
-      // 与后台的路径规范化保持一致，保留目录名称中的空格。
-      const parts: string[] = []
-      for (const part of target.split("/")) {
-        if (part === "..") parts.pop()
-        else if (part && part !== ".") parts.push(part)
-      }
-      target = "/" + parts.join("/")
-    }
-    if (target === "/") { navigate("/"); pendingScrollRef.current = 0; return }
-    // 收藏从根目录展开完整路径；面包屑沿用当前浏览范围。
-    const nextRoot = openDirectory ? "/" : target === root || !target.startsWith(root.replace(/\/$/u, "") + "/") ? parentRemotePath(target) : root
-    const ancestors: string[] = []
-    for (let current = parentRemotePath(target); current !== nextRoot && current !== "/"; current = parentRemotePath(current)) {
-      ancestors.push(current)
-      // 收藏祖先链与目标共用最多 32 个目录缓存，避免定位期间反复淘汰祖先。
-      if (ancestors.length >= (openDirectory ? 31 : 64)) {
-        setRevealError("目录层级过深，请输入更近的父目录路径。")
-        return
-      }
+    cancelPendingReveal()
+    let ancestors: string[]
+    try {
+      target = normalizeWorkspaceLocation(target)
+      ancestors = workspaceLocationAncestors(target)
+    } catch (failure) {
+      setRevealError(workspaceErrorMessage(failure))
+      return
     }
     pendingOpenRef.current = null
-    if (openDirectory) {
-      // 将定位路径上的缓存移到最近使用位置；旧分页未含目标节点时从第一页重新定位。
-      const chain = [nextRoot, ...[...ancestors].reverse(), target]
-      setDirectories(current => {
-        const next = { ...current }
-        for (const [index, directory] of chain.entries()) {
-          const state = current[directory]
-          if (!state) continue
-          delete next[directory]
-          const child = chain[index + 1]
-          if (child && state.startCursor && state.startCursor !== "0" && !state.page?.entries.some(item => item.path === child)) {
-            requestsRef.current.delete(directory)
-          } else next[directory] = state
-        }
-        return next
-      })
-    }
-    const parent = parentRemotePath(target)
-    const parentPage = directories[parent]
-    if (!openDirectory && parentPage?.startCursor && parentPage.startCursor !== "0" && !parentPage.page?.entries.some((item) => item.path === target) && !requestsRef.current.has(parent)) void load(parent)
-    pendingScrollRef.current = null
-    setRoot(nextRoot)
-    setExpanded((current) => new Set([...current, ...ancestors, nextRoot]))
-    setSelected(target)
+    setRevealError("")
     setDraft(target)
     setEditingPath(false)
+    if (target === "/") {
+      setSelected("/")
+      onPath("/")
+      pendingScrollRef.current = 0
+      if (scrollRef.current) scrollRef.current.scrollTop = 0
+      return
+    }
+    // 所有定位都从根目录保留完整祖先链；旧分页未含目标时从第一页查找。
+    revealOriginRef.current = { directories: directoriesRef.current, expanded, scrollTop: scrollRef.current?.scrollTop ?? 0, requestSequence: requestSequenceRef.current }
+    revealLoadedRef.current.clear()
+    const chain = [...ancestors, target]
+    setDirectories(current => {
+      const next = { ...current }
+      for (const [index, directory] of chain.entries()) {
+        const state = current[directory]
+        if (!state) continue
+        delete next[directory]
+        const child = chain[index + 1]
+        if (child && state.startCursor && state.startCursor !== "0" && !state.page?.entries.some(item => item.path === child)) {
+          requestsRef.current.delete(directory)
+        } else next[directory] = state
+      }
+      return next
+    })
+    pendingScrollRef.current = null
+    setExpanded(current => new Set([...current, ...ancestors]))
+    if (target.split("/").some(part => part.startsWith("."))) setShowHidden(true)
+    setReveal({ path: target, id: revealSequenceRef.current, expectDirectory, ...(sourceSessionId ? { terminalSessionId: sourceSessionId } : {}) })
+  }
+
+  const failReveal = (message: string) => {
+    const origin = revealOriginRef.current
+    cancelPendingReveal()
+    setRevealError(message)
+    if (origin) {
+      setDirectories(Object.fromEntries(Object.entries(origin.directories).map(([directory, state]) => [directory, { ...state, loading: requestsRef.current.has(directory) }])))
+      setExpanded(origin.expanded)
+      pendingScrollRef.current = origin.scrollTop
+    }
+  }
+
+  useEffect(() => {
+    if (reveal?.terminalSessionId && (!visible || reveal.terminalSessionId !== terminalSessionId)) {
+      revealSequenceRef.current += 1
+      failReveal("")
+    }
+  }, [reveal, visible, terminalSessionId])
+
+  const locateTerminalDirectory = async () => {
+    if (!connected || !terminalSessionId || locatingTerminal) return
+    const request = ++terminalRequestRef.current
+    const navigation = revealSequenceRef.current
+    setLocatingTerminal(true)
     setRevealError("")
-    if (target.split("/").some((part) => part.startsWith("."))) setShowHidden(true)
-    onPath(target)
-    setReveal({ path: target, id: ++revealSequenceRef.current, openDirectory })
+    const current = () => mountedRef.current && connectedRef.current && terminalRequestRef.current === request && terminalSessionRef.current === terminalSessionId && revealSequenceRef.current === navigation
+    try {
+      const result = unwrapWorkspaceResult(await api.serverTerminalWorkingDirectory({ ...scope, sessionId: terminalSessionId }))
+      if (current()) revealPath(result.path, true, terminalSessionId)
+    } catch (failure) {
+      if (current()) setRevealError(workspaceErrorMessage(failure))
+    } finally {
+      if (mountedRef.current && terminalRequestRef.current === request) setLocatingTerminal(false)
+    }
   }
 
   useEffect(() => {
@@ -368,55 +393,61 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
   }, [visible, connected])
 
   useEffect(() => {
-    if (!reveal || !connected || rows.some((row) => row.kind === "entry" && row.entry.path === reveal.path)) return
+    if (!reveal || !connected || (reveal.terminalSessionId && (!visible || reveal.terminalSessionId !== terminalSessionId)) || rows.some((row) => row.kind === "entry" && row.entry.path === reveal.path)) return
     const chain: string[] = []
     for (let current = parentRemotePath(reveal.path); ; current = parentRemotePath(current)) {
       chain.unshift(current)
       if (current === root || current === "/" || chain.length > 64) break
     }
-    if (chain.length > 64) { setRevealError("目录层级过深，请输入更近的父目录路径。"); setReveal(null); return }
+    if (chain.length > 64) { failReveal("路径层级超过目录树定位上限。"); return }
     const seen = new Set<string>()
     for (let index = 0; index < chain.length; index += 1) {
       const directory = chain[index]!
       const state = directories[directory]
       if (state?.loading || requestsRef.current.has(directory)) return
-      if (state?.error) { setRevealError(state.error); setReveal(null); return }
-      if (!state?.page) { void load(directory); return }
+      if (state?.error) { failReveal(state.error); return }
+      if (!state?.page) {
+        if (revealLoadedRef.current.has(directory)) { failReveal("目录树已达到缓存上限，无法继续定位。"); return }
+        void load(directory)
+        return
+      }
+      revealLoadedRef.current.add(directory)
       const canonical = state.page.canonicalPath ?? directory
-      if (seen.has(canonical)) { setRevealError("循环链接，无法继续定位。"); setReveal(null); return }
+      if (seen.has(canonical)) { failReveal("循环链接，无法继续定位。"); return }
       seen.add(canonical)
       const child = chain[index + 1] ?? reveal.path
       const entry = state.page.entries.find(item => item.path === child)
       if (entry?.type === "symlink" && !entry.linkTargetType) {
-        if (state.metadataError) { setRevealError(state.metadataError); setReveal(null) }
+        if (state.metadataError) { failReveal(state.metadataError) }
         return
       }
       if (entry && (serverEntryType(entry) === "directory" || child === reveal.path)) continue
       if (state.page.nextCursor) { void load(directory, state.page.nextCursor, state.page.entries.length >= 2000); return }
-      setRevealError("当前目录列表中未找到该项，请刷新后重试。")
-      setReveal(null)
+      failReveal("当前目录列表中未找到该项，请刷新后重试。")
       return
     }
-  }, [reveal, connected, directories, root, rows, load])
+  }, [reveal, connected, visible, terminalSessionId, directories, root, rows, load])
 
   useLayoutEffect(() => {
     const element = scrollRef.current
-    if (!element || !reveal || !connected) return
+    if (!element || !reveal || !connected || (reveal.terminalSessionId && (!visible || reveal.terminalSessionId !== terminalSessionId))) return
     const index = rows.findIndex((row) => row.kind === "entry" && row.entry.path === reveal.path)
     if (index < 0) return
-    if (reveal.openDirectory) {
-      const row = rows[index]!
-      if (row.kind !== "entry") return
-      if (row.entry.type === "symlink" && !row.entry.linkTargetType) {
-        const message = directories[parentRemotePath(reveal.path)]?.metadataError
-        if (message) { setRevealError(message); setReveal(null) }
-        return
-      }
-      if (row.cycle || serverEntryType(row.entry) !== "directory") {
-        setRevealError(row.cycle ? "循环链接，无法打开收藏目录。" : "收藏路径已不是可打开的目录，请刷新后重试。")
-        setReveal(null)
-        return
-      }
+    const row = rows[index]!
+    if (row.kind !== "entry") return
+    if (row.entry.type === "symlink" && !row.entry.linkTargetType) {
+      const message = directories[parentRemotePath(reveal.path)]?.metadataError
+      if (message) { failReveal(message) }
+      return
+    }
+    const isDirectory = serverEntryType(row.entry) === "directory"
+    if (row.cycle || (reveal.expectDirectory && !isDirectory)) {
+      failReveal(row.cycle ? "循环链接，无法继续定位。" : "该路径已不是可打开的目录，请刷新后重试。")
+      return
+    }
+    setSelected(reveal.path)
+    onPath(isDirectory ? reveal.path : parentRemotePath(reveal.path))
+    if (isDirectory) {
       setExpanded(current => new Set([...current, reveal.path]))
       if (needsDirectoryRead(directories[reveal.path]) && !requestsRef.current.has(reveal.path)) void load(reveal.path)
     }
@@ -428,7 +459,8 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
       if (mountedRef.current && revealSequenceRef.current === id) element.querySelector<HTMLButtonElement>('[data-tree-index="' + index + '"]')?.focus({ preventScroll: true })
     }))
     setReveal(null)
-  }, [reveal, connected, rows, rowHeight, directories, load])
+    revealOriginRef.current = null
+  }, [reveal, connected, visible, terminalSessionId, rows, rowHeight, directories, load])
 
   useLayoutEffect(() => {
     const element = scrollRef.current
@@ -454,24 +486,25 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
   return <section className="server-file-tree" aria-label="服务器目录树">
     <div className="server-file-toolbar">
       <div className="server-file-actions">
-        <DirectoryBookmarks key={directoryBookmarksKey(scope)} scope={scope} path={path} connected={connected} visible={visible} onNavigate={target => revealDirectory(target, true)} />
-        <Button size="icon-sm" variant="ghost" aria-label="收起所有目录" title="收起所有目录" onClick={() => { setExpanded(new Set()); if (scrollRef.current) scrollRef.current.scrollTop = 0 }}><CaretUpDown /></Button>
+        <DirectoryBookmarks key={directoryBookmarksKey(scope)} scope={scope} path={path} connected={connected} visible={visible} onNavigate={target => revealPath(target, true)} />
+        <Button size="icon-sm" variant="ghost" aria-label="收起所有目录" title="收起所有目录" onClick={() => { revealSequenceRef.current += 1; cancelPendingReveal(); setExpanded(new Set()); if (scrollRef.current) scrollRef.current.scrollTop = 0 }}><CaretUpDown /></Button>
         <Button size="icon-sm" variant="ghost" aria-label="显示隐藏文件" title={showHidden ? "隐藏点文件" : "显示隐藏文件"} aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}>{showHidden ? <Eye /> : <EyeSlash />}</Button>
+        <Button size="icon-sm" variant="ghost" aria-label="定位终端当前目录" title="定位当前终端的工作目录" disabled={!connected || !terminalSessionId || locatingTerminal} onClick={() => { void locateTerminalDirectory() }}>{locatingTerminal ? <SpinnerGap className="animate-spin" /> : <Crosshair />}</Button>
         <WorkspaceIconButton action="refresh" label="刷新目录" disabled={!connected || refreshing} busy={refreshing} onClick={() => { void refreshVisibleDirectories() }} />
         <Button size="icon-sm" variant="ghost" title="上传文件" aria-label="上传文件" disabled={!connected} onClick={onUpload}><UploadSimple /></Button>
       </div>
     </div>
     <div className="server-file-navigation">
-      <Button size="icon-sm" type="button" variant="ghost" aria-label="上级目录" title="上级目录" disabled={path === "/" || !connected} onClick={() => revealDirectory(parentRemotePath(path))}><ArrowUp /></Button>
-      {editingPath ? <form className="server-path-editor" onSubmit={(event) => { event.preventDefault(); navigate(draft) }}>
+      <Button size="icon-sm" type="button" variant="ghost" aria-label="上级目录" title="上级目录" disabled={path === "/" || !connected} onClick={() => revealPath(parentRemotePath(path))}><ArrowUp /></Button>
+      {editingPath ? <form className="server-path-editor" onSubmit={(event) => { event.preventDefault(); revealPath(draft) }}>
         <Input ref={pathInputRef} aria-label="目录路径" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setEditingPath(false) } }} disabled={!connected} spellCheck={false} />
         <Button type="submit" size="sm" variant="ghost" disabled={!connected || !draft.startsWith("/")}>转到</Button>
       </form> : <>
-        <nav className="server-path-breadcrumbs" aria-label="当前目录" title={path} onDoubleClick={() => { setDraft(path); setEditingPath(true) }}>
-          <button type="button" disabled={!connected} onClick={() => revealDirectory("/")} aria-label="根目录">/</button>
-          {breadcrumbs.map((item, index) => <span key={item.path}><CaretRight size={11} /><button type="button" disabled={!connected} aria-current={index === breadcrumbs.length - 1 ? "location" : undefined} title={`定位到 ${item.path}`} onClick={() => revealDirectory(item.path)}>{item.name}</button></span>)}
+        <nav className="server-path-breadcrumbs" aria-label="当前目录" title={path} onClick={event => { if (connected && event.target === event.currentTarget) { beginPathEditing() } }} onDoubleClick={event => { if (connected && !(event.target as Element).closest("button")) { beginPathEditing() } }}>
+          <button type="button" disabled={!connected} onClick={() => revealPath("/")} aria-label="根目录">/</button>
+          {breadcrumbs.map((item, index) => <span key={item.path}><CaretRight size={11} /><button type="button" disabled={!connected} aria-current={index === breadcrumbs.length - 1 ? "location" : undefined} title={`定位到 ${item.path}`} onClick={() => revealPath(item.path)}>{item.name}</button></span>)}
         </nav>
-        <Button size="icon-sm" variant="ghost" aria-label="编辑目录路径" title="输入路径" disabled={!connected} onClick={() => { setDraft(path); setEditingPath(true) }}><PencilSimple /></Button>
+        <Button size="icon-sm" variant="ghost" aria-label="编辑目录路径" title="输入路径" disabled={!connected} onClick={() => { beginPathEditing() }}><PencilSimple /></Button>
       </>}
     </div>
     {revealError ? <div className="px-3 py-2 text-xs text-danger" role="status">{revealError}</div> : null}
@@ -498,7 +531,7 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
             if (pending) {
               pendingOpenRef.current = { path: entry.path, previewFile }
               revealSequenceRef.current += 1
-              setReveal(null)
+              cancelPendingReveal()
               setRevealError("")
               setSelected(entry.path)
               const directory = parentRemotePath(entry.path)
@@ -509,7 +542,7 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
             if (!connected || !(supported || pending) || (event.target as Element).closest("button") || !pathDrag.begin(event.dataTransfer, entry.path)) { event.preventDefault(); return }
             pendingOpenRef.current = null
             revealSequenceRef.current += 1
-            setReveal(null)
+            cancelPendingReveal()
             setRevealError("")
             setSelected(entry.path)
           }} onDragEnd={() => pathDrag.clear()} onClick={event => {

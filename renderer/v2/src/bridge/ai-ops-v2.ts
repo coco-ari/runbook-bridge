@@ -547,6 +547,7 @@ export interface AiOpsV2Api {
   serverWorkspaceMetrics(payload: PluginScope & { kind?: "system" | "disks" }): Promise<IpcResult<ServerMetricsSnapshot & { retryAfterMs: number }>>
   serverWorkspaceStopMetrics(payload: PluginScope): Promise<IpcResult<{ stopped: boolean }>>
   serverTerminalOpen(payload: PluginScope & { cols: number; rows: number; tabId?: string; defaultColors?: boolean; recoveryOf?: string }): Promise<IpcResult<ServerTerminalSession>>
+  serverTerminalWorkingDirectory(payload: PluginScope & { sessionId: string }): Promise<IpcResult<{ path: string }>>
   serverTerminalRead(payload: PluginScope & { sessionId: string }): Promise<IpcResult<ServerTerminalRead>>
   serverTerminalWrite(payload: PluginScope & { sessionId: string; data: string; encoding?: "utf8" | "binary" }): Promise<IpcResult<OpaqueData>>
   serverTerminalClipboard(payload: PluginScope & { sessionId: string } & ({ action: "copy"; text: string } | { action: "paste" })): Promise<IpcResult<{ text?: string }>>
@@ -633,6 +634,7 @@ export const AI_OPS_V2_API_NAMES = [
   "serverWorkspaceMetrics",
   "serverWorkspaceStopMetrics",
   "serverTerminalOpen",
+  "serverTerminalWorkingDirectory",
   "serverTerminalRead",
   "serverTerminalWrite",
   "serverTerminalClipboard",

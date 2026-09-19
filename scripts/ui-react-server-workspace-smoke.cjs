@@ -30,6 +30,7 @@ const terminalSessions = new Map();
 const writes = [];
 const resizes = [];
 const directoryReads = [];
+const directoryState = { requests: [], delay: 0, fail: false };
 const previewReads = [];
 const metricsState = { reads:0, stops:0, round:0, mode:"normal", delay:0, diskDelay:0, inFlight:0, byKind:{system:0,disks:0}, maxByKind:{system:0,disks:0} };
 const removedPaths = new Set();
@@ -174,8 +175,17 @@ function register() {
     const sessionId = 'terminal-' + (opened.length + 1);
     opened.push(sessionId);
     defaultColorOptions.push(input.defaultColors);
-    terminalSessions.set(sessionId, { status: 'open', tabId:input.tabId, recoverable:false, closeReason:null, chunks: [Buffer.from('\x1b[32m已连接到示例服务器\x1b[0m\r\noperator@demo:~$ ')] });
+    terminalSessions.set(sessionId, { status: 'open', cwd:'/srv', tabId:input.tabId, recoverable:false, closeReason:null, chunks: [Buffer.from('\x1b[32m已连接到示例服务器\x1b[0m\r\noperator@demo:~$ ')] });
     return { sessionId, status: 'open', cols: input.cols, rows: input.rows };
+  });
+  handle('server-terminal-working-directory', async input => {
+    scoped(input);
+    assert.equal(terminalSessions.get(input.sessionId)?.status, 'open');
+    directoryState.requests.push(input);
+    const path = terminalSessions.get(input.sessionId).cwd;
+    if (directoryState.delay) await wait(directoryState.delay);
+    if (directoryState.fail) throw Object.assign(new Error('无法读取当前终端的工作目录。'), { code:'TERMINAL_DIRECTORY_UNAVAILABLE' });
+    return { path };
   });
   handle('server-terminal-read', async (input) => {
     scoped(input);
@@ -367,7 +377,7 @@ async function assertFileSidebarLayout() {
         unusedBottom: sidebar.getBoundingClientRect().bottom - sidebar.querySelector('.server-tree-scroll').getBoundingClientRect().bottom,
       };
     })()`);
-    assert.equal(layout.buttons.length, 5, '目录工具栏保留五个操作按钮');
+    assert.equal(layout.buttons.length, 6, '目录工具栏包含定位当前终端按钮');
     assert.ok(layout.buttons.every(button => button.inside && Math.abs(button.centerY - layout.buttons[0].centerY) <= 1), zoom + ' 倍缩放下按钮保持单行且完整可见：' + JSON.stringify(layout));
     assert.ok(Math.abs(layout.height - 43) <= 1, zoom + ' 倍缩放下工具栏不增加空白行');
     assert.ok(Math.abs(layout.unusedBottom) <= 1, '文件列表使用底部释放的空间');
@@ -580,6 +590,13 @@ async function run() {
     await require('./workspace-file-interactions-ui.cjs')({evaluate,click,doubleClick,clickText,until,wait,win,previewReads,writes,opened,terminalSessions,errors});
     completed = true;
     process.stdout.write(JSON.stringify({ok:true,fileInteractions:true,writes:writes.length})+'\n');
+    return;
+  }
+  if (process.env.RUNBOOK_BRIDGE_LOCATION_SMOKE === '1') {
+    releaseRootMetadata();
+    await require('./workspace-location-ui.cjs')({evaluate,click,until,wait,win,setViewport,snapshot,terminalSessions,directoryState,writes,previewReads,errors});
+    completed = true;
+    process.stdout.write(JSON.stringify({ok:true,pathLocations:true,queries:directoryState.requests.length})+'\n');
     return;
   }
   if (process.env.RUNBOOK_BRIDGE_CONVENIENCE_SMOKE === '1') {
@@ -1070,6 +1087,7 @@ async function run() {
   await testWorkspaceConveniences();
   await require('./workspace-metrics-ui.cjs')({evaluate,click,clickText,until,wait,win,setViewport,snapshot,metricsState,writes,errors});
   await require('./workspace-file-interactions-ui.cjs')({evaluate,click,doubleClick,clickText,until,wait,win,previewReads,writes,opened,terminalSessions,errors});
+  await require('./workspace-location-ui.cjs')({evaluate,click,until,wait,win,setViewport,snapshot,terminalSessions,directoryState,writes,previewReads,errors});
   completed = true;
   process.stdout.write(JSON.stringify({ ok: true, terminalSessions: opened.length, writes: writes.length, directoryReads: directoryReads.length, resizes: resizes.length, screenshotRoot: process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR ?? null }) + '\n');
 }
@@ -1400,7 +1418,7 @@ async function testWorkspaceConveniences() {
   const beforeCycleBookmark=directoryReads.length;
   await click('[aria-label="常用目录"]');
   await click('[aria-label="打开收藏目录 /bin/X11"]');
-  await until("document.querySelector('.server-file-tree').textContent.includes('循环链接，无法打开收藏目录')",'收藏循环链接停止展开');
+  await until("document.querySelector('.server-file-tree').textContent.includes('循环链接，无法继续定位')",'收藏循环链接停止展开');
   assert.ok(!directoryReads.slice(beforeCycleBookmark).some(item=>["/bin/X11","/usr/bin/X11"].includes(item.path)),'收藏循环链接不发起目录读取');
   await saveBookmarks(["/srv"]);
   await click('[aria-label="常用目录"]');
@@ -1430,6 +1448,7 @@ async function testWorkspaceConveniences() {
   // 断线时保留历史搜索和目录收藏，但收藏不会主动发起连接。
   await clickText('断开连接');
   await until("document.querySelector('[data-testid=server-connection-notice]')",'断线保留收藏');
+  assert.equal(await evaluate("document.querySelector('[aria-label=定位终端当前目录]').disabled"),true,'断线后禁止读取终端目录');
   await click('[aria-label="常用目录"]');
   assert.equal(await evaluate("document.querySelector('[aria-label=\"打开收藏目录 /srv\"]').disabled"),true);
   await click('[aria-label="常用目录"]');

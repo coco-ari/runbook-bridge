@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('aiOps', {
     serverWorkspaceMetrics: payload => ipcRenderer.invoke('v2:server-workspace-metrics', payload),
     serverWorkspaceStopMetrics: payload => ipcRenderer.invoke('v2:server-workspace-stop-metrics', payload),
     serverTerminalOpen: (payload) => ipcRenderer.invoke('v2:server-terminal-open', payload),
+    serverTerminalWorkingDirectory: (payload) => ipcRenderer.invoke('v2:server-terminal-working-directory', payload),
     serverTerminalRead: (payload) => ipcRenderer.invoke('v2:server-terminal-read', payload),
     serverTerminalWrite: (payload) => ipcRenderer.invoke('v2:server-terminal-write', payload),
     serverTerminalClipboard: (payload) => ipcRenderer.invoke('v2:server-terminal-clipboard', payload),

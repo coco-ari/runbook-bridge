@@ -1,4 +1,5 @@
 import { DEFAULT_TERMINAL_COLORS, probeTerminalShell } from './server-terminal-startup.mjs';
+import { readTerminalDirectoryChannel } from './server-terminal-directory.mjs';
 import { metricsCommand, readMetricsChannel } from './server-metrics-reader.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -1076,10 +1077,10 @@ export class SshBroker {
     }
     if (typeof defaultColors !== 'boolean') throw new AppError('INVALID_ARGUMENT', '默认配色设置无效。');
     let startupCommand = null;
-    if (defaultColors && typeof session.client.exec === 'function') {
+    if (typeof session.client.exec === 'function') {
       // 每条 SSH 连接只探测一次；探测失败仍可正常打开人工终端。
       session.terminalShellPromise ??= probeTerminalShell(session.client);
-      if (await session.terminalShellPromise) startupCommand = DEFAULT_TERMINAL_COLORS;
+      if (await session.terminalShellPromise) startupCommand = defaultColors ? DEFAULT_TERMINAL_COLORS : ':';
       if (this.sessions.get(projectId) !== session) throw new AppError('TERMINAL_CLOSED', 'SSH 连接已经变化，请重新打开终端。');
     }
     // 仅桌面人工会话使用 PTY；Agent 的单命令策略与确认路径保持独立。
@@ -1120,6 +1121,13 @@ export class SshBroker {
           channel.pause();
           channel.stderr?.pause();
           channel.desktopStartupCommand = startupCommand;
+          channel.desktopTrackDirectory = Boolean(startupCommand);
+          channel.desktopReadWorkingDirectory = async (pid, options) => {
+            if (this.sessions.get(projectId) !== session) throw new AppError('TERMINAL_CLOSED', '服务器连接已经变化。');
+            const result = await readTerminalDirectoryChannel(session.client, pid, options);
+            if (this.sessions.get(projectId) !== session) throw new AppError('TERMINAL_CLOSED', '服务器连接已经变化。');
+            return result;
+          };
           resolve(channel);
         });
       } catch {

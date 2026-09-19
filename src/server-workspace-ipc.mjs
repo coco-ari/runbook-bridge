@@ -8,6 +8,7 @@ const CALLS = [
   ['server-workspace-clear-transfers', 'serverWorkspaceFiles', 'clearTransfers', ['jobId']],
   ['server-workspace-prepare-upload-resume', 'serverWorkspaceFiles', 'prepareUploadResume', ['jobId']],
   ['server-terminal-open', 'serverWorkspaceManager', 'openTerminal', ['cols', 'rows', 'tabId', 'defaultColors', 'recoveryOf']],
+  ['server-terminal-working-directory', 'serverWorkspaceManager', 'terminalWorkingDirectory', ['sessionId']],
   ['server-terminal-read', 'serverWorkspaceManager', 'readTerminal', ['sessionId']],
   ['server-terminal-write', 'serverWorkspaceManager', 'writeTerminal', ['sessionId', 'data', 'encoding']],
   ['server-terminal-resize', 'serverWorkspaceManager', 'resizeTerminal', ['sessionId', 'cols', 'rows']],

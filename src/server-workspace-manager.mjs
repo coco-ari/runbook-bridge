@@ -158,7 +158,7 @@ export class ServerWorkspaceManager {
       }
       record.channel = channel;
       record.status = 'open';
-      record.startup = record.defaultColors && channel.desktopStartupCommand ? createTerminalStartup(channel.desktopStartupCommand) : null;
+      record.startup = channel.desktopStartupCommand ? createTerminalStartup(channel.desktopStartupCommand, { identifyShell:channel.desktopTrackDirectory === true }) : null;
       record.onData = (chunk, stderr = false) => {
         let buffer = Buffer.from(chunk);
         if (record.startup) buffer = stderr && !record.startup.done ? Buffer.alloc(0) : record.startup.consume(buffer);
@@ -189,6 +189,7 @@ export class ServerWorkspaceManager {
       channel.stderr?.resume();
       // 完成所有权复核后才发送固定配置；就绪前拒绝人工输入，并复用同一初始化 Promise。
       if (record.startup) await Promise.all([this.writeRecord(record, Buffer.from(record.startup.command)), record.startup.ready]);
+      record.shellPid = record.startup?.shellPid ?? null;
       record.startup = null;
       if (record.status === 'closed') throw new AppError('TERMINAL_CLOSED', '终端打开操作已取消。');
       record.initializing = false;
@@ -281,6 +282,26 @@ export class ServerWorkspaceManager {
     }
   }
 
+  async terminalWorkingDirectory(ownerId, payload) {
+    const record = await this.requireRecord(ownerId, payload);
+    if (!record.shellPid || typeof record.channel?.desktopReadWorkingDirectory !== 'function') {
+      throw new AppError('TERMINAL_DIRECTORY_UNAVAILABLE', '当前终端暂不支持读取工作目录，请输入路径定位。');
+    }
+    // 目录查询独立于终端输入，并绑定窗口、标签、连接代次；同会话并发请求复用。
+    if (!record.directoryRead) {
+      record.directoryController = new AbortController();
+      record.directoryRead = Promise.resolve().then(() => record.channel.desktopReadWorkingDirectory(record.shellPid, { signal:record.directoryController.signal })).then(async result => {
+        record.nextValidationAt = 0;
+        await this.requireRecord(ownerId, payload);
+        return result;
+      }).finally(() => {
+        record.directoryController = null;
+        record.directoryRead = null;
+      });
+    }
+    return record.directoryRead;
+  }
+
   async writeTerminal(ownerId, payload) {
     const encoding = payload?.encoding ?? 'utf8';
     if (!['utf8', 'binary'].includes(encoding) || typeof payload?.data !== 'string'
@@ -360,6 +381,7 @@ export class ServerWorkspaceManager {
     record.waiter?.();
     for (const complete of [...record.pendingWrites]) complete(true);
     record.startup?.cancel();
+    record.directoryController?.abort();
     if (destroy) {
       try { record.channel?.close(); record.channel?.destroy(); } catch { /* 通道可能已经关闭。 */ }
     }

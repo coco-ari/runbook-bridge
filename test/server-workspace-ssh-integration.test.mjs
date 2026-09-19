@@ -28,6 +28,8 @@ test('真实本地 SSH 协议分配 PTY、持续收发字节并传播窗口变�
   let remote;
   let shellCount = 0;
   let probes = 0;
+  let workingDirectory = '/home/operator';
+  const directoryQueries = [];
   const startupCommands = [];
   const server = new ssh2.Server({ hostKeys: [privateKey] }, (client) => {
     clients.add(client);
@@ -40,10 +42,16 @@ test('真实本地 SSH 协议分配 PTY、持续收发字节并传播窗口变�
     client.on('ready', () => client.on('session', (accept) => {
       const session = accept();
       session.on('exec', (approve, _reject, info) => {
-        assert.equal(info.command, 'printf \'%s\' "$SHELL"');
-        probes += 1;
         const stream = approve();
-        stream.write('/bin/bash'); stream.exit(0); stream.end();
+        if (info.command === 'printf \'%s\' "$SHELL"') {
+          probes += 1;
+          stream.write('/bin/bash');
+        } else {
+          assert.equal(info.command, 'command readlink -- /proc/4242/cwd');
+          directoryQueries.push(info.command);
+          stream.write(workingDirectory + '\n');
+        }
+        stream.exit(0); stream.end();
       });
       session.on('pty', (approve, _reject, info) => { pty = info; approve(); });
       session.on('window-change', (approve, _reject, info) => { windows.push(info); approve?.(); });
@@ -62,6 +70,9 @@ test('真实本地 SSH 协议分配 PTY、持续收发字节并传播窗口变�
             current.write(data);
             current.write('\r\noperator@example:~$ ');
             current.write(data);
+            const shellLabel = data.toString().match(/runbook-shell:[a-f0-9]{32}:/u)?.[0];
+            assert.ok(shellLabel);
+            current.write('\x1b]' + shellLabel + '4242\x07');
             current.write(marker.subarray(0, 7));
             current.write(Buffer.concat([marker.subarray(7), Buffer.from('operator@example:~$ ')]));
           } else current.write(data);
@@ -109,10 +120,15 @@ test('真实本地 SSH 协议分配 PTY、持续收发字节并传播窗口变�
   assert.equal(pty.cols, 132);
   assert.equal(pty.rows, 37);
 
+  assert.deepEqual(await manager.terminalWorkingDirectory(1, payload), { path: workingDirectory });
+  workingDirectory = '/srv/example';
   const input = 'cd /srv/example\r\x03\t\x1b[A';
   await manager.writeTerminal(1, { ...payload, data: input });
   const echoed = await receive((data) => data.length === Buffer.byteLength(input));
   assert.equal(echoed.content.toString(), input);
+  assert.deepEqual(await manager.terminalWorkingDirectory(1, payload), { path: '/srv/example' });
+  assert.equal(directoryQueries.length, 2);
+  assert.equal((await manager.readTerminal(1, payload)).data.length, 0, '查询目录不向人工终端注入命令或输出');
   assert.equal((await manager.openTerminal(1, scope)).sessionId, session.sessionId);
   assert.equal(shellCount, 1);
   assert.equal(probes, 1);

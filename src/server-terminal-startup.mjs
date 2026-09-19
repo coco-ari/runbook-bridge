@@ -51,10 +51,13 @@ export function probeTerminalShell(client, timeoutMs = 1500) {
 }
 
 // 只隔离新会话的初始化输出；完成标记之后按原始字节转发，不匹配用户命令文本。
-export function createTerminalStartup(command, { timeoutMs = 15_000, maxBytes = 1024 * 1024 } = {}) {
+export function createTerminalStartup(command, { timeoutMs = 15_000, maxBytes = 1024 * 1024, identifyShell = false } = {}) {
   const token = crypto.randomBytes(16).toString('hex');
   const label = 'runbook-ready:' + token;
   const marker = Buffer.from('\x1b]' + label + '\x07');
+  const shellLabel = 'runbook-shell:' + token + ':';
+  const shellPrefix = Buffer.from('\x1b]' + shellLabel);
+  let shellPid = null;
   let pending = Buffer.alloc(0);
   let received = 0;
   let settled = false;
@@ -73,10 +76,11 @@ export function createTerminalStartup(command, { timeoutMs = 15_000, maxBytes = 
     if (error) rejectReady(error);
     else resolveReady();
   };
-  const timer = setTimeout(() => finish(new AppError('TERMINAL_STARTUP_TIMEOUT', '终端初始化超时。可在「目录配色」关闭自动配色后重新打开终端。')), timeoutMs);
+  const timer = setTimeout(() => finish(new AppError('TERMINAL_STARTUP_TIMEOUT', '终端初始化超时，请检查登录 Shell 是否等待输入后重新打开终端。')), timeoutMs);
   return {
     // 使用转义形式构造控制字符，避免命令本身的回显被误认成完成标记。
-    command: command + "; printf '\\033]" + label + "\\007'\r",
+    command: command + (identifyShell ? "; printf '\\033]" + shellLabel + "%s\\007' \"$$\"" : "") + "; printf '\\033]" + label + "\\007'\r",
+    get shellPid() { return shellPid; },
     ready,
     get done() { return done; },
     consume(chunk) {
@@ -84,10 +88,20 @@ export function createTerminalStartup(command, { timeoutMs = 15_000, maxBytes = 
       if (settled) return Buffer.alloc(0);
       received += chunk.length;
       if (received > maxBytes) {
-        finish(new AppError('TERMINAL_STARTUP_FAILED', '终端初始化输出异常。可在「目录配色」关闭自动配色后重新打开终端。'));
+        finish(new AppError('TERMINAL_STARTUP_FAILED', '终端初始化输出异常，请检查登录 Shell 的启动配置后重新打开终端。'));
         return Buffer.alloc(0);
       }
       const combined = Buffer.concat([pending, chunk]);
+      // 随机帧只用于本会话的初始化元数据，进程号严格限制为十进制整数。
+      const shellStart = identifyShell ? combined.indexOf(shellPrefix) : -1;
+      if (shellStart !== -1) {
+        const shellEnd = combined.indexOf(7, shellStart + shellPrefix.length);
+        if (shellEnd !== -1) {
+          const value = combined.subarray(shellStart + shellPrefix.length, shellEnd).toString('latin1');
+          const pid = Number(value);
+          if (/^[1-9][0-9]{0,9}$/u.test(value) && Number.isSafeInteger(pid) && pid <= 2147483647) shellPid = pid;
+        }
+      }
       const index = combined.indexOf(marker);
       if (index !== -1) {
         const remainder = combined.subarray(index + marker.length);
@@ -95,7 +109,7 @@ export function createTerminalStartup(command, { timeoutMs = 15_000, maxBytes = 
         return remainder;
       }
       // 只保留可能跨包的标记尾部，登录横幅和回显不会累积到终端缓冲。
-      pending = Buffer.from(combined.subarray(Math.max(0, combined.length - marker.length + 1)));
+      pending = Buffer.from(combined.subarray(Math.max(0, combined.length - Math.max(marker.length, shellPrefix.length + 12) + 1)));
       return Buffer.alloc(0);
     },
     cancel() { finish(new AppError('TERMINAL_CLOSED', '终端初始化已取消。')); },

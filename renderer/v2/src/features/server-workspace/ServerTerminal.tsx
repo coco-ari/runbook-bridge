@@ -26,6 +26,7 @@ function readDefaultColors() {
 
 export interface ServerTerminalProps {
   readonly tabId: string
+  readonly onSessionChange?: (tabId: string, sessionId: string | null) => void
   readonly api: AiOpsV2Api
   readonly scope: PluginScope
   readonly visible: boolean
@@ -36,7 +37,7 @@ export interface ServerTerminalProps {
   readonly pathDrag: WorkspacePathDrag
 }
 
-export function ServerTerminal({ tabId, api, scope, visible, connected, connection, maximized, onMaximize, pathDrag }: ServerTerminalProps) {
+export function ServerTerminal({ tabId, api, scope, visible, connected, connection, maximized, onMaximize, pathDrag, onSessionChange }: ServerTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -61,6 +62,10 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
   const writeChainRef = useRef(Promise.resolve())
   const queuedBytesRef = useRef(0)
   const [status, setStatus] = useState<"idle" | "opening" | "open" | "closed" | "waiting">("idle")
+  useEffect(() => {
+    onSessionChange?.(tabId, status === "open" ? sessionRef.current : null)
+    return () => onSessionChange?.(tabId, null)
+  }, [onSessionChange, tabId, status])
   const [defaultColors, setDefaultColors] = useState(readDefaultColors)
   const [colorHelp, setColorHelp] = useState(false)
   const [colorPlatform, setColorPlatform] = useState("linux")
