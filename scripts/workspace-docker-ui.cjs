@@ -4,7 +4,8 @@ module.exports = async ({evaluate,click,clickText,until,wait,win,setViewport,sna
   const nativeClick = async selector => {
     win.webContents.focus();
     await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
-    await until(visible(selector),'定位原生点击目标');
+    // 菜单初次出现时可能仍在视口外，等待定位完成且命中目标后再发送原生点击。
+    await until("(() => {const target=document.querySelector(" + JSON.stringify(selector) + ");const r=target?.getBoundingClientRect();if(!r||r.width<=0||r.height<=0||r.left<0||r.top<0||r.right>innerWidth+1||r.bottom>innerHeight+1)return false;const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return Boolean(hit&&target.contains(hit));})()",'原生点击目标完成定位');
     const point = await evaluate("(() => {const r=document.querySelector(" + JSON.stringify(selector) + ").getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};})()");
     win.webContents.sendInputEvent({type:'mouseMove',...point});
     win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});
