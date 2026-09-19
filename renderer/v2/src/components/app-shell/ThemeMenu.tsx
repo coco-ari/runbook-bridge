@@ -19,28 +19,28 @@ const options = [
   { value: "system", label: "跟随系统", Icon: Desktop },
 ] as const
 
-export function ThemeMenu({ placement = "sidebar" }: { readonly placement?: "sidebar" | "workspace" }) {
+export function ThemeMenu() {
   const { preference, setPreference } = useTheme()
   const selected = options.find((option) => option.value === preference) ?? options[2]
 
   return (
-    <div className={placement === "workspace" ? "shrink-0" : "shrink-0 px-2 pb-2 pt-1"} data-testid="theme-controls">
+    <div data-testid="theme-controls">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
             aria-label={`切换主题，当前${selected.label}`}
-            className="h-8 w-full min-w-0 justify-start gap-1.5 px-2.5 text-xs text-muted-foreground"
+            className="h-10 w-full min-w-0 justify-start gap-2 px-3 text-sm"
             data-testid="theme-menu-trigger"
             size="sm"
             type="button"
-            variant="ghost"
+            variant="outline"
           >
             <selected.Icon aria-hidden="true" className="size-3.5 shrink-0" />
             <span className="min-w-0 flex-1 truncate text-left text-xs leading-4">{selected.label}</span>
             <CaretUpDown aria-hidden="true" className="size-3 shrink-0" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align={placement === "workspace" ? "end" : "start"} className="w-44" data-testid="theme-menu" side={placement === "workspace" ? "bottom" : "top"}>
+        <DropdownMenuContent align="start" className="w-[var(--radix-dropdown-menu-trigger-width)]" data-testid="theme-menu" side="bottom">
           <DropdownMenuLabel>外观主题</DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuRadioGroup

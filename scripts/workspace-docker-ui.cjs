@@ -41,9 +41,12 @@ module.exports = async ({evaluate,click,clickText,until,wait,win,setViewport,sna
   assert.equal(count('logs'),beforeRefresh + 1,'本地搜索不重新读取服务器');
   await evaluate("(() => {const input=document.querySelector('[aria-label=\\\"搜索已加载日志\\\"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,''); input.dispatchEvent(new Event('input',{bubbles:true}));})()");
   for (const theme of ['light','dark']) {
-    await nativeClick('[data-testid="server-workspace"] [data-testid="theme-menu-trigger"]');
+    await nativeClick('[data-testid="server-workspace"] [data-testid="settings-open"]');
+    await nativeClick('[data-testid="theme-menu-trigger"]');
     await nativeClick('[data-testid="theme-option-' + theme + '"]');
     await until("document.documentElement.dataset.theme === '" + theme + "'",'切换主题');
+    await nativeClick('[data-testid="settings-back"]');
+    await until("!document.querySelector('[data-testid=settings-page]')",'返回服务器工作区');
     await snapshot('docker-workspace-' + theme + '.png');
     if (theme === 'light') { await click('[aria-label="服务器文件"]'); await snapshot('docker-workspace-files-light.png'); await click('[aria-label="Docker 容器"]'); }
   }

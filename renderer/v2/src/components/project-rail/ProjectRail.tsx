@@ -2,18 +2,18 @@ import { shortcutLabel } from "@/lib/platform"
 import { useEffect, useMemo, useState } from "react"
 import {
   ArrowClockwise,
-  Cloud,
   DotsThree,
   FolderSimple,
   GearSix,
   MagnifyingGlass,
   Plus,
   ShieldWarning,
+  Trash,
   WarningCircle,
 } from "@phosphor-icons/react"
 
 import { StatusIndicator, statusLabel } from "@/components/app-shell/StatusIndicator"
-import { ThemeMenu } from "@/components/app-shell/ThemeMenu"
+import { SettingsButton } from "@/features/settings/SettingsButton"
 import {
   Alert,
   AlertDescription,
@@ -95,7 +95,6 @@ function normalizeProjectQuery(value: string): string {
 
 export type ProjectRailAction =
   | Readonly<{ type: "create-project" }>
-  | Readonly<{ type: "cloud-config" }>
   | Readonly<{ type: "create-environment"; project: WorkspaceProjectReadModel }>
   | Readonly<{ type: "edit-project"; project: WorkspaceProjectReadModel }>
   | Readonly<{ type: "delete-project"; project: WorkspaceProjectReadModel }>
@@ -202,6 +201,11 @@ function ProjectActionsMenu({ project, onAction, selectedProjectId }: {
         <DropdownMenuItem onSelect={() => handoff.queueAction(() => onAction({ type: "edit-project", project }))}>
           <GearSix />
           项目设置
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => handoff.queueAction(() => onAction({ type: "delete-project", project }))} variant="destructive">
+          <Trash />
+          删除项目
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -554,8 +558,7 @@ export function ProjectRail({
           </nav>
         </SidebarContent>
 
-        <Button className="mx-2 mb-1 justify-start gap-2" variant="ghost" onClick={() => onAction({ type: "cloud-config" })} aria-label="云配置" data-testid="cloud-config-open"><Cloud size={16} /><span className="text-xs">云配置</span></Button>
-        <ThemeMenu />
+        <SettingsButton className="mx-2 mb-2 justify-start gap-2" />
 
         <SidebarFooter
           className={cn(

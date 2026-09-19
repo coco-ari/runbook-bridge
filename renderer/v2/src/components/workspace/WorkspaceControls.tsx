@@ -1,7 +1,7 @@
 import type { ComponentProps } from "react"
 import { ArrowClockwise, ArrowLeft, ArrowsIn, ArrowsOut, LinkBreak, Plus, X } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
-import { ThemeMenu } from "@/components/app-shell/ThemeMenu"
+import { SettingsButton } from "@/features/settings/SettingsButton"
 
 type IconButtonProps = Omit<ComponentProps<typeof Button>, "children" | "aria-label"> & {
   readonly action: "refresh" | "close" | "add" | "maximize" | "restore"
@@ -25,7 +25,7 @@ export function WorkspaceHeaderActions({ connected, busy, onDisconnect, onClose,
   readonly prefix: string; readonly closeLabel: string; readonly closeTitle: string
 }) {
   return <>
-    <ThemeMenu placement="workspace" />
+    <SettingsButton />
     <Button data-testid={prefix + "-disconnect"} size="sm" variant="outline" type="button" title="断开连接" disabled={!connected || busy} onClick={onDisconnect}><LinkBreak aria-hidden="true" />{busy ? "断开中…" : "断开连接"}</Button>
     <WorkspaceIconButton action="close" data-testid={prefix + "-close"} label={closeLabel} title={closeTitle} onClick={onClose} />
   </>

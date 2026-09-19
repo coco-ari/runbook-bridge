@@ -4,11 +4,10 @@ import type { AiOpsV2Api } from "@/bridge/ai-ops-v2"
 import type { CloudConfigData, CloudConfigRequest, CloudProject } from "./cloud-types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 
 const randomPassword = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, "0")).join("")
 
-export function CloudConfigDialog({ api, open, onOpenChange, onChanged }: { api: AiOpsV2Api; open: boolean; onOpenChange: (open: boolean) => void; onChanged: () => void }) {
+export function CloudConfigPanel({ api, onChanged, onBusyChange }: { api: AiOpsV2Api; onChanged: () => void; onBusyChange: (busy: boolean) => void }) {
   const [status, setStatus] = useState<CloudConfigData>({})
   const [catalog, setCatalog] = useState<CloudConfigData>({})
   const [url, setUrl] = useState("")
@@ -17,7 +16,7 @@ export function CloudConfigDialog({ api, open, onOpenChange, onChanged }: { api:
   const [remember, setRemember] = useState(false)
   const [creating, setCreating] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState(true)
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
   const [direction, setDirection] = useState<"upload" | "download">("download")
@@ -35,21 +34,20 @@ export function CloudConfigDialog({ api, open, onOpenChange, onChanged }: { api:
   const run = async (operation: () => Promise<void>) => {
     if (busyRef.current) return
     busyRef.current = true
-    setBusy(true); setError(""); setNotice("")
+    setBusy(true); onBusyChange(true); setError(""); setNotice("")
     try { await operation() } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : "云配置操作失败。") }
-    finally { busyRef.current = false; if (mounted.current) setBusy(false) }
+    finally { busyRef.current = false; if (mounted.current) { setBusy(false); onBusyChange(false) } }
   }
   useEffect(() => {
-    mounted.current = open
-    if (open) void run(async () => {
+    mounted.current = true
+    void run(async () => {
       const next = await call({ action: "status" })
       if (!mounted.current) return
       setStatus(next); setUrl(next.url ?? ""); setRemember(Boolean(next.remembered))
       if (next.unlocked) setCatalog(await call({ action: "catalog" }))
     })
-    else { setPassword(""); setAdminToken(""); setPlan(null); setChoices({}); setSelected([]); setShowPassword(false) }
     return () => { mounted.current = false }
-  }, [open, api])
+  }, [api])
   const refresh = async () => {
     setStatus(await call({ action: "status" }))
     setCatalog(await call({ action: "catalog", snapshotId: snapshotId || null }))
@@ -65,9 +63,7 @@ export function CloudConfigDialog({ api, open, onOpenChange, onChanged }: { api:
     setNotice("仓库已解锁。可以选择项目上传或下载。")
   })
   const projects: readonly CloudProject[] = direction === "upload" ? status.projects ?? [] : catalog.projects ?? []
-  return <Dialog open={open} onOpenChange={next => { if (!busy) onOpenChange(next) }}>
-    <DialogContent className="sm:max-w-3xl" showCloseButton={!busy} data-testid="cloud-config-dialog">
-      <DialogHeader><DialogTitle>云配置</DialogTitle><DialogDescription>加密保存项目、插件与凭据，在另一台电脑下载后即可使用现有连接按钮。</DialogDescription></DialogHeader>
+  return <div className="space-y-5 text-sm" data-testid="cloud-config-panel" aria-busy={busy}>
       {error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-destructive">{error}</div> : null}
       {notice ? <div role="status" className="rounded-lg border bg-muted/40 p-3 whitespace-pre-line">{notice}</div> : null}
       <fieldset disabled={busy} className="space-y-3 rounded-lg border p-4">
@@ -124,6 +120,5 @@ export function CloudConfigDialog({ api, open, onOpenChange, onChanged }: { api:
       </section> : null}
       {(status.backups ?? []).length ? <details className="rounded-lg border p-3"><summary className="cursor-pointer font-medium">本地加密备份（{status.backups?.length}）</summary><div className="mt-3 max-h-40 space-y-2 overflow-y-auto">{status.backups?.map(backup => <div key={backup.backupId} className="flex items-center justify-between gap-3 text-xs"><span>{backup.name} · {new Date(backup.createdAt).toLocaleString()}</span><Button size="sm" variant="outline" disabled={busy} onClick={() => void run(async () => showPlan(await call({ action: "prepareRestore", backupId: backup.backupId })))}><ClockCounterClockwise />预览恢复</Button></div>)}</div></details> : null}
       {busy ? <p role="status" className="text-xs text-muted-foreground">正在处理，请稍候…</p> : null}
-    </DialogContent>
-  </Dialog>
+  </div>
 }

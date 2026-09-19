@@ -8,6 +8,7 @@ import {
   Plus,
   ShieldWarning,
   TerminalWindow,
+  Trash,
   TreeStructure,
   WarningCircle,
   type Icon,
@@ -382,6 +383,11 @@ function EnvironmentGroup({
               <DropdownMenuItem onSelect={() => actionsHandoff.queueAction(() => onAction({ type: "edit-environment", environment }))}>
                 <GearSix />
                 环境设置
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => actionsHandoff.queueAction(() => onAction({ type: "delete-environment", environment }))} variant="destructive">
+                <Trash />
+                删除环境
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

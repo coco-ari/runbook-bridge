@@ -572,6 +572,14 @@ async function waitForThemeToastsToDismiss(cdp, label) {
 }
 
 async function clickThemeControl(cdp, testId) {
+  const settings = await cdp.evaluate('Boolean(document.querySelector("[data-testid=settings-page]"))');
+  if (testId === 'theme-menu-trigger' && !settings) {
+    await clickThemeControl(cdp,'settings-open');
+    await waitForThemeUi(cdp,'Boolean(document.querySelector("[data-testid=settings-page]"))','open settings page');
+  } else if (settings && !testId.startsWith('theme-') && !testId.startsWith('settings-')) {
+    await clickThemeControl(cdp,'settings-back');
+    await waitForThemeUi(cdp,'!document.querySelector("[data-testid=settings-page]")','return from settings');
+  }
   await cdp.call('Page.bringToFront');
   await cdp.call('Page.captureScreenshot', {format:'png',fromSurface:true,captureBeyondViewport:false});
   await waitForThemeUi(cdp, `(() => {
@@ -646,8 +654,12 @@ async function assertThemeState(cdp, preference, actual, label, {persisted = tru
 }
 
 async function assertThemeControlGeometry(cdp, compact) {
+  if (await cdp.evaluate('Boolean(document.querySelector("[data-testid=settings-page]"))')) {
+    await clickThemeControl(cdp,'settings-back');
+    await waitForThemeUi(cdp,'!document.querySelector("[data-testid=settings-page]")','return before sidebar geometry');
+  }
   const snapshot = await cdp.evaluate(`(() => {
-    const trigger = document.querySelector('[data-testid="theme-menu-trigger"]');
+    const trigger = document.querySelector('[data-testid="settings-open"]');
     const label = trigger?.querySelector('span');
     const rail = document.querySelector('[data-testid="project-rail"]');
     const footer = document.querySelector('[data-testid="add-project-footer"]');
@@ -691,6 +703,8 @@ async function exerciseThemePreferences(cdp) {
   await waitForThemeUi(cdp, `document.querySelector('[data-testid="theme-menu"]') === null
     && document.activeElement === document.querySelector('[data-testid="theme-menu-trigger"]')`, 'Escape restores theme trigger focus');
   assert.equal(await cdp.evaluate(`localStorage.getItem('${THEME_STORAGE_KEY}')`), 'system', 'Escape leaves the persisted preference unchanged');
+  await clickThemeControl(cdp,'settings-back');
+  await waitForThemeUi(cdp,'!document.querySelector("[data-testid=settings-page]")','return from settings after Escape');
   process.stdout.write('Packaged theme controls passed: manual light/dark, live system changes, visible matching Toaster, native menu focus\n');
 }
 
@@ -749,10 +763,13 @@ async function main() {
     assert.equal(cloudContract.status.ok,true);
     assert.deepEqual(cloudContract.status.data.projects,[]);
     assert.equal(cloudContract.invalid.error.code,'CLOUD_INVALID_ARGUMENT');
-    await running.cdp.evaluate('document.querySelector("[data-testid=cloud-config-open]").click()');
-    await waitForThemeUi(running.cdp,'Boolean(document.querySelector("[data-testid=cloud-config-dialog] [data-slot=dialog-close]"))','云配置窗口加载完成');
-    await running.cdp.evaluate('document.querySelector("[data-testid=cloud-config-dialog] [data-slot=dialog-close]").click()');
-    await waitForThemeUi(running.cdp,'!document.querySelector("[data-testid=cloud-config-dialog]") && !document.querySelector("[data-slot=dialog-overlay]")','云配置窗口关闭动画结束');
+    await running.cdp.evaluate('document.querySelector("[data-testid=settings-open]").click()');
+    await waitForThemeUi(running.cdp,'Boolean(document.querySelector("[data-testid=settings-cloud]"))','配置页面加载完成');
+    await running.cdp.evaluate('document.querySelector("[data-testid=settings-cloud]").click()');
+    await waitForThemeUi(running.cdp,'Boolean(document.querySelector("[data-testid=cloud-config-panel]")) && !document.querySelector("[data-testid=settings-back]").disabled','云配置加载完成');
+    assert.equal(await running.cdp.evaluate('Boolean(document.querySelector("[role=dialog],[data-slot=dialog-overlay]"))'),false,'云配置在页面内操作');
+    await running.cdp.evaluate('document.querySelector("[data-testid=settings-back]").click()');
+    await waitForThemeUi(running.cdp,'!document.querySelector("[data-testid=settings-page]")','返回工作台');
     const metricsContract = await running.cdp.evaluate("(async () => { const scope = {projectId:'metrics-probe',environmentId:'probe',pluginInstanceId:'probe'}; return {read:await window.aiOps.v2.serverWorkspaceMetrics(scope),invalid:await window.aiOps.v2.serverWorkspaceMetrics({...scope,command:'arbitrary'}),invalidKind:await window.aiOps.v2.serverWorkspaceMetrics({...scope,kind:'arbitrary'}),disks:await window.aiOps.v2.serverWorkspaceMetrics({...scope,kind:'disks'}),stop:await window.aiOps.v2.serverWorkspaceStopMetrics(scope)}; })()");
     assert.equal(metricsContract.read.ok, false);
     assert.ok(['PROJECT_NOT_FOUND','ENVIRONMENT_NOT_FOUND','PLUGIN_NOT_FOUND'].includes(metricsContract.read.error.code));
