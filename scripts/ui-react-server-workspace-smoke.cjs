@@ -1473,12 +1473,16 @@ async function testWorkspaceConveniences() {
   await click('[aria-label="常用目录"]');
   await click('[aria-label="打开收藏目录 /srv"]');
   await until("document.querySelector('[role=treeitem][title=\"/srv\"][aria-selected=true]')",'错误后可再次定位有效收藏');
+  await until("document.activeElement?.getAttribute('title') === '/srv'",'收藏定位焦点恢复后再打开面板');
   await click('[aria-label="常用目录"]');
 
   for(const theme of ['light','dark']) {
     nativeTheme.themeSource=theme;
     await evaluate("localStorage.setItem('runbook-bridge:theme-preference:v1',"+JSON.stringify(theme)+"); window.dispatchEvent(new StorageEvent('storage',{key:'runbook-bridge:theme-preference:v1'}))");
     await setViewport(860,620);
+    // 主题更新会把焦点还给终端；在布局稳定后打开被测弹层。
+    if (!await evaluate("Boolean(document.querySelector('.server-directory-bookmarks'))")) await click('[aria-label="常用目录"]');
+    await until("Boolean(document.querySelector('.server-directory-bookmarks')?.getClientRects().length)",'收藏面板可见后检查窄窗口布局');
     const fits=await evaluate("(() => { const pop=document.querySelector('.server-directory-bookmarks').getBoundingClientRect(); const toolbar=document.querySelector('.server-file-toolbar'); return pop.left>=0 && pop.right<=innerWidth && toolbar.scrollWidth<=toolbar.clientWidth; })()");
     assert.ok(fits,'窄窗口收藏面板和工具栏没有越界 '+theme);
     const contrast=await evaluate("(() => { const pop=document.querySelector('.server-directory-bookmarks'); const item=pop.querySelector('.server-bookmark-link'); const canvas=document.createElement('canvas'); canvas.width=1; canvas.height=1; const context=canvas.getContext('2d'); const lum=color=>{ context.fillStyle=color; context.fillRect(0,0,1,1); return [...context.getImageData(0,0,1,1).data].slice(0,3).map(n=>{n/=255;return n<=0.04045?n/12.92:((n+0.055)/1.055)**2.4;}).reduce((s,n,i)=>s+n*[0.2126,0.7152,0.0722][i],0); }; const a=lum(getComputedStyle(item).color),b=lum(getComputedStyle(pop).backgroundColor); return (Math.max(a,b)+0.05)/(Math.min(a,b)+0.05); })()");
