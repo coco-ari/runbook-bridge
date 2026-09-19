@@ -1,124 +1,214 @@
 import { useEffect, useRef, useState } from "react"
-import { CloudArrowUp, CloudArrowDown, ClockCounterClockwise, Copy, ArrowsClockwise } from "@phosphor-icons/react"
+import { CaretDown, CheckCircle, ClockCounterClockwise, Cloud, Copy, Info, LinkBreak, LockKey, ShieldCheck, SpinnerGap, WarningCircle } from "@phosphor-icons/react"
 import type { AiOpsV2Api } from "@/bridge/ai-ops-v2"
-import type { CloudConfigData, CloudConfigRequest, CloudProject } from "./cloud-types"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { CloudProjectPicker } from "./CloudProjectPicker"
+import { CloudSyncPreview } from "./CloudSyncPreview"
+import type { CloudConfigData, CloudConfigRequest, CloudProject } from "./cloud-types"
 
 const randomPassword = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, "0")).join("")
+
+function repositoryHost(url: string) {
+  try { return new URL(url).host } catch { return "云配置仓库" }
+}
+
+function HttpNotice({ url }: { readonly url: string }) {
+  return url.trim().toLowerCase().startsWith("http:") ? <p className="flex items-start gap-2 text-xs leading-5 text-warning">
+    <Info size={15} className="mt-0.5 shrink-0" aria-hidden="true" />
+    <span>HTTP 仅用于可信内网。配置内容仍加密，但仓库访问凭证会明文传输。</span>
+  </p> : null
+}
 
 export function CloudConfigPanel({ api, onChanged, onBusyChange }: { api: AiOpsV2Api; onChanged: () => void; onBusyChange: (busy: boolean) => void }) {
   const [status, setStatus] = useState<CloudConfigData>({})
   const [catalog, setCatalog] = useState<CloudConfigData>({})
+  const [catalogState, setCatalogState] = useState<"loading" | "ready" | "error">("loading")
   const [url, setUrl] = useState("")
   const [password, setPassword] = useState("")
   const [adminToken, setAdminToken] = useState("")
   const [remember, setRemember] = useState(false)
   const [creating, setCreating] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
+  const [initializing, setInitializing] = useState(true)
   const [busy, setBusy] = useState(true)
+  const [busyLabel, setBusyLabel] = useState("正在加载云仓库…")
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
   const [direction, setDirection] = useState<"upload" | "download">("download")
   const [selected, setSelected] = useState<string[]>([])
+  const [query, setQuery] = useState("")
   const [snapshotId, setSnapshotId] = useState("")
   const [plan, setPlan] = useState<CloudConfigData | null>(null)
   const [choices, setChoices] = useState<Record<string, "local" | "cloud">>({})
   const mounted = useRef(false)
   const busyRef = useRef(false)
+  const backupReturnFocusRef = useRef<HTMLButtonElement | null>(null)
+
   const call = async (request: CloudConfigRequest) => {
     const result = await api.cloudConfig(request)
     if (!result.ok) throw new Error(result.error.message)
     return result.data
   }
-  const run = async (operation: () => Promise<void>) => {
+  const run = async (operation: () => Promise<void>, label = "正在处理，请稍候…") => {
     if (busyRef.current) return
     busyRef.current = true
-    setBusy(true); onBusyChange(true); setError(""); setNotice("")
-    try { await operation() } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : "云配置操作失败。") }
-    finally { busyRef.current = false; if (mounted.current) { setBusy(false); onBusyChange(false) } }
+    setBusy(true); onBusyChange(true); setBusyLabel(label); setError(""); setNotice("")
+    try { await operation() }
+    catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : "云配置操作失败。") }
+    finally {
+      busyRef.current = false
+      if (mounted.current) { setBusy(false); onBusyChange(false) }
+    }
+  }
+  const loadCatalog = async (id = "") => {
+    setCatalogState("loading")
+    try {
+      const next = await call({ action: "catalog", snapshotId: id || null })
+      if (mounted.current) { setCatalog(next); setCatalogState("ready") }
+    } catch (cause) { if (mounted.current) setCatalogState("error"); throw cause }
   }
   useEffect(() => {
     mounted.current = true
     void run(async () => {
-      const next = await call({ action: "status" })
-      if (!mounted.current) return
-      setStatus(next); setUrl(next.url ?? ""); setRemember(Boolean(next.remembered))
-      if (next.unlocked) setCatalog(await call({ action: "catalog" }))
-    })
+      try {
+        const next = await call({ action: "status" })
+        if (!mounted.current) return
+        setStatus(next); setUrl(next.url ?? ""); setRemember(Boolean(next.remembered))
+        if (next.unlocked) await loadCatalog()
+      } finally { if (mounted.current) setInitializing(false) }
+    }, "正在加载云仓库…")
     return () => { mounted.current = false }
   }, [api])
-  const refresh = async () => {
-    setStatus(await call({ action: "status" }))
-    setCatalog(await call({ action: "catalog", snapshotId: snapshotId || null }))
-  }
+
+  const clearPlan = () => { setPlan(null); setChoices({}) }
+  const resetSelection = () => { clearPlan(); setSelected([]); setQuery("") }
   const showPlan = (next: CloudConfigData) => {
     setPlan(next)
     setChoices(Object.fromEntries((next.rows ?? []).flatMap(row => row.suggested ? [[row.rowId, row.suggested]] : [])))
   }
+  const returnToSelection = () => {
+    const restoring = plan?.direction === "restore"
+    clearPlan()
+    requestAnimationFrame(() => {
+      if (restoring) {
+        const backups = document.querySelector<HTMLDetailsElement>('[data-testid="cloud-backups"]')
+        if (backups) backups.open = true
+        const target = backupReturnFocusRef.current
+        if (target?.isConnected) target.focus()
+        else backups?.querySelector("summary")?.focus()
+      } else document.getElementById("cloud-project-selection")?.focus()
+    })
+  }
+  const changeDirection = (next: "upload" | "download") => {
+    setDirection(next); resetSelection(); setNotice(""); setError("")
+  }
+  const refresh = () => {
+    resetSelection()
+    void run(async () => {
+      const next = await call({ action: "status" })
+      setStatus(next); setUrl(next.url ?? "")
+      if (next.unlocked) await loadCatalog(snapshotId)
+      else { setCatalog({}); setCatalogState("ready") }
+    }, "正在刷新项目列表…")
+  }
+  const changeSnapshot = (id: string) => {
+    setSnapshotId(id); resetSelection(); setCatalog(current => ({ ...current, projects: [] }))
+    void run(async () => loadCatalog(id), "正在读取所选版本…")
+  }
   const bind = () => run(async () => {
     const next = await call(creating ? { action: "create", serviceUrl: url, adminToken, password, remember } : { action: "bind", url, password, remember })
     setStatus(next); setUrl(next.url ?? ""); setCreating(false); setPassword(""); setAdminToken(""); setShowPassword(false)
-    setCatalog(await call({ action: "catalog" })); setPlan(null); setSelected([]); setSnapshotId("")
-    setNotice("仓库已解锁。可以选择项目上传或下载。")
+    resetSelection(); setSnapshotId(""); await loadCatalog()
+    setNotice("仓库已解锁。选择要上传或下载的项目，即可开始同步。")
+  }, creating ? "正在创建云仓库…" : "正在解锁云仓库…")
+  const unbind = () => run(async () => {
+    const next = await call({ action: "unbind" })
+    setStatus(next); setCatalog({}); setUrl(""); resetSelection(); setSnapshotId("")
+    setPassword(""); setAdminToken(""); setShowPassword(false); setRemember(false)
+    setNotice("已解除本机绑定，云端项目仍会保留。")
   })
+  const confirm = () => {
+    if (!plan) return
+    const current = plan
+    void run(async () => {
+      // Confirmations are single-use, including failed attempts. A retry needs a new preview.
+      clearPlan()
+      const result = await call({ action: "confirm", planId: current.planId!, choices })
+      const items = result.results ?? []
+      setNotice("已完成 " + items.filter(i => ["imported", "uploaded"].includes(i.status)).length + " 个项目，保留 " + items.filter(i => i.status === "skipped").length + " 个，失败 " + items.filter(i => i.status === "failed").length + " 个。"
+        + items.filter(i => i.error).map(i => "\n" + i.error?.message + "（" + i.error?.code + "）").join("")
+        + (result.syncStateWarning || items.some(i => i.syncStateWarning) ? "\n数据已完成，但同步关联保存失败，下次请核对预览。" : "")
+        + (items.some(i => i.cleanupPending) ? "\n事务清理尚未完成，请重启应用完成恢复。" : ""))
+      onChanged(); setSelected([]); setQuery("")
+      const next = await call({ action: "status" })
+      setStatus(next)
+      if (next.unlocked) await loadCatalog(snapshotId)
+    }, current.direction === "upload" ? "正在上传项目…" : current.direction === "restore" ? "正在恢复本地备份…" : "正在导入项目…")
+  }
   const projects: readonly CloudProject[] = direction === "upload" ? status.projects ?? [] : catalog.projects ?? []
+
   return <div className="space-y-5 text-sm" data-testid="cloud-config-panel" aria-busy={busy}>
-      {error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-destructive">{error}</div> : null}
-      {notice ? <div role="status" className="rounded-lg border bg-muted/40 p-3 whitespace-pre-line">{notice}</div> : null}
-      <fieldset disabled={busy} className="space-y-3 rounded-lg border p-4">
-        <legend className="px-1 font-medium">{creating ? "创建仓库" : status.unlocked ? "已连接的仓库" : "连接云仓库"}</legend>
-        <label className="grid gap-1.5 text-xs font-medium">{creating ? "云服务地址" : "仓库链接"}<Input id="cloud-url" readOnly={Boolean(status.unlocked && !creating)} autoComplete="off" value={url} onChange={e => { setUrl(e.target.value); setPlan(null) }} placeholder={creating ? "请输入云服务根地址" : "请输入完整的仓库链接"} /></label>
-        {url.trim().toLowerCase().startsWith("http:") ? <p className="text-xs text-amber-700 dark:text-amber-400">HTTP 仅用于可信内网。配置内容仍加密，但仓库访问凭证会明文传输。</p> : null}
-        {status.unlocked && !creating ? <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => void run(async () => { await navigator.clipboard.writeText(status.url ?? ""); setNotice("已复制仓库链接。") })}><Copy />复制链接</Button>
-          <span className="text-xs text-muted-foreground">{status.remembered ? "已在本机安全保存访问凭据" : "仅当前会话解锁"}</span>
-          <Button size="sm" variant="ghost" onClick={() => void run(async () => { const next = await call({ action: "unbind" }); setStatus(next); setCatalog({}); setPlan(null); setUrl(""); setSelected([]) })}>解除绑定</Button>
-        </div> : <>
-          {creating ? <label className="grid gap-1.5 text-xs font-medium">部署管理员令牌<Input id="cloud-admin-token" type="password" autoComplete="off" value={adminToken} onChange={e => setAdminToken(e.target.value)} /></label> : null}
-          <label className="grid gap-1.5 text-xs font-medium">仓库密码<Input id="cloud-password" type={showPassword ? "text" : "password"} autoComplete="off" value={password} onChange={e => setPassword(e.target.value)} placeholder="至少 16 个字符" /></label>
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={showPassword} onChange={e => setShowPassword(e.target.checked)} />显示密码</label>
-            <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />在本机记住</label>
-            {creating ? <Button size="sm" variant="outline" onClick={() => { setPassword(randomPassword()); setShowPassword(true) }}>生成随机密码</Button> : null}
+    {error ? <div role="alert" className="flex items-start gap-2.5 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-destructive"><WarningCircle className="mt-0.5 shrink-0" size={18} aria-hidden="true" /><p className="min-w-0 break-words leading-6">{error}</p></div> : null}
+    {notice ? <div role="status" className="flex items-start gap-2.5 rounded-xl border border-primary/20 bg-primary/5 p-4"><Info className="mt-0.5 shrink-0 text-primary" size={18} aria-hidden="true" /><p className="min-w-0 break-words whitespace-pre-line text-xs leading-6">{notice}</p></div> : null}
+
+    <fieldset disabled={busy} className="min-w-0 rounded-xl border bg-card shadow-sm" aria-label="云仓库">
+      {initializing ? <div className="flex items-center gap-3 p-5 text-muted-foreground"><SpinnerGap className="motion-safe:animate-spin" size={20} aria-hidden="true" /><span>正在加载云仓库…</span></div>
+        : status.unlocked ? <>
+          <div className="flex flex-wrap items-center justify-between gap-4 p-4 sm:p-5">
+            <div className="flex min-w-0 flex-1 items-center gap-3">
+              <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-success/10 text-success"><Cloud size={24} weight="duotone" aria-hidden="true" /></span>
+              <div className="min-w-0 space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2"><h2 className="font-semibold">云配置仓库</h2><Badge variant="success"><CheckCircle size={12} aria-hidden="true" />已解锁</Badge></div>
+                <p className="break-all text-xs text-muted-foreground" data-testid="cloud-repository-host">{repositoryHost(url)}<span className="mx-2 text-border" aria-hidden="true">·</span>{status.remembered ? "已在本机记住" : "仅本次会话"}</p>
+              </div>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => void run(async () => { await navigator.clipboard.writeText(status.url ?? ""); setNotice("已复制仓库链接。") })}><Copy size={15} aria-hidden="true" />复制链接</Button>
           </div>
-          {creating ? <p className="text-xs text-muted-foreground">请保存仓库密码。服务端无法找回密码或解密配置。</p> : null}
-          <div className="flex gap-2"><Button onClick={() => void bind()} disabled={!url || [...password].length < 16 || (creating && !adminToken)}>{creating ? "创建仓库" : "解锁仓库"}</Button><Button variant="ghost" onClick={() => { setCreating(!creating); setUrl(""); setPassword(creating ? "" : randomPassword()); setShowPassword(!creating); setAdminToken("") }}>{creating ? "使用已有仓库" : "创建新仓库"}</Button></div>
-        </>}
-      </fieldset>
-      {status.unlocked ? <section className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant={direction === "download" ? "default" : "outline"} disabled={busy} onClick={() => { setDirection("download"); setSelected([]); setPlan(null) }}><CloudArrowDown />下载项目</Button>
-          <Button variant={direction === "upload" ? "default" : "outline"} disabled={busy} onClick={() => { setDirection("upload"); setSelected([]); setPlan(null) }}><CloudArrowUp />上传项目</Button>
-          <Button size="icon" variant="ghost" aria-label="刷新云配置" disabled={busy} onClick={() => void run(async () => { await refresh(); setPlan(null); setSelected([]) })}><ArrowsClockwise /></Button>
-        </div>
-        {direction === "download" ? <label className="flex flex-wrap items-center gap-2 text-xs">云端版本<select aria-label="云端版本" className="max-w-full rounded-md border bg-background p-2" disabled={busy} value={snapshotId} onChange={e => { const id = e.target.value; setSnapshotId(id); setSelected([]); setPlan(null); void run(async () => setCatalog(await call({ action: "catalog", snapshotId: id || null }))) }}><option value="">最新版本</option>{(catalog.versions ?? []).map(v => <option key={v.snapshotId} value={v.snapshotId}>{new Date(v.createdAt).toLocaleString()} · {Math.ceil(v.bytes / 1024)} KiB</option>)}</select></label> : null}
-        <div className="max-h-48 overflow-y-auto rounded-lg border divide-y">
-          {projects.length ? projects.map(project => <label key={project.projectId} className="flex cursor-pointer items-start gap-3 p-3"><input className="mt-0.5" type="checkbox" disabled={busy} checked={selected.includes(project.projectId)} onChange={e => { setPlan(null); setSelected(current => e.target.checked ? [...current, project.projectId] : current.filter(id => id !== project.projectId)) }} /><span className="min-w-0"><span className="block font-medium">{project.name}</span><span className="text-xs text-muted-foreground">{(project.warnings ?? []).length ? `${project.warnings?.length} 项连接前检查，将在预览中列出` : "包含此项目的环境、插件、运维说明和已保存凭据"}</span></span></label>) : <p className="p-4 text-sm text-muted-foreground">{direction === "download" ? "仓库还没有项目，请先从本机上传。" : "本机还没有可上传项目。"}</p>}
-        </div>
-        <div className="flex items-center justify-between"><Button variant="ghost" size="sm" disabled={busy || !projects.length} onClick={() => { setSelected(selected.length === projects.length ? [] : projects.map(p => p.projectId)); setPlan(null) }}>{selected.length === projects.length && projects.length ? "取消全选" : "全选"}</Button><Button disabled={busy || !selected.length} onClick={() => void run(async () => showPlan(await call({ action: "prepare", direction, projectIds: selected, snapshotId: direction === "download" ? snapshotId || null : null })))}>预览{direction === "upload" ? "上传" : "下载"}（{selected.length}）</Button></div>
-      </section> : null}
-      {plan ? <section className="space-y-3 rounded-lg border p-4" aria-label="同步预览">
-        <h3 className="font-medium">{plan.direction === "restore" ? "本地备份恢复预览" : "同步预览"}</h3>
-        {(plan.rows ?? []).map(row => <div key={row.rowId} className="space-y-2 border-b pb-3 last:border-0">
-          <div className="font-medium">{row.name}{row.conflict ? <span className="ml-2 text-xs text-amber-600">需要选择保留哪份配置</span> : null}</div>
-          <p className="text-xs text-muted-foreground">插件新增 {row.diff.added}、修改 {row.diff.modified}、删除 {row.diff.removed}；环境新增 {row.diff.environmentsAdded}、删除 {row.diff.environmentsRemoved}{row.diff.credentialsChanged ? "；凭据有变更" : ""}{!row.diff.contentChanged ? "；内容一致" : ""}。</p>
-          {row.diff.metadataChanged || row.diff.runbooksChanged || row.diff.questionsChanged ? <p className="text-xs text-muted-foreground">{row.diff.metadataChanged ? "项目或环境名称、顺序有变更；" : ""}运维说明变更 {row.diff.runbooksChanged ?? 0} 项；快捷提问变更 {row.diff.questionsChanged ?? 0} 项。</p> : null}
-          {row.willDisconnect ? <p className="text-xs">采用{plan.direction === "restore" ? "备份" : "云端"}前会断开此项目的连接，并保存本机加密备份；完成后请手动连接。</p> : null}
-          {row.warnings.map((warning, index) => <p key={index} className="text-xs text-amber-700 dark:text-amber-400">{warning}</p>)}
-          <div className="flex gap-4 text-xs">{(["local", "cloud"] as const).map(choice => <label key={choice} className="flex items-center gap-2"><input type="radio" name={`cloud-choice-${row.rowId}`} disabled={busy} checked={choices[row.rowId] === choice} onChange={() => setChoices(current => ({ ...current, [row.rowId]: choice }))} />{choice === "local" ? (plan.direction === "upload" ? "采用本地并上传" : "保留本地") : (plan.direction === "upload" ? "保留云端" : plan.direction === "restore" ? "采用备份" : "采用云端")}</label>)}</div>
-        </div>)}
-        <Button disabled={busy || !(plan.rows ?? []).every(row => choices[row.rowId])} onClick={() => void run(async () => {
-          const current = plan
-          setPlan(null)
-          const result = await call({ action: "confirm", planId: current.planId!, choices })
-          const items = result.results ?? []
-          setNotice(`已完成 ${items.filter(i => ["imported", "uploaded"].includes(i.status)).length} 个项目，保留 ${items.filter(i => i.status === "skipped").length} 个，失败 ${items.filter(i => i.status === "failed").length} 个。` + items.filter(i => i.error).map(i => `\n${i.error?.message}（${i.error?.code}）`).join("") + (result.syncStateWarning || items.some(i => i.syncStateWarning) ? "\n数据已完成，但同步关联保存失败，下次请核对预览。" : "") + (items.some(i => i.cleanupPending) ? "\n事务清理尚未完成，请重启应用完成恢复。" : ""))
-          onChanged(); setStatus(await call({ action: "status" })); setSelected([])
-          if (status.unlocked) setCatalog(await call({ action: "catalog", snapshotId: snapshotId || null }))
-        })}>确认{plan.direction === "upload" ? "上传" : plan.direction === "restore" ? "恢复" : "导入"}</Button>
-      </section> : null}
-      {(status.backups ?? []).length ? <details className="rounded-lg border p-3"><summary className="cursor-pointer font-medium">本地加密备份（{status.backups?.length}）</summary><div className="mt-3 max-h-40 space-y-2 overflow-y-auto">{status.backups?.map(backup => <div key={backup.backupId} className="flex items-center justify-between gap-3 text-xs"><span>{backup.name} · {new Date(backup.createdAt).toLocaleString()}</span><Button size="sm" variant="outline" disabled={busy} onClick={() => void run(async () => showPlan(await call({ action: "prepareRestore", backupId: backup.backupId })))}><ClockCounterClockwise />预览恢复</Button></div>)}</div></details> : null}
-      {busy ? <p role="status" className="text-xs text-muted-foreground">正在处理，请稍候…</p> : null}
+          <div className="space-y-3 border-t px-4 py-3 sm:px-5">
+            <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+              <p className="flex items-center gap-1.5 text-xs text-muted-foreground"><ShieldCheck size={15} aria-hidden="true" />配置与凭据均加密保存</p>
+              <details className="group min-w-0 open:basis-full" data-testid="cloud-repository-details">
+                <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded-sm text-xs text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">仓库设置<CaretDown className="transition-transform group-open:rotate-180" size={12} aria-hidden="true" /></summary>
+                <div className="mt-3 space-y-3 rounded-lg bg-muted/40 p-3">
+                  <label className="grid gap-2 text-xs font-medium">仓库链接<Input id="cloud-url" readOnly autoComplete="off" value={url} /></label>
+                  <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-muted-foreground">解除绑定只移除本机访问，不会删除云端项目。</p><Button size="sm" variant="ghost" className="text-destructive" onClick={() => void unbind()}><LinkBreak size={15} aria-hidden="true" />解除绑定</Button></div>
+                </div>
+              </details>
+            </div>
+            <HttpNotice url={url} />
+          </div>
+        </> : <div className="space-y-5 p-5 sm:p-6">
+          <div className="flex items-start gap-3"><span className="grid size-11 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary"><LockKey size={22} aria-hidden="true" /></span><div className="space-y-1.5"><h2 className="font-semibold">{creating ? "创建云仓库" : "连接云仓库"}</h2><p className="text-xs leading-5 text-muted-foreground">{creating ? "创建一个属于你的加密仓库，用于多台电脑同步。" : "输入仓库链接和密码，将项目配置带到这台电脑。"}</p></div></div>
+          <div className="grid gap-4">
+            <label className="grid gap-2 text-xs font-medium">{creating ? "云服务地址" : "仓库链接"}<Input id="cloud-url" autoComplete="off" value={url} onChange={e => { setUrl(e.target.value); clearPlan() }} placeholder={creating ? "请输入云服务根地址" : "粘贴完整的仓库链接"} /></label>
+            <HttpNotice url={url} />
+            {creating ? <label className="grid gap-2 text-xs font-medium">部署管理员令牌<Input id="cloud-admin-token" type="password" autoComplete="off" value={adminToken} onChange={e => setAdminToken(e.target.value)} /></label> : null}
+            <label className="grid gap-2 text-xs font-medium">仓库密码<Input id="cloud-password" type={showPassword ? "text" : "password"} autoComplete="off" value={password} onChange={e => setPassword(e.target.value)} placeholder="至少 16 个字符" /></label>
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+              <label className="flex items-center gap-2 text-xs"><input className="size-3.5 accent-primary" type="checkbox" checked={showPassword} onChange={e => setShowPassword(e.target.checked)} />显示密码</label>
+              <label className="flex items-center gap-2 text-xs"><input className="size-3.5 accent-primary" type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />在本机记住</label>
+              {creating ? <Button size="sm" variant="outline" onClick={() => { setPassword(randomPassword()); setShowPassword(true) }}>生成随机密码</Button> : null}
+            </div>
+          </div>
+          {creating ? <p className="rounded-lg bg-warning/5 p-3 text-xs leading-5 text-warning">请妥善保存仓库密码。服务端无法找回密码或解密配置。</p> : null}
+          <div className="flex flex-wrap gap-2 border-t pt-4"><Button onClick={() => void bind()} disabled={!url.trim() || [...password].length < 16 || (creating && !adminToken)}>{creating ? "创建仓库" : "解锁仓库"}</Button><Button variant="ghost" onClick={() => { setCreating(!creating); setUrl(""); setPassword(creating ? "" : randomPassword()); setShowPassword(!creating); setAdminToken(""); setError(""); setNotice("") }}>{creating ? "使用已有仓库" : "创建新仓库"}</Button></div>
+        </div>}
+    </fieldset>
+
+    {busy ? <p role="status" className="flex items-center gap-2 px-1 text-xs text-muted-foreground"><SpinnerGap className="motion-safe:animate-spin" size={16} aria-hidden="true" />{busyLabel}</p> : null}
+
+    {plan ? <CloudSyncPreview plan={plan} choices={choices} busy={busy} onChoice={(rowId, choice) => setChoices(current => ({ ...current, [rowId]: choice }))} onBack={returnToSelection} onConfirm={confirm} />
+      : status.unlocked ? <CloudProjectPicker
+        busy={busy} loading={direction === "download" && catalogState === "loading"} loadError={direction === "download" && catalogState === "error"} direction={direction} projects={projects} selected={selected} query={query} snapshotId={snapshotId} versions={catalog.versions ?? []}
+        onDirectionChange={changeDirection} onQueryChange={setQuery} onSelectionChange={next => { clearPlan(); setSelected(next) }} onSnapshotChange={changeSnapshot} onRefresh={refresh}
+        onPreview={() => void run(async () => showPlan(await call({ action: "prepare", direction, projectIds: selected, snapshotId: direction === "download" ? snapshotId || null : null })), "正在生成同步预览…")}
+      /> : null}
+
+    {(status.backups ?? []).length ? <details className="group rounded-xl border bg-card" data-testid="cloud-backups">
+      <summary className="flex cursor-pointer list-none items-center gap-3 rounded-xl p-4 focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden"><span className="grid size-9 place-items-center rounded-lg bg-muted text-muted-foreground"><ClockCounterClockwise size={19} aria-hidden="true" /></span><span className="min-w-0 flex-1"><span className="block text-sm font-medium">本地加密备份（{status.backups?.length}）</span><span className="mt-1 block text-xs text-muted-foreground">导入前自动保存，可预览并恢复之前的配置。</span></span><CaretDown className="shrink-0 text-muted-foreground transition-transform group-open:rotate-180" size={14} aria-hidden="true" /></summary>
+      <div className="divide-y border-t">{status.backups?.map(backup => <div key={backup.backupId} className="flex flex-wrap items-center justify-between gap-3 p-4"><div className="min-w-0 space-y-1"><p className="break-words text-sm font-medium">{backup.name}</p><p className="text-xs text-muted-foreground">{new Date(backup.createdAt).toLocaleString()}</p></div><Button size="sm" variant="outline" disabled={busy} onClick={event => { backupReturnFocusRef.current = event.currentTarget; void run(async () => showPlan(await call({ action: "prepareRestore", backupId: backup.backupId })), "正在生成恢复预览…") }}><ClockCounterClockwise size={14} aria-hidden="true" />预览恢复</Button></div>)}</div>
+    </details> : null}
   </div>
 }
