@@ -1,10 +1,10 @@
-import { useEffect } from "react"
+import { useEffect, type ReactNode } from "react"
 import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 
 interface WorkspaceTabsProps {
   readonly id: string
   readonly label: string
-  readonly items: readonly { id: string; label: string; title: string }[]
+  readonly items: readonly { id: string; label: string; title: string; icon?: ReactNode }[]
   readonly active: string | null
   readonly onSelect: (id: string) => void
   readonly onClose: (id: string) => void
@@ -23,7 +23,7 @@ export function WorkspaceTabs({ id, label, items, active, onSelect, onClose, onA
           if (event.key === "Delete") { onClose(item.id); return }
           const next = items[event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + items.length) % items.length]
           if (next) { onSelect(next.id); requestAnimationFrame(() => document.getElementById(id + "-tab-" + next.id)?.focus()) }
-        }}><span>{item.label}</span></button>
+        }}>{item.icon}<span>{item.label}</span></button>
         <WorkspaceIconButton action="close" className="server-tab-close" label={"关闭" + item.title} title="关闭标签" onClick={() => onClose(item.id)} />
       </div>)}
     </div>

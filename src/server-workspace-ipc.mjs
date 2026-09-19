@@ -2,6 +2,8 @@ import { AppError, toPublicError } from './errors.mjs';
 
 const SCOPE_KEYS = ['projectId', 'environmentId', 'pluginInstanceId'];
 const CALLS = [
+  ['server-docker-read', 'serverDocker', 'read', ['kind', 'requestId', 'containerId', 'cursor', 'limit', 'lines', 'maxBytes', 'since', 'until']],
+  ['server-docker-cancel', 'serverDocker', 'cancel', ['requestId']],
   ['server-workspace-metrics', 'serverWorkspaceManager', 'readMetrics', ['kind']],
   ['server-workspace-stop-metrics', 'serverWorkspaceManager', 'stopMetrics', []],
   ['server-workspace-pause-upload', 'serverWorkspaceFiles', 'pauseUpload', ['jobId']],
@@ -34,6 +36,7 @@ export function registerServerWorkspaceIpc(ipcMain, services) {
   const installed = new WeakSet();
   const picking = new Set();
   const closeOwner = (ownerId) => {
+    services.serverDocker?.closeOwner(ownerId);
     services.serverWorkspaceManager?.closeOwner(ownerId);
     services.serverWorkspaceFiles?.closeOwner(ownerId);
   };
@@ -68,6 +71,9 @@ export function registerServerWorkspaceIpc(ipcMain, services) {
       if (method === 'readMetrics' && event.sender.getOwnerBrowserWindow?.()?.isMinimized?.()) {
         manager.stopMetrics(ownerId, payload);
         throw new AppError('METRICS_PAUSED', '窗口最小化期间暂停资源采集。');
+      }
+      if (name === 'server-docker-read' && payload.kind === 'stats' && event.sender.getOwnerBrowserWindow?.()?.isMinimized?.()) {
+        throw new AppError('DOCKER_PAUSED', '窗口最小化期间暂停容器资源采集。');
       }
       return manager[method](ownerId, payload);
     });

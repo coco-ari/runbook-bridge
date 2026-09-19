@@ -45,7 +45,7 @@
 
 - 保留 `dist` 的 Windows 命令兼容性，增加显式 `dist:mac`、`dist:mac:arm64`、`dist:mac:x64`。继续使用已有 electron-builder，不增加生产依赖。
 - 包定位器识别 Windows 可执行文件和 Mac `.app`/`Contents/MacOS/<binary>`，由 `Contents/Resources/app.asar` 定位 Mac 源码；路径含空格及中文必须通过。
-- 包验证仍检查源码和 Renderer 哈希、源文件排除、全部 36 个 MCP 工具及真实本机协议驱动，不降低既有断言。
+- 包验证仍检查源码和 Renderer 哈希、源文件排除、全部 40 个 MCP 工具及真实本机协议驱动，不降低既有断言。
 - `ELECTRON_RUN_AS_NODE=1` 是现有 MCP 启动契约，签名配置不得关闭对应 Fuse。文档使用实际安装的 `.app` 内可执行文件及 `mcp-v2.mjs` 路径。
 - `ssh2` 可选原生加密扩展需要检查目标架构和 Electron ABI；不能把 Windows 的 `node_modules` 复制到 Mac。优先使用现有 JavaScript 回退并以包内真实 SSH 协议测试确认。
 - 开发构建与可公开分发的签名构建区分记录。正式分发需一致 Developer ID 签名、Hardened Runtime、最小必要 entitlements、Apple 公证及 stapling；Apple 账户和证书仅放 CI secret，不进入源码。
@@ -60,7 +60,7 @@
 | VPN | IPv4/IPv6、正确路由、错误出口、缺失网卡、断线、系统选路变化；Server 与数据库拒绝未验证连接 |
 | 服务器工作区 | 终端输入/输出/尺寸/关闭、文件浏览/读取/上传审批/覆盖/取消和状态隔离 |
 | 数据库工作区 | 多表标签、查询/分页/筛选/排序、补全/拖表、复制、MySQL 只读边界及 Redis 范围 |
-| Agent | 36 个 MCP 工具、stdio、Broker 重启、短期上下文、断开拒绝、单次确认绑定、审计 |
+| Agent | 40 个 MCP 工具、stdio、Broker 重启、短期上下文、断开拒绝、单次确认绑定、审计 |
 | UI 一致性 | 六组完整 Electron smoke，浅/深色、固定内容区尺寸、Command/Ctrl、焦点/弹层、中文路径和输入法 |
 | 本地安全 | Keychain 保存/重启解密/拒绝授权/升级解密、Socket/Token 权限与清理，不触碰真实用户数据 |
 | 安装与升级 | DMG 挂载、拷贝安装、启动、退出、覆盖安装、数据/密文/布局保持、MCP 仍可用、移除应用保留数据 |

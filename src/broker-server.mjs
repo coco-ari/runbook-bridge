@@ -150,6 +150,10 @@ export class BrokerServer {
       case 'serverSystemSnapshot': return this.v2Service.invoke(params, 'status', { actionId:'system.summary', parameters:{} });
       case 'serverServiceInspect': return this.v2Service.invoke(params, 'service.inspect', { unit:params.unit, view:params.view });
       case 'serverJournalQuery': return this.v2Service.invoke(params, 'journal.read', { unit:params.unit, since:params.since, priority:params.priority, lines:params.lines });
+      case 'serverDockerListContainers': return this.v2Service.invoke(params, 'docker.list', { cursor:params.cursor, limit:params.limit });
+      case 'serverDockerInspectContainer': return this.v2Service.invoke(params, 'docker.inspect', { containerId:params.containerId });
+      case 'serverDockerReadLogs': return this.v2Service.invoke(params, 'docker.logs', { containerId:params.containerId, lines:params.lines, maxBytes:params.maxBytes, since:params.since, until:params.until });
+      case 'serverDockerContainerStats': return this.v2Service.invoke(params, 'docker.stats', { containerId:params.containerId });
       case 'serverContainerInspect': return this.v2Service.invoke(params, 'container.inspect', { runtime:params.runtime, container:params.container });
       case 'serverListFiles': return this.v2Service.invoke(params, 'logs', { operation: 'list', sourceId: params.sourceId, cursor: params.cursor, limit: params.limit });
       case 'serverReadLog': return this.v2Service.invoke(params, 'logs', { operation: 'read', fileId: params.fileId, cursor: params.cursor, maxBytes: params.maxBytes, tail: params.tail });

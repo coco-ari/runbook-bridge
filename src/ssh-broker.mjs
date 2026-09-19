@@ -1138,6 +1138,17 @@ export class SshBroker {
     });
   }
 
+  async readDocker(projectId, socket, request, options = {}) {
+    const { dockerCommand, readDockerChannel } = await import('./server-docker-reader.mjs');
+    const session = this.requireSession(projectId);
+    const config = await this.store.get(projectId);
+    if (!evaluateCommandPolicy(dockerCommand(socket, request), config.commandPolicy).allowed) throw new AppError('COMMAND_BLOCKED', 'Docker 读取被当前命令策略禁止。');
+    if (options.signal?.aborted || this.requireSession(projectId) !== session) throw new AppError('DOCKER_CANCELLED', 'Docker 读取已取消。');
+    const result = await readDockerChannel(session.client, socket, request, options);
+    if (options.signal?.aborted || this.requireSession(projectId) !== session) throw new AppError('DOCKER_CANCELLED', 'Docker 读取已取消。');
+    return result;
+  }
+
   async readWorkspaceMetrics(projectId, kind, options = {}) {
     const command = metricsCommand(kind);
     const session = this.requireSession(projectId);

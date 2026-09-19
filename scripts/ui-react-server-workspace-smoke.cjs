@@ -32,6 +32,13 @@ const resizes = [];
 const directoryReads = [];
 const directoryState = { requests: [], delay: 0, fail: false };
 const previewReads = [];
+const dockerState = { reads:[], cancels:[], delay:0, missing:false };
+const dockerContainers = Array.from({length:7}, (_,index) => ({
+  id:(index+1).toString(16).padStart(64,'0'), name:index === 0 ? 'fixture-api' : 'fixture-' + (index+1),
+  image:'example.invalid/demo:fixture', state:index === 5 ? 'exited' : 'running',
+  status:index === 5 ? 'Exited (0)' : 'Up 1 minute', ports:index === 0 ? '8080/tcp' : '',
+  project:index < 5 ? 'demo-stack' : '', service:index === 0 ? 'api' : 'worker',
+}));
 const metricsState = { reads:0, stops:0, round:0, mode:"normal", delay:0, diskDelay:0, inFlight:0, byKind:{system:0,disks:0}, maxByKind:{system:0,disks:0} };
 const removedPaths = new Set();
 let previewFailure = null;
@@ -128,6 +135,19 @@ function fixtureStat(value) {
   return { type: isLink ? 'symlink' : /\.(conf|txt|log)$/u.test(canonicalPath) || canonicalPath === '/usr/bin/apt' ? 'file' : 'directory', canonicalPath };
 }
 function register() {
+  handle('server-docker-read', async input => {
+    dockerState.reads.push(input);
+    if (dockerState.delay) await wait(dockerState.delay);
+    const sampledAt = new Date().toISOString();
+    if (input.kind === 'list') return { items:dockerContainers,total:dockerContainers.length,truncated:false,nextCursor:null,sampledAt };
+    if (dockerState.missing) throw Object.assign(new Error('容器已删除，请刷新列表；同名新容器需要重新打开。'),{code:'DOCKER_CONTAINER_NOT_FOUND'});
+    const item = dockerContainers.find(value => value.id === input.containerId);
+    assert.ok(item);
+    if (input.kind === 'inspect') return { ...item, running:true,exitCode:0,restartCount:0,startedAt:'2026-01-01T00:00:00Z',finishedAt:'0001-01-01T00:00:00Z',health:'healthy',ports:{'8080/tcp':null},mounts:[],sampledAt };
+    if (input.kind === 'logs') return { content:'2026-01-01T00:00:00Z INFO fixture request complete\n2026-01-01T00:00:01Z WARN fixture delayed response\n',truncated:true,sampledAt,lines:input.lines,maxBytes:65536 };
+    return { available:true,sampledAt,cpu:'5.2%',memory:'64 MiB / 2 GiB',memoryPercent:'3.1%',network:'2 MB / 1 MB',block:'0 B / 0 B',pids:'8' };
+  });
+  handle('server-docker-cancel', input => { dockerState.cancels.push(input); return {stopped:true}; });
   handle('workspace-overview', () => [project()]);
   handle('project-list', () => [project()]);
   handle('environment-list', () => project().environments);
@@ -578,6 +598,13 @@ async function run() {
   await until(`document.querySelector('.xterm-rows')?.textContent.includes('operator@demo')`, '真实 xterm 收到输出');
   assert.equal(opened.length, 1, '首次点击只创建一个会话');
   await assertFileSidebarLayout();
+  if (process.env.RUNBOOK_BRIDGE_DOCKER_SMOKE === '1') {
+    releaseRootMetadata();
+    await require('./workspace-docker-ui.cjs')({evaluate,click,clickText,until,wait,win,setViewport,snapshot,dockerState,opened,closed,errors});
+    completed = true;
+    process.stdout.write(JSON.stringify({ok:true,docker:true,reads:dockerState.reads.length,cancels:dockerState.cancels.length})+'\n');
+    return;
+  }
   if (process.env.RUNBOOK_BRIDGE_METRICS_SMOKE === '1') {
     releaseRootMetadata();
     await require('./workspace-metrics-ui.cjs')({evaluate,click,clickText,until,wait,win,setViewport,snapshot,metricsState,writes,errors});

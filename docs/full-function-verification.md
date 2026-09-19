@@ -130,5 +130,5 @@ CI 原生运行 Windows x64、Mac arm64、Mac x64，三端均运行六组 UI、�
 - `test/server-operations-v2.test.mjs`：日志完整行续查、ZIP 跨成员匹配分页、缓存减少传输、游标隔离、失败读取预算、动态源与路径边界。
 - `test/bounded-reads.test.mjs`、`test/log-processor.test.mjs`、`test/mysql-read-efficiency.test.mjs`、`test/sftp-download-efficiency.test.mjs`：并发/队列、主线程响应、元数据复用及授权分离、传输进度和清理。
 - `test/operation-gate.test.mjs`：确认状态等待、客户端隔离和单次消费；`test/build-metadata.test.mjs`：构建指纹。
-- 包内 `verify-package.mjs` 核对源码、Renderer、构建指纹和 36 个工具；`packaged-mcp-smoke.mjs` 在实际 Electron 包中运行工作线程归档续查及确认状态回归。
+- 包内 `verify-package.mjs` 核对源码、Renderer、构建指纹和 40 个工具；`packaged-mcp-smoke.mjs` 在实际 Electron 包中运行工作线程归档续查及确认状态回归。
 - 三平台 CI 验证完成后保存 `installers-win32-x64`、`installers-darwin-arm64`、`installers-darwin-x64`，同时包含 `build/runtime.json`。以提交号定位 CI 运行，不以相同版本号的旧包作为本次证据。

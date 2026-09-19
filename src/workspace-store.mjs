@@ -6,6 +6,7 @@ import readline from 'node:readline';
 import { isDeepStrictEqual } from 'node:util';
 import YAML from 'yaml';
 import { AppError } from './errors.mjs';
+import { normalizeDockerSocket } from './server-docker-reader.mjs';
 import { classifyPluginChange } from './plugin-change-classifier.mjs';
 import { assertPluginConfigurationReady } from './plugin-connection-adapters.mjs';
 import {
@@ -34,7 +35,7 @@ const PLUGIN_CONNECTION_FIELDS = Object.freeze({
 });
 const PLUGIN_CONNECTION_NESTED_FIELDS = Object.freeze({
   server:Object.freeze({
-    target:new Set(['host', 'port', 'addressFamily', 'hostKeyFingerprint']),
+    target:new Set(['host', 'port', 'addressFamily', 'hostKeyFingerprint', 'dockerSocket']),
     auth:new Set(['type', 'username', 'privateKeyPath', 'agentSocket']),
     uplink:new Set(['type', 'host', 'port', 'username', 'remoteDns', 'interfaceAlias']),
   }),
@@ -378,6 +379,7 @@ function normalizePlugin(input, scope, existing = null) {
         host,
         port,
         addressFamily: normalizeAddressFamily(target.addressFamily),
+        ...(target.dockerSocket !== undefined && target.dockerSocket !== '' ? { dockerSocket:normalizeDockerSocket(target.dockerSocket) } : {}),
         ...(addressUnchanged && target.hostKeyFingerprint
           ? { hostKeyFingerprint: String(target.hostKeyFingerprint) }
           : {}),

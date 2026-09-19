@@ -191,6 +191,7 @@ if (process.argv.includes('--mcp')) {
           if (event.type === 'lost') environmentConnectionManager.pluginLost(event.projectId, event.environmentId, event.pluginInstanceId, event.error).catch(() => undefined);
         });
         const serverOperations = new ServerOperations(serverRuntime, workspaceStore);
+        const serverDocker = serverOperations.docker;
         const serverWorkspaceManager = new ServerWorkspaceManager({ workspaceStore, serverRuntime, serverOperations });
         const serverWorkspaceFiles = new ServerWorkspaceFiles({ workspaceStore, serverRuntime, serverOperations });
         const contextManager = new EnvironmentContextManager(workspaceStore);
@@ -218,7 +219,7 @@ if (process.argv.includes('--mcp')) {
           }
         };
         const v2Service = new V2Service({ workspaceStore, connectionManager: environmentConnectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault: pluginCredentialVault, mutationCoordinator, workspaceChanged:(payload) => broadcast('v2:workspace-changed', payload) });
-        v2 = { serverWorkspaceManager, serverWorkspaceFiles, workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, mutationCoordinator, credentialUseResolver, validationRuntime, pluginProbeManager, pluginEditSessionManager, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
+        v2 = { serverDocker, serverWorkspaceManager, serverWorkspaceFiles, workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, mutationCoordinator, credentialUseResolver, validationRuntime, pluginProbeManager, pluginEditSessionManager, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
         const token = await rotateBrokerToken(dataRoot);
         brokerServer = new BrokerServer({ dataRoot, token, v2Service, appVersion: app.getVersion() });
         await brokerServer.start();
@@ -260,6 +261,7 @@ if (process.argv.includes('--mcp')) {
       event.preventDefault();
       app.__aiOpsClosing = true;
       v2?.networkWatcher?.stop();
+      v2?.serverDocker?.dispose();
       v2?.serverWorkspaceManager?.dispose();
       v2?.serverWorkspaceFiles?.dispose();
       v2?.pluginProbeManager?.invalidateAll?.();
