@@ -26,7 +26,7 @@ export class CloudConfigService {
     this.queue = Promise.resolve();
     this.stateError = false;
     mutationCoordinator.cloudRecoveryGuard = projectId => workspace.assertProjectAvailable(projectId);
-    this.store.cloudMutationGuard = projectId => mutationCoordinator.assertProjectAvailable(projectId);
+    this.store.cloudMutationGuard = projectId => mutationCoordinator.assertCloudProjectAvailable(projectId);
   }
   async init() {
     try {

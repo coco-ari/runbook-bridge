@@ -13,9 +13,13 @@ export class WorkspaceMutationCoordinator {
     this.cloudProjects = new Set();
   }
 
-  assertProjectAvailable(projectId) {
+  assertCloudProjectAvailable(projectId) {
     this.cloudRecoveryGuard?.(projectId);
     if (this.cloudProjects.has(projectId)) throw new AppError('CLOUD_PROJECT_BUSY','项目正在同步云配置，请稍后重试。');
+  }
+
+  assertProjectAvailable(projectId) {
+    this.assertCloudProjectAvailable(projectId);
     if (this.projectsDeleting.has(projectId)) {
       throw new AppError('PROJECT_DELETING', '项目正在删除，当前操作已取消。');
     }

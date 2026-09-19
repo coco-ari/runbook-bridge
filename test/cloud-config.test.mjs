@@ -112,6 +112,17 @@ test('真实连接管理器按依赖断开并清除浏览会话，断开失败�
   assert.equal(snapshotDigest(await a.workspace.capture(p.projectId)),before);
 });
 
+test('云同步禁止并发写入，但不阻止已持有删除门禁的项目删除',async t => {
+  const a = await device(t,new CloudConfigClient()), p = await project(a);
+  a.coordinator.cloudProjects.add(p.projectId);
+  await assert.rejects(a.store.updateProject(p.projectId,{name:'不能写入'}),{code:'CLOUD_PROJECT_BUSY'});
+  assert.throws(() => a.coordinator.beginProjectDelete(p.projectId),{code:'CLOUD_PROJECT_BUSY'});
+  a.coordinator.cloudProjects.delete(p.projectId);
+  a.coordinator.beginProjectDelete(p.projectId);
+  await a.store.deleteProject(p.projectId);
+  assert.equal((await a.store.listProjects()).length,0);
+});
+
 test('云快照加密认证绑定仓库与父版本并拒绝篡改',async () => {
   const meta = newCloudMeta(), keys = await deriveCloudKeys(PASSWORD,meta);
   const payload = {schemaVersion:1,projects:[]};

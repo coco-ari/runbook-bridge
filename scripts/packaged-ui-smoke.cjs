@@ -750,10 +750,9 @@ async function main() {
     assert.deepEqual(cloudContract.status.data.projects,[]);
     assert.equal(cloudContract.invalid.error.code,'CLOUD_INVALID_ARGUMENT');
     await running.cdp.evaluate('document.querySelector("[data-testid=cloud-config-open]").click()');
-    await delay(250);
-    assert.equal(await running.cdp.evaluate('Boolean(document.querySelector("[data-testid=cloud-config-dialog]"))'),true);
+    await waitForThemeUi(running.cdp,'Boolean(document.querySelector("[data-testid=cloud-config-dialog] [data-slot=dialog-close]"))','云配置窗口加载完成');
     await running.cdp.evaluate('document.querySelector("[data-testid=cloud-config-dialog] [data-slot=dialog-close]").click()');
-    await delay(150);
+    await waitForThemeUi(running.cdp,'!document.querySelector("[data-testid=cloud-config-dialog]") && !document.querySelector("[data-slot=dialog-overlay]")','云配置窗口关闭动画结束');
     const metricsContract = await running.cdp.evaluate("(async () => { const scope = {projectId:'metrics-probe',environmentId:'probe',pluginInstanceId:'probe'}; return {read:await window.aiOps.v2.serverWorkspaceMetrics(scope),invalid:await window.aiOps.v2.serverWorkspaceMetrics({...scope,command:'arbitrary'}),invalidKind:await window.aiOps.v2.serverWorkspaceMetrics({...scope,kind:'arbitrary'}),disks:await window.aiOps.v2.serverWorkspaceMetrics({...scope,kind:'disks'}),stop:await window.aiOps.v2.serverWorkspaceStopMetrics(scope)}; })()");
     assert.equal(metricsContract.read.ok, false);
     assert.ok(['PROJECT_NOT_FOUND','ENVIRONMENT_NOT_FOUND','PLUGIN_NOT_FOUND'].includes(metricsContract.read.error.code));
