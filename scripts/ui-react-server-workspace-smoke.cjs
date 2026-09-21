@@ -147,6 +147,14 @@ function register() {
   });
   handle('server-workspace-prepare-file-action', input => {
     scoped(input); fileActionCalls.push({...input});
+    if (input.kind === 'delete') {
+      assert.equal(Object.hasOwn(input,'name'),false);
+      if (input.path === '/srv/config') throw Object.assign(new Error('文件夹非空，不能删除。'),{code:'DIRECTORY_NOT_EMPTY'});
+      const source=fixtureStat(input.path);
+      const item={operationId:require('node:crypto').randomUUID(),kind:'delete',path:input.path,parentPath:path.posix.dirname(input.path),
+        canonicalPath:input.path,type:source.type,size:256,mtime:1,expiresAt:Date.now()+60000};
+      fileActionPreparations.set(item.operationId,item);return item;
+    }
     if (input.name === 'example.log') throw Object.assign(new Error('同名文件或文件夹已存在，请使用其他名称。'),{code:'TARGET_EXISTS'});
     const parentPath = input.kind === 'mkdir' ? input.path : path.posix.dirname(input.path);
     const item={operationId:require('node:crypto').randomUUID(),kind:input.kind,path:input.path,destinationPath:path.posix.join(parentPath,input.name),parentPath,expiresAt:Date.now()+60000};
@@ -156,6 +164,11 @@ function register() {
   handle('server-workspace-confirm-file-action', input => {
     scoped(input); const item=fileActionPreparations.get(input.operationId); assert.ok(item);
     fileActionPreparations.delete(input.operationId); fileActionCalls.push({kind:'confirm',...item});
+    if(item.kind==='delete') {
+      removedPaths.add(item.path);fileActionEntries.delete(item.path);
+      workspaceFiles.directoryCache.clear(() => true);
+      return {kind:'delete',path:item.path,parentPath:item.parentPath};
+    }
     fileActionEntries.set(item.destinationPath,item.kind==='mkdir'?'directory':fixtureStat(item.path).type);
     if(item.kind==='rename') { removedPaths.add(item.path); fileActionEntries.delete(item.path); }
     workspaceFiles.directoryCache.clear(() => true);
@@ -325,6 +338,16 @@ function register() {
     return reviewResult(uploadPreparation);
   });
   handle('server-workspace-pick-upload', input => { scoped(input); return makePreparation(input.path, uploadSelection); });
+  handle('server-workspace-paste-upload', async input => {
+    scoped(input);
+    assert.deepEqual(Object.keys(input).sort(), [...Object.keys(scope),'path'].sort(), '原生粘贴接口不接受 Renderer 提供本地路径');
+    const { readWindowsClipboardFiles } = await import('../src/desktop-file-clipboard.mjs');
+    const localPaths = await readWindowsClipboardFiles();
+    uploadImports.push({...input,localPaths,source:'clipboard'});
+    makePreparation(input.path, localPaths.map(file => path.basename(file)));
+    uploadPreparation.files = uploadPreparation.files.map((file,index) => ({...file,localPath:localPaths[index]}));
+    return reviewResult(uploadPreparation);
+  });
   handle('server-workspace-import-upload', input => {
     scoped(input);
     uploadImports.push(input);
@@ -661,6 +684,14 @@ async function run() {
   await until(`document.querySelector('.xterm-rows')?.textContent.includes('operator@demo')`, '真实 xterm 收到输出');
   assert.equal(opened.length, 1, '首次点击只创建一个会话');
   await assertFileSidebarLayout();
+  if (process.env.RUNBOOK_BRIDGE_UPLOAD_INPUT_SMOKE === '1') {
+    releaseRootMetadata();
+    await require('./workspace-upload-input-ui.cjs')({evaluate,click,clickText,until,wait,win,temporaryRoot,imports:uploadImports,writes,confirmCount:()=>uploadConfirmCalls,snapshot});
+    await require('./workspace-file-actions-ui.cjs')({evaluate,click,clickText,until,wait,win,fileActionCalls,uploadRevisions,selectUploads:names=>{uploadSelection=names;},confirmCount:()=>uploadConfirmCalls,snapshot});
+    completed = true;
+    process.stdout.write(JSON.stringify({ok:true,uploadInputs:true,fileActions:true})+'\n');
+    return;
+  }
   if (process.env.RUNBOOK_BRIDGE_FILE_ACTIONS_SMOKE === '1') {
     releaseRootMetadata();
     await require('./workspace-file-actions-ui.cjs')({evaluate,click,clickText,until,wait,win,fileActionCalls,uploadRevisions,selectUploads:names=>{uploadSelection=names;},confirmCount:()=>uploadConfirmCalls,snapshot});
@@ -691,8 +722,7 @@ async function run() {
   }
   if (process.env.RUNBOOK_BRIDGE_LOCATION_SMOKE === '1') {
     releaseRootMetadata();
-    await require('./workspace-upload-input-ui.cjs')({evaluate,click,clickText,until,wait,win,temporaryRoot,imports:uploadImports,writes,confirmCount:()=>uploadConfirmCalls,snapshot});
-  await require('./workspace-location-ui.cjs')({evaluate,click,until,wait,win,setViewport,snapshot,terminalSessions,directoryState,writes,previewReads,errors});
+    await require('./workspace-location-ui.cjs')({evaluate,click,until,wait,win,setViewport,snapshot,terminalSessions,directoryState,writes,previewReads,errors});
     completed = true;
     process.stdout.write(JSON.stringify({ok:true,pathLocations:true,queries:directoryState.requests.length})+'\n');
     return;
@@ -1196,6 +1226,7 @@ async function run() {
   await require('./workspace-metrics-ui.cjs')({evaluate,click,clickText,until,wait,win,setViewport,snapshot,metricsState,writes,errors});
   await require('./workspace-file-interactions-ui.cjs')({evaluate,click,doubleClick,clickText,until,wait,win,previewReads,writes,opened,terminalSessions,errors});
   await require('./workspace-location-ui.cjs')({evaluate,click,until,wait,win,setViewport,snapshot,terminalSessions,directoryState,writes,previewReads,errors});
+  await require('./workspace-upload-input-ui.cjs')({evaluate,click,clickText,until,wait,win,temporaryRoot,imports:uploadImports,writes,confirmCount:()=>uploadConfirmCalls,snapshot});
   await require('./workspace-file-actions-ui.cjs')({evaluate,click,clickText,until,wait,win,fileActionCalls,uploadRevisions,selectUploads:names=>{uploadSelection=names;},confirmCount:()=>uploadConfirmCalls,snapshot});
   completed = true;
   process.stdout.write(JSON.stringify({ ok: true, terminalSessions: opened.length, writes: writes.length, directoryReads: directoryReads.length, resizes: resizes.length, screenshotRoot: process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR ?? null }) + '\n');

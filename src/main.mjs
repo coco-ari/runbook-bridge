@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, powerMonitor, session, Menu } from 'electron';
 import { ProjectStore } from './project-store.mjs';
 import { desktopMenuTemplate } from './desktop-menu.mjs';
+import { readWindowsClipboardFiles } from './desktop-file-clipboard.mjs';
 import { createTransferExitGuard } from './desktop-transfer-exit-guard.mjs';
 import { BrokerServer } from './broker-server.mjs';
 import { rotateBrokerToken } from './broker-auth.mjs';
@@ -236,6 +237,7 @@ if (process.argv.includes('--mcp')) {
           broadcast,
           quickQuestionClipboard:clipboard,
           terminalClipboard:clipboard,
+          readServerClipboardFiles:readWindowsClipboardFiles,
           isWorkspaceRenderer: (sender) => sender.getURL() === pathToFileURL(path.join(__dirname, '..', 'renderer-build', 'v2', 'index.html')).href,
           pickServerDownloadPath: async (sender, name) => {
             const window = BrowserWindow.fromWebContents(sender);

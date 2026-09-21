@@ -14,6 +14,7 @@ interface Props {
   api: AiOpsV2Api
   scope: PluginScope
   connected: boolean
+  serverLabel: string
   visible: boolean
   resolveTarget: (element: Element) => MenuTarget
   onSelect: (entry: ServerDirectoryEntry) => void
@@ -26,15 +27,16 @@ interface Props {
 const modified = (seconds: number) => new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "medium" }).format(seconds * 1000)
 const typeNames = { file: "文件", directory: "文件夹", symlink: "符号链接", special: "特殊文件" }
 
-export function ServerFileMenu({ api, scope, connected, visible, resolveTarget, onSelect, onDownload, downloadBusy, onRefresh, onChanged, children }: Props) {
+export function ServerFileMenu({ api, scope, serverLabel, connected, visible, resolveTarget, onSelect, onDownload, downloadBusy, onRefresh, onChanged, children }: Props) {
   const [target, setTarget] = useState<MenuTarget>({ entry: null, directory: "/" })
-  const [dialog, setDialog] = useState<"info" | "action" | null>(null)
+  const [dialog, setDialog] = useState<"info" | "action" | "delete" | null>(null)
   const [info, setInfo] = useState<ServerFileInfo | null>(null)
   const [infoPath, setInfoPath] = useState("")
   const [action, setAction] = useState<Action | null>(null)
   const [prepared, setPrepared] = useState<ServerFileActionPreparation | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  const cancelButton = useRef<HTMLButtonElement>(null)
   const sequence = useRef(0)
   const busyRef = useRef(false)
   const preparedRef = useRef<ServerFileActionPreparation | null>(null)
@@ -95,6 +97,39 @@ export function ServerFileMenu({ api, scope, connected, visible, resolveTarget, 
       }
     } finally { if (sequence.current === version) { busyRef.current = false; setBusy(false) } }
   }
+  const beginDelete = async (selectedPath: string) => {
+    close()
+    const version = ++sequence.current
+    setDialog("delete"); setInfoPath(selectedPath); setBusy(true)
+    try {
+      const result = unwrapWorkspaceResult(await api.serverWorkspacePrepareFileAction({ ...scope, kind: "delete", path: selectedPath }))
+      if (sequence.current !== version) {
+        void api.serverWorkspaceCancelFileAction({ ...scope, operationId: result.operationId }).catch(() => undefined)
+        return
+      }
+      preparedRef.current = result
+      setPrepared(result)
+    } catch (failure) { if (sequence.current === version) setError(workspaceErrorMessage(failure)) }
+    finally { if (sequence.current === version) setBusy(false) }
+  }
+  const confirmDelete = async () => {
+    if (prepared?.kind !== "delete" || busyRef.current || !connected) return
+    const version = ++sequence.current
+    busyRef.current = true; setBusy(true); setError("")
+    try {
+      const result = unwrapWorkspaceResult(await api.serverWorkspaceConfirmFileAction({ ...scope, operationId: prepared.operationId }))
+      preparedRef.current = null
+      if (sequence.current !== version) return
+      close()
+      onChanged(result)
+      toast.success("已删除")
+    } catch (failure) {
+      if (sequence.current === version) {
+        cancelPrepared(); setPrepared(null); setError(workspaceErrorMessage(failure))
+        onRefresh(parentRemotePath(infoPath))
+      }
+    } finally { if (sequence.current === version) { busyRef.current = false; setBusy(false) } }
+  }
   const selectTarget = (element: Element) => {
     const next = resolveTarget(element)
     setTarget(next)
@@ -125,12 +160,23 @@ export function ServerFileMenu({ api, scope, connected, visible, resolveTarget, 
         <ContextMenuItem disabled={!connected} onSelect={() => onRefresh(entry ? parentRemotePath(entry.path) : target.directory)}>刷新所在目录</ContextMenuItem>
         <ContextMenuItem disabled={!connected || Boolean(entry && !["directory", "file"].includes(serverEntryType(entry)))} onSelect={() => beginAction("mkdir")}>新建文件夹</ContextMenuItem>
         {entry ? <ContextMenuItem disabled={!connected || !["file", "directory"].includes(entry.type) || entry.path === "/"} onSelect={() => beginAction("rename")}>重命名</ContextMenuItem> : null}
+        {entry ? <><ContextMenuSeparator /><ContextMenuItem variant="destructive" className="text-danger focus:text-danger" disabled={!connected || !["file", "directory"].includes(entry.type) || entry.path === "/"} onSelect={() => { void beginDelete(entry.path) }}>删除…</ContextMenuItem></> : null}
       </ContextMenuContent>
     </ContextMenu>
     <Dialog open={dialog !== null} onOpenChange={open => { if (!open && !busyRef.current) close() }}>
-      <DialogContent className="sm:max-w-[580px]" showCloseButton={!busyRef.current} onEscapeKeyDown={event => { if (busyRef.current) event.preventDefault() }} onInteractOutside={event => { if (busyRef.current) event.preventDefault() }}>
-        <DialogHeader><DialogTitle>{dialog === "info" ? "文件属性" : action?.kind === "mkdir" ? "新建文件夹" : "重命名"}</DialogTitle><DialogDescription>{dialog === "info" ? "显示服务器当前返回的属性，文件夹不递归计算总大小。" : prepared ? "请核对最终目标后确认。" : "名称仅用于当前目录，同名目标不会被覆盖。"}</DialogDescription></DialogHeader>
-        {dialog === "info" ? <>
+      <DialogContent className="sm:max-w-[580px]" data-testid={dialog === "delete" ? "file-delete-dialog" : undefined} onOpenAutoFocus={event => { if (dialog === "delete") { event.preventDefault(); cancelButton.current?.focus() } }} showCloseButton={!busyRef.current} onEscapeKeyDown={event => { if (busyRef.current) event.preventDefault() }} onInteractOutside={event => { if (busyRef.current) event.preventDefault() }}>
+        <DialogHeader><DialogTitle>{dialog === "delete" ? "永久删除" : dialog === "info" ? "文件属性" : action?.kind === "mkdir" ? "新建文件夹" : "重命名"}</DialogTitle><DialogDescription>{dialog === "delete" ? "此操作无法撤销，文件不会进入回收站。请核对服务器与完整路径。" : dialog === "info" ? "显示服务器当前返回的属性，文件夹不递归计算总大小。" : prepared ? "请核对最终目标后确认。" : "名称仅用于当前目录，同名目标不会被覆盖。"}</DialogDescription></DialogHeader>
+        {dialog === "delete" ? <div className="space-y-3 text-sm">
+          <p className="break-all">{serverLabel}</p>
+          <p className="whitespace-pre-wrap break-all font-mono" data-testid="file-delete-path">{infoPath}</p>
+          {busy ? <p role="status">{busyRef.current ? "正在删除…" : "正在检查目标…"}</p> : null}
+          {prepared?.kind === "delete" ? <dl className="server-file-properties">
+            <dt>名称</dt><dd className="whitespace-pre-wrap">{infoPath.slice(infoPath.lastIndexOf("/") + 1)}</dd>
+            <dt>类型</dt><dd>{prepared.type === "directory" ? "空文件夹" : "普通文件"}</dd>
+            {prepared.type === "file" ? <><dt>大小</dt><dd>{formatTransferBytes(prepared.size)}</dd></> : null}
+            <dt>修改时间</dt><dd>{modified(prepared.mtime)}</dd>
+          </dl> : null}
+        </div> : dialog === "info" ? <>
           <p className="break-all font-mono text-xs">{infoPath}</p>
           {busy ? <p role="status">正在读取属性…</p> : null}
           {info ? <dl className="server-file-properties">
@@ -143,10 +189,10 @@ export function ServerFileMenu({ api, scope, connected, visible, resolveTarget, 
         </> : action ? <form id="server-file-action-form" className="space-y-3" onSubmit={event => { event.preventDefault(); void submit() }}>
           <p className="break-all font-mono text-xs">{action.path}</p>
           <label className="block space-y-2 text-sm"><span>{action.kind === "mkdir" ? "文件夹名称" : "新名称"}</span><Input aria-label={action.kind === "mkdir" ? "文件夹名称" : "新名称"} name="entry-name" autoComplete="off" spellCheck={false} autoFocus value={action.name} disabled={busy || Boolean(prepared)} onChange={event => setAction({ ...action, name: event.target.value })} /></label>
-          {prepared ? <div className="space-y-2 text-sm"><p>目标：<code className="break-all">{prepared.destinationPath}</code></p>{prepared.canonicalDestination !== prepared.destinationPath ? <p>实际目标：<code className="break-all">{prepared.canonicalDestination}</code></p> : null}<Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => { cancelPrepared(); setPrepared(null) }}>修改名称</Button></div> : null}
+          {prepared && prepared.kind !== "delete" ? <div className="space-y-2 text-sm"><p>目标：<code className="break-all">{prepared.destinationPath}</code></p>{prepared.canonicalDestination !== prepared.destinationPath ? <p>实际目标：<code className="break-all">{prepared.canonicalDestination}</code></p> : null}<Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => { cancelPrepared(); setPrepared(null) }}>修改名称</Button></div> : null}
         </form> : null}
         {error ? <p role="alert" className="text-sm text-danger break-words">{error}</p> : null}
-        <DialogFooter><Button variant="outline" disabled={busyRef.current} onClick={close}>{dialog === "info" ? "关闭" : "取消"}</Button>{dialog === "info" ? <Button disabled={!connected || busy} onClick={() => { void readInfo(infoPath) }}>刷新属性</Button> : <Button form="server-file-action-form" type="submit" disabled={!connected || busy || !action?.name}>{busy ? "正在处理…" : !prepared ? "检查并继续" : action?.kind === "mkdir" ? "确认新建" : "确认重命名"}</Button>}</DialogFooter>
+        <DialogFooter><Button ref={cancelButton} variant="outline" disabled={busyRef.current} onClick={close}>{dialog === "info" ? "关闭" : "取消"}</Button>{dialog === "delete" ? <Button type="button" variant={prepared?.kind === "delete" ? "destructive" : "outline"} disabled={!connected || busy} onClick={() => { if (prepared?.kind === "delete") void confirmDelete(); else void beginDelete(infoPath) }}>{busy ? "正在处理…" : prepared?.kind === "delete" ? "永久删除" : "重新检查"}</Button> : dialog === "info" ? <Button disabled={!connected || busy} onClick={() => { void readInfo(infoPath) }}>刷新属性</Button> : <Button form="server-file-action-form" type="submit" disabled={!connected || busy || !action?.name}>{busy ? "正在处理…" : !prepared ? "检查并继续" : action?.kind === "mkdir" ? "确认新建" : "确认重命名"}</Button>}</DialogFooter>
       </DialogContent>
     </Dialog>
   </>

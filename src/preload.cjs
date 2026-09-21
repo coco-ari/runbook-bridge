@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('aiOps', {
     serverWorkspacePrepareUploadResume: (payload) => ipcRenderer.invoke('v2:server-workspace-prepare-upload-resume', payload),
     serverWorkspacePickUpload: (payload) => ipcRenderer.invoke('v2:server-workspace-pick-upload', payload),
     serverWorkspaceImportUpload: importUploadFiles,
+    serverWorkspacePasteUpload: payload => ipcRenderer.invoke('v2:server-workspace-paste-upload', payload),
     serverWorkspaceReadUploadReview: (payload) => ipcRenderer.invoke('v2:server-workspace-read-upload-review', payload),
     serverWorkspaceCancelUploadReview: (payload) => ipcRenderer.invoke('v2:server-workspace-cancel-upload-review', payload),
     serverWorkspaceReviseUpload: (payload) => ipcRenderer.invoke('v2:server-workspace-revise-upload', payload),

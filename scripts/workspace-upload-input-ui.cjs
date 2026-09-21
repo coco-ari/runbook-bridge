@@ -1,7 +1,9 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const executeFile = promisify(execFile);
 
 module.exports = async function testWorkspaceUploadInput({evaluate, click, clickText, until, wait, win, temporaryRoot, imports, writes, confirmCount, snapshot}) {
   const localPaths = ['发布 包.jar', '说明.txt'].map(name => path.join(temporaryRoot, name));
@@ -37,6 +39,9 @@ module.exports = async function testWorkspaceUploadInput({evaluate, click, click
     await debuggerApi.sendCommand('Input.dispatchDragEvent',{type:'drop',...target,data});
   };
   try {
+    await click('[aria-label="编辑目录路径"]');
+    await evaluate("(() => { const input=document.querySelector('[aria-label=目录路径]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'/srv'); input.dispatchEvent(new Event('input',{bubbles:true})); })()");
+    await clickText('转到');
     await until(has(row('/srv/config')), '上传测试目录就绪');
     await drop(row('/srv/config'));
     await assertReview('/srv/config');
@@ -85,23 +90,44 @@ module.exports = async function testWorkspaceUploadInput({evaluate, click, click
       const command = "Add-Type -AssemblyName System.Windows.Forms; $uploadFiles = New-Object System.Collections.Specialized.StringCollection; " +
         localPaths.map(file => "$null = $uploadFiles.Add('" + file.replace(/'/g,"''") + "'); ").join('') +
         "[System.Windows.Forms.Clipboard]::SetFileDropList($uploadFiles)";
-      execFileSync('powershell.exe', ['-NoProfile','-NonInteractive','-STA','-EncodedCommand',Buffer.from(command,'utf16le').toString('base64')], {windowsHide:true,timeout:15000});
-      await evaluate(has(row('/srv/config')) + '.focus()');
+      // 异步调用保留 Electron 消息循环，避免剪贴板所有权交接时相互等待。
+      await executeFile('powershell.exe', ['-NoProfile','-NonInteractive','-STA','-EncodedCommand',Buffer.from(command,'utf16le').toString('base64')], {windowsHide:true,timeout:15000}).catch(() => {
+        throw new Error('无法建立原生文件剪贴板测试夹具');
+      });
+      // 即使浏览器没有交付粘贴事件，快捷键也必须读取原生文件清单。
+      await evaluate("window.__blockFilePaste=event=>{event.preventDefault();event.stopImmediatePropagation();};document.addEventListener('paste',window.__blockFilePaste,true)");
+      const folderPoint = await point(row('/srv/config'));
+      win.webContents.focus();
+      win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...folderPoint});
+      win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...folderPoint});
+      await wait(250);
+      assert.equal(await evaluate("document.activeElement?.getAttribute('title')"), '/srv/config', '真实点击目录后仍保留键盘焦点');
       win.webContents.sendInputEvent({type:'keyDown',keyCode:'V',modifiers:['control']});
       win.webContents.sendInputEvent({type:'keyUp',keyCode:'V',modifiers:['control']});
       await assertReview('/srv/config');
+      assert.equal(imports.at(-1).source, 'clipboard', 'Ctrl+V 使用主进程原生文件列表');
+      await evaluate("document.removeEventListener('paste',window.__blockFilePaste,true);delete window.__blockFilePaste");
       await cancel();
       await evaluate(has(row('/srv/config')) + '.focus()');
       win.webContents.paste();
       await assertReview('/srv/config');
+      assert.equal(imports.at(-1).source, 'clipboard', '菜单粘贴复用原生文件列表');
       await cancel();
+      const countBeforeText = imports.length;
+      require('electron').clipboard.writeText('/tmp/not-a-file-selection');
+      await evaluate(has(row('/srv/config')) + '.focus()');
+      win.webContents.sendInputEvent({type:'keyDown',keyCode:'V',modifiers:['control']});
+      win.webContents.sendInputEvent({type:'keyUp',keyCode:'V',modifiers:['control']});
+      await until("document.querySelector('.server-workspace-error')?.textContent.includes('剪贴板中没有本地文件')", '无文件时明确提示，不再静默');
+      assert.equal(imports.length, countBeforeText, '文本路径不能作为本地文件上传');
+      await click('[aria-label="收起上传提示"]');
     }
     const expectedShortcut = process.platform === 'darwin' ? '⌘V' : 'Ctrl+V';
     assert.ok((await evaluate("document.querySelector('.server-file-tree [aria-label=上传文件]').title")).includes(expectedShortcut));
     assert.equal(confirmCount(), beforeConfirm);
     assert.equal(writes.length, beforeWrites);
   } finally {
-    await evaluate("document.querySelector('#upload-input-fixture')?.remove()");
+    await evaluate("document.removeEventListener('paste',window.__blockFilePaste,true);delete window.__blockFilePaste;document.querySelector('#upload-input-fixture')?.remove()");
     if (!attached) debuggerApi.detach();
   }
 };

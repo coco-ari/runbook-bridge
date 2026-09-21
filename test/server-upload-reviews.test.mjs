@@ -340,13 +340,14 @@ test('复用后的文件前置条件继续拦截源文件、远端文件和目�
   assert.equal(h.files.jobs.size, 0);
 });
 
-function importIpc(h) {
+function importIpc(h, readClipboard = async () => h.paths) {
   const handlers = new Map();
   const sender = Object.assign(new EventEmitter(), { id: 1, mainFrame: {}, isDestroyed: () => false });
   const event = { sender, senderFrame: sender.mainFrame };
   registerServerWorkspaceIpc({ handle: (name, callback) => handlers.set(name, callback) }, {
     serverWorkspaceFiles: h.files, isWorkspaceRenderer: value => value === sender,
     pickServerUploadFiles: async () => h.paths,
+    readServerClipboardFiles: readClipboard,
   });
   const payload = { ...scope, path: '/srv', localPaths: h.paths };
   return { handlers, sender, event, payload, invoke: (input = payload, source = event) => handlers.get('v2:server-workspace-import-upload')(source, input) };
@@ -453,4 +454,45 @@ test('保留两份的名称探测有上限，不无限扫描服务器', async t 
   const next = await h.done(await h.files.reviseUploadReview(owner, { ...scope, reviewId:first.reviewId, fileNames:['file-0.txt'], decisions:[{name:'file-0.txt',action:'keep-both'}] }));
   assert.equal(next.error.code, 'TARGET_EXISTS');
   assert.equal(h.files.preparations.size, 0);
+});
+
+test('原生粘贴只接收目标目录，读取后建立清单而不上传，并拒绝客户端本地路径', async t => {
+  const h = await harness(t, 2);
+  let reads = 0;
+  const ipc = importIpc(h, async () => { reads += 1; return h.paths; });
+  const paste = ipc.handlers.get('v2:server-workspace-paste-upload');
+  const payload = {...scope,path:'/srv'};
+  for(const extra of [{localPaths:h.paths},{text:h.paths[0]},{overwrite:true}]) {
+    assert.equal((await paste(ipc.event,{...payload,...extra})).error.code,'INVALID_ARGUMENT');
+  }
+  assert.equal((await paste({...ipc.event,senderFrame:{}},payload)).error.code,'WORKSPACE_ACCESS_DENIED');
+  assert.equal(reads,0);
+  const result = await paste(ipc.event,payload);
+  assert.equal(result.ok,true);
+  assert.deepEqual(result.data.files.map(file=>file.localPath),h.paths);
+  assert.equal((await h.done(result.data)).status,'ready');
+  assert.equal(h.files.jobs.size,0);
+  h.disconnect();
+  assert.equal((await paste(ipc.event,payload)).error.code,'NOT_CONNECTED');
+  assert.equal(reads,1);
+});
+
+test('原生剪贴板读取与其他文件入口互斥，读取期间换代或关闭窗口会丢弃结果', async t => {
+  for(const change of ['owner','generation']) await t.test(change, async child => {
+    const h=await harness(child,1), barrier=gate();
+    let reads=0;
+    const ipc=importIpc(h,async()=>{reads+=1;await barrier.promise;return h.paths;});
+    const paste=ipc.handlers.get('v2:server-workspace-paste-upload'), payload={...scope,path:'/srv'};
+    const pending=paste(ipc.event,payload);
+    await tick();
+    assert.equal((await paste(ipc.event,payload)).error.code,'WORKSPACE_BUSY');
+    assert.equal((await ipc.invoke()).error.code,'WORKSPACE_BUSY');
+    assert.equal(reads,1);
+    if(change==='owner') ipc.sender.emit('did-start-navigation',{},'file:///fixture.html',false,true);
+    else h.reconnect();
+    barrier.release();
+    assert.equal((await pending).error.code,'WORKSPACE_CHANGED');
+    assert.equal(h.files.uploadReviews.records.size,0);
+    assert.equal(h.files.jobs.size,0);
+  });
 });

@@ -224,15 +224,16 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
     if (current) void api.serverWorkspaceCancelUploadReview({ ...scope, reviewId: current.reviewId }).catch(() => undefined)
   }
 
-  const pickUpload = useCallback(async (targetPath = path, files?: readonly File[]) => {
+  const pickUpload = useCallback(async (targetPath = path, files?: readonly File[], fromClipboard = false) => {
     if (!connected || !visibleRef.current || uploadPickerRef.current || uploadActionRef.current || preparationRef.current) return
     uploadPickerRef.current = true
     const version = ++uploadSelectionVersion.current
     setUploadPreparing(true)
     setUploadError("")
     try {
-      const result = unwrapWorkspaceResult(await (files
-        ? api.serverWorkspaceImportUpload({ ...scope, path: targetPath }, files)
+      const result = unwrapWorkspaceResult(await (fromClipboard
+        ? api.serverWorkspacePasteUpload({ ...scope, path: targetPath })
+        : files ? api.serverWorkspaceImportUpload({ ...scope, path: targetPath }, files)
         : api.serverWorkspacePickUpload({ ...scope, path: targetPath })))
       if (mountedRef.current && version === uploadSelectionVersion.current && result) { preparationRef.current = result; setPreparation(result); setOverwrite(false); setUploadNeedsReview(false) }
       else if (result) void api.serverWorkspaceCancelUploadReview({ ...scope, reviewId: result.reviewId }).catch(() => undefined)
@@ -383,7 +384,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
       <ServerResourceRail active={resource} onSelect={selectResource} />
       <ResizablePanelGroup orientation="horizontal" id={`${panelId}-panels`}>
         <ResizablePanel id={`${panelId}-files`} defaultSize="320px" minSize="240px" maxSize="50%" collapsible collapsedSize={0} panelRef={treePanelRef}>
-          <div className="server-resource-panel" hidden={resource !== "files"}><ServerFileTree terminalLabel={activeTerminalLabel} terminalSessionId={activeTerminalSessionId} api={api} scope={scope} connected={connected} visible={visible && resource === "files"} path={path} onPath={setPath} onPreview={(file) => { void openPreview(file) }} onUpload={() => { void pickUpload() }} onUploadFiles={(target, files) => { void pickUpload(target, files) }} uploadBlocked={uploadPreparing || Boolean(preparation) || uploadConfirming || Boolean(resumingJobId)} onDownload={file => { void downloadFile(file) }} downloadBusy={downloadPicking} pathDrag={pathDrag} refreshEpoch={refreshEpoch} refreshPaths={refreshPaths} invalidatedPath={invalidatedPath} locateFile={fileLocation} /></div>
+          <div className="server-resource-panel" hidden={resource !== "files"}><ServerFileTree serverLabel={`${entry.projectName} / ${entry.environmentName} / ${entry.plugin.displayName} · ${sshIdentity}`} terminalLabel={activeTerminalLabel} terminalSessionId={activeTerminalSessionId} api={api} scope={scope} connected={connected} visible={visible && resource === "files"} path={path} onPath={setPath} onPreview={(file) => { void openPreview(file) }} onUpload={() => { void pickUpload() }} onUploadFiles={(target, files) => { void pickUpload(target, files) }} onPasteFiles={target => { void pickUpload(target, undefined, true) }} uploadBlocked={uploadPreparing || Boolean(preparation) || uploadConfirming || Boolean(resumingJobId)} onDownload={file => { void downloadFile(file) }} downloadBusy={downloadPicking} pathDrag={pathDrag} refreshEpoch={refreshEpoch} refreshPaths={refreshPaths} invalidatedPath={invalidatedPath} locateFile={fileLocation} /></div>
           <div className="server-resource-panel" hidden={resource !== "docker"}><ServerDockerTree api={api} scope={scope} connected={connected} visible={visible && resource === "docker"} binding={dockerBinding} onOpen={openContainer} selected={activeDocker} /></div>
         </ResizablePanel>
         <ResizableHandle className={maximized ? "hidden" : ""} aria-label="调整文件树宽度" />

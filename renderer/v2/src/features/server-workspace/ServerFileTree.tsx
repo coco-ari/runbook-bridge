@@ -21,6 +21,7 @@ interface ServerFileTreeProps {
   readonly api: AiOpsV2Api
   readonly scope: PluginScope
   readonly connected: boolean
+  readonly serverLabel: string
   readonly visible: boolean
   readonly path: string
   readonly onPath: (path: string) => void
@@ -29,6 +30,7 @@ interface ServerFileTreeProps {
   readonly downloadBusy: boolean
   readonly onUpload: () => void
   readonly onUploadFiles: (path: string, files: readonly File[]) => void
+  readonly onPasteFiles: (path: string) => void
   readonly uploadBlocked: boolean
   readonly pathDrag: WorkspacePathDrag
   readonly invalidatedPath: Readonly<{ path: string; id: number }> | null
@@ -39,10 +41,11 @@ interface ServerFileTreeProps {
   readonly refreshPaths: readonly string[]
 }
 
-export function ServerFileTree({ api, scope, connected, visible, path, onPath, onPreview, onUpload, onUploadFiles, uploadBlocked, onDownload, downloadBusy, pathDrag, refreshEpoch, refreshPaths, invalidatedPath, locateFile, terminalSessionId, terminalLabel }: ServerFileTreeProps) {
+export function ServerFileTree({ api, scope, connected, serverLabel, visible, path, onPath, onPreview, onUpload, onUploadFiles, onPasteFiles, uploadBlocked, onDownload, downloadBusy, pathDrag, refreshEpoch, refreshPaths, invalidatedPath, locateFile, terminalSessionId, terminalLabel }: ServerFileTreeProps) {
   const [dropTarget, setDropTarget] = useState<string | null>(null)
   const canReceiveFiles = connected && visible && !uploadBlocked
   const pasteShortcut = /Mac/iu.test(navigator.platform) ? "⌘V" : "Ctrl+V"
+  const useNativeFileClipboard = /Win/iu.test(navigator.platform)
   const hasFiles = (data: DataTransfer) => data.types.includes("Files") && !data.types.includes("application/x-runbook-workspace-path")
   const uploadTarget = (target: EventTarget | null) => {
     if (!(target instanceof Element) || target.closest("input, textarea, [contenteditable=true]")) return null
@@ -524,12 +527,26 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
     requestAnimationFrame(() => requestAnimationFrame(() => element.querySelector<HTMLButtonElement>(`[data-tree-index="${index}"]`)?.focus()))
   }
 
-  return <section className="server-file-tree" aria-label="服务器目录树" onPaste={event => {
+  return <section className="server-file-tree" aria-label="服务器目录树" onKeyDownCapture={event => {
+    if (!useNativeFileClipboard || !event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== "v") return
+    if (!(event.target instanceof Element) || !event.currentTarget.contains(event.target) || !event.target.closest(".server-tree-scroll")) return
     const target = uploadTarget(event.target)
-    if (!target || !hasFiles(event.clipboardData)) return
+    if (!target) return
     event.preventDefault()
     event.stopPropagation()
-    if (canReceiveFiles) onUploadFiles(target, Array.from(event.clipboardData.files))
+    if (canReceiveFiles && !event.repeat) onPasteFiles(target)
+  }} onPaste={event => {
+    if (!(event.target instanceof Element) || !event.currentTarget.contains(event.target)) return
+    const target = uploadTarget(event.target)
+    if (!target) return
+    const nativeFiles = useNativeFileClipboard && event.nativeEvent.isTrusted
+    if (!nativeFiles && !hasFiles(event.clipboardData)) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (canReceiveFiles) {
+      if (nativeFiles) onPasteFiles(target)
+      else onUploadFiles(target, Array.from(event.clipboardData.files))
+    }
   }}>
     <div className="server-file-toolbar">
       <div className="server-file-actions">
@@ -555,7 +572,7 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
       </>}
     </div>
     {revealError ? <div className="px-3 py-2 text-xs text-danger" role="status">{revealError}</div> : null}
-    <ServerFileMenu api={api} scope={scope} connected={connected} visible={visible} downloadBusy={downloadBusy} onDownload={onDownload}
+    <ServerFileMenu api={api} scope={scope} serverLabel={serverLabel} connected={connected} visible={visible} downloadBusy={downloadBusy} onDownload={onDownload}
       resolveTarget={element => {
         const rowElement = element.closest<HTMLElement>("[data-tree-index]")
         const row = rowElement ? rows[Number(rowElement.dataset.treeIndex)] : null
@@ -565,6 +582,14 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
       onSelect={entry => { pendingOpenRef.current = null; setSelected(entry.path) }}
       onRefresh={target => { void load(target) }}
       onChanged={result => {
+        if (result.kind === "delete") {
+          pendingOpenRef.current = null
+          invalidate(result.path)
+          invalidate(result.parentPath)
+          setExpanded(current => new Set([...current].filter(value => value !== result.path && !value.startsWith(result.path + "/"))))
+          revealPath(result.parentPath)
+          return
+        }
         if (result.kind === "rename") {
           invalidate(result.path)
           setExpanded(current => new Set([...current].filter(value => value !== result.path && !value.startsWith(result.path + "/"))))

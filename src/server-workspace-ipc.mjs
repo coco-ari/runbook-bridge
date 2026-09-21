@@ -134,6 +134,20 @@ export function registerServerWorkspaceIpc(ipcMain, services) {
       return await files.beginUploadReview(ownerId, payload, payload.localPaths);
     } finally { picking.delete(ownerId); }
   });
+  handle('server-workspace-paste-upload', ['path'], async (ownerId, payload, event) => {
+    const files = services.serverWorkspaceFiles;
+    if (!files || !services.readServerClipboardFiles) throw new AppError('WORKSPACE_UNAVAILABLE', '文件粘贴暂不可用，请拖入文件上传。');
+    if (picking.has(ownerId)) throw new AppError('WORKSPACE_BUSY', '正在接收文件，请稍候。');
+    picking.add(ownerId);
+    try {
+      const binding = await files.requirePlugin(ownerId, payload);
+      const selected = await services.readServerClipboardFiles();
+      ownerFor(event);
+      await files.requirePlugin(ownerId, payload, binding);
+      // 路径仅来自主进程读取的原生文件剪贴板，仍须预检并由用户确认后上传。
+      return await files.beginUploadReview(ownerId, payload, selected);
+    } finally { picking.delete(ownerId); }
+  });
   handle('server-workspace-pick-upload', ['path'], async (ownerId, payload, event) => {
     if (!services.serverWorkspaceFiles || !services.pickServerUploadFiles) throw new AppError('WORKSPACE_UNAVAILABLE', '文件选择暂不可用。');
     if (picking.has(ownerId)) throw new AppError('WORKSPACE_BUSY', '请选择或关闭当前文件选择窗口。');

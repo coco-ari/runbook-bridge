@@ -758,13 +758,22 @@ async function main() {
     assert.equal(inspection.noPageOverflow, true);
     assert.equal(inspection.overviewOk, true);
     assert.equal(inspection.projectCount, 0);
-    assert.equal(inspection.apiCount, 96);
+    assert.equal(inspection.apiCount, 97);
     const fileActionContract = await running.cdp.evaluate("(async () => { const scope={projectId:'file-action-probe',environmentId:'probe',pluginInstanceId:'probe'}; return {info:await window.aiOps.v2.serverWorkspaceFileInfo({...scope,path:'/srv'}),prepare:await window.aiOps.v2.serverWorkspacePrepareFileAction({...scope,kind:'mkdir',path:'/srv',name:'fixture'}),invalid:await window.aiOps.v2.serverWorkspaceConfirmFileAction({...scope,operationId:'missing',destinationPath:'/other'}),confirm:await window.aiOps.v2.serverWorkspaceConfirmFileAction({...scope,operationId:'missing'}),cancel:await window.aiOps.v2.serverWorkspaceCancelFileAction({...scope,operationId:'missing'})}; })()");
     assert.equal(fileActionContract.info.ok, false);
     assert.equal(fileActionContract.prepare.ok, false);
     assert.equal(fileActionContract.invalid.error.code, 'INVALID_ARGUMENT');
     assert.equal(fileActionContract.confirm.error.code, 'WORKSPACE_ACTION_EXPIRED');
     assert.equal(fileActionContract.cancel.error.code, 'WORKSPACE_ACTION_EXPIRED');
+    const deleteContract = await running.cdp.evaluate("(async () => { const scope={projectId:'delete-probe',environmentId:'probe',pluginInstanceId:'probe'}; return {root:await window.aiOps.v2.serverWorkspacePrepareFileAction({...scope,kind:'delete',path:'/'}),recursive:await window.aiOps.v2.serverWorkspacePrepareFileAction({...scope,kind:'delete',path:'/srv',recursive:true}),name:await window.aiOps.v2.serverWorkspacePrepareFileAction({...scope,kind:'delete',path:'/srv',name:'other'}),missing:await window.aiOps.v2.serverWorkspacePrepareFileAction({...scope,kind:'delete',path:'/srv/file.txt'})}; })()");
+    assert.equal(deleteContract.root.error.code,'PATH_INVALID');
+    assert.equal(deleteContract.recursive.error.code,'INVALID_ARGUMENT');
+    assert.equal(deleteContract.name.error.code,'INVALID_ARGUMENT');
+    assert.ok(['PROJECT_NOT_FOUND','ENVIRONMENT_NOT_FOUND','PLUGIN_NOT_FOUND'].includes(deleteContract.missing.error.code));
+    const pasteContract = await running.cdp.evaluate("(async () => { const scope={projectId:'paste-probe',environmentId:'probe',pluginInstanceId:'probe',path:'/srv'}; return {missing:await window.aiOps.v2.serverWorkspacePasteUpload(scope),forged:await window.aiOps.v2.serverWorkspacePasteUpload({...scope,localPaths:['C:/fixture.txt']})}; })()");
+    assert.equal(pasteContract.missing.ok, false);
+    assert.ok(['PROJECT_NOT_FOUND','ENVIRONMENT_NOT_FOUND','PLUGIN_NOT_FOUND'].includes(pasteContract.missing.error.code));
+    assert.equal(pasteContract.forged.error.code, 'INVALID_ARGUMENT');
     const importContract = await running.cdp.evaluate("(async () => { const scope = {projectId:'upload-probe',environmentId:'probe',pluginInstanceId:'probe',path:'/srv'}; return {empty:await window.aiOps.v2.serverWorkspaceImportUpload(scope,[]),memory:await window.aiOps.v2.serverWorkspaceImportUpload(scope,[new File(['fixture'],'fixture.txt')]),forged:await window.aiOps.v2.serverWorkspaceImportUpload(scope,[{path:'/tmp/fixture.txt'}])}; })()");
     assert.equal(importContract.empty.error.code, 'INVALID_ARGUMENT');
     assert.equal(importContract.memory.error.code, 'UPLOAD_SOURCE_UNAVAILABLE');
@@ -876,7 +885,7 @@ async function main() {
       return {ok: overview?.ok === true, projectCount: Array.isArray(overview?.data) ? overview.data.length : -1,
         apiCount: Object.keys(window.aiOps.v2).length};
     })()`);
-    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 96});
+    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 97});
     assert.deepEqual(running.httpRequests, []);
     await selectThemePreference(running.cdp, 'system');
     await emulateSystemTheme(running.cdp, 'dark');
@@ -896,7 +905,7 @@ async function main() {
         availableWidth: compactSearch.availableWidth, nativeTextBox: compactSearch.nativeBox?.source ?? 'conservative-cancel-budget'},
     })}\n`);
     process.stdout.write(
-      `Packaged React UI smoke passed (96 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
+      `Packaged React UI smoke passed (97 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
     );
   } catch (error) {
     if (running) {

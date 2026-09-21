@@ -2,6 +2,7 @@
 
 ## 使用方法
 
+- Windows 目录树内的 Ctrl+V 主动读取系统原生文件列表，不依赖浏览器是否产生文件粘贴事件；没有文件或读取失败时显示明确提示。文本路径不会被当作文件上传。读取使用系统自带 Windows PowerShell 的固定 STA 命令，隐藏运行，最多五秒、最多二十项，不执行剪贴板文本。
 - 从访达或资源管理器复制本地文件，点击服务器目标文件夹后按 macOS 的 `⌘V` 或 Windows 的 `Ctrl+V`，自动打开上传确认框并列出源文件。macOS 原生「编辑 → 粘贴」使用相同入口；终端和路径输入框的文本粘贴保持原行为。
 - 本地文件可拖到文件夹行、普通文件行或文件树空白处。目标分别为该文件夹、文件所在目录、当前选定目录；目录下的空白状态行使用所属目录。拖入时显示准确目标，松开只打开确认，不立即传输，也不移动或删除本地文件。
 - 每批 1 至 20 个普通文件、单文件不超过 500 MiB，沿用现有校验、覆盖确认和传输队列。首版不支持整文件夹递归上传、本地符号链接、截图或无磁盘路径的虚拟附件；纯文本不会作为文件路径上传。检查和确认期间不接收下一批文件，先完成或取消当前清单。
@@ -18,6 +19,7 @@
 
 - 文件或文件夹右键支持复制名称、复制完整路径、查看实时属性、刷新所在目录；普通文件还可下载。键盘聚焦目录行后可按 Shift+F10 打开同一菜单。macOS 使用系统右键或触控板辅助点按。
 - 新建文件夹在选中目录内创建；右键普通文件时使用其所在目录。重命名仅支持同一父目录下的普通文件、文件夹，不支持根目录、符号链接、跨目录移动或覆盖已有目标。输入名称后先检查，再展示准确目标并确认，完成后刷新并定位。
+- 右键「删除…」仅支持单个普通文件或空文件夹。先读取服务器状态，再显示服务器身份、完整路径、类型、大小和修改时间；明确标识永久删除、无法撤销，默认焦点为「取消」。点击「永久删除」才执行，成功后刷新并定位父目录。非空目录（含隐藏文件）、根目录、符号链接、特殊文件及包含链接的父路径会被拒绝。
 - 属性展示类型、大小、修改时间、权限和实际路径；文件夹不递归统计大小，链接目标不可用时明确标识。
 - 上传发现同名目标时，展示本地与远端的大小、修改时间，可逐项选择「跳过、覆盖、保留两份」，或应用到本批次所有冲突。覆盖仍需勾选确认，跳过的文件不进入传输队列，全部跳过可直接完成。
 - 保留两份保留远端原文件，并预先显示新文件的完整路径，例如 `app (1).jar`、`backup (1).tar.gz`。查找最多 100 个编号，避开已存在目标及本批次其他文件名。上传时严格使用已确认的名称，遇到并发占用则失败，不自动换名或扩大覆盖范围。这不是「备份旧文件再用原名部署」。
@@ -40,10 +42,11 @@
 | --- | --- | --- |
 | `serverWorkspacePauseUpload` | 作用域、jobId | 请求暂停本窗口任务 |
 | `serverWorkspaceClearTransfers` | 作用域、可选 jobId | 移除结束记录；省略 ID 清理本作用域所有结束记录 |
+| `serverWorkspacePasteUpload` | 作用域、远端 path | Windows 原生文件剪贴板读取并建立上传清单；不接受本地路径或剪贴板文本 |
 | `serverWorkspaceImportUpload` | 作用域、远端 path，以及独立参数 `File[]` | 接收粘贴或拖入的本地文件，返回上传检查清单；不启动传输 |
 | `serverWorkspaceDownload` | 作用域、远端 path | 原生另存为并创建下载任务；取消选择返回 null |
 | `serverWorkspaceFileInfo` | 作用域、path | 读取实时元数据，不读取文件内容 |
-| `serverWorkspacePrepareFileAction` | 作用域、kind（mkdir/rename）、path、name | 校验源与目标，返回 operationId、准确目标和过期时间，不写入 |
+| `serverWorkspacePrepareFileAction` | 作用域、kind（mkdir/rename/delete）、path；mkdir/rename 需 name，delete 禁止 name | 返回 operationId 和过期时间；创建/改名返回准确目标，删除返回目标类型、大小、修改时间和实际路径，不写入 |
 | `serverWorkspaceConfirmFileAction` | 作用域、operationId | 单次消费本窗口确认，按已绑定参数执行 |
 | `serverWorkspaceCancelFileAction` | 作用域、operationId | 撤销待确认文件操作 |
 | `serverWorkspaceReviseUpload` | 作用域、reviewId、fileNames、可选 decisions | 修订当前批次；decisions 仅接受已选文件的 name 与 action（skip/overwrite/keep-both） |
@@ -52,14 +55,20 @@
 
 新增文件来源入口由 preload 的 `webUtils.getPathForFile` 解析真实磁盘 `File`，不向 Renderer 暴露可接收任意本地路径的 API。内存文件和伪造对象在桥接层拒绝；主进程再次检查路径、数量、普通文件类型、大小、窗口身份和连接绑定，再进入原有 `beginUploadReview`。目录目标及文件状态仍通过一次性确认绑定；此次变更扩展桌面文件接收边界，不扩展 MCP 权限。
 
-文件创建与重命名是新增的桌面人工写入边界：主进程绑定窗口、作用域、配置修订、连接代次、规范路径及源/目标状态，五分钟后过期；确认阶段重新检查，原生 SFTP 不覆盖重命名目标。取消、断连、配置变化、窗口关闭使凭证失效。审计记录开始、完成或失败，不记录文件内容。Renderer 不得提供覆盖开关、目标替换路径或私有前置条件。属性读取沿用有界读取与连接校验。远端其他进程在最终状态检查后的并发修改仍有竞态窗口。
+文件创建、重命名与单项删除是桌面人工写入边界：主进程绑定窗口、作用域、配置修订、连接代次、规范路径及源/目标状态，五分钟后过期；确认阶段重新检查，原生 SFTP 不覆盖重命名目标。取消、断连、配置变化、窗口关闭使凭证失效。审计记录开始、完成或失败，不记录文件内容。Renderer 不得提供覆盖开关、目标替换路径或私有前置条件。属性读取沿用有界读取与连接校验。远端其他进程在最终状态检查后的并发修改仍有竞态窗口。
 
-桌面 preload API 共 96 个，MCP 工具与原下载、上传协议保持不变。
+删除复用相同的一次性确认凭证，绑定原始完整路径、类型、大小、修改时间、权限和规范路径。预检与最终操作均检查路径不经链接，目录检查最多四批当前层级条目，遇到任何普通或隐藏条目立即拒绝；无法确认空目录时失败关闭。执行使用 SFTP `REMOVE` / `RMDIR`，不执行 Shell、不递归、不自动重试。目录在最终检查后新增内容时，服务器仍会拒绝 `RMDIR`。删除被拒绝、目标变化或连接中断后需要刷新、重新预检并确认。
+
+SFTP 的按路径删除没有“比较文件身份后原子删除”的通用接口：同类型、同大小、同修改时间及权限的替换无法仅凭属性识别，最终检查和服务器执行之间也仍有竞态窗口。当前实现不会宣称提供事务锁或防御服务器上其他进程的恶意并发替换。参考 [ssh2 SFTP 接口](https://github.com/mscdex/ssh2/blob/master/SFTP.md) 与 [SFTP RMDIR 协议定义](https://www.ietf.org/archive/id/draft-spaghetti-sshm-filexfer-00.html)。
+
+原生粘贴新增主进程读取本地文件剪贴板的桌面权限，读取前后校验窗口、作用域、配置修订及连接代次，与文件选择和拖入入口互斥。文件类型、数量、大小和最终写入确认继续复用原有校验。macOS 保留原生 ⌘V/菜单粘贴路径，不运行 Windows 命令。
+
+桌面 preload API 共 97 个，MCP 工具与原下载、上传协议保持不变。
 
 ## 验证
 
 ```powershell
-node --test test/server-workspace-actions.test.mjs test/server-upload-conflicts.test.mjs test/server-upload-import.test.mjs test/server-upload-reviews.test.mjs test/server-download-transfer.test.mjs test/server-upload-resume-runtime.test.mjs test/server-workspace-files.test.mjs test/renderer-bridge-contract.test.mjs
+node --test test/desktop-file-clipboard.test.mjs test/server-workspace-actions.test.mjs test/server-upload-conflicts.test.mjs test/server-upload-import.test.mjs test/server-upload-reviews.test.mjs test/server-download-transfer.test.mjs test/server-upload-resume-runtime.test.mjs test/server-workspace-files.test.mjs test/renderer-bridge-contract.test.mjs
 corepack pnpm run check
 corepack pnpm test
 corepack pnpm run test:ui:server-workspace

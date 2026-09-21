@@ -693,6 +693,49 @@ async function requireRemoteSnapshot(sftp, remotePath, expected) {
   return actual;
 }
 
+
+function workspaceDeletePath(value) {
+  if (typeof value !== 'string' || value === '/' || !value.startsWith('/') || value.length > 4096
+    || /[\u0000-\u001f\u007f\\]/u.test(value) || path.posix.normalize(value) !== value || value.endsWith('/')) {
+    throw new AppError('PATH_INVALID', '删除必须使用单个文件或文件夹的完整实际路径，不能删除根目录。');
+  }
+  return value;
+}
+
+async function requireEmptyWorkspaceDirectory(sftp, target) {
+  const handle = await sftpOpenDirectory(sftp, target);
+  try {
+    // 仅检查当前层级，发现任意条目（包括隐藏文件）立即拒绝；不递归遍历。
+    for (let page = 0; page < 4; page += 1) {
+      const entries = await sftpReadDirectory(sftp, handle);
+      if (!entries) return;
+      if (entries.some(entry => entry.filename !== '.' && entry.filename !== '..')) {
+        throw new AppError('DIRECTORY_NOT_EMPTY', '文件夹非空，不能删除。请先处理其中的文件。');
+      }
+    }
+    throw new AppError('DIRECTORY_CHECK_FAILED', '无法确认文件夹为空，已停止删除。');
+  } finally { await sftpCloseHandle(sftp, handle); }
+}
+
+async function inspectWorkspaceDeletePath(sftp, value, expected) {
+  const target = workspaceDeletePath(value);
+  const parentPath = path.posix.dirname(target);
+  const parent = await readRemoteSnapshot(sftp, parentPath);
+  if (!parent.exists || parent.type !== 'directory' || parent.canonicalPath !== parentPath) {
+    throw new AppError('WORKSPACE_PATH_CHANGED', '父目录包含链接或已经变化，请从实际目录重新操作。');
+  }
+  const current = await readRemoteSnapshot(sftp, target);
+  if (expected && (!snapshotMatches(current, expected) || current.canonicalPath !== expected.canonicalPath)) {
+    throw new AppError('REMOTE_CHANGED', '待删除目标在确认后发生变化，已停止删除，请刷新后重新确认。');
+  }
+  if (!current.exists) throw new AppError('SOURCE_NOT_FOUND', '待删除的文件或文件夹已不存在。');
+  if (!['file', 'directory'].includes(current.type) || current.canonicalPath !== target) {
+    throw new AppError('SOURCE_NOT_ALLOWED', '仅支持删除普通文件和空文件夹，不能删除链接或特殊文件。');
+  }
+  if (current.type === 'directory') await requireEmptyWorkspaceDirectory(sftp, target);
+  return current;
+}
+
 export class SshBroker {
   constructor(projectStore, {
     clientFactory = () => new Client(),
@@ -1206,6 +1249,7 @@ export class SshBroker {
     return this.withInternalSftp(projectId, async (sftp, session, lifecycle) => operation({
       generation: session.generation,
       statPath: (remotePath) => statRemotePathOnSftp(sftp, remotePath),
+      inspectDeletePath: (remotePath) => inspectWorkspaceDeletePath(sftp, remotePath),
       listDirectory: (remotePath) => listRemoteDirectoryOnSftp(sftp, remotePath),
       // 人工目录树直接使用 READDIR 属性，链接目标由后续批次查询。
       listDirectoryEntries: async (remotePath) => {
@@ -1401,6 +1445,7 @@ export class SshBroker {
   }
 
   async mutateWorkspacePathApproved(projectId, args, { signal, beforeCommit } = {}) {
+    if (args.kind === 'delete') return this.deleteWorkspacePathApproved(projectId, args, { signal, beforeCommit });
     const { kind, parentPath, canonicalParent, destinationPath, sourcePath, precondition } = args;
     if (!['mkdir', 'rename'].includes(kind) || path.posix.dirname(destinationPath) !== canonicalParent
       || (kind === 'rename' && (!sourcePath || path.posix.dirname(sourcePath) !== canonicalParent || !['file', 'directory'].includes(precondition.source?.type)))
@@ -1426,6 +1471,36 @@ export class SshBroker {
       else await new Promise((resolve, reject) => sftp.mkdir(destinationPath, { mode: 0o755 }, error => error ? reject(error) : resolve()));
       return { path: destinationPath };
     }, { signal });
+  }
+
+
+  async deleteWorkspacePathApproved(projectId, args, { signal, beforeCommit } = {}) {
+    const target = workspaceDeletePath(args.sourcePath);
+    const expected = args.precondition?.source;
+    if (args.parentPath !== path.posix.dirname(target) || args.canonicalParent !== args.parentPath
+      || !expected?.exists || expected.path !== target || expected.canonicalPath !== target
+      || !['file', 'directory'].includes(expected.type)) throw new AppError('INVALID_ARGUMENT', '删除确认参数无效。');
+    try {
+      return await this.withInternalSftp(projectId, async (sftp, _session, lifecycle) => {
+        await inspectWorkspaceDeletePath(sftp, target, expected);
+        await beforeCommit?.();
+        await inspectWorkspaceDeletePath(sftp, target, expected);
+        lifecycle.signal.throwIfAborted();
+        // RMDIR 由服务器保证目录非空时失败；REMOVE 只处理当前这个文件。
+        if (expected.type === 'directory') {
+          try { await sftpRmdir(sftp, target); }
+          catch (error) {
+            if (!lifecycle.signal.aborted && String(error.code) === '4') await requireEmptyWorkspaceDirectory(sftp, target);
+            throw error;
+          }
+        } else await sftpUnlinkStrict(sftp, target);
+        return { path: target };
+      }, { signal });
+    } catch (error) {
+      if (error.code === 'SOURCE_ACCESS_DENIED') throw new AppError('SOURCE_ACCESS_DENIED', '当前 SSH 用户没有完成删除所需的权限。');
+      if (error.code === 'TRANSFER_FAILED') throw new AppError('DELETE_FAILED', '删除未完成，请刷新目录确认目标状态后重试。');
+      throw error;
+    }
   }
 
   async moveRemotePathApproved(projectId, sourcePath, destinationPath, precondition) {

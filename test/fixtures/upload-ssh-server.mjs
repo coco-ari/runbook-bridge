@@ -15,8 +15,8 @@ export async function createUploadFixture(t, { writeDelayMs = 0, capacity = 0, a
   const files = new Map();
   const clients = new Set();
   const sockets = new Set();
-  const counters = { uploaded: 0, downloaded: 0, renames: 0, probes: 0, pendingWrites: 0, maxPendingWrites: 0, writes: [] };
-  const faults = { dropAfter: Infinity, dropRename: false, onWrite: null };
+  const counters = { uploaded: 0, downloaded: 0, renames: 0, removes: 0, rmdirs: 0, directoryReads: 0, directoryCloses: 0, probes: 0, pendingWrites: 0, maxPendingWrites: 0, writes: [] };
+  const faults = { dropAfter: Infinity, dropRename: false, onWrite: null, beforeRemove: null, beforeRmdir: null, deleteDenied: new Set(), realPaths: new Map(), repeatDirectoryDots: false };
   const modes = new Map();
   const server = new ssh2.Server({ hostKeys: [key] }, client => {
     clients.add(client);
@@ -40,7 +40,7 @@ export async function createUploadFixture(t, { writeDelayMs = 0, capacity = 0, a
         const status = (id, code) => { if (!dropped) sftp.status(id, code); };
         const stat = (id, name) => files.has(name) ? sftp.attrs(id, attrs(name)) : status(id, 2);
         sftp.on('LSTAT', stat); sftp.on('STAT', stat);
-        sftp.on('REALPATH', (id, name) => sftp.name(id, [{ filename: name, longname: name, attrs: {} }]));
+        sftp.on('REALPATH', (id, name) => sftp.name(id, [{ filename: faults.realPaths.get(name) ?? name, longname: name, attrs: {} }]));
         sftp.on('OPEN', (id, name, flags, attributes) => {
           if (dropped) return;
           if ((flags & 32) && files.has(name)) return status(id, 4);
@@ -74,8 +74,35 @@ export async function createUploadFixture(t, { writeDelayMs = 0, capacity = 0, a
           if (offset >= data.length) return status(id, 1);
           const chunk = data.subarray(offset, offset + length); counters.downloaded += chunk.length; sftp.data(id, chunk);
         });
-        sftp.on('CLOSE', (id, handle) => { handles.delete(handle.toString()); status(id, 0); });
-        sftp.on('REMOVE', (id, name) => { files.delete(name); status(id, 0); });
+        sftp.on('CLOSE', (id, handle) => { if (handles.get(handle.toString())?.directory) counters.directoryCloses += 1; handles.delete(handle.toString()); status(id, 0); });
+        sftp.on('OPENDIR', (id, name) => {
+          if (!files.has(name)) return status(id, 2);
+          if ((modes.get(name) & 0o170000) !== 0o40000) return status(id, 4);
+          const handle = Buffer.from(String(++sequence)); handles.set(handle.toString(), { directory: name, read: false }); sftp.handle(id, handle);
+        });
+        sftp.on('READDIR', (id, handle) => {
+          counters.directoryReads += 1;
+          const current = handles.get(handle.toString());
+          if (current.read && !faults.repeatDirectoryDots) return status(id, 1);
+          current.read = true;
+          const names = [...files.keys()].filter(name => name !== current.directory && path.posix.dirname(name) === current.directory);
+          sftp.name(id, ['.', '..'].map(filename => ({ filename, longname: filename, attrs: {} }))
+            .concat(names.map(name => ({ filename: path.posix.basename(name), longname: name, attrs: attrs(name) }))));
+        });
+        sftp.on('REMOVE', (id, name) => {
+          counters.removes += 1; faults.beforeRemove?.(name);
+          if (faults.deleteDenied.has(name)) return status(id, 3);
+          if (!files.has(name)) return status(id, 2);
+          if ((modes.get(name) & 0o170000) === 0o40000) return status(id, 4);
+          files.delete(name); modes.delete(name); status(id, 0);
+        });
+        sftp.on('RMDIR', (id, name) => {
+          counters.rmdirs += 1; faults.beforeRmdir?.(name);
+          if (faults.deleteDenied.has(name)) return status(id, 3);
+          if (!files.has(name)) return status(id, 2);
+          if ((modes.get(name) & 0o170000) !== 0o40000 || [...files.keys()].some(value => value.startsWith(name + '/'))) return status(id, 4);
+          files.delete(name); modes.delete(name); status(id, 0);
+        });
         sftp.on('MKDIR', (id, name, attributes) => {
           if (files.has(name)) return status(id, 4);
           files.set(name, Buffer.alloc(0)); modes.set(name, (attributes.mode ?? 0o755) | 0o40000); status(id, 0);

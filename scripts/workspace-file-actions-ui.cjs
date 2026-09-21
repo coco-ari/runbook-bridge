@@ -20,6 +20,7 @@ module.exports = async function fileActionsUi({evaluate,click,clickText,until,wa
     await wait(300);
     await evaluate(has(row(value))+".scrollIntoView({block:'nearest'})");
     await wait(180);
+    await until("(() => { const element="+has(row(value))+"; if(!element)return false; const r=element.getBoundingClientRect(); return document.elementFromPoint(Math.round(r.left+80),Math.round(r.top+r.height/2))?.closest('[role=treeitem]')?.title==="+JSON.stringify(value)+"; })()", '等待目标行可交互');
     const point = await evaluate("(() => { const element=document.querySelector("+JSON.stringify(row(value))+"); if(!element)return null; const r=element.getBoundingClientRect(); return {x:Math.round(r.left+80),y:Math.round(r.top+r.height/2)}; })()");
     assert.ok(point,'右键目标存在');
     assert.equal(await evaluate('document.elementFromPoint('+point.x+','+point.y+')?.closest("[role=treeitem]")?.title'),value,'右键坐标准确命中当前目录行');
@@ -32,7 +33,7 @@ module.exports = async function fileActionsUi({evaluate,click,clickText,until,wa
     assert.ok(await evaluate("(() => { const item=[...document.querySelectorAll('[role=menuitem]')].find(item=>item.textContent.trim()==="+JSON.stringify(label)+"); if(!item||item.getAttribute('aria-disabled')==='true') return false; item.click(); return true; })()"), '菜单操作：'+label);
     await wait(100);
   };
-  const ready = async () => until("!document.querySelector('[data-testid=upload-review-progress]') && !document.querySelector('.server-upload-review-error')", '冲突预检完成');
+  const ready = async () => until("document.querySelector('[aria-label=\"批量处理同名文件\"]')?.disabled === false && !document.querySelector('[data-testid=upload-review-progress]') && !document.querySelector('.server-upload-review-error')", '冲突预检完成');
   try {
     await enterPath('/srv');
     await until(has(row('/srv/example.conf')), '测试目录');
@@ -83,7 +84,7 @@ module.exports = async function fileActionsUi({evaluate,click,clickText,until,wa
     assert.equal(await evaluate("document.querySelectorAll('[data-testid=upload-resolved-path]').length"),3,'批量保留两份逐项预览');
     await setValue('[aria-label="处理同名文件 conflict-a.txt"]','skip','select'); await ready();
     await setValue('[aria-label="处理同名文件 conflict-b.txt"]','overwrite','select'); await ready();
-    assert.ok(await evaluate("document.querySelector('[role=dialog]').textContent.includes('512 B')"),'源目标元数据展示');
+    assert.ok(await evaluate("document.querySelector('.server-upload-dialog[data-state=open]').textContent.includes('512 B')"),'源目标元数据展示');
     assert.equal(confirmCount(),before,'改变冲突策略不提前开始上传');
     assert.ok(uploadRevisions.at(-1).decisions.some(item=>item.name==='conflict-b.txt'&&item.action==='overwrite'));
     await snapshot('upload-conflict-policies.png');
@@ -98,5 +99,41 @@ module.exports = async function fileActionsUi({evaluate,click,clickText,until,wa
     await setValue('[aria-label="批量处理同名文件"]','skip','select'); await ready();
     await clickText('完成（全部跳过）');
     await until("!document.querySelector('[role=dialog]')",'全部跳过正常关闭');
+
+    const deleteDialog = '[data-testid="file-delete-dialog"][data-state="open"]';
+    const deleteReady = () => until("document.querySelector("+JSON.stringify(deleteDialog)+")?.textContent.includes('普通文件')", '删除预检完成');
+    await enterPath('/srv');
+    await menu('/srv/example-backup.conf'); await choose('删除…'); await deleteReady();
+    assert.equal(await evaluate("document.activeElement?.textContent.trim()"),'取消','删除弹窗默认聚焦取消');
+    assert.ok(await evaluate(has(deleteDialog)+".textContent.includes('工作区验证服务器')"),'展示当前服务器');
+    assert.equal(await evaluate("document.querySelector('[data-testid=file-delete-path]').textContent"),'/srv/example-backup.conf','显示准确删除路径');
+    assert.ok(await evaluate(has(deleteDialog)+".textContent.includes('无法撤销')"),'明确永久删除');
+    assert.ok(await evaluate(has(row('/srv/example-backup.conf'))),'预检不删除文件');
+    const actionsBeforeCancel=fileActionCalls.length;
+    win.webContents.focus();
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});
+    win.webContents.sendInputEvent({type:'char',keyCode:'\r'});
+    win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});
+    await until('!'+has(deleteDialog),'默认回车取消');
+    assert.equal(fileActionCalls.length,actionsBeforeCancel,'默认回车不提交删除');
+    assert.ok(await evaluate(has(row('/srv/example-backup.conf'))),'取消保留文件');
+
+    await menu('/srv/example-backup.conf'); await choose('删除…'); await deleteReady();
+    await snapshot('file-delete-confirm.png');
+    await clickText('永久删除');
+    await until('!'+has(row('/srv/example-backup.conf')),'删除文件后刷新');
+    assert.equal(fileActionCalls.at(-1).kind,'delete');
+    assert.ok(fileActionCalls.at(-1).operationId,'执行使用确认凭证');
+
+    await menu('/srv/菜单改名目录'); await choose('删除…');
+    await until(has(deleteDialog)+".textContent.includes('空文件夹')",'展示空目录预检结果');
+    await clickText('永久删除');
+    await until('!'+has(row('/srv/菜单改名目录')),'删除空目录后刷新');
+
+    await menu('/srv/config'); await choose('删除…');
+    await until(has(deleteDialog)+".textContent.includes('文件夹非空')",'非空目录拒绝删除');
+    assert.equal(await evaluate("Array.from(document.querySelectorAll("+JSON.stringify(deleteDialog+" button")+")).some(item=>item.textContent.trim()==='永久删除')"),false,'预检失败没有删除按钮');
+    await clickText('取消');
+    assert.ok(await evaluate(has(row('/srv/config'))),'非空目录保留');
   } finally { clipboard.write(saved); }
 };

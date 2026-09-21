@@ -472,20 +472,25 @@ export interface ServerFileInfo extends ServerDirectoryEntry {
   readonly observedAt: number
 }
 
-export interface ServerFileActionPreparation {
+export type ServerFileActionPreparation = {
   readonly operationId: string
-  readonly kind: "mkdir" | "rename"
   readonly path: string
+  readonly expiresAt: number
+} & ({
+  readonly kind: "mkdir" | "rename"
   readonly destinationPath: string
   readonly canonicalDestination: string
-  readonly expiresAt: number
-}
-export interface ServerFileActionResult {
-  readonly kind: "mkdir" | "rename"
+} | {
+  readonly kind: "delete"
+  readonly canonicalPath: string
+  readonly type: "file" | "directory"
+  readonly size: number
+  readonly mtime: number
+})
+export type ServerFileActionResult = {
   readonly path: string
-  readonly destinationPath: string
   readonly parentPath: string
-}
+} & ({ readonly kind: "mkdir" | "rename"; readonly destinationPath: string } | { readonly kind: "delete" })
 export type ServerUploadConflictAction = "skip" | "overwrite" | "keep-both"
 export interface ServerUploadDecision { readonly name: string; readonly action: ServerUploadConflictAction }
 export interface ServerUploadReviewFile {
@@ -705,7 +710,7 @@ export interface AiOpsV2Api {
   serverTerminalClose(payload: PluginScope & { sessionId: string }): Promise<IpcResult<OpaqueData>>
   serverWorkspaceListDirectory(payload: PluginScope & { path: string; cursor?: string | null; snapshotId?: string; deferLinks?: boolean; resolveLinks?: boolean }): Promise<IpcResult<ServerDirectoryPage>>
   serverWorkspaceFileInfo(payload: PluginScope & { path: string }): Promise<IpcResult<ServerFileInfo>>
-  serverWorkspacePrepareFileAction(payload: PluginScope & { kind: "mkdir" | "rename"; path: string; name: string }): Promise<IpcResult<ServerFileActionPreparation>>
+  serverWorkspacePrepareFileAction(payload: PluginScope & ({ kind: "mkdir" | "rename"; path: string; name: string } | { kind: "delete"; path: string })): Promise<IpcResult<ServerFileActionPreparation>>
   serverWorkspaceConfirmFileAction(payload: PluginScope & { operationId: string }): Promise<IpcResult<ServerFileActionResult>>
   serverWorkspaceCancelFileAction(payload: PluginScope & { operationId: string }): Promise<IpcResult<OpaqueData>>
   serverWorkspaceReadFile(payload: PluginScope & { path: string }): Promise<IpcResult<ServerFilePreview>>
@@ -713,6 +718,7 @@ export interface AiOpsV2Api {
   serverWorkspaceClearTransfers(payload: PluginScope & { jobId?: string }): Promise<IpcResult<{ removedIds: readonly string[] }>>
   serverWorkspaceDownload(payload: PluginScope & { path: string }): Promise<IpcResult<ServerUploadJob | null>>
   serverWorkspacePrepareUploadResume(payload: PluginScope & { jobId: string }): Promise<IpcResult<ServerUploadReview>>
+  serverWorkspacePasteUpload(payload: PluginScope & { path: string }): Promise<IpcResult<ServerUploadReview>>
   serverWorkspacePickUpload(payload: PluginScope & { path: string }): Promise<IpcResult<ServerUploadReview | null>>
   serverWorkspaceImportUpload(payload: PluginScope & { path: string }, files: readonly File[]): Promise<IpcResult<ServerUploadReview>>
   serverWorkspaceReviseUpload(payload: PluginScope & { reviewId: string; fileNames: readonly string[]; decisions?: readonly ServerUploadDecision[] }): Promise<IpcResult<ServerUploadReview | null>>
@@ -814,6 +820,7 @@ export const AI_OPS_V2_API_NAMES = [
   "serverWorkspacePrepareUploadResume",
   "serverWorkspacePickUpload",
   "serverWorkspaceImportUpload",
+  "serverWorkspacePasteUpload",
   "serverWorkspaceReviseUpload",
   "serverWorkspaceReadUploadReview",
   "serverWorkspaceCancelUploadReview",

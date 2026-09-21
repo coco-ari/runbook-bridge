@@ -45,9 +45,11 @@ export class ServerWorkspaceActions {
   }
 
   async prepare(ownerId, payload) {
-    if (!['mkdir', 'rename'].includes(payload.kind)) throw new AppError('INVALID_ARGUMENT', '文件操作类型无效。');
-    const name = workspaceEntryName(payload.name);
+    if (!['mkdir', 'rename', 'delete'].includes(payload.kind)) throw new AppError('INVALID_ARGUMENT', '文件操作类型无效。');
+    if (payload.kind === 'delete' && Object.hasOwn(payload, 'name')) throw new AppError('INVALID_ARGUMENT', '删除操作不能指定新名称。');
+    const name = payload.kind === 'delete' ? undefined : workspaceEntryName(payload.name);
     const selectedPath = this.files.normalizeUploadPath(payload.path);
+    if (payload.kind === 'delete' && (selectedPath === '/' || selectedPath !== payload.path || selectedPath.endsWith('/') || /[\u0000-\u001f\u007f]/u.test(selectedPath))) throw new AppError('PATH_INVALID', '删除必须使用完整实际路径，不能删除根目录。');
     if (payload.kind === 'rename' && selectedPath === '/') throw new AppError('PATH_INVALID', '不能重命名根目录。');
     const binding = await this.files.requirePlugin(ownerId, payload);
     if ([...this.executions].some(item => item.ownerId === ownerId)) throw new AppError('WORKSPACE_BUSY', '正在执行文件操作，请稍候。');
@@ -56,7 +58,16 @@ export class ServerWorkspaceActions {
       kind: payload.kind, selectedPath, name, expiresAt: this.files.now() + 5 * 60 * 1000 };
     this.records.set(item.operationId, item);
     try {
-      await this.files.withPathReader(binding.plugin, async stat => {
+      if (item.kind === 'delete') {
+        await this.files.serverRuntime.withRemoteReadSession(binding.plugin, async reader => {
+          const source = await reader.inspectDeletePath(selectedPath);
+          this.active(item);
+          item.parentPath = path.posix.dirname(selectedPath);
+          item.source = source;
+          item.args = { kind: 'delete', parentPath: item.parentPath, canonicalParent: item.parentPath,
+            sourcePath: selectedPath, precondition: { source } };
+        }, { signal: item.controller.signal });
+      } else await this.files.withPathReader(binding.plugin, async stat => {
         const parentPath = item.kind === 'mkdir' ? selectedPath : path.posix.dirname(selectedPath);
         const parent = await this.files.resolvePath(binding.plugin, parentPath, 'directory', stat);
         this.active(item);
@@ -81,6 +92,8 @@ export class ServerWorkspaceActions {
       }, { signal: item.controller.signal });
       await this.files.requirePlugin(ownerId, payload, binding);
       this.active(item);
+      if (item.kind === 'delete') return { operationId: item.operationId, kind: item.kind, path: selectedPath,
+        canonicalPath: item.source.canonicalPath, type: item.source.type, size: item.source.size, mtime: item.source.mtime, expiresAt: item.expiresAt };
       return { operationId: item.operationId, kind: item.kind, path: selectedPath, destinationPath: item.logicalDestination,
         canonicalDestination: item.destinationPath, expiresAt: item.expiresAt };
     } catch (error) { this.records.delete(item.operationId); item.controller.abort(error); throw error; }
@@ -107,7 +120,7 @@ export class ServerWorkspaceActions {
     this.executions.add(item);
     const audit = result => this.files.workspaceStore.appendAudit(item.scope.projectId, {
       ...item.scope, pluginType: 'server', source: 'desktop-human', type: 'desktop-file-action', result,
-      operation: { kind: item.kind, path: item.selectedPath, destinationPath: item.logicalDestination },
+      operation: { kind: item.kind, path: item.selectedPath, ...(item.kind === 'delete' ? { type: item.source.type } : { destinationPath: item.logicalDestination }) },
     });
     try {
       const binding = await this.files.requirePlugin(ownerId, payload, item);
@@ -119,7 +132,7 @@ export class ServerWorkspaceActions {
       });
       this.files.directoryCache.clear(value => matchesScope(item, value.binding.scope));
       await audit('completed');
-      return { kind: item.kind, path: item.selectedPath, destinationPath: item.logicalDestination, parentPath: item.parentPath };
+      return { kind: item.kind, path: item.selectedPath, ...(item.kind === 'delete' ? {} : { destinationPath: item.logicalDestination }), parentPath: item.parentPath };
     } catch (error) {
       await audit('error').catch(() => {});
       throw error;
