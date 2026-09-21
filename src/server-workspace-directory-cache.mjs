@@ -5,6 +5,12 @@ import { AppError } from './errors.mjs';
 const PAGE_SIZE = 200;
 const MAX_DIRECTORIES = 32;
 const MAX_ENTRIES = 20_000;
+const entryNames = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
+
+function compareSnapshotEntries(left, right) {
+  const directoryOrder = Number(right.type === 'directory') - Number(left.type === 'directory');
+  return directoryOrder || entryNames.compare(left.name, right.name) || (left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+}
 const expired = () => new AppError('WORKSPACE_DIRECTORY_EXPIRED', '目录缓存已更新，请重新读取。');
 const sameBinding = (left, right) => left.revision === right.revision && left.generation === right.generation && left.epoch === right.epoch
   && ['projectId', 'environmentId', 'pluginInstanceId'].every((key) => left.scope[key] === right.scope[key]);
@@ -103,8 +109,9 @@ export class ServerWorkspaceDirectoryCache {
           await this.validatePath(item, plugin, reader);
           await this.files.requirePlugin(ownerId, payload, binding);
           this.assertCurrent(item);
+          // 分页前固定普通目录优先的快照顺序；链接补齐后不重排，避免偏移游标漏项或重复。
           item.entries = result.entries.filter((entry) => entry.name && entry.name !== '.' && entry.name !== '..' && !/[\/\\\0]/u.test(entry.name))
-            .slice(0, 10_000).sort((left, right) => left.name.localeCompare(right.name))
+            .slice(0, 10_000).sort(compareSnapshotEntries)
             .map((entry) => ({ ...entry, path: path.posix.join(item.path, entry.name) }));
           item.truncated = result.truncated;
           this.trim(item);

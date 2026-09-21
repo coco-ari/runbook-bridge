@@ -343,6 +343,10 @@ export class ServerPluginRuntime extends EventEmitter {
     return this.broker.writeRemoteFileApproved(this.key(plugin), remotePath, content, precondition);
   }
 
+  mutateWorkspacePath(plugin, args, options) {
+    return this.broker.mutateWorkspacePathApproved(this.key(plugin), args, options);
+  }
+
   moveRemotePath(plugin, sourcePath, destinationPath, precondition) {
     return this.broker.moveRemotePathApproved(this.key(plugin), sourcePath, destinationPath, precondition);
   }

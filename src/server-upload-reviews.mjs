@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { AppError, toPublicError } from './errors.mjs';
+import { planUploadFile, uploadDecisions } from './server-upload-conflicts.mjs';
 
 const SCOPE_FIELDS = ['projectId', 'environmentId', 'pluginInstanceId'];
 const CHECK_TIMEOUT = 10 * 60 * 1000;
@@ -50,7 +51,7 @@ export class ServerUploadReviews {
     item.preparationId = null;
   }
 
-  async start(ownerId, payload, paths, previous = null) {
+  async start(ownerId, payload, paths, previous = null, decisions = {}) {
     if (!Array.isArray(paths) || !paths.length || paths.length > 20) throw new AppError('INVALID_ARGUMENT', '每次请选择 1 至 20 个普通文件。');
     const binding = await this.files.requirePlugin(ownerId, payload, previous);
     const sourcePath = this.files.normalizeUploadPath(payload.path);
@@ -65,7 +66,7 @@ export class ServerUploadReviews {
     const item = {
       ...binding, ownerId, reviewId: crypto.randomUUID(), sourcePath, path: previous?.path ?? sourcePath,
       expectedPath: previous?.canonicalPath ?? null, controller: new AbortController(), status: 'checking',
-      paths: [...paths], publicFiles: [], progress: { phase: 'remote', completedFiles: 0, totalFiles: paths.length, hashedBytes: 0, totalBytes: 0 },
+      paths: [...paths], decisions, publicFiles: [], progress: { phase: 'remote', completedFiles: 0, totalFiles: paths.length, hashedBytes: 0, totalBytes: 0 },
     };
     this.records.set(item.reviewId, item);
     item.timer = setTimeout(() => this.fail(item, new AppError('UPLOAD_PREPARATION_TIMEOUT', '文件检查超过 10 分钟，请重试或减少文件数量。')), CHECK_TIMEOUT);
@@ -76,7 +77,7 @@ export class ServerUploadReviews {
         const stat = await fs.lstat(localPath).catch(() => { throw new AppError('PATH_INVALID', '本地上传文件不存在。'); });
         if (!stat.isFile() || stat.isSymbolicLink()) throw new AppError('PATH_INVALID', '只能上传本地普通文件。');
         if (stat.size > 500 * 1024 * 1024) throw new AppError('FILE_TOO_LARGE', '上传文件不能超过 500 MiB。');
-        return { name: path.basename(localPath), localPath, bytes: stat.size, remotePath: path.posix.join(item.path, path.basename(localPath)), exists: null };
+        return { name: path.basename(localPath), localPath, bytes: stat.size, localMtimeMs: stat.mtimeMs, remotePath: path.posix.join(item.path, path.basename(localPath)), exists: null };
       }));
       item.progress.totalBytes = item.publicFiles.reduce((sum, file) => sum + file.bytes, 0);
       await this.files.requirePlugin(ownerId, payload, binding);
@@ -119,6 +120,8 @@ export class ServerUploadReviews {
     try {
       this.active(item);
       const snapshots = new Map();
+      const plans = new Map();
+      const reserved = new Set(item.publicFiles.map(file => file.name));
       const binding = await this.files.requirePlugin(item.ownerId, item.scope, item);
       await this.files.withPathReader(binding.plugin, async stat => {
         this.active(item);
@@ -127,11 +130,12 @@ export class ServerUploadReviews {
         item.path = item.canonicalPath = resolved.canonicalPath;
         for (const file of item.publicFiles) {
           this.active(item);
-          file.remotePath = path.posix.join(item.path, file.name);
-          const snapshot = await this.files.serverOperations.remoteSnapshot(binding.plugin, file.remotePath, stat);
-          if (snapshot.exists && snapshot.type !== 'file') throw new AppError('PATH_INVALID', '目标同名路径不是普通文件，不能覆盖。');
-          snapshots.set(file.remotePath, snapshot);
-          file.exists = snapshot.exists;
+          const plan = await planUploadFile(file, {
+            action: Object.hasOwn(item.decisions, file.name) ? item.decisions[file.name] : undefined, directory: item.path, reserved,
+            snapshot: target => this.files.serverOperations.remoteSnapshot(binding.plugin, target, stat),
+          });
+          plans.set(file.name, plan);
+          snapshots.set(plan.remotePath, plan.target);
           item.progress.completedFiles += 1;
         }
       }, { signal: item.controller.signal });
@@ -139,12 +143,12 @@ export class ServerUploadReviews {
       item.progress.phase = 'hashing';
       item.progress.completedFiles = 0;
       prepared = await this.files.prepareUpload(item.ownerId, { ...item.scope, path: item.sourcePath }, item.paths, null, {
-        binding: item, signal: item.controller.signal, directory: item.path, snapshots,
+        binding: item, signal: item.controller.signal, directory: item.path, snapshots, plans,
         ensureActive: () => this.active(item),
         onProgress: progress => Object.assign(item.progress, progress),
       });
       this.active(item);
-      Object.assign(item, { preparationId: prepared.preparationId, expiresAt: prepared.expiresAt, publicFiles: prepared.files, status: 'ready' });
+      Object.assign(item, { preparationId: prepared.preparationId, expiresAt: prepared.expiresAt, publicFiles: item.publicFiles.map(file => prepared.files.find(next => next.name === file.name) ?? file), status: 'ready' });
       item.progress.phase = 'ready';
       this.expireReady(item);
     } catch (error) {
@@ -170,8 +174,9 @@ export class ServerUploadReviews {
     if (item.status === 'checking') throw new AppError('WORKSPACE_BUSY', '正在检查文件，请稍候或取消。');
     const names = payload.fileNames;
     if (!Array.isArray(names) || names.length > 20 || new Set(names).size !== names.length || names.some(name => !item.publicFiles.some(file => file.name === name))) throw new AppError('INVALID_ARGUMENT', '只能保留本次已经选择的文件。');
+    const decisions = uploadDecisions(payload.decisions, names, item.decisions);
     if (!names.length) { this.stop(item); return null; }
-    if (item.status === 'ready' && names.length < item.publicFiles.length) {
+    if (payload.decisions === undefined && item.status === 'ready' && names.length < item.publicFiles.length) {
       await this.files.requirePlugin(ownerId, payload, item);
       if (this.records.get(item.reviewId) !== item) throw new AppError('UPLOAD_CONFIRMATION_INVALID', '文件选择已变化，请使用最新清单。');
       if (item.status === 'ready' && item.expiresAt > this.files.now()) {
@@ -180,7 +185,7 @@ export class ServerUploadReviews {
         return this.retainReady(item, names, prepared);
       }
     }
-    return this.start(ownerId, { ...item.scope, path: item.sourcePath }, names.map(name => item.publicFiles.find(file => file.name === name).localPath), item);
+    return this.start(ownerId, { ...item.scope, path: item.sourcePath }, names.map(name => item.publicFiles.find(file => file.name === name).localPath), item, decisions);
   }
 
   cancel(ownerId, payload) { this.stop(this.get(ownerId, payload)); return {}; }

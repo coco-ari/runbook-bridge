@@ -457,7 +457,7 @@ function cachedHarness() {
           calls.stats.push(target);
           if (target === '/srv/example' || target === canonical) return { type: 'directory', canonicalPath: canonical };
           calls.active += 1; calls.peak = Math.max(calls.peak, calls.active);
-          try { await beforeStat(target); return { type: 'file', canonicalPath: target }; } finally { calls.active -= 1; }
+          try { return await beforeStat(target) ?? { type: 'file', canonicalPath: target }; } finally { calls.active -= 1; }
         },
       });
     } finally { signal.removeEventListener('abort', aborted); }
@@ -465,6 +465,48 @@ function cachedHarness() {
   const input = { ...scope, path: '/srv/example', deferLinks: true };
   return { ...h, calls, input, setEntries: (value) => { entries = value; }, setStat: (value) => { beforeStat = value; }, setScan: (value) => { beforeScan = value; }, setCanonical: (value) => { canonical = value; } };
 }
+
+test('目录快照在分页前将文件夹置顶并按名称自然排序，跨页没有漏项或重复', async (t) => {
+  const h = cachedHarness(); t.after(() => h.files.dispose());
+  const directories = Array.from({ length: 205 }, (_, index) => ({ name: 'z-folder' + (205 - index), type: 'directory' }));
+  const files = Array.from({ length: 410 }, (_, index) => ({ name: 'a-file' + (410 - index), type: 'file' }));
+  h.setEntries([...files, ...directories]);
+  let page = await h.files.listDirectory(owner, h.input);
+  assert.ok(page.entries.every(entry => entry.type === 'directory'), '首屏不能因文件名称靠前而遗漏文件夹');
+  const entries = [...page.entries];
+  while (page.nextCursor) {
+    page = await h.files.listDirectory(owner, { ...h.input, snapshotId: page.snapshotId, cursor: page.nextCursor });
+    entries.push(...page.entries);
+  }
+  assert.deepEqual(entries.map(entry => entry.name), [
+    ...Array.from({ length: 205 }, (_, index) => 'z-folder' + (index + 1)),
+    ...Array.from({ length: 410 }, (_, index) => 'a-file' + (index + 1)),
+  ]);
+  assert.equal(new Set(entries.map(entry => entry.path)).size, 615);
+  assert.equal(h.calls.scans, 1, '继续分页不重复扫描目录');
+  assert.ok(h.calls.stats.every(target => target === h.input.path), '普通条目排序不增加逐项属性查询');
+});
+
+test('跨页链接解析为目录后保留快照顺序和原游标，展示分组不影响分页', async (t) => {
+  const h = cachedHarness(); t.after(() => h.files.dispose());
+  h.setEntries([
+    { name: 'folder', type: 'directory' },
+    ...Array.from({ length: 205 }, (_, index) => ({ name: 'a-file' + index, type: 'file' })),
+    { name: 'z-link', type: 'symlink' },
+  ]);
+  const first = await h.files.listDirectory(owner, h.input);
+  const input = { ...h.input, snapshotId: first.snapshotId, cursor: first.nextCursor };
+  const second = await h.files.listDirectory(owner, input);
+  assert.equal(second.metadataPending, true);
+  h.setStat(async target => ({ type: 'directory', canonicalPath: target }));
+  const resolved = await h.files.listDirectory(owner, { ...input, resolveLinks: true });
+  assert.equal(resolved.entries.at(-1).linkTargetType, 'directory');
+  assert.deepEqual(resolved.entries.map(entry => entry.path), second.entries.map(entry => entry.path));
+  assert.equal(resolved.nextCursor, second.nextCursor);
+  const firstAgain = await h.files.listDirectory(owner, { ...h.input, snapshotId: first.snapshotId });
+  assert.deepEqual(firstAgain.entries, first.entries, '后台解析不能把第二页的目录链接移入第一页');
+  assert.equal(h.calls.scans, 1);
+});
 
 test('目录首屏不等待链接查询，分页复用一次扫描且后台链接并发有界', async (t) => {
   const h = cachedHarness(); t.after(() => h.files.dispose());

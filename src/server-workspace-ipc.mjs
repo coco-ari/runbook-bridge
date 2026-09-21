@@ -3,6 +3,10 @@ import path from 'node:path';
 
 const SCOPE_KEYS = ['projectId', 'environmentId', 'pluginInstanceId'];
 const CALLS = [
+  ['server-workspace-file-info', 'serverWorkspaceFiles', 'fileInfo', ['path']],
+  ['server-workspace-prepare-file-action', 'serverWorkspaceFiles', 'prepareFileAction', ['kind', 'path', 'name']],
+  ['server-workspace-confirm-file-action', 'serverWorkspaceFiles', 'confirmFileAction', ['operationId']],
+  ['server-workspace-cancel-file-action', 'serverWorkspaceFiles', 'cancelFileAction', ['operationId']],
   ['server-docker-read', 'serverDocker', 'read', ['kind', 'requestId', 'containerId', 'cursor', 'limit', 'lines', 'maxBytes', 'since', 'until']],
   ['server-docker-cancel', 'serverDocker', 'cancel', ['requestId']],
   ['server-workspace-metrics', 'serverWorkspaceManager', 'readMetrics', ['kind']],
@@ -18,7 +22,7 @@ const CALLS = [
   ['server-terminal-close', 'serverWorkspaceManager', 'closeTerminal', ['sessionId']],
   ['server-workspace-list-directory', 'serverWorkspaceFiles', 'listDirectory', ['path', 'cursor', 'snapshotId', 'deferLinks', 'resolveLinks']],
   ['server-workspace-read-file', 'serverWorkspaceFiles', 'readFile', ['path']],
-  ['server-workspace-revise-upload', 'serverWorkspaceFiles', 'reviseUploadReview', ['reviewId', 'fileNames']],
+  ['server-workspace-revise-upload', 'serverWorkspaceFiles', 'reviseUploadReview', ['reviewId', 'fileNames', 'decisions']],
   ['server-workspace-read-upload-review', 'serverWorkspaceFiles', 'readUploadReview', ['reviewId']],
   ['server-workspace-cancel-upload-review', 'serverWorkspaceFiles', 'cancelUploadReview', ['reviewId']],
   ['server-workspace-confirm-upload', 'serverWorkspaceFiles', 'confirmUpload', ['preparationId', 'overwrite']],

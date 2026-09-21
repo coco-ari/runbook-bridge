@@ -20,6 +20,7 @@ import { ServerConnectionNotice } from "./ServerConnectionNotice"
 import { terminalConnection } from "./terminal-recovery"
 import { RuntimeHostKeyDialog } from "@/features/connections/RuntimeHostKeyDialog"
 import { ServerFilePreviews } from "./ServerFilePreviews"
+import type { ServerUploadDecision } from "@/bridge/ai-ops-v2"
 import { formatTransferBytes, formatTransferEta, parentRemotePath, serverEntryType, serverWorkspaceKey, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
 import "./server-workspace.css"
 import "./docker-workspace.css"
@@ -239,13 +240,13 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
     finally { uploadPickerRef.current = false; if (mountedRef.current) setUploadPreparing(false) }
   }, [api, connected, path, scope])
 
-  const reviseUpload = async (names: readonly string[]) => {
+  const reviseUpload = async (names: readonly string[], decisions?: readonly ServerUploadDecision[]) => {
     if (!preparation || uploadActionRef.current) return false
     uploadActionRef.current = true
     const version = ++uploadSelectionVersion.current
     setUploadRevising(names.length < preparation.files.length ? "removing" : "checking"); setUploadNeedsReview(true); setOverwrite(false); setUploadError("")
     try {
-      const result = unwrapWorkspaceResult(await api.serverWorkspaceReviseUpload({ ...scope, reviewId: preparation.reviewId, fileNames: names }))
+      const result = unwrapWorkspaceResult(await api.serverWorkspaceReviseUpload({ ...scope, reviewId: preparation.reviewId, fileNames: names, ...(decisions ? { decisions } : {}) }))
       if (!mountedRef.current || version !== uploadSelectionVersion.current) {
         if (result) void api.serverWorkspaceCancelUploadReview({ ...scope, reviewId: result.reviewId }).catch(() => undefined)
         return false
@@ -274,7 +275,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
       jobsVersion.current += 1
       setJobs((current) => [...current.filter((job) => !result.jobs.some((next) => next.jobId === job.jobId)), ...result.jobs])
       setPreparation(null)
-      setTrayOpen(true)
+      if (result.jobs.length) setTrayOpen(true)
     } catch (failure) { if (mountedRef.current) { setUploadError(workspaceErrorMessage(failure)); setUploadNeedsReview(true); setOverwrite(false) } }
     finally { uploadActionRef.current = false; if (mountedRef.current) setUploadConfirming(false) }
   }

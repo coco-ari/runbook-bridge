@@ -4,10 +4,11 @@ import { ArrowUp, Crosshair, DownloadSimple, CaretDown, CaretRight, CaretUpDown,
 import type { AiOpsV2Api, PluginScope, ServerDirectoryEntry, ServerDirectoryPage } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { ServerFileMenu } from "./ServerFileMenu"
 import { DirectoryBookmarks } from "./DirectoryBookmarks"
 import { directoryBookmarksKey } from "./directory-bookmarks"
 import { canDragWorkspacePath, type WorkspacePathDrag } from "./workspace-path-drag"
-import { isWorkspacePathStale, parentRemotePath, serverEntryType, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
+import { compareServerDirectoryEntries, isWorkspacePathStale, parentRemotePath, serverEntryType, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
 import { normalizeWorkspaceLocation, workspaceLocationAncestors } from "./workspace-location"
 
 interface DirectoryState { readonly page?: ServerDirectoryPage; readonly loading: boolean; readonly loadedAt?: number; readonly error?: string; readonly metadataError?: string | undefined; readonly startCursor?: string; readonly history?: readonly string[] }
@@ -385,7 +386,8 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
       if (ancestors.has(canonical)) { result.push({ kind: "cycle", directory, depth, message: "循环链接，已停止展开" }); return }
       const branch = new Set(ancestors).add(canonical)
       if (state?.history?.length) result.push({ kind: "previous", directory, depth })
-      const entries = (state?.page?.entries ?? []).filter((entry) => showHidden || !entry.name.startsWith("."))
+      // 只排序展示副本，让已解析的目录链接归入文件夹组，保留原始分页位置供元数据请求使用。
+      const entries = (state?.page?.entries ?? []).filter((entry) => showHidden || !entry.name.startsWith(".")).sort(compareServerDirectoryEntries)
       for (const entry of entries) {
         const target = entry.type === "symlink" ? entry.linkTarget : canonical.replace(/\/$/u, "") + "/" + entry.name
         const cycle = serverEntryType(entry) === "directory" && Boolean(target && branch.has(target))
@@ -553,6 +555,24 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
       </>}
     </div>
     {revealError ? <div className="px-3 py-2 text-xs text-danger" role="status">{revealError}</div> : null}
+    <ServerFileMenu api={api} scope={scope} connected={connected} visible={visible} downloadBusy={downloadBusy} onDownload={onDownload}
+      resolveTarget={element => {
+        const rowElement = element.closest<HTMLElement>("[data-tree-index]")
+        const row = rowElement ? rows[Number(rowElement.dataset.treeIndex)] : null
+        const entry = row?.kind === "entry" ? row.entry : null
+        return { entry, directory: entry ? serverEntryType(entry) === "directory" ? entry.path : parentRemotePath(entry.path) : element.closest<HTMLElement>("[data-upload-path]")?.dataset.uploadPath || path }
+      }}
+      onSelect={entry => { pendingOpenRef.current = null; setSelected(entry.path) }}
+      onRefresh={target => { void load(target) }}
+      onChanged={result => {
+        if (result.kind === "rename") {
+          invalidate(result.path)
+          setExpanded(current => new Set([...current].filter(value => value !== result.path && !value.startsWith(result.path + "/"))))
+        }
+        invalidate(result.parentPath)
+        const nextPath = result.kind === "rename" && (path === result.path || path.startsWith(result.path + "/")) ? result.destinationPath + path.slice(result.path.length) : result.destinationPath
+        revealPath(nextPath)
+      }}>
     <div className="server-tree-scroll" ref={scrollRef} role="tree" tabIndex={0} aria-label="远程文件目录" aria-description={`选择目录后按 ${pasteShortcut} 粘贴文件，或拖入本地文件上传`} data-upload-over={dropTarget !== null || undefined}
       onDragEnter={receiveDrag} onDragOver={receiveDrag} onDragLeave={event => {
         if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDropTarget(null)
@@ -629,6 +649,7 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
         })}
       </div>
     </div>
+    </ServerFileMenu>
     {dropTarget !== null ? <div className="server-upload-drop-hint" role="status"><UploadSimple size={16} /><span>松开后确认上传到 <strong>{dropTarget}</strong></span></div> : null}
   </section>
 }

@@ -6,6 +6,7 @@ import { ServerUploadResumes } from './server-upload-resumes.mjs';
 import { recoverableUpload } from './server-upload-transfer.mjs';
 import { ServerUploadReviews } from './server-upload-reviews.mjs';
 import { ServerUploadProgress } from './server-upload-progress.mjs';
+import { ServerWorkspaceActions } from './server-workspace-actions.mjs';
 import { ServerWorkspaceDirectoryCache } from './server-workspace-directory-cache.mjs';
 
 const PREPARATION_TTL = 5 * 60 * 1000;
@@ -36,6 +37,7 @@ export class ServerWorkspaceFiles {
   constructor({ workspaceStore, serverRuntime, serverOperations, now = Date.now }) {
     Object.assign(this, { workspaceStore, serverRuntime, serverOperations, now });
     this.directoryCache = new ServerWorkspaceDirectoryCache(this);
+    this.actions = new ServerWorkspaceActions(this);
     this.preparations = new Map();
     this.uploadReviews = new ServerUploadReviews(this);
     this.uploadResumes = new ServerUploadResumes(this);
@@ -154,6 +156,11 @@ export class ServerWorkspaceFiles {
     }));
   }
 
+  fileInfo(ownerId, payload) { return this.actions.info(ownerId, payload); }
+  prepareFileAction(ownerId, payload) { return this.actions.prepare(ownerId, payload); }
+  confirmFileAction(ownerId, payload) { return this.actions.confirm(ownerId, payload); }
+  cancelFileAction(ownerId, payload) { return this.actions.cancel(ownerId, payload); }
+
   normalizeUploadPath(input) { return remotePath(input); }
 
   async assertUploadDirectory(plugin, directory, options = {}) {
@@ -192,11 +199,13 @@ export class ServerWorkspaceFiles {
       for (const source of localPaths) {
         if (typeof source !== 'string' || !path.isAbsolute(source)) throw new AppError('PATH_INVALID', '本地文件路径无效。');
         const name = path.basename(source);
+        const plan = options.plans?.get(name);
+        if (plan?.action === 'skip') continue;
         if (!name || /[\0\r\n\\/]/u.test(name) || names.has(name)) throw new AppError('INVALID_ARGUMENT', '文件名无效，或同一批次中存在同名文件。');
         names.add(name);
         options.ensureActive?.();
         const args = await this.serverOperations.prepareMutation(binding.plugin, 'fs.upload', {
-          localPath: source, remotePath: path.posix.join(directory, name), overwrite: true,
+          localPath: source, remotePath: plan?.remotePath ?? path.posix.join(directory, name), overwrite: true,
         }, {
           signal: options.signal,
           onProgress: bytes => options.onProgress?.({ currentFile: name, hashedBytes: hashedBytes + bytes }),
@@ -207,7 +216,7 @@ export class ServerWorkspaceFiles {
         });
         if (args._precondition.remote.exists && args._precondition.remote.type !== 'file') throw new AppError('PATH_INVALID', '目标同名路径不是普通文件，不能覆盖。');
         options.ensureActive?.();
-        files.push({ name, args });
+        files.push({ name, args, ...(plan ? { action: plan.action, plan } : {}) });
         hashedBytes += args._precondition.local.size;
         options.onProgress?.({ completedFiles: files.length, hashedBytes });
       }
@@ -221,8 +230,9 @@ export class ServerWorkspaceFiles {
       const preparationId = crypto.randomUUID();
       const expiresAt = this.now() + PREPARATION_TTL;
       this.preparations.set(preparationId, { ...binding, ownerId, files, path: directory, uploadDirectory, expiresAt });
-      return { preparationId, path: directory, sourcePath, expiresAt, files: files.map(({ name, args }) => ({
+      return { preparationId, path: directory, sourcePath, expiresAt, files: files.map(({ name, args, plan }) => ({
         name, localPath: args.localPath, bytes: args._precondition.local.size, remotePath: args.remotePath, exists: args._precondition.remote.exists,
+        ...(plan ? { exists: plan.exists, action: plan.action, localMtimeMs: args._precondition.local.mtimeMs, remote: plan.remote } : {}),
       })) };
     } finally { this.preparing.delete(ownerId); }
   }
@@ -266,8 +276,8 @@ export class ServerWorkspaceFiles {
     const binding = await this.requirePlugin(ownerId, scope, preparation);
     await this.assertUploadDirectory(binding.plugin, preparation.uploadDirectory);
     await this.requirePlugin(ownerId, scope, binding);
-    const jobs = preparation.resumeJobId ? [this.uploadResumes.confirm(ownerId, scope, preparation, binding)] : preparation.files.map(({ name, args }) => {
-      const job = { ...binding, uploadDirectory: preparation.uploadDirectory, ownerId, jobId: crypto.randomUUID(), name, path: args.remotePath, bytes: args._precondition.local.size, transferred: 0, status: 'queued', progress: new ServerUploadProgress(this.now), args: { ...args, overwrite: payload.overwrite }, controller: new AbortController() };
+    const jobs = preparation.resumeJobId ? [this.uploadResumes.confirm(ownerId, scope, preparation, binding)] : preparation.files.map(({ name, args, action }) => {
+      const job = { ...binding, uploadDirectory: preparation.uploadDirectory, ownerId, jobId: crypto.randomUUID(), name: path.posix.basename(args.remotePath), path: args.remotePath, bytes: args._precondition.local.size, transferred: 0, status: 'queued', progress: new ServerUploadProgress(this.now), args: { ...args, overwrite: action === 'overwrite' || payload.overwrite }, controller: new AbortController() };
       this.jobs.set(job.jobId, job);
       return job;
     });
@@ -422,6 +432,7 @@ export class ServerWorkspaceFiles {
   }
 
   interruptScope(scope) {
+    this.actions.clear(item => includesScope(item.scope, scope));
     this.uploadReviews.clear(item => includesScope(item.scope, scope));
     this.directoryCache.clear(item => includesScope(item.binding.scope, scope));
     for (const [id, item] of this.preparations) if (includesScope(item.scope, scope)) this.preparations.delete(id);
@@ -429,6 +440,7 @@ export class ServerWorkspaceFiles {
   }
 
   closeScope(scope, reason = '服务器配置或连接已经变化。') {
+    this.actions.clear(item => includesScope(item.scope, scope));
     this.uploadReviews.clear(item => includesScope(item.scope, scope));
     this.directoryCache.clear((item) => includesScope(item.binding.scope, scope));
     for (const [id, preparation] of this.preparations) if (includesScope(preparation.scope, scope)) this.preparations.delete(id);
@@ -436,6 +448,7 @@ export class ServerWorkspaceFiles {
   }
 
   closeOwner(ownerId) {
+    this.actions.clear(item => item.ownerId === ownerId);
     this.uploadReviews.clear(item => item.ownerId === ownerId);
     this.directoryCache.clear((item) => item.ownerId === ownerId);
     this.ownerEpochs.set(ownerId, (this.ownerEpochs.get(ownerId) ?? 0) + 1);
@@ -447,6 +460,7 @@ export class ServerWorkspaceFiles {
   }
 
   dispose() {
+    this.actions.clear(() => true);
     this.uploadReviews.clear(() => true);
     this.directoryCache.clear(() => true);
     this.disposed = true;

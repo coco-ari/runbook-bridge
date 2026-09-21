@@ -401,3 +401,56 @@ test('接收外部文件时与原生选择器互斥，等待期间窗口失效�
   assert.equal((await pending).error.code, 'WORKSPACE_CHANGED');
   assert.equal(h.files.uploadReviews.records.size, 0);
 });
+
+test('上传冲突逐项混合处理，副本保留扩展名且避开已有文件，公开清单不泄露私有前置条件', async t => {
+  const h = await harness(t);
+  for (let index = 0; index < 3; index += 1) h.remote.set('/srv/file-' + index + '.txt', 12);
+  h.remote.set('/srv/file-2 (1).txt', 20);
+  const first = await h.done(await h.begin());
+  assert.equal(first.files[0].remote.size, 12);
+  assert.equal(first.files[0].remote.mtime, 1);
+  assert.ok(first.files[0].localMtimeMs > 0);
+  const next = await h.files.reviseUploadReview(owner, { ...scope, reviewId: first.reviewId, fileNames: first.files.map(file => file.name),
+    decisions: [{name:'file-0.txt',action:'skip'}, {name:'file-1.txt',action:'overwrite'}, {name:'file-2.txt',action:'keep-both'}] });
+  assert.equal(h.files.preparations.has(first.preparationId), false);
+  const ready = await h.done(next);
+  assert.equal(ready.files[0].action, 'skip');
+  assert.equal(ready.files[2].remotePath, '/srv/file-2 (2).txt');
+  const prepared = h.files.preparations.get(ready.preparationId);
+  assert.equal(prepared.files.length, 2);
+  assert.equal(prepared.files[1].args._precondition.remote.exists, false);
+  assert.equal(JSON.stringify(ready).includes('sha256'), false);
+  const sent = [];
+  h.files.serverRuntime.uploadRemoteFile = async (_plugin, local, target, precondition) => { sent.push({local,target,precondition}); };
+  const result = await h.files.confirmUpload(owner, { ...scope, preparationId: ready.preparationId, overwrite: true });
+  assert.deepEqual(result.jobs.map(job => job.path), ['/srv/file-1.txt','/srv/file-2 (2).txt']);
+  assert.equal(result.jobs[1].name, 'file-2 (2).txt');
+  await tick(); await tick();
+  assert.deepEqual(sent.map(item => item.target), result.jobs.map(job => job.path));
+});
+
+test('全部跳过不会建立上传任务，重新选择策略生成新凭证且拒绝任意路径', async t => {
+  const h = await harness(t, 1);
+  h.remote.set('/srv/file-0.txt', 12);
+  const first = await h.done(await h.begin());
+  for (const decisions of [[{name:'unknown',action:'skip'}], [{name:'file-0.txt',action:'other'}], [{name:'file-0.txt',action:'keep-both',remotePath:'/other'}]]) {
+    await assert.rejects(h.files.reviseUploadReview(owner, { ...scope, reviewId: first.reviewId, fileNames:['file-0.txt'], decisions }), { code: 'INVALID_ARGUMENT' });
+  }
+  const skipped = await h.done(await h.files.reviseUploadReview(owner, { ...scope, reviewId:first.reviewId, fileNames:['file-0.txt'], decisions:[{name:'file-0.txt',action:'skip'}] }));
+  const again = await h.done(await h.files.reviseUploadReview(owner, { ...scope, reviewId:skipped.reviewId, fileNames:['file-0.txt'], decisions:[{name:'file-0.txt',action:'keep-both'}] }));
+  assert.equal(again.files[0].action, 'keep-both');
+  assert.equal(h.files.preparations.has(skipped.preparationId), false);
+  const allSkipped = await h.done(await h.files.reviseUploadReview(owner, { ...scope, reviewId:again.reviewId, fileNames:['file-0.txt'], decisions:[{name:'file-0.txt',action:'skip'}] }));
+  assert.deepEqual((await h.files.confirmUpload(owner, { ...scope, preparationId:allSkipped.preparationId, overwrite:false })).jobs, []);
+  assert.equal(h.files.jobs.size, 0);
+});
+
+test('保留两份的名称探测有上限，不无限扫描服务器', async t => {
+  const h = await harness(t, 1);
+  h.remote.set('/srv/file-0.txt', 12);
+  for (let index = 1; index <= 100; index += 1) h.remote.set('/srv/file-0 (' + index + ').txt', 12);
+  const first = await h.done(await h.begin());
+  const next = await h.done(await h.files.reviseUploadReview(owner, { ...scope, reviewId:first.reviewId, fileNames:['file-0.txt'], decisions:[{name:'file-0.txt',action:'keep-both'}] }));
+  assert.equal(next.error.code, 'TARGET_EXISTS');
+  assert.equal(h.files.preparations.size, 0);
+});

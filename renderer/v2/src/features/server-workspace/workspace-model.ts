@@ -41,3 +41,10 @@ export function formatTransferEta(seconds: number): string {
 export function serverEntryType(entry: ServerDirectoryEntry) {
   return entry.type === "symlink" ? entry.linkTargetType ?? "unavailable" : entry.type
 }
+
+const entryNames = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" })
+
+export function compareServerDirectoryEntries(left: ServerDirectoryEntry, right: ServerDirectoryEntry): number {
+  const directoryOrder = Number(serverEntryType(right) === "directory") - Number(serverEntryType(left) === "directory")
+  return directoryOrder || entryNames.compare(left.name, right.name) || (left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
+}

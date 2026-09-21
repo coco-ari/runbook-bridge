@@ -83,7 +83,7 @@ function reviewResult(item) {
     item.preparationId=item.failure?null:require('node:crypto').randomUUID();
     item.expiresAt=item.failure?null:Date.now()+60000;
     item.progress={...item.progress,phase:item.failure?'hashing':'ready',completedFiles:item.files.length,hashedBytes:item.progress.totalBytes};
-    item.files=item.files.map(file=>({...file,exists:file.name==='release.tar'}));
+    item.files=item.files.map(file=>({...file,exists:file.name==='release.tar'||file.name.startsWith('conflict-')||file.name==='all-skipped.txt'}));
   }
   const {readyAt,failure,...result}=item;
   return structuredClone(result);
@@ -132,11 +132,35 @@ function canonicalFixturePath(value) {
 function fixtureStat(value) {
   if ([...removedPaths].some(item => value === item || value.startsWith(item + '/'))) throw Object.assign(new Error('服务器路径不存在。'), { code: 'SOURCE_NOT_FOUND' });
   if (value === '/missing-link') return { type: 'symlink', canonicalPath: null };
+  if (fileActionEntries.has(value)) return {type:fileActionEntries.get(value),canonicalPath:value};
   const canonicalPath = canonicalFixturePath(value);
   const isLink = ['/bin', '/lib', '/current.conf', '/default.conf', '/usr/bin/X11', '/bin/X11'].includes(value);
   return { type: isLink ? 'symlink' : /\.(conf|txt|log)$/u.test(canonicalPath) || canonicalPath === '/usr/bin/apt' ? 'file' : 'directory', canonicalPath };
 }
+const fileActionEntries = new Map();
+const fileActionPreparations = new Map();
+const fileActionCalls = [];
 function register() {
+  handle('server-workspace-file-info', input => {
+    scoped(input); fileActionCalls.push({kind:'info',path:input.path});
+    return {...fixtureStat(input.path),path:input.path,name:path.posix.basename(input.path),size:256,mtime:1,mode:0o100644,observedAt:Date.now()};
+  });
+  handle('server-workspace-prepare-file-action', input => {
+    scoped(input); fileActionCalls.push({...input});
+    if (input.name === 'example.log') throw Object.assign(new Error('同名文件或文件夹已存在，请使用其他名称。'),{code:'TARGET_EXISTS'});
+    const parentPath = input.kind === 'mkdir' ? input.path : path.posix.dirname(input.path);
+    const item={operationId:require('node:crypto').randomUUID(),kind:input.kind,path:input.path,destinationPath:path.posix.join(parentPath,input.name),parentPath,expiresAt:Date.now()+60000};
+    fileActionPreparations.set(item.operationId,item); return {...item,canonicalDestination:item.destinationPath};
+  });
+  handle('server-workspace-cancel-file-action', input => { scoped(input); fileActionPreparations.delete(input.operationId); return {}; });
+  handle('server-workspace-confirm-file-action', input => {
+    scoped(input); const item=fileActionPreparations.get(input.operationId); assert.ok(item);
+    fileActionPreparations.delete(input.operationId); fileActionCalls.push({kind:'confirm',...item});
+    fileActionEntries.set(item.destinationPath,item.kind==='mkdir'?'directory':fixtureStat(item.path).type);
+    if(item.kind==='rename') { removedPaths.add(item.path); fileActionEntries.delete(item.path); }
+    workspaceFiles.directoryCache.clear(() => true);
+    return item;
+  });
   handle('server-docker-read', async input => {
     dockerState.reads.push(input);
     if (dockerState.delay) await wait(dockerState.delay);
@@ -271,6 +295,7 @@ function register() {
     if (input.path === '/srv') entries.push(entry('带空格目录 ', 'directory'), entry("带 空格'$(echo literal).conf"));
     for (const job of uploads) if (job.direction !== 'download' && job.status === 'completed') uploadedPaths.add(job.path);
     entries.push(...[...uploadedPaths].filter(target => path.posix.dirname(target) === input.path).map(target => entry(path.posix.basename(target))));
+    entries.push(...[...fileActionEntries].filter(([target]) => path.posix.dirname(target) === input.path).map(([target,type]) => entry(path.posix.basename(target),type)));
     const offset = Number(input.cursor ?? 0);
     return { path: input.path, entries: entries.filter(item => !removedPaths.has(item.path)).slice(offset, offset + 200), nextCursor: entries.length > offset + 200 ? String(offset + 200) : null, truncated: entries.length > offset + 200 };
   };
@@ -324,6 +349,15 @@ function register() {
     assert.ok(input.fileNames.every(name=>uploadPreparation.files.some(file=>file.name===name)));
     assert.equal(input.path,undefined,'修订不能指定目标目录');
     uploadRevisions.push(input);
+    if (input.decisions) {
+      const previous = uploadPreparation;
+      const choices = new Map(previous.files.map(file => [file.name,file.action]));
+      for(const decision of input.decisions) choices.set(decision.name,decision.action);
+      makePreparation(previous.sourcePath,input.fileNames,revisionFailure);
+      uploadPreparation.files=uploadPreparation.files.map(file => ({...file,localMtimeMs:1000,remote:{size:512,mtime:1,mode:0o644,type:'file'},action:choices.get(file.name),
+        remotePath:choices.get(file.name)==='keep-both'?file.remotePath.replace(/(\.tar\.(?:gz|bz2|xz)|\.[^/.]+)$/u,' (1)$1'):file.remotePath}));
+      return reviewResult(uploadPreparation);
+    }
     if (uploadPreparation.status === 'ready' && uploadPreparation.expiresAt > Date.now() && input.fileNames.length > 0 && input.fileNames.length < uploadPreparation.files.length) {
       const files = uploadPreparation.files.filter(file => input.fileNames.includes(file.name));
       const bytes = files.reduce((sum, file) => sum + file.bytes, 0);
@@ -333,7 +367,7 @@ function register() {
     }
     return input.fileNames.length?makePreparation(uploadPreparation.sourcePath,input.fileNames,revisionFailure):null;
   });
-  handle('server-workspace-confirm-upload', input => { scoped(input); uploadConfirmCalls += 1; assert.equal(input.preparationId, uploadPreparation.preparationId); assert.equal(input.overwrite, true); uploads = uploadPreparation.files.map((file, index) => ({ jobId: 'upload-job-' + index, name: file.name, path: file.remotePath, bytes: file.bytes, transferred: 0, status: 'running', canPause:true, phase:'uploading', bytesPerSecond:80000, etaSeconds:12 })); return { jobs: uploads }; });
+  handle('server-workspace-confirm-upload', input => { scoped(input); uploadConfirmCalls += 1; assert.equal(input.preparationId, uploadPreparation.preparationId); if(uploadPreparation.files.some(file=>file.exists&&file.action!=='skip'&&file.action!=='keep-both')) assert.equal(input.overwrite, true); uploads = uploadPreparation.files.filter(file=>file.action!=='skip').map((file, index) => ({ jobId: 'upload-job-' + index, name: path.posix.basename(file.remotePath), path: file.remotePath, bytes: file.bytes, transferred: 0, status: 'running', canPause:true, phase:'uploading', bytesPerSecond:80000, etaSeconds:12 })); return { jobs: uploads }; });
   handle('server-workspace-uploads', (input) => { scoped(input); if (uploadReadFailure) throw new Error('已有上传任务状态暂时无法读取。'); uploads = uploads.map((job) => { if (job.status !== 'running') return job; const transferred = Math.min(job.bytes, job.transferred + 80000); return { ...job, transferred, status: transferred === job.bytes ? 'completed' : 'running' }; }); return { jobs: uploads.map(job=>({...job,canPause:job.direction!=='download'&&job.status==='running',canRemove:['completed','cancelled','error'].includes(job.status)})) }; });
   handle('server-workspace-pause-upload', input => {
     scoped(input);const job=uploads.find(item=>item.jobId===input.jobId);
@@ -627,6 +661,13 @@ async function run() {
   await until(`document.querySelector('.xterm-rows')?.textContent.includes('operator@demo')`, '真实 xterm 收到输出');
   assert.equal(opened.length, 1, '首次点击只创建一个会话');
   await assertFileSidebarLayout();
+  if (process.env.RUNBOOK_BRIDGE_FILE_ACTIONS_SMOKE === '1') {
+    releaseRootMetadata();
+    await require('./workspace-file-actions-ui.cjs')({evaluate,click,clickText,until,wait,win,fileActionCalls,uploadRevisions,selectUploads:names=>{uploadSelection=names;},confirmCount:()=>uploadConfirmCalls,snapshot});
+    completed=true;
+    process.stdout.write(JSON.stringify({ok:true,fileActions:true})+'\n');
+    return;
+  }
   if (process.env.RUNBOOK_BRIDGE_DOCKER_SMOKE === '1') {
     releaseRootMetadata();
     await require('./workspace-docker-ui.cjs')({evaluate,click,clickText,until,wait,win,setViewport,snapshot,dockerState,opened,closed,errors});
@@ -679,14 +720,17 @@ async function run() {
   await until(`document.querySelector('[role="treeitem"][title="/srv"]')`, '文件目录');
   assert.ok(await evaluate(`document.querySelectorAll('.server-workspace [role="treeitem"]').length < 60`), '200条目录采用虚拟列表');
   assert.ok(await evaluate("document.querySelector('[role=treeitem][title^=\"/bin\"]')?.textContent.includes('读取中')"), '链接信息延迟时先展示基本列表，不误报断链');
-  const beforeMetadata = await evaluate("[...document.querySelectorAll('[role=treeitem]')].map(row => ({ path:row.title.split('（')[0], top:row.getBoundingClientRect().top }))");
+  const beforeMetadata = await evaluate("[...new Set([...document.querySelectorAll('[role=treeitem]')].map(row => row.getBoundingClientRect().height))]");
   await click('[role="treeitem"][title^="/bin"]');
   releaseRootMetadata();
   await until("document.querySelector('[role=treeitem][title^=\"/bin →\"] .server-icon-folder')", '后台补齐目录链接类型');
   await until("document.querySelector('[role=treeitem][title=\"/bin/apt\"]')", '等待中的链接点击在解析后自动展开');
   await click('[role="treeitem"][title^="/bin →"]');
-  const afterMetadata = await evaluate("[...document.querySelectorAll('[role=treeitem]')].map(row => ({ path:row.title.split(' →')[0].split('（')[0], top:row.getBoundingClientRect().top }))");
-  assert.deepEqual(afterMetadata, beforeMetadata, '补齐元数据不重排条目或改变行高');
+  const afterMetadata = await evaluate("[...new Set([...document.querySelectorAll('[role=treeitem]')].map(row => row.getBoundingClientRect().height))]");
+  assert.deepEqual(afterMetadata, beforeMetadata, '补齐元数据并重新分组后保持固定行高');
+  assert.equal(await evaluate("document.querySelector('[role=treeitem][aria-selected=true]')?.title.split(' →')[0]"), '/bin', '目录链接重新排序后保留选中项');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('[role=treeitem][aria-level=\"1\"]')].slice(0,18).map(row => row.querySelector('.server-tree-name').textContent)"),
+    ['app','bin','boot','dev','etc','home','lib','media','mnt','opt','proc','root','run','srv','sys','tmp','usr','var'], '普通目录和已解析的目录链接统一置顶，组内按名称排序');
   assert.ok(await evaluate(`[...document.querySelectorAll('.server-tree-link')].some(row => row.textContent.includes('bin') && row.textContent.includes('→ /usr/bin'))`), '软链接展示真实目标且名称清晰可读');
   await snapshot('server-files-reference.png');
   assert.ok(await evaluate(`document.querySelector('[role="treeitem"][title^="/bin →"] .server-icon-folder') !== null`), '目录链接显示文件夹图标');
@@ -731,6 +775,8 @@ async function run() {
   await clickText('转到');
   await until(`document.querySelector('[role="treeitem"][title="/srv/example.conf"]')`, '输入路径导航');
   assert.ok(await evaluate(`document.querySelector('[aria-label="当前目录"] [aria-current="location"]')?.textContent === 'srv'`), '面包屑同步当前路径');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('[role=treeitem][aria-level=\"2\"]')].filter(row => row.title.startsWith('/srv/')).map(row => row.querySelector('.server-tree-name').textContent)"),
+    ['带空格目录 ','config',"带 空格'$(echo literal).conf",'example.conf','example.log','loading'], '展开目录时名称靠后的文件夹也排在文件前面');
   const treeHas = (value) => 'document.querySelector(' + JSON.stringify('[role="treeitem"][title="' + value + '"]') + ')';
   await click('[role="treeitem"][title="/srv/config"]');
   await until(treeHas('/srv/config/example.conf'), '缓存多层子目录');
@@ -778,7 +824,9 @@ async function run() {
   await wait(100); await clickText("查看上一批");
   await evaluate("(() => { const tree = document.querySelector('.server-tree-scroll'); tree.scrollTop = 0; tree.dispatchEvent(new Event('scroll')); })()");
   await wait(100);
-  // 虚拟列表只挂载可视区附近的条目，先滚动到明确的失效链接再验证禁用行为。
+  // 自然排序将失效链接放在文件组末尾，先滚动到当前批次底部再验证禁用行为。
+  await evaluate("(() => { const tree = document.querySelector('.server-tree-scroll'); tree.scrollTop = tree.scrollHeight; tree.dispatchEvent(new Event('scroll')); })()");
+  await wait(100);
   const unavailableLink = '[role="treeitem"][title^="/missing-link"][aria-disabled="true"]';
   for (let attempt = 0; attempt < 10; attempt += 1) {
     if (await evaluate('Boolean(document.querySelector(' + JSON.stringify(unavailableLink) + '))')) break;
@@ -788,6 +836,8 @@ async function run() {
   const beforeLink = directoryReads.length;
   await click(unavailableLink);
   assert.equal(directoryReads.length, beforeLink, "不遍历符号链接");
+  await evaluate("(() => { const tree = document.querySelector('.server-tree-scroll'); tree.scrollTop = 0; tree.dispatchEvent(new Event('scroll')); })()");
+  await until(`document.querySelector('[role="treeitem"][title="/srv"]')`, '返回目录组');
   await click('[role="treeitem"][title="/srv"]');
   await until(`document.querySelector('[role="treeitem"][title="/srv/example.conf"]')`, '懒加载子目录');
   const assertTreeGeometry = async (label) => {
@@ -1146,6 +1196,7 @@ async function run() {
   await require('./workspace-metrics-ui.cjs')({evaluate,click,clickText,until,wait,win,setViewport,snapshot,metricsState,writes,errors});
   await require('./workspace-file-interactions-ui.cjs')({evaluate,click,doubleClick,clickText,until,wait,win,previewReads,writes,opened,terminalSessions,errors});
   await require('./workspace-location-ui.cjs')({evaluate,click,until,wait,win,setViewport,snapshot,terminalSessions,directoryState,writes,previewReads,errors});
+  await require('./workspace-file-actions-ui.cjs')({evaluate,click,clickText,until,wait,win,fileActionCalls,uploadRevisions,selectUploads:names=>{uploadSelection=names;},confirmCount:()=>uploadConfirmCalls,snapshot});
   completed = true;
   process.stdout.write(JSON.stringify({ ok: true, terminalSessions: opened.length, writes: writes.length, directoryReads: directoryReads.length, resizes: resizes.length, screenshotRoot: process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR ?? null }) + '\n');
 }

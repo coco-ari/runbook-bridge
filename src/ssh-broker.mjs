@@ -1400,6 +1400,34 @@ export class SshBroker {
     return { path:target, bytes:buffer.length, sha256 };
   }
 
+  async mutateWorkspacePathApproved(projectId, args, { signal, beforeCommit } = {}) {
+    const { kind, parentPath, canonicalParent, destinationPath, sourcePath, precondition } = args;
+    if (!['mkdir', 'rename'].includes(kind) || path.posix.dirname(destinationPath) !== canonicalParent
+      || (kind === 'rename' && (!sourcePath || path.posix.dirname(sourcePath) !== canonicalParent || !['file', 'directory'].includes(precondition.source?.type)))
+      || precondition.destination?.exists !== false) throw new AppError('INVALID_ARGUMENT', '文件操作参数无效。');
+    return this.withInternalSftp(projectId, async (sftp, _session, lifecycle) => {
+      const checkParent = async () => {
+        const actual = await sftpRealpath(sftp, parentPath);
+        const entry = await readRemoteSnapshot(sftp, canonicalParent);
+        if (actual !== canonicalParent || !entry.exists || entry.type !== 'directory' || entry.canonicalPath !== canonicalParent) {
+          throw new AppError('WORKSPACE_PATH_CHANGED', '目标父目录已变化，请重新确认。');
+        }
+      };
+      await checkParent();
+      if (kind === 'rename') await requireRemoteSnapshot(sftp, sourcePath, precondition.source);
+      await requireRemoteSnapshot(sftp, destinationPath, precondition.destination);
+      await beforeCommit?.();
+      await checkParent();
+      if (kind === 'rename') await requireRemoteSnapshot(sftp, sourcePath, precondition.source);
+      await requireRemoteSnapshot(sftp, destinationPath, precondition.destination);
+      lifecycle.signal.throwIfAborted();
+      // 普通 SFTP 重命名不允许覆盖；创建目录也不合并已经存在的目录。
+      if (kind === 'rename') await sftpRename(sftp, sourcePath, destinationPath);
+      else await new Promise((resolve, reject) => sftp.mkdir(destinationPath, { mode: 0o755 }, error => error ? reject(error) : resolve()));
+      return { path: destinationPath };
+    }, { signal });
+  }
+
   async moveRemotePathApproved(projectId, sourcePath, destinationPath, precondition) {
     const source = normalizeAbsoluteRemotePath(sourcePath);
     const destination = normalizeAbsoluteRemotePath(destinationPath);

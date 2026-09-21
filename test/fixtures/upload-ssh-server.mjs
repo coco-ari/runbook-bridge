@@ -76,6 +76,10 @@ export async function createUploadFixture(t, { writeDelayMs = 0, capacity = 0, a
         });
         sftp.on('CLOSE', (id, handle) => { handles.delete(handle.toString()); status(id, 0); });
         sftp.on('REMOVE', (id, name) => { files.delete(name); status(id, 0); });
+        sftp.on('MKDIR', (id, name, attributes) => {
+          if (files.has(name)) return status(id, 4);
+          files.set(name, Buffer.alloc(0)); modes.set(name, (attributes.mode ?? 0o755) | 0o40000); status(id, 0);
+        });
         sftp.on('RENAME', (id, from, to) => {
           if ((!allowRenameOverwrite && files.has(to)) || !files.has(from)) return status(id, 4);
           files.set(to, files.get(from)); modes.set(to,modes.get(from)); files.delete(from); counters.renames += 1;

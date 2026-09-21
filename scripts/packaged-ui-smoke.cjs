@@ -758,7 +758,13 @@ async function main() {
     assert.equal(inspection.noPageOverflow, true);
     assert.equal(inspection.overviewOk, true);
     assert.equal(inspection.projectCount, 0);
-    assert.equal(inspection.apiCount, 92);
+    assert.equal(inspection.apiCount, 96);
+    const fileActionContract = await running.cdp.evaluate("(async () => { const scope={projectId:'file-action-probe',environmentId:'probe',pluginInstanceId:'probe'}; return {info:await window.aiOps.v2.serverWorkspaceFileInfo({...scope,path:'/srv'}),prepare:await window.aiOps.v2.serverWorkspacePrepareFileAction({...scope,kind:'mkdir',path:'/srv',name:'fixture'}),invalid:await window.aiOps.v2.serverWorkspaceConfirmFileAction({...scope,operationId:'missing',destinationPath:'/other'}),confirm:await window.aiOps.v2.serverWorkspaceConfirmFileAction({...scope,operationId:'missing'}),cancel:await window.aiOps.v2.serverWorkspaceCancelFileAction({...scope,operationId:'missing'})}; })()");
+    assert.equal(fileActionContract.info.ok, false);
+    assert.equal(fileActionContract.prepare.ok, false);
+    assert.equal(fileActionContract.invalid.error.code, 'INVALID_ARGUMENT');
+    assert.equal(fileActionContract.confirm.error.code, 'WORKSPACE_ACTION_EXPIRED');
+    assert.equal(fileActionContract.cancel.error.code, 'WORKSPACE_ACTION_EXPIRED');
     const importContract = await running.cdp.evaluate("(async () => { const scope = {projectId:'upload-probe',environmentId:'probe',pluginInstanceId:'probe',path:'/srv'}; return {empty:await window.aiOps.v2.serverWorkspaceImportUpload(scope,[]),memory:await window.aiOps.v2.serverWorkspaceImportUpload(scope,[new File(['fixture'],'fixture.txt')]),forged:await window.aiOps.v2.serverWorkspaceImportUpload(scope,[{path:'/tmp/fixture.txt'}])}; })()");
     assert.equal(importContract.empty.error.code, 'INVALID_ARGUMENT');
     assert.equal(importContract.memory.error.code, 'UPLOAD_SOURCE_UNAVAILABLE');
@@ -870,7 +876,7 @@ async function main() {
       return {ok: overview?.ok === true, projectCount: Array.isArray(overview?.data) ? overview.data.length : -1,
         apiCount: Object.keys(window.aiOps.v2).length};
     })()`);
-    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 92});
+    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 96});
     assert.deepEqual(running.httpRequests, []);
     await selectThemePreference(running.cdp, 'system');
     await emulateSystemTheme(running.cdp, 'dark');
@@ -890,7 +896,7 @@ async function main() {
         availableWidth: compactSearch.availableWidth, nativeTextBox: compactSearch.nativeBox?.source ?? 'conservative-cancel-budget'},
     })}\n`);
     process.stdout.write(
-      `Packaged React UI smoke passed (92 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
+      `Packaged React UI smoke passed (96 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
     );
   } catch (error) {
     if (running) {

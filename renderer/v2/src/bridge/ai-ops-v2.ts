@@ -467,6 +467,38 @@ export interface ServerDirectoryEntry {
   readonly type: "directory" | "file" | "symlink" | "special"
 }
 
+export interface ServerFileInfo extends ServerDirectoryEntry {
+  readonly canonicalPath: string | null
+  readonly observedAt: number
+}
+
+export interface ServerFileActionPreparation {
+  readonly operationId: string
+  readonly kind: "mkdir" | "rename"
+  readonly path: string
+  readonly destinationPath: string
+  readonly canonicalDestination: string
+  readonly expiresAt: number
+}
+export interface ServerFileActionResult {
+  readonly kind: "mkdir" | "rename"
+  readonly path: string
+  readonly destinationPath: string
+  readonly parentPath: string
+}
+export type ServerUploadConflictAction = "skip" | "overwrite" | "keep-both"
+export interface ServerUploadDecision { readonly name: string; readonly action: ServerUploadConflictAction }
+export interface ServerUploadReviewFile {
+  readonly name: string
+  readonly localPath: string
+  readonly bytes: number
+  readonly localMtimeMs?: number
+  readonly remotePath: string
+  readonly exists: boolean | null
+  readonly action?: ServerUploadConflictAction | "upload" | "pending"
+  readonly remote?: { readonly size: number; readonly mtime: number; readonly mode: number; readonly type: ServerDirectoryEntry["type"] } | null
+}
+
 export interface ServerDirectoryPage {
   readonly snapshotId?: string
   readonly metadataPending?: boolean
@@ -503,7 +535,7 @@ export interface ServerUploadReview extends Omit<ServerUploadPreparation, "prepa
   readonly status: "checking" | "ready" | "error"
   readonly preparationId: string | null
   readonly expiresAt: number | null
-  readonly files: readonly { readonly name: string; readonly localPath: string; readonly bytes: number; readonly remotePath: string; readonly exists: boolean | null }[]
+  readonly files: readonly ServerUploadReviewFile[]
   readonly progress: { readonly phase: "remote" | "hashing" | "ready"; readonly completedFiles: number; readonly totalFiles: number; readonly hashedBytes: number; readonly totalBytes: number; readonly currentFile?: string }
   readonly error?: PublicError
 }
@@ -672,6 +704,10 @@ export interface AiOpsV2Api {
   serverTerminalResize(payload: PluginScope & { sessionId: string; cols: number; rows: number }): Promise<IpcResult<OpaqueData>>
   serverTerminalClose(payload: PluginScope & { sessionId: string }): Promise<IpcResult<OpaqueData>>
   serverWorkspaceListDirectory(payload: PluginScope & { path: string; cursor?: string | null; snapshotId?: string; deferLinks?: boolean; resolveLinks?: boolean }): Promise<IpcResult<ServerDirectoryPage>>
+  serverWorkspaceFileInfo(payload: PluginScope & { path: string }): Promise<IpcResult<ServerFileInfo>>
+  serverWorkspacePrepareFileAction(payload: PluginScope & { kind: "mkdir" | "rename"; path: string; name: string }): Promise<IpcResult<ServerFileActionPreparation>>
+  serverWorkspaceConfirmFileAction(payload: PluginScope & { operationId: string }): Promise<IpcResult<ServerFileActionResult>>
+  serverWorkspaceCancelFileAction(payload: PluginScope & { operationId: string }): Promise<IpcResult<OpaqueData>>
   serverWorkspaceReadFile(payload: PluginScope & { path: string }): Promise<IpcResult<ServerFilePreview>>
   serverWorkspacePauseUpload(payload: PluginScope & { jobId: string }): Promise<IpcResult<ServerUploadJob>>
   serverWorkspaceClearTransfers(payload: PluginScope & { jobId?: string }): Promise<IpcResult<{ removedIds: readonly string[] }>>
@@ -679,7 +715,7 @@ export interface AiOpsV2Api {
   serverWorkspacePrepareUploadResume(payload: PluginScope & { jobId: string }): Promise<IpcResult<ServerUploadReview>>
   serverWorkspacePickUpload(payload: PluginScope & { path: string }): Promise<IpcResult<ServerUploadReview | null>>
   serverWorkspaceImportUpload(payload: PluginScope & { path: string }, files: readonly File[]): Promise<IpcResult<ServerUploadReview>>
-  serverWorkspaceReviseUpload(payload: PluginScope & { reviewId: string; fileNames: readonly string[] }): Promise<IpcResult<ServerUploadReview | null>>
+  serverWorkspaceReviseUpload(payload: PluginScope & { reviewId: string; fileNames: readonly string[]; decisions?: readonly ServerUploadDecision[] }): Promise<IpcResult<ServerUploadReview | null>>
   serverWorkspaceReadUploadReview(payload: PluginScope & { reviewId: string }): Promise<IpcResult<ServerUploadReview>>
   serverWorkspaceCancelUploadReview(payload: PluginScope & { reviewId: string }): Promise<IpcResult<OpaqueData>>
   serverWorkspaceConfirmUpload(payload: PluginScope & { preparationId: string; overwrite: boolean }): Promise<IpcResult<{ jobs: readonly ServerUploadJob[] }>>
@@ -767,6 +803,10 @@ export const AI_OPS_V2_API_NAMES = [
   "serverTerminalResize",
   "serverTerminalClose",
   "serverWorkspaceListDirectory",
+  "serverWorkspaceFileInfo",
+  "serverWorkspacePrepareFileAction",
+  "serverWorkspaceConfirmFileAction",
+  "serverWorkspaceCancelFileAction",
   "serverWorkspaceReadFile",
   "serverWorkspacePauseUpload",
   "serverWorkspaceClearTransfers",

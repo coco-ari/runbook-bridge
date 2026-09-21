@@ -14,6 +14,15 @@
 - 新建目标使用独占硬链接发布，支持普通 NTFS 本地磁盘；不支持硬链接的文件系统会明确失败，不回退到可能覆盖新文件的写入。已有目标按另存为授权与状态检查后替换。最终状态检查不能阻止其他程序在检查之后并发修改文件。
 - 取消已暂停/中断的上传、记录过期或退出应用会释放恢复信息，服务器可能留下当前任务的 `.part-*`；不扫描或删除历史临时文件。
 
+## 文件菜单与同名冲突
+
+- 文件或文件夹右键支持复制名称、复制完整路径、查看实时属性、刷新所在目录；普通文件还可下载。键盘聚焦目录行后可按 Shift+F10 打开同一菜单。macOS 使用系统右键或触控板辅助点按。
+- 新建文件夹在选中目录内创建；右键普通文件时使用其所在目录。重命名仅支持同一父目录下的普通文件、文件夹，不支持根目录、符号链接、跨目录移动或覆盖已有目标。输入名称后先检查，再展示准确目标并确认，完成后刷新并定位。
+- 属性展示类型、大小、修改时间、权限和实际路径；文件夹不递归统计大小，链接目标不可用时明确标识。
+- 上传发现同名目标时，展示本地与远端的大小、修改时间，可逐项选择「跳过、覆盖、保留两份」，或应用到本批次所有冲突。覆盖仍需勾选确认，跳过的文件不进入传输队列，全部跳过可直接完成。
+- 保留两份保留远端原文件，并预先显示新文件的完整路径，例如 `app (1).jar`、`backup (1).tar.gz`。查找最多 100 个编号，避开已存在目标及本批次其他文件名。上传时严格使用已确认的名称，遇到并发占用则失败，不自动换名或扩大覆盖范围。这不是「备份旧文件再用原名部署」。
+- 修改冲突策略会重新检查并生成新的确认凭证，原凭证立即失效；移除文件只缩小本次清单。选择只应用于当前批次，不保存为全局自动覆盖偏好。
+
 ## 异常反馈与退出保护
 
 - 操作失败提示保留到用户收起或重新操作；后台传输状态查询的临时错误单独显示，查询恢复后自行消除。
@@ -33,22 +42,31 @@
 | `serverWorkspaceClearTransfers` | 作用域、可选 jobId | 移除结束记录；省略 ID 清理本作用域所有结束记录 |
 | `serverWorkspaceImportUpload` | 作用域、远端 path，以及独立参数 `File[]` | 接收粘贴或拖入的本地文件，返回上传检查清单；不启动传输 |
 | `serverWorkspaceDownload` | 作用域、远端 path | 原生另存为并创建下载任务；取消选择返回 null |
+| `serverWorkspaceFileInfo` | 作用域、path | 读取实时元数据，不读取文件内容 |
+| `serverWorkspacePrepareFileAction` | 作用域、kind（mkdir/rename）、path、name | 校验源与目标，返回 operationId、准确目标和过期时间，不写入 |
+| `serverWorkspaceConfirmFileAction` | 作用域、operationId | 单次消费本窗口确认，按已绑定参数执行 |
+| `serverWorkspaceCancelFileAction` | 作用域、operationId | 撤销待确认文件操作 |
+| `serverWorkspaceReviseUpload` | 作用域、reviewId、fileNames、可选 decisions | 修订当前批次；decisions 仅接受已选文件的 name 与 action（skip/overwrite/keep-both） |
 
 现有 `serverWorkspaceUploads` 返回统一传输列表，增加方向、本地下载路径和可操作能力；状态增加 `pausing`、`paused`。继续上传复用原有一次性确认流程；手动暂停后的继续由界面自动完成该步骤，仍仅使用原任务的文件参数和覆盖范围。Renderer 不能指定下载本地路径、文件句柄、哈希或续传偏移；原生对话框前后、任务启动和提交均校验窗口、作用域、配置修订及连接代次。下载审计不记录本地路径或内容。
 
 新增文件来源入口由 preload 的 `webUtils.getPathForFile` 解析真实磁盘 `File`，不向 Renderer 暴露可接收任意本地路径的 API。内存文件和伪造对象在桥接层拒绝；主进程再次检查路径、数量、普通文件类型、大小、窗口身份和连接绑定，再进入原有 `beginUploadReview`。目录目标及文件状态仍通过一次性确认绑定；此次变更扩展桌面文件接收边界，不扩展 MCP 权限。
 
-桌面 preload API 共 92 个，原 MCP 下载和上传入口保持原协议。
+文件创建与重命名是新增的桌面人工写入边界：主进程绑定窗口、作用域、配置修订、连接代次、规范路径及源/目标状态，五分钟后过期；确认阶段重新检查，原生 SFTP 不覆盖重命名目标。取消、断连、配置变化、窗口关闭使凭证失效。审计记录开始、完成或失败，不记录文件内容。Renderer 不得提供覆盖开关、目标替换路径或私有前置条件。属性读取沿用有界读取与连接校验。远端其他进程在最终状态检查后的并发修改仍有竞态窗口。
+
+桌面 preload API 共 96 个，MCP 工具与原下载、上传协议保持不变。
 
 ## 验证
 
 ```powershell
-node --test test/server-upload-import.test.mjs test/server-upload-reviews.test.mjs test/server-download-transfer.test.mjs test/server-upload-resume-runtime.test.mjs test/server-workspace-files.test.mjs test/renderer-bridge-contract.test.mjs
+node --test test/server-workspace-actions.test.mjs test/server-upload-conflicts.test.mjs test/server-upload-import.test.mjs test/server-upload-reviews.test.mjs test/server-download-transfer.test.mjs test/server-upload-resume-runtime.test.mjs test/server-workspace-files.test.mjs test/renderer-bridge-contract.test.mjs
 corepack pnpm run check
 corepack pnpm test
 corepack pnpm run test:ui:server-workspace
 corepack pnpm run test:ui
 ```
+
+文件菜单回归覆盖实际 Electron 右键及键盘菜单、名称/路径复制、实时属性、新建、改名、同名拒绝、刷新定位；冲突回归覆盖批量与逐项混合、最终副本名、全部跳过和确认前不上传。创建与改名使用回环 SFTP 验证一次性确认、源/目标并发变化、作用域和生命周期失效。
 
 文件接收回归覆盖真实 Chromium 文件拖放、隔离 preload 文件解析、粘贴清单、准确落点、重复粘贴、纯文本与输入框隔离；Windows 另验证原生文件剪贴板和 Ctrl+V。macOS 复用跨平台事件及原生菜单，Finder 文件复制与 ⌘V 的系统级体验仍需在 Mac 实机验收。
 

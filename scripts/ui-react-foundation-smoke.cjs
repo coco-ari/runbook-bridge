@@ -3556,7 +3556,7 @@ async function assertSecurity(win) {
     styleAttributeProbe.remove();
     return result;
   })()`,true);
-  assert.equal(snapshot.apiNames.length,92);
+  assert.equal(snapshot.apiNames.length,96);
   assert.equal(snapshot.hasRequire,false);
   assert.equal(snapshot.hasProcess,false);
   assert.equal(snapshot.inlineStyleAttributeWidth,'13px');
