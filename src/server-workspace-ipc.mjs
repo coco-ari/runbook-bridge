@@ -1,4 +1,5 @@
 import { AppError, toPublicError } from './errors.mjs';
+import path from 'node:path';
 
 const SCOPE_KEYS = ['projectId', 'environmentId', 'pluginInstanceId'];
 const CALLS = [
@@ -112,6 +113,23 @@ export function registerServerWorkspaceIpc(ipcMain, services) {
       return await files.downloads.start(ownerId, payload, prepared, selected);
     } finally { picking.delete(ownerId); }
   });
+  handle('server-workspace-import-upload', ['path', 'localPaths'], async (ownerId, payload, event) => {
+    const files = services.serverWorkspaceFiles;
+    if (!files) throw new AppError('WORKSPACE_UNAVAILABLE', '文件上传暂不可用。');
+    if (!Array.isArray(payload.localPaths) || !payload.localPaths.length || payload.localPaths.length > 20
+      || payload.localPaths.some(value => typeof value !== 'string' || value.length > 32768 || value.includes('\0') || !path.isAbsolute(value))) {
+      throw new AppError('INVALID_ARGUMENT', '每次请粘贴或拖入 1 至 20 个本地普通文件。');
+    }
+    if (picking.has(ownerId)) throw new AppError('WORKSPACE_BUSY', '正在接收文件，请稍候。');
+    picking.add(ownerId);
+    try {
+      const binding = await files.requirePlugin(ownerId, payload);
+      ownerFor(event);
+      await files.requirePlugin(ownerId, payload, binding);
+      // 与文件选择器共用预检查和一次性确认；接收文件不启动传输。
+      return await files.beginUploadReview(ownerId, payload, payload.localPaths);
+    } finally { picking.delete(ownerId); }
+  });
   handle('server-workspace-pick-upload', ['path'], async (ownerId, payload, event) => {
     if (!services.serverWorkspaceFiles || !services.pickServerUploadFiles) throw new AppError('WORKSPACE_UNAVAILABLE', '文件选择暂不可用。');
     if (picking.has(ownerId)) throw new AppError('WORKSPACE_BUSY', '请选择或关闭当前文件选择窗口。');
@@ -122,7 +140,7 @@ export function registerServerWorkspaceIpc(ipcMain, services) {
       if (!files?.length) return null;
       ownerFor(event);
       await services.serverWorkspaceFiles.requirePlugin(ownerId, payload, binding);
-      return services.serverWorkspaceFiles.beginUploadReview(ownerId, payload, files);
+      return await services.serverWorkspaceFiles.beginUploadReview(ownerId, payload, files);
     } finally { picking.delete(ownerId); }
   });
 }

@@ -339,3 +339,65 @@ test('复用后的文件前置条件继续拦截源文件、远端文件和目�
   await assert.rejects(h.files.confirmUpload(owner, { ...scope, preparationId: next.preparationId, overwrite: true }), { code: 'WORKSPACE_PATH_CHANGED' });
   assert.equal(h.files.jobs.size, 0);
 });
+
+function importIpc(h) {
+  const handlers = new Map();
+  const sender = Object.assign(new EventEmitter(), { id: 1, mainFrame: {}, isDestroyed: () => false });
+  const event = { sender, senderFrame: sender.mainFrame };
+  registerServerWorkspaceIpc({ handle: (name, callback) => handlers.set(name, callback) }, {
+    serverWorkspaceFiles: h.files, isWorkspaceRenderer: value => value === sender,
+    pickServerUploadFiles: async () => h.paths,
+  });
+  const payload = { ...scope, path: '/srv', localPaths: h.paths };
+  return { handlers, sender, event, payload, invoke: (input = payload, source = event) => handlers.get('v2:server-workspace-import-upload')(source, input) };
+}
+
+test('外部文件入口复用检查和一次性确认，清单不启动传输，保留同名覆盖提示', async t => {
+  const h = await harness(t, 2), ipc = importIpc(h);
+  h.remote.set('/srv/file-0.txt', 8);
+  const result = await ipc.invoke();
+  assert.equal(result.ok, true);
+  assert.equal(result.data.path, '/srv');
+  assert.deepEqual(result.data.files.map(file => file.localPath), h.paths);
+  const ready = await h.done(result.data);
+  assert.equal(ready.status, 'ready');
+  assert.equal(ready.files[0].exists, true);
+  await assert.rejects(h.files.confirmUpload(owner, { ...scope, preparationId: ready.preparationId, overwrite: false }), { code: 'TARGET_EXISTS' });
+  await assert.rejects(h.files.confirmUpload('renderer:2', { ...scope, preparationId: ready.preparationId, overwrite: true }), { code: 'UPLOAD_CONFIRMATION_INVALID' });
+  h.reconnect();
+  await assert.rejects(h.files.confirmUpload(owner, { ...scope, preparationId: ready.preparationId, overwrite: true }), { code: 'WORKSPACE_CHANGED' });
+});
+
+test('外部文件 IPC 拒绝额外参数、无效路径、过量文件、子框架和非工作区来源', async t => {
+  const h = await harness(t, 1), ipc = importIpc(h);
+  for (const extra of [
+    { command: 'fixture' }, { overwrite: true }, { preparationId: 'fixture' },
+    { localPaths: [] }, { localPaths: Array(21).fill(h.paths[0]) }, { localPaths: ['relative'] },
+    { localPaths: [null] }, { localPaths: [h.paths[0] + '\0'] }, { localPaths: ['/'.repeat(32769)] },
+  ]) assert.equal((await ipc.invoke({ ...ipc.payload, ...extra })).error.code, 'INVALID_ARGUMENT');
+  assert.equal((await ipc.invoke(ipc.payload, { ...ipc.event, senderFrame: {} })).error.code, 'WORKSPACE_ACCESS_DENIED');
+  assert.equal((await ipc.invoke(ipc.payload, { sender: { id: 2, mainFrame: {} } })).error.code, 'WORKSPACE_ACCESS_DENIED');
+  assert.equal((await ipc.invoke({ ...ipc.payload, localPaths: [h.root] })).error.code, 'PATH_INVALID', '不支持整文件夹递归上传');
+  assert.equal((await ipc.invoke({ ...ipc.payload, localPaths: [path.join(h.root, 'missing')] })).error.code, 'PATH_INVALID');
+  h.disconnect();
+  assert.equal((await ipc.invoke()).error.code, 'NOT_CONNECTED');
+});
+
+test('接收外部文件时与原生选择器互斥，等待期间窗口失效不能建立检查', async t => {
+  const h = await harness(t, 1), ipc = importIpc(h), barrier = gate();
+  const original = h.files.requirePlugin.bind(h.files);
+  let first = true;
+  h.files.requirePlugin = async (...args) => {
+    const result = await original(...args);
+    if (first) { first = false; await barrier.promise; }
+    return result;
+  };
+  const pending = ipc.invoke();
+  await tick();
+  assert.equal((await ipc.invoke()).error.code, 'WORKSPACE_BUSY');
+  assert.equal((await ipc.handlers.get('v2:server-workspace-pick-upload')(ipc.event, { ...scope, path: '/srv' })).error.code, 'WORKSPACE_BUSY');
+  ipc.sender.emit('did-start-navigation', {}, 'file:///fixture.html', false, true);
+  barrier.release();
+  assert.equal((await pending).error.code, 'WORKSPACE_CHANGED');
+  assert.equal(h.files.uploadReviews.records.size, 0);
+});

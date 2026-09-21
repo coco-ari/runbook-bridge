@@ -63,6 +63,7 @@ let reviewHeld = false;
 let reviewReadDelay = 0;
 const cancelledReviews = [];
 const uploadRevisions = [];
+const uploadImports = [];
 let preparationRuns = 0;
 const makePreparation = (target, names, failure = false) => {
   preparationRuns += 1;
@@ -299,6 +300,13 @@ function register() {
     return reviewResult(uploadPreparation);
   });
   handle('server-workspace-pick-upload', input => { scoped(input); return makePreparation(input.path, uploadSelection); });
+  handle('server-workspace-import-upload', input => {
+    scoped(input);
+    uploadImports.push(input);
+    makePreparation(input.path, input.localPaths.map(file => path.basename(file)));
+    uploadPreparation.files = uploadPreparation.files.map((file,index) => ({...file, localPath:input.localPaths[index]}));
+    return reviewResult(uploadPreparation);
+  });
   handle('server-workspace-read-upload-review', async input => {
     scoped(input);
     const item=uploadPreparation;
@@ -642,7 +650,8 @@ async function run() {
   }
   if (process.env.RUNBOOK_BRIDGE_LOCATION_SMOKE === '1') {
     releaseRootMetadata();
-    await require('./workspace-location-ui.cjs')({evaluate,click,until,wait,win,setViewport,snapshot,terminalSessions,directoryState,writes,previewReads,errors});
+    await require('./workspace-upload-input-ui.cjs')({evaluate,click,clickText,until,wait,win,temporaryRoot,imports:uploadImports,writes,confirmCount:()=>uploadConfirmCalls,snapshot});
+  await require('./workspace-location-ui.cjs')({evaluate,click,until,wait,win,setViewport,snapshot,terminalSessions,directoryState,writes,previewReads,errors});
     completed = true;
     process.stdout.write(JSON.stringify({ok:true,pathLocations:true,queries:directoryState.requests.length})+'\n');
     return;

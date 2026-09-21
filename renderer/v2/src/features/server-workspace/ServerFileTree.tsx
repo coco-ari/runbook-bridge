@@ -1,5 +1,5 @@
 import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from "react"
 import { ArrowUp, Crosshair, DownloadSimple, CaretDown, CaretRight, CaretUpDown, Eye, EyeSlash, File, FileCode, FileText, FileZip, FolderSimple, FolderOpen, Link, PencilSimple, SpinnerGap, UploadSimple } from "@phosphor-icons/react"
 import type { AiOpsV2Api, PluginScope, ServerDirectoryEntry, ServerDirectoryPage } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
@@ -27,6 +27,8 @@ interface ServerFileTreeProps {
   readonly onDownload: (entry: ServerDirectoryEntry) => void
   readonly downloadBusy: boolean
   readonly onUpload: () => void
+  readonly onUploadFiles: (path: string, files: readonly File[]) => void
+  readonly uploadBlocked: boolean
   readonly pathDrag: WorkspacePathDrag
   readonly invalidatedPath: Readonly<{ path: string; id: number }> | null
   readonly locateFile?: Readonly<{ path: string; id: number }> | null
@@ -36,7 +38,43 @@ interface ServerFileTreeProps {
   readonly refreshPaths: readonly string[]
 }
 
-export function ServerFileTree({ api, scope, connected, visible, path, onPath, onPreview, onUpload, onDownload, downloadBusy, pathDrag, refreshEpoch, refreshPaths, invalidatedPath, locateFile, terminalSessionId, terminalLabel }: ServerFileTreeProps) {
+export function ServerFileTree({ api, scope, connected, visible, path, onPath, onPreview, onUpload, onUploadFiles, uploadBlocked, onDownload, downloadBusy, pathDrag, refreshEpoch, refreshPaths, invalidatedPath, locateFile, terminalSessionId, terminalLabel }: ServerFileTreeProps) {
+  const [dropTarget, setDropTarget] = useState<string | null>(null)
+  const canReceiveFiles = connected && visible && !uploadBlocked
+  const pasteShortcut = /Mac/iu.test(navigator.platform) ? "⌘V" : "Ctrl+V"
+  const hasFiles = (data: DataTransfer) => data.types.includes("Files") && !data.types.includes("application/x-runbook-workspace-path")
+  const uploadTarget = (target: EventTarget | null) => {
+    if (!(target instanceof Element) || target.closest("input, textarea, [contenteditable=true]")) return null
+    const row = target.closest<HTMLElement>("[data-upload-path]")
+    return row ? row.dataset.uploadPath || null : path
+  }
+  const receiveDrag = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasFiles(event.dataTransfer)) return
+    event.preventDefault()
+    event.stopPropagation()
+    const target = canReceiveFiles ? uploadTarget(event.target) : null
+    event.dataTransfer.dropEffect = target ? "copy" : "none"
+    setDropTarget(target)
+  }
+  useEffect(() => {
+    setDropTarget(null)
+    if (!visible) return
+    const clear = () => setDropTarget(null)
+    // 阻止外部文件在窗口中触发默认导航，具体上传只由文件树落点接收。
+    const preventFileNavigation = (event: globalThis.DragEvent) => {
+      if (event.dataTransfer?.types.includes("Files")) event.preventDefault()
+    }
+    window.addEventListener("dragover", preventFileNavigation)
+    window.addEventListener("drop", preventFileNavigation)
+    window.addEventListener("dragend", clear)
+    window.addEventListener("blur", clear)
+    return () => {
+      window.removeEventListener("dragover", preventFileNavigation)
+      window.removeEventListener("drop", preventFileNavigation)
+      window.removeEventListener("dragend", clear)
+      window.removeEventListener("blur", clear)
+    }
+  }, [connected, visible, uploadBlocked])
   const [refreshing, setRefreshing] = useState(false)
   const refreshingRef = useRef(false)
   const connectedRef = useRef(connected)
@@ -484,7 +522,13 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
     requestAnimationFrame(() => requestAnimationFrame(() => element.querySelector<HTMLButtonElement>(`[data-tree-index="${index}"]`)?.focus()))
   }
 
-  return <section className="server-file-tree" aria-label="服务器目录树">
+  return <section className="server-file-tree" aria-label="服务器目录树" onPaste={event => {
+    const target = uploadTarget(event.target)
+    if (!target || !hasFiles(event.clipboardData)) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (canReceiveFiles) onUploadFiles(target, Array.from(event.clipboardData.files))
+  }}>
     <div className="server-file-toolbar">
       <div className="server-file-actions">
         <DirectoryBookmarks key={directoryBookmarksKey(scope)} scope={scope} path={path} connected={connected} visible={visible} onNavigate={target => revealPath(target, true)} />
@@ -492,7 +536,7 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
         <Button size="icon-sm" variant="ghost" aria-label="显示隐藏文件" title={showHidden ? "隐藏点文件" : "显示隐藏文件"} aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}>{showHidden ? <Eye /> : <EyeSlash />}</Button>
         <Button size="icon-sm" variant="ghost" aria-label="定位终端当前目录" title={terminalLabel ? "定位 " + terminalLabel + " 的工作目录" : "定位当前终端的工作目录"} disabled={!connected || !terminalSessionId || locatingTerminal} onClick={() => { void locateTerminalDirectory() }}>{locatingTerminal ? <SpinnerGap className="animate-spin" /> : <Crosshair />}</Button>
         <WorkspaceIconButton action="refresh" label="刷新目录" disabled={!connected || refreshing} busy={refreshing} onClick={() => { void refreshVisibleDirectories() }} />
-        <Button size="icon-sm" variant="ghost" title="上传文件" aria-label="上传文件" disabled={!connected} onClick={onUpload}><UploadSimple /></Button>
+        <Button size="icon-sm" variant="ghost" title={`上传文件，也可选择目录后按 ${pasteShortcut} 或拖入本地文件`} aria-label="上传文件" disabled={!canReceiveFiles} onClick={onUpload}><UploadSimple /></Button>
       </div>
     </div>
     <div className="server-file-navigation">
@@ -509,14 +553,26 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
       </>}
     </div>
     {revealError ? <div className="px-3 py-2 text-xs text-danger" role="status">{revealError}</div> : null}
-    <div className="server-tree-scroll" ref={scrollRef} role="tree" aria-label="远程文件目录" onScroll={(event) => setViewport({ scrollTop: event.currentTarget.scrollTop, height: event.currentTarget.clientHeight })}>
+    <div className="server-tree-scroll" ref={scrollRef} role="tree" tabIndex={0} aria-label="远程文件目录" aria-description={`选择目录后按 ${pasteShortcut} 粘贴文件，或拖入本地文件上传`} data-upload-over={dropTarget !== null || undefined}
+      onDragEnter={receiveDrag} onDragOver={receiveDrag} onDragLeave={event => {
+        if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDropTarget(null)
+      }} onDrop={event => {
+        setDropTarget(null)
+        if (!hasFiles(event.dataTransfer)) return
+        event.preventDefault()
+        event.stopPropagation()
+        const target = uploadTarget(event.target)
+        if (canReceiveFiles && target) onUploadFiles(target, Array.from(event.dataTransfer.files))
+      }} onClick={event => {
+        if (!(event.target as Element).closest("[data-tree-index], button")) event.currentTarget.focus()
+      }} onScroll={(event) => setViewport({ scrollTop: event.currentTarget.scrollTop, height: event.currentTarget.clientHeight })}>
       <div style={{ height: rows.length * rowHeight, position: "relative" }}>
         {rows.slice(start, end).map((row, offset) => {
           const index = start + offset
           const style = { position: "absolute" as const, top: index * rowHeight, left: 0, right: 0, height: rowHeight, paddingLeft: 12 + row.depth * 18 }
           if (row.kind !== "entry") {
             const state = directories[row.directory]
-            return <div key={`status:${row.kind}:${row.directory}`} style={style} className="flex min-w-0 items-center gap-1 pr-2 text-xs text-muted-foreground">
+            return <div key={`status:${row.kind}:${row.directory}`} data-upload-path={row.kind === "error" || row.kind === "cycle" ? "" : row.directory} style={style} className="flex min-w-0 items-center gap-1 pr-2 text-xs text-muted-foreground">
               {row.kind === "previous" ? <Button size="sm" variant="ghost" disabled={!connected} onClick={() => { void load(row.directory, state?.history?.at(-1), true, true) }}>查看上一批</Button> : row.kind === "loading" ? <><SpinnerGap className="animate-spin" size={13} />读取中…</> : row.kind === "more" ? <Button size="sm" variant="ghost" disabled={!connected} onClick={() => { void load(row.directory, state?.page?.nextCursor ?? undefined) }}>{row.message ?? "加载更多"}</Button> : row.kind === "error" ? <><span className="truncate text-danger" title={row.message}>{row.message}</span><Button size="sm" variant="ghost" disabled={!connected} onClick={() => { void load(row.directory) }}>重试</Button></> : row.kind === "limit" ? state?.page?.nextCursor ? <Button size="sm" variant="ghost" disabled={!connected} title="替换当前批次，可返回上一批" onClick={() => { void load(row.directory, state.page?.nextCursor ?? undefined, true); if (scrollRef.current) scrollRef.current.scrollTop = 0 }}>查看下一批</Button> : <span title="服务器目录达到单次读取上限；可输入具体子目录路径继续浏览。">{row.message}</span> : <span>{row.message}</span>}
             </div>
           }
@@ -539,7 +595,7 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
               setDirectories(current => ({ ...current, [directory]: { ...current[directory]!, metadataError: undefined } }))
             } else if (supported) toggle(entry, previewFile)
           }
-          return <div key={`entry:${entry.path}`} data-tree-index={index} tabIndex={0} className={"server-tree-row" + (entry.type === "symlink" ? " server-tree-link" : "")} role="treeitem" aria-level={row.depth + 1} aria-selected={selected === entry.path} {...(isDirectory ? { "aria-expanded": open } : {})} aria-disabled={(!supported && !pending) || !connected} style={style} title={entry.type === "symlink" ? `${entry.path}${entry.linkTarget ? " → " + entry.linkTarget : ""}${row.cycle ? "（循环链接）" : pending ? metadataError ? "（链接信息读取失败，点击重试）" : "（正在读取链接信息）" : supported ? "" : "（目标不可用或不支持打开）"}` : entry.path} draggable={connected && (supported || pending) && canDragWorkspacePath(entry.path)} onDragStart={event => {
+          return <div key={`entry:${entry.path}`} data-tree-index={index} data-upload-path={supported ? isDirectory ? entry.path : parentRemotePath(entry.path) : ""} data-upload-over={dropTarget === entry.path && isDirectory || undefined} tabIndex={0} className={"server-tree-row" + (entry.type === "symlink" ? " server-tree-link" : "")} role="treeitem" aria-level={row.depth + 1} aria-selected={selected === entry.path} {...(isDirectory ? { "aria-expanded": open } : {})} aria-disabled={(!supported && !pending) || !connected} style={style} title={entry.type === "symlink" ? `${entry.path}${entry.linkTarget ? " → " + entry.linkTarget : ""}${row.cycle ? "（循环链接）" : pending ? metadataError ? "（链接信息读取失败，点击重试）" : "（正在读取链接信息）" : supported ? "" : "（目标不可用或不支持打开）"}` : entry.path} draggable={connected && (supported || pending) && canDragWorkspacePath(entry.path)} onDragStart={event => {
             if (!connected || !(supported || pending) || (event.target as Element).closest("button") || !pathDrag.begin(event.dataTransfer, entry.path)) { event.preventDefault(); return }
             pendingOpenRef.current = null
             revealSequenceRef.current += 1
@@ -547,7 +603,7 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
             setRevealError("")
             setSelected(entry.path)
           }} onDragEnd={() => pathDrag.clear()} onClick={event => {
-            if (!(event.target as Element).closest("button")) activate(false)
+            if (!(event.target as Element).closest("button")) { event.currentTarget.focus(); activate(false) }
           }} onDoubleClick={event => {
             if ((event.target as Element).closest("button") || isDirectory) return
             event.preventDefault()
@@ -573,5 +629,6 @@ export function ServerFileTree({ api, scope, connected, visible, path, onPath, o
         })}
       </div>
     </div>
+    {dropTarget !== null ? <div className="server-upload-drop-hint" role="status"><UploadSimple size={16} /><span>松开后确认上传到 <strong>{dropTarget}</strong></span></div> : null}
   </section>
 }

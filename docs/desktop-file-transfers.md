@@ -2,6 +2,9 @@
 
 ## 使用方法
 
+- 从访达或资源管理器复制本地文件，点击服务器目标文件夹后按 macOS 的 `⌘V` 或 Windows 的 `Ctrl+V`，自动打开上传确认框并列出源文件。macOS 原生「编辑 → 粘贴」使用相同入口；终端和路径输入框的文本粘贴保持原行为。
+- 本地文件可拖到文件夹行、普通文件行或文件树空白处。目标分别为该文件夹、文件所在目录、当前选定目录；目录下的空白状态行使用所属目录。拖入时显示准确目标，松开只打开确认，不立即传输，也不移动或删除本地文件。
+- 每批 1 至 20 个普通文件、单文件不超过 500 MiB，沿用现有校验、覆盖确认和传输队列。首版不支持整文件夹递归上传、本地符号链接、截图或无磁盘路径的虚拟附件；纯文本不会作为文件路径上传。检查和确认期间不接收下一批文件，先完成或取消当前清单。
 - 上传排队或传输中可点击「暂停」。当前最多 1 MiB 批次写入完成后才显示「已暂停」，不会关闭 SSH 连接或影响其他任务。最终校验/提交阶段不提供暂停。
 - 应用及所属窗口保持运行时，暂停后 30 分钟内点击「继续上传」即可恢复，不再弹出确认窗口；后台仍重新核对源文件和已传前缀。断线中断后的恢复保留原有确认流程；手动暂停不消耗最多 3 次的断线恢复额度。返回详情保留任务，退出应用后不恢复。
 - 已完成、已取消、失败且后台已退出的任务可「移除记录」或「清除已结束」。只删除界面/内存记录，保留本地文件、服务器文件和审计。暂停与中断任务不能被批量清掉。
@@ -28,20 +31,25 @@
 | --- | --- | --- |
 | `serverWorkspacePauseUpload` | 作用域、jobId | 请求暂停本窗口任务 |
 | `serverWorkspaceClearTransfers` | 作用域、可选 jobId | 移除结束记录；省略 ID 清理本作用域所有结束记录 |
+| `serverWorkspaceImportUpload` | 作用域、远端 path，以及独立参数 `File[]` | 接收粘贴或拖入的本地文件，返回上传检查清单；不启动传输 |
 | `serverWorkspaceDownload` | 作用域、远端 path | 原生另存为并创建下载任务；取消选择返回 null |
 
 现有 `serverWorkspaceUploads` 返回统一传输列表，增加方向、本地下载路径和可操作能力；状态增加 `pausing`、`paused`。继续上传复用原有一次性确认流程；手动暂停后的继续由界面自动完成该步骤，仍仅使用原任务的文件参数和覆盖范围。Renderer 不能指定下载本地路径、文件句柄、哈希或续传偏移；原生对话框前后、任务启动和提交均校验窗口、作用域、配置修订及连接代次。下载审计不记录本地路径或内容。
 
-桌面 preload API 共 81 个，MCP 工具仍为 36 个，原 MCP 下载和上传入口保持原协议。
+新增文件来源入口由 preload 的 `webUtils.getPathForFile` 解析真实磁盘 `File`，不向 Renderer 暴露可接收任意本地路径的 API。内存文件和伪造对象在桥接层拒绝；主进程再次检查路径、数量、普通文件类型、大小、窗口身份和连接绑定，再进入原有 `beginUploadReview`。目录目标及文件状态仍通过一次性确认绑定；此次变更扩展桌面文件接收边界，不扩展 MCP 权限。
+
+桌面 preload API 共 92 个，原 MCP 下载和上传入口保持原协议。
 
 ## 验证
 
 ```powershell
-node --test test/server-download-transfer.test.mjs test/server-upload-resume-runtime.test.mjs test/server-workspace-files.test.mjs test/renderer-bridge-contract.test.mjs
+node --test test/server-upload-import.test.mjs test/server-upload-reviews.test.mjs test/server-download-transfer.test.mjs test/server-upload-resume-runtime.test.mjs test/server-workspace-files.test.mjs test/renderer-bridge-contract.test.mjs
 corepack pnpm run check
 corepack pnpm test
 corepack pnpm run test:ui:server-workspace
 corepack pnpm run test:ui
 ```
+
+文件接收回归覆盖真实 Chromium 文件拖放、隔离 preload 文件解析、粘贴清单、准确落点、重复粘贴、纯文本与输入框隔离；Windows 另验证原生文件剪贴板和 Ctrl+V。macOS 复用跨平台事件及原生菜单，Finder 文件复制与 ⌘V 的系统级体验仍需在 Mac 实机验收。
 
 下载与暂停测试使用回环地址真实 SSH2 客户端/服务端，覆盖文件完整性、空文件、多批传输、取消、中断、源文件变化、本地目标冲突、校验后发布、原有文件保留、暂停恢复与命令通道共存。界面验证覆盖暂停/继续、移除记录后轮询、目录树下载、任务路径与批量清理。真实公网、不同文件系统和生产服务器仍需要实际体验验证。

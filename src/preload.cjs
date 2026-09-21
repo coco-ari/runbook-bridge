@@ -1,4 +1,19 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+
+const importUploadFiles = async (payload, files) => {
+  if (!Array.isArray(files) || !files.length || files.length > 20) {
+    return { ok: false, error: { code: 'INVALID_ARGUMENT', message: '每次请选择 1 至 20 个普通文件。' } };
+  }
+  let localPaths;
+  try {
+    // 只接受系统提供的真实文件对象，不能用文本路径或内存文件绕过本地文件选择。
+    localPaths = Array.from(files, file => webUtils.getPathForFile(file));
+    if (localPaths.some(value => !value)) throw new Error();
+  } catch {
+    return { ok: false, error: { code: 'UPLOAD_SOURCE_UNAVAILABLE', message: '请从访达或资源管理器复制、拖入本地文件；暂不支持截图和虚拟附件。' } };
+  }
+  return ipcRenderer.invoke('v2:server-workspace-import-upload', { ...payload, localPaths });
+};
 
 const requestConnectionIntent = (payload) => ipcRenderer.invoke('v2:connection-intent',payload);
 const legacyConnectionSnapshot = (payload) => requestConnectionIntent(payload).then((result) => (
@@ -26,6 +41,7 @@ contextBridge.exposeInMainWorld('aiOps', {
     serverWorkspaceDownload: payload => ipcRenderer.invoke('v2:server-workspace-download', payload),
     serverWorkspacePrepareUploadResume: (payload) => ipcRenderer.invoke('v2:server-workspace-prepare-upload-resume', payload),
     serverWorkspacePickUpload: (payload) => ipcRenderer.invoke('v2:server-workspace-pick-upload', payload),
+    serverWorkspaceImportUpload: importUploadFiles,
     serverWorkspaceReadUploadReview: (payload) => ipcRenderer.invoke('v2:server-workspace-read-upload-review', payload),
     serverWorkspaceCancelUploadReview: (payload) => ipcRenderer.invoke('v2:server-workspace-cancel-upload-review', payload),
     serverWorkspaceReviseUpload: (payload) => ipcRenderer.invoke('v2:server-workspace-revise-upload', payload),
