@@ -1305,7 +1305,7 @@ async function assertCompactProjectRail(win,theme) {
       };
     })()`,true);
     assert.equal(snapshot.noToggle,true,'project rail has no top collapse arrow');
-    assert.ok(snapshot.rowHeights.every((height) => Math.abs(height - 36) <= 1),'expanded and compact rows both stay 36px high');
+    assert.ok(snapshot.rowHeights.every((height) => Math.abs(height - 32) <= 1),'展开与紧凑项目行均保持 32px 高');
     assert.ok(snapshot.actions.every((action) => action.sameAppearance && action.outlined && action.transparent && action.noInlineShortcut && Math.abs(action.height - 40) <= 1),
       `${label}: navigation add actions must retain neutral outline appearance: ${JSON.stringify(snapshot.actions)}`);
     assert.deepEqual(snapshot.actions[0].appearance,snapshot.actions[1].appearance,'project and environment add actions use the same neutral colors');
@@ -1503,8 +1503,8 @@ async function assertCompactProjectRail(win,theme) {
       assert.ok(row.present && row.name && row.status,`compact identity/status missing: ${JSON.stringify(row)}`);
       assert.equal(row.name,project.name,'compact navigation keeps the full name in the DOM');
       assert.equal(row.avatar,false,'compact rows do not duplicate the name with a monogram');
-      assert.ok(Math.abs(row.height - 36) <= 1 && row.singleLine && row.nameTruncation,
-        `compact project row must be a 36px left-aligned single line: ${JSON.stringify(row)}`);
+      assert.ok(Math.abs(row.height - 32) <= 1 && row.singleLine && row.nameTruncation,
+        `紧凑项目行应为 32px 高、左对齐且单行显示： ${JSON.stringify(row)}`);
       assert.ok(row.label?.includes(project.name) && row.label.includes(row.status));
       if (row.statusKind === 'disconnected') {
         assert.equal(row.statusAnimated,false,'disconnected status remains static');
@@ -3621,6 +3621,7 @@ async function run() {
       'workspace overview',
     );
     await assertSecurity(win);
+    await require('./workspace-style-ui.cjs')(win);
     await assertRendererKeyboardFocus(win);
 
     const initial = await win.webContents.executeJavaScript(`(() => ({

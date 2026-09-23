@@ -189,7 +189,12 @@ async function run() {
   });
   const win = new BrowserWindow({ show: false, useContentSize: true, enableLargerThanScreen: true, width: 1280, height: 820,
     webPreferences: { preload: path.join(root, 'src', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
-  win.webContents.on('console-message', (_event, level, message) => { if (level >= 2) errors.push(message); });
+  win.webContents.on('console-message', (_event, details) => { if (details.level === 'error') errors.push(details.message); });
+  const execute = win.webContents.executeJavaScript.bind(win.webContents);
+  Object.defineProperty(win.webContents, 'executeJavaScript', { value: async (source, ...args) => {
+    try { return await execute(source, ...args); }
+    catch (error) { throw new Error('界面脚本执行失败：' + source.slice(0, 700), { cause: error }); }
+  } });
   try {
     await win.loadFile(path.join(root, 'renderer-build', 'v2', 'index.html'));
     await waitFor(win, 'document.querySelector(\'[data-shell-ready="true"]\')', '主界面');
@@ -327,7 +332,7 @@ async function run() {
     await text(win, '.redis-tab-panel:not([hidden])', '暂不支持');
     const beforeMatchMode = calls.length;
     await click(win, testId('redis-search-exact'));
-    assert.equal(await win.webContents.executeJavaScript('document.querySelector("[data-testid=redis-search-exact]").checked', true), true);
+    assert.equal(await win.webContents.executeJavaScript('(document.querySelector("[data-testid=redis-search-exact]").getAttribute("aria-checked") === "true")', true), true);
     assert.equal(calls.length, beforeMatchMode, '切换匹配方式不触发读取');
     await fill(win, testId('redis-search-input'), 'outside:key');
     const scans = calls.filter((entry) => entry.operation === 'scan').length;
@@ -393,7 +398,7 @@ async function run() {
     await fill(win, testId('redis-search-input'), 'cache:tex');
     const beforeExactHistory = calls.filter(entry => entry.operation === 'scan').length;
     await click(win, testId('redis-search-suggestion'));
-    assert.equal(await win.webContents.executeJavaScript('document.querySelector("[data-testid=redis-search-exact]").checked', true), true, '历史恢复精确匹配模式');
+    assert.equal(await win.webContents.executeJavaScript('(document.querySelector("[data-testid=redis-search-exact]").getAttribute("aria-checked") === "true")', true), true, '历史恢复精确匹配模式');
     assert.equal(calls.filter(entry => entry.operation === 'scan').length, beforeExactHistory, '精确历史直接读取 Key');
     assert.equal(await win.webContents.executeJavaScript(historyInput + '.value', true), 'cache:text');
 
@@ -408,7 +413,7 @@ async function run() {
     assert.equal(calls.at(-1).payload.keyword, 'cache:orders:*');
     assert.equal(calls.at(-1).payload.patternId, 'cache', '目录搜索保持已登记范围');
     assert.equal(calls.at(-1).payload.cursor, undefined, '目录搜索创建新查询');
-    assert.equal(await win.webContents.executeJavaScript('document.querySelector("[data-testid=redis-search-exact]").checked', true), false);
+    assert.equal(await win.webContents.executeJavaScript('(document.querySelector("[data-testid=redis-search-exact]").getAttribute("aria-checked") === "true")', true), false);
     assert.equal(await win.webContents.executeJavaScript('document.querySelectorAll("[data-redis-key]").length', true), 3);
     await pressSearch('Escape');
     await win.webContents.executeJavaScript('document.querySelector(\'[data-redis-folder="cache:orders:pending:"]\').focus()', true);
@@ -636,7 +641,7 @@ async function run() {
     assert.deepEqual(external, []);
     assert.deepEqual(errors, []);
     process.stdout.write('Redis 工作区 UI smoke 通过（' + calls.length + ' 次限定范围的模拟请求）。\n');
-  } catch (error) { await shot(win, 'redis-failure').catch(() => {}); throw error; }
+  } catch (error) { console.error('Redis 渲染错误', JSON.stringify(errors)); await shot(win, 'redis-failure').catch(() => {}); throw error; }
   finally { if (!win.isDestroyed()) win.destroy(); }
 }
 run().then(() => app.exit(0)).catch((error) => { process.stderr.write(String(error.stack ?? error) + '\n'); app.exit(1); });

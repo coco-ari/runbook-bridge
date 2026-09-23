@@ -1,3 +1,4 @@
+import { SelectControl, SelectItem } from "@/components/ui/select"
 import { copyMysqlText } from "./mysql-clipboard"
 import { CaretLeft, CaretRight, CheckCircle, Clock, MagnifyingGlass, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
 import { useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
@@ -122,7 +123,7 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
       <header className="flex min-h-11 shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b px-3 py-2">
         <h3 className="flex shrink-0 items-center gap-2 text-xs font-medium"><TableIcon aria-hidden="true" className="size-3.5 text-muted-foreground" />{kind === "preview" ? "数据预览" : "查询结果"}</h3>
         <span aria-hidden="true" className="h-3.5 w-px bg-border" />
-        <p aria-live="polite" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] tabular-nums text-muted-foreground" data-testid={`${prefix}-summary`}>
+        <p aria-live="polite" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs tabular-nums text-muted-foreground" data-testid={`${prefix}-summary`}>
           <span className="flex items-center gap-1 text-success"><CheckCircle aria-hidden="true" className="size-3" />成功</span>
           <span>返回 {result.rowCount} 行</span>
           <span className="flex items-center gap-1"><Clock aria-hidden="true" className="size-3" />耗时 {Math.round(result.durationMs)} ms</span>
@@ -179,7 +180,7 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
                   <tr>
                     <th className="sticky top-0 z-10 h-8 border-b border-r bg-surface-inset px-3 text-right font-normal text-text-faint" scope="col"><span className="sr-only">行号</span>#</th>
                     {result.columns.map((column) => (
-                      <th aria-sort={selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "ascending" : "descending" : "none"} className="sticky top-0 z-10 h-8 border-b bg-surface-inset px-3 text-left font-mono text-[11px] font-normal text-muted-foreground" key={column.name} scope="col" title={column.table ? `${column.table}.${column.name}` : column.name}>
+                      <th aria-sort={selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "ascending" : "descending" : "none"} className="sticky top-0 z-10 h-8 border-b bg-surface-inset px-3 text-left font-mono text-xs font-normal text-muted-foreground" key={column.name} scope="col" title={column.table ? `${column.table}.${column.name}` : column.name}>
                         <button aria-label={`按 ${column.name} 排序`} draggable={Boolean(columnDragScope)} onDragStart={event => { if (columnDragScope) { event.dataTransfer.effectAllowed = "copy"; event.dataTransfer.setData("application/x-runbook-mysql-column", JSON.stringify({ ...columnDragScope, column: column.name })) } }} className="mysql-column-sort" data-column={column.name} data-testid={`${prefix}-sort`} onClick={() => sortColumn(column.name)} title={onSort ? "在数据库中排序：降序 / 升序 / 默认" : "当前返回结果排序：降序 / 升序 / 默认"} type="button"><span>{column.name}</span><span aria-hidden="true">{selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "↑" : "↓" : "↕"}</span></button>
                       </th>
                     ))}
@@ -203,9 +204,9 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
                       }}
                       tabIndex={0}
                     >
-                      <td className="h-8 border-b border-r border-border/50 px-3 py-0 text-right font-mono text-[10px] tabular-nums text-text-faint"><span className="block h-[31px] leading-[31px]">{index + 1}</span></td>
+                      <td className="h-8 border-b border-r border-border/50 px-3 py-0 text-right font-mono text-xs tabular-nums text-text-faint"><span className="block h-[31px] leading-[31px]">{index + 1}</span></td>
                       {result.columns.map((column) => (
-                        <td className="h-8 border-b border-border/50 px-3 py-0 font-mono text-[11px]" key={column.name} onDoubleClick={() => { void copyText(mysqlCopyCellText(row[column.name]), "单元格已复制") }} title="单击查看行详情，双击复制完整单元格">
+                        <td className="h-8 border-b border-border/50 px-3 py-0 font-mono text-xs" key={column.name} onDoubleClick={() => { void copyText(mysqlCopyCellText(row[column.name]), "单元格已复制") }} title="单击查看行详情，双击复制完整单元格">
                           <span className={`block h-[31px] truncate leading-[31px] ${typeof row[column.name] === "number" ? "text-right tabular-nums" : ""} ${row[column.name] === null || row[column.name] === undefined ? "text-muted-foreground italic" : ""}`}>
                             {mysqlCellText(row[column.name])}
                           </span>
@@ -220,10 +221,10 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
             </div>
             {selectedRow && state.selectedRow !== null ? <MysqlResultRowDetail columns={result.columns} id={detailId} key={`${state.selectedRow}`} onClose={closeDetail} onCopy={(text, description) => { void copyText(text, description) }} prefix={prefix} row={selectedRow} rowNumber={state.selectedRow + 1} /> : null}
           </div>
-          <footer className="flex min-h-9 shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-1 text-[11px] tabular-nums text-muted-foreground">
+          <footer className="flex min-h-9 shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-1 text-xs tabular-nums text-muted-foreground">
             <span>{filteredRows.length ? `${start + 1} 至 ${start + rows.length}` : "0"} / {filteredRows.length} 行{filter ? ` · 共返回 ${result.rows.length} 行` : " · 当前返回结果"}</span>
             <span aria-live="polite" className={`min-w-0 flex-1 truncate ${notice?.failed ? "text-danger" : "text-text-faint"}`} role="status">{notice?.message || "单击行查看详情 · 双击单元格复制"}</span>
-            {stream ? <><span className="ml-auto" data-testid={`${prefix}-load-status`}>{stream.message}</span><Button data-testid={`${prefix}-load-more`} disabled={!stream.hasMore || stream.loading || Boolean(filter)} onClick={stream.onLoadMore} size="sm" variant="ghost">{stream.loading ? "加载中…" : "继续加载"}</Button></> : <><label className="ml-auto flex items-center gap-1.5"><span className="sr-only">每页结果行数</span><select aria-label="每页结果行数" className="h-6 rounded border bg-surface px-1 text-[11px] outline-none focus-visible:ring-2 focus-visible:ring-ring" onChange={(event) => changeView({ pageSize: Number(event.target.value), page: 0, selectedRow: null })} value={state.pageSize}>{[25, 50, MYSQL_RESULT_PAGE_SIZE].map((size) => <option key={size} value={size}>{size} 行 / 页</option>)}</select></label>
+            {stream ? <><span className="ml-auto" data-testid={`${prefix}-load-status`}>{stream.message}</span><Button data-testid={`${prefix}-load-more`} disabled={!stream.hasMore || stream.loading || Boolean(filter)} onClick={stream.onLoadMore} size="sm" variant="ghost">{stream.loading ? "加载中…" : "继续加载"}</Button></> : <><label className="ml-auto flex items-center gap-1.5"><span className="sr-only">每页结果行数</span><SelectControl aria-label="每页结果行数" size="sm" onValueChange={(value) => changeView({ pageSize: Number(value), page: 0, selectedRow: null })} value={String(state.pageSize)}>{[25, 50, MYSQL_RESULT_PAGE_SIZE].map((size) => <SelectItem key={size} value={String(size)}>{size} 行 / 页</SelectItem>)}</SelectControl></label>
             <Button aria-label="上一页结果" disabled={visiblePage === 0} onClick={() => changeView({ page: visiblePage - 1, selectedRow: null })} size="icon-xs" type="button" variant="ghost"><CaretLeft aria-hidden="true" className="size-3.5" /></Button>
             <span className="min-w-10 text-center">{visiblePage + 1} / {lastPage + 1}</span>
             <Button aria-label="下一页结果" data-testid={`${prefix}-next-page`} disabled={visiblePage === lastPage} onClick={() => changeView({ page: visiblePage + 1, selectedRow: null })} size="icon-xs" type="button" variant="ghost"><CaretRight aria-hidden="true" className="size-3.5" /></Button></>}

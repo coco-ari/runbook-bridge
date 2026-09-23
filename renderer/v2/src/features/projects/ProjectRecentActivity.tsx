@@ -129,7 +129,7 @@ export function ProjectRecentActivity({
       <CardHeader className="border-b border-border/70 px-3 py-2.5">
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
           <CardTitle>
-            <h3 className="flex items-center gap-2 text-xs font-semibold">
+            <h3 className="flex items-center gap-2 text-section font-medium">
               <ClockCounterClockwise aria-hidden="true" className="text-primary" size={14} />
               近期操作
             </h3>

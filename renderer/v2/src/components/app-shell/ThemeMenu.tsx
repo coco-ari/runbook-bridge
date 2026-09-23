@@ -29,14 +29,14 @@ export function ThemeMenu() {
         <DropdownMenuTrigger asChild>
           <Button
             aria-label={`切换主题，当前${selected.label}`}
-            className="h-10 w-full min-w-0 justify-start gap-2 px-3 text-sm"
+            className="h-8 w-full min-w-0 justify-start gap-2 px-3 text-sm"
             data-testid="theme-menu-trigger"
             size="sm"
             type="button"
             variant="outline"
           >
             <selected.Icon aria-hidden="true" className="size-3.5 shrink-0" />
-            <span className="min-w-0 flex-1 truncate text-left text-xs leading-4">{selected.label}</span>
+            <span className="min-w-0 flex-1 truncate text-left text-sm leading-5">{selected.label}</span>
             <CaretUpDown aria-hidden="true" className="size-3 shrink-0" />
           </Button>
         </DropdownMenuTrigger>

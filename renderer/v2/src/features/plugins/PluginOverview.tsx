@@ -99,7 +99,7 @@ export function PluginOverview({
             <p className="text-xs leading-5 text-muted-foreground">{capabilityBoundary(plugin.pluginType)}</p>
           </div>
         </div>
-        <p className="flex items-start gap-2 text-[11px] leading-5 text-muted-foreground">
+        <p className="flex items-start gap-2 text-xs leading-5 text-muted-foreground">
           <LockKey aria-hidden="true" className="mt-0.5 shrink-0" size={14} />
           只有已连接且获准的插件能力会进入新的 Agent context，凭据不会显示或复制。
         </p>

@@ -109,6 +109,7 @@ function SelectItem({
   return (
     <SelectPrimitive.Item
       data-slot="select-item"
+      data-value={props.value}
       className={cn(
         "relative flex w-full cursor-default items-center gap-1.5 rounded-md py-1 pr-8 pl-1.5 text-sm outline-hidden select-none focus:bg-accent focus:text-accent-foreground not-data-[variant=destructive]:focus:**:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
         className
@@ -188,3 +189,17 @@ export {
   SelectTrigger,
   SelectValue,
 }
+
+// 简单选择字段共用触发器、菜单及键盘交互，避免业务页自行实现外观。
+function SelectControl({ value, onValueChange, children, placeholder, disabled = false, size = "default", ...props }: Omit<React.ComponentProps<typeof SelectTrigger>, "value" | "onChange" | "children"> & {
+  readonly value: string
+  readonly onValueChange: (value: string) => void
+  readonly children: React.ReactNode
+  readonly placeholder?: string
+}) {
+  return <Select value={value} onValueChange={onValueChange} disabled={disabled}>
+    <SelectTrigger {...props} size={size}><SelectValue placeholder={placeholder} /></SelectTrigger>
+    <SelectContent position="popper">{children}</SelectContent>
+  </Select>
+}
+export { SelectControl }

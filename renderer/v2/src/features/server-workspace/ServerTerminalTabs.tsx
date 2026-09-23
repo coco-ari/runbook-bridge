@@ -1,3 +1,4 @@
+import { Empty, EmptyHeader, EmptyTitle, EmptyMedia, EmptyContent } from "@/components/ui/empty"
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react"
 import type { PanelImperativeHandle } from "react-resizable-panels"
 import { TerminalWindow } from "@phosphor-icons/react"
@@ -73,7 +74,7 @@ export function ServerTerminalTabs({ onActiveSessionChange, onActiveTerminalLabe
           {tabs.map(tab => <div key={tab.id} className="server-terminal-tab-panel" role="tabpanel" id={groupId + "-panel-" + tab.id} aria-labelledby={groupId + "-tab-" + tab.id} hidden={active !== tab.id}>
             <ServerTerminal {...props} onSessionChange={onSessionChange} tabId={tab.id} visible={props.visible && activeDocker === null && active === tab.id} />
           </div>)}
-          {!tabs.length ? <div className="server-tabs-empty"><p>所有终端已关闭</p><Button variant="outline" disabled={!props.connected} onClick={add}>新增终端</Button></div> : null}
+          {!tabs.length ? <Empty className="server-tabs-empty"><EmptyHeader><EmptyMedia variant="icon"><TerminalWindow /></EmptyMedia><EmptyTitle>所有终端已关闭</EmptyTitle></EmptyHeader><EmptyContent><Button variant="outline" disabled={!props.connected} onClick={add}>新增终端</Button></EmptyContent></Empty> : null}
         </ResizablePanel>
       </ResizablePanelGroup>
     </div>

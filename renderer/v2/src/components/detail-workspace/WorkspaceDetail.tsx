@@ -434,7 +434,7 @@ export function WorkspaceDetail({
       <header className="shrink-0 bg-surface">
         <div className="flex min-w-0 items-start gap-3 px-4 py-3">
           <div className="min-w-0 flex-1">
-            <p className="truncate text-[11px] text-muted-foreground" title={scopePath}>{scopePath || "本地工作区"}</p>
+            <p className="truncate text-xs text-muted-foreground" title={scopePath}>{scopePath || "本地工作区"}</p>
             <div className="mt-1 flex min-w-0 items-center gap-2">
               <h1 className="truncate text-base font-semibold tracking-tight" title={title}>{title}</h1>
               <StatusIndicator appearance="badge" status={selectedStatus} />

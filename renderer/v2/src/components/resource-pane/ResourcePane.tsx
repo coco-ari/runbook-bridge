@@ -146,7 +146,7 @@ function NavigationReadFailure({
     <Alert className={className} data-testid={testId} variant="destructive">
       <WarningCircle weight="fill" />
       <AlertTitle className="text-xs">{title}</AlertTitle>
-      <AlertDescription className="space-y-2 text-[11px] leading-4">
+      <AlertDescription className="space-y-2 text-xs leading-4">
         <span className="block space-y-0.5">
           {descriptions.map((description) => (
             <span className="block" key={description}>{description}</span>
@@ -256,7 +256,7 @@ function EnvironmentGroup({
           "group/environment relative min-w-0 flex-nowrap items-stretch gap-0 overflow-hidden rounded-none border-0 bg-transparent p-0",
           "before:absolute before:inset-y-2 before:left-0 before:z-10 before:w-0.5 before:rounded-r-full before:bg-transparent",
           "transition-colors duration-150 hover:bg-accent/40",
-          environmentSelected && "bg-primary/[0.08] before:bg-primary",
+          environmentSelected && "bg-surface-selected before:bg-primary",
         )}
         size="xs"
         variant={expanded ? "muted" : "default"}
@@ -269,7 +269,7 @@ function EnvironmentGroup({
                 "min-h-14 min-w-0 flex-1 gap-2 rounded-none border-0 px-2.5 py-2 hover:no-underline",
                 "transition-colors duration-150 hover:bg-transparent focus-visible:ring-inset",
                 "[&_[data-slot=accordion-trigger-icon]]:hidden",
-                environmentSelected && "text-accent-foreground dark:text-primary",
+                environmentSelected && "bg-surface-selected text-primary",
               )}
               data-shell-nav-item
               data-testid={`environment-trigger-${environment.environmentId}`}
@@ -300,7 +300,7 @@ function EnvironmentGroup({
                     <span>{environment.name}</span>
                   </ItemTitle>
                   <ItemDescription asChild className={cn(
-                    "flex min-w-0 items-center gap-1.5 font-mono text-[10px] leading-4",
+                    "flex min-w-0 items-center gap-1.5 font-mono text-xs leading-4",
                     environmentScopeSelected && "dark:text-primary/75",
                   )}>
                     <span>
@@ -317,7 +317,7 @@ function EnvironmentGroup({
                 <span>
                   <StatusIndicator
                     appearance="badge"
-                    className="h-5 max-w-18 px-1.5 font-mono text-[10px]"
+                    className="h-5 max-w-18 px-1.5 font-mono text-xs"
                     status={environment.status}
                   />
                 </span>
@@ -441,7 +441,7 @@ function EnvironmentGroup({
                   "group/plugin relative min-h-12 min-w-0 flex-nowrap items-stretch gap-0 overflow-hidden rounded-none border-0 border-b border-border/50 p-0 last:border-b-0",
                   "before:absolute before:inset-y-2 before:left-0 before:z-10 before:w-0.5 before:rounded-r-full before:bg-transparent",
                   "transition-colors duration-150 hover:bg-accent/55",
-                  selected && "bg-primary/[0.08] text-foreground before:bg-primary dark:text-primary",
+                  selected && "bg-surface-selected text-primary before:bg-primary",
                 )}
                 data-plugin-id={plugin.pluginInstanceId}
                 data-testid={`plugin-row-${plugin.pluginInstanceId}`}
@@ -482,7 +482,7 @@ function EnvironmentGroup({
                         <span>{plugin.displayName}</span>
                       </ItemTitle>
                       <ItemDescription asChild className={cn(
-                        "flex min-w-0 items-center gap-1.5 font-mono text-[10px] leading-4",
+                        "flex min-w-0 items-center gap-1.5 font-mono text-xs leading-4",
                         selected && "dark:text-primary/75",
                       )}>
                         <span>
@@ -653,15 +653,15 @@ export function ResourcePane({
           <TreeStructure size={16} weight="duotone" />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+          <p className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
             环境与插件
           </p>
-          <h2 className="truncate text-[13px] font-semibold tracking-tight" title={project?.name}>
+          <h2 className="truncate text-sm font-semibold tracking-tight" title={project?.name}>
             {project?.name ?? "未选择项目"}
           </h2>
         </div>
         {project ? (
-          <Badge className="h-5 px-1.5 font-mono text-[10px]" variant="outline">
+          <Badge className="h-5 px-1.5 font-mono text-xs" variant="outline">
             {project.environments.length}
           </Badge>
         ) : null}
@@ -803,7 +803,7 @@ export function ResourcePane({
                 <Plus className="text-muted-foreground" size={14} />
                 <span className="truncate text-xs font-medium">新增环境</span>
               </span>
-              <Badge className="border-border bg-muted/50 font-mono text-[10px] text-muted-foreground" variant="outline">
+              <Badge className="border-border bg-muted/50 font-mono text-xs text-muted-foreground" variant="outline">
                 {project.environments.length} 个
               </Badge>
             </Button>

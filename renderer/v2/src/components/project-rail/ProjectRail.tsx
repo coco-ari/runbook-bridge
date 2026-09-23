@@ -298,7 +298,7 @@ export function ProjectRail({
           <div className="flex h-10 min-w-0 items-center gap-2.5">
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-semibold tracking-tight">AI 运维工具</p>
-              <p className="truncate text-[11px] text-muted-foreground">本地三栏工作台</p>
+              <p className="truncate text-xs text-muted-foreground">本地三栏工作台</p>
             </div>
           </div>
 
@@ -314,9 +314,9 @@ export function ProjectRail({
                 variant="outline"
               >
                 <ShieldWarning className={confirmationCount > 0 ? "text-warning" : undefined} size={14} />
-                <span className="min-w-0 flex-1 truncate text-left text-[11px] leading-4">操作确认</span>
+                <span className="min-w-0 flex-1 truncate text-left text-xs leading-4">操作确认</span>
                 {confirmationCount > 0 ? (
-                  <span aria-hidden="true" className="min-w-3.5 shrink-0 rounded-sm bg-warning/15 px-0.5 text-center font-mono text-[10px] font-semibold leading-3.5 text-warning">
+                  <span aria-hidden="true" className="min-w-3.5 shrink-0 rounded-sm bg-warning/15 px-0.5 text-center font-mono text-xs font-semibold leading-3.5 text-warning">
                     {confirmationCount > 9 ? "9+" : confirmationCount}
                   </span>
                 ) : null}
@@ -355,9 +355,9 @@ export function ProjectRail({
                 : `共 ${projects.length} 个项目`}
             </p>
           </div>
-          <SidebarGroupLabel className="mx-4 mt-3 mb-2 h-6 px-0 text-[11px] leading-4 tracking-normal">
+          <SidebarGroupLabel className="mx-4 mt-3 mb-2 h-6 px-0 text-xs leading-4 tracking-normal">
             项目
-            <span aria-hidden="true" className={cn("ml-2 text-[10px] font-normal text-muted-foreground", (!projectDrag.enabled || collapsed) && "hidden")}>拖动排序</span>
+            <span aria-hidden="true" className={cn("ml-2 text-xs font-normal text-muted-foreground", (!projectDrag.enabled || collapsed) && "hidden")}>拖动排序</span>
             <span className="ml-auto font-mono tabular-nums">
               {normalizedProjectQuery ? `${visibleProjects.length}/${projects.length}` : projects.length}
             </span>
@@ -404,7 +404,7 @@ export function ProjectRail({
                       <Alert className="rounded-md" variant="destructive">
                         <WarningCircle weight="fill" />
                         <AlertTitle className="text-xs">项目列表刷新失败</AlertTitle>
-                        <AlertDescription className="space-y-2 text-[11px] leading-4">
+                        <AlertDescription className="space-y-2 text-xs leading-4">
                           <span className="block">
                             {projects.length > 0
                               ? "当前显示上次成功读取的项目摘要。"
@@ -471,8 +471,8 @@ export function ProjectRail({
                               className={cn(
                                 "relative before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-r-full before:bg-transparent",
                                 "transition-colors duration-150",
-                                "h-9 w-full justify-start gap-2 px-2.5 py-0 group-has-data-[sidebar=menu-action]/menu-item:pr-2.5",
-                                selected && "bg-primary/[0.08] text-foreground before:bg-primary dark:text-primary",
+                                "h-8 w-full justify-start gap-2 px-2.5 py-0 group-has-data-[sidebar=menu-action]/menu-item:pr-2.5",
+                                selected && "bg-surface-selected text-primary before:bg-primary",
                                 selected && "text-primary data-active:text-primary",
                                 project.isolated && "aria-disabled:pointer-events-auto",
                                 projectDrag.canDrag(project) && "cursor-grab active:cursor-grabbing",
@@ -498,10 +498,10 @@ export function ProjectRail({
                                 children: (
                                   <span className="min-w-0 space-y-1">
                                     <span className="block font-semibold [overflow-wrap:anywhere]">{project.name}</span>
-                                    <span className="block text-[11px] [overflow-wrap:anywhere]">
+                                    <span className="block text-xs [overflow-wrap:anywhere]">
                                       {projectDescription(project)} · {statusLabel(project.status)}
                                     </span>
-                                    {projectDrag.canDrag(project) ? <span className="block text-[11px]">拖动排序 · Alt + ↑ / ↓</span> : null}
+                                    {projectDrag.canDrag(project) ? <span className="block text-xs">拖动排序 · Alt + ↑ / ↓</span> : null}
                                   </span>
                                 ),
                               }}
@@ -586,7 +586,7 @@ export function ProjectRail({
             <TooltipContent side="right">
               新增项目
               <Kbd
-                className="border border-background/20 bg-background/10 px-1.5 py-0.5 font-mono text-[10px] leading-none"
+                className="border border-background/20 bg-background/10 px-1.5 py-0.5 font-mono text-xs leading-none"
               >
                 {shortcutLabel("N")}
               </Kbd>

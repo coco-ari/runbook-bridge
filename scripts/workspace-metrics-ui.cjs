@@ -28,11 +28,12 @@ module.exports = async function testMetrics({evaluate,click,clickText,until,wait
     await evaluate("localStorage.setItem('runbook-bridge:theme-preference:v1'," + JSON.stringify(theme) + "); window.dispatchEvent(new StorageEvent('storage',{key:'runbook-bridge:theme-preference:v1'}))");
     for (const width of [1440,960,800]) {
       await setViewport(width,820);
+      await until("getComputedStyle(document.querySelector('.server-workspace-header')).minHeight === '56px'", '窗口重绘后恢复常规页头高度');
       const geometry = await evaluate("(() => { const header=document.querySelector('.server-workspace-header'); const metrics=header.querySelector('.server-metrics'); const rect=metrics.getBoundingClientRect(); const action=header.querySelector('[data-testid=settings-open]').getBoundingClientRect(); const title=header.querySelector('.server-workspace-heading').getBoundingClientRect(); const values=[...metrics.querySelectorAll('strong')].map(el=>{const a=el.getBoundingClientRect(),b=el.closest('.server-metric').getBoundingClientRect(),label=el.previousElementSibling.getBoundingClientRect();return{left:a.left,right:a.right,cellLeft:b.left,cellRight:b.right,sameLine:a.top<label.bottom&&label.top<a.bottom};}); const details=[...metrics.querySelectorAll('.server-metric-detail')].map(el=>getComputedStyle(el).display!=='none'); return {width:innerWidth,headerHeight:header.getBoundingClientRect().height,left:rect.left,right:rect.right,titleRight:title.right,actionLeft:action.left,values,details,bars:metrics.querySelectorAll('.server-metric-meter,[role=progressbar],progress,meter').length,overflow:header.scrollWidth>header.clientWidth}; })()");
       assert.ok(!geometry.overflow, '状态条不撑破页头：'+theme+' '+width);
       assert.ok(geometry.left >= geometry.titleRight, '不覆盖服务器身份');
       assert.ok(geometry.right <= geometry.actionLeft, '不覆盖配置与连接操作');
-      assert.ok(geometry.headerHeight <= 58, '保留紧凑页头高度');
+      assert.equal(geometry.headerHeight, 56, '工作区页头保持统一的 56px 高度');
       assert.ok(geometry.values.every(item=>item.left>=item.cellLeft&&item.right<=item.cellRight), '百分比完整显示');
       assert.equal(geometry.bars, 0, '纯文本状态行不显示进度条');
       assert.ok(geometry.values.every(item=>item.sameLine), '标签和百分比处于同一行');
@@ -75,7 +76,8 @@ module.exports = async function testMetrics({evaluate,click,clickText,until,wait
   assert.equal(await evaluate("document.querySelector('[data-metric=cpu]').dataset.tone"),'muted');
   assert.equal(await evaluate("document.querySelector('[data-metric=disk]').dataset.tone"),'normal','系统采样失败不影响磁盘状态');
   await setViewport(800,820);
-  assert.ok(await evaluate("(() => { const header=document.querySelector('.server-workspace-header'); return header.scrollWidth<=header.clientWidth&&[...header.querySelectorAll('.server-metric strong')].every(value=>{const a=value.getBoundingClientRect(),b=value.closest('.server-metric').getBoundingClientRect();return a.left>=b.left&&a.right<=b.right}) })()"), '过期前缀在窄窗口完整显示');
+  const staleLayout = await evaluate("(() => { const header=document.querySelector('.server-workspace-header'); return { viewport:innerWidth, width:header.clientWidth, scroll:header.scrollWidth, values:[...header.querySelectorAll('.server-metric strong')].map(value=>{const a=value.getBoundingClientRect(),b=value.closest('.server-metric').getBoundingClientRect();return {text:value.textContent,left:a.left,right:a.right,cellLeft:b.left,cellRight:b.right}})} })()");
+  assert.ok(staleLayout.scroll <= staleLayout.width && staleLayout.values.every(value => value.left >= value.cellLeft && value.right <= value.cellRight), '过期前缀在窄窗口完整显示：' + JSON.stringify(staleLayout));
   await setViewport(1440,920);
   metricsState.mode='normal';
   await until(cpu + " === '18%'", '恢复后更新指标');

@@ -237,7 +237,7 @@ export function PluginConnectionPanel({
             </span>
             <div className="min-w-0 space-y-1">
               <div aria-live="polite" className="flex min-w-0 flex-wrap items-center gap-2" role="status">
-                <h3 className="text-sm font-semibold" id="plugin-connection-title">{guidance.title}</h3>
+                <h3 className="text-section font-medium" id="plugin-connection-title">{guidance.title}</h3>
                 <Badge variant={phase.variant}>{phase.label}</Badge>
               </div>
               <p className="text-xs leading-5 text-muted-foreground">{guidance.description}</p>
@@ -304,13 +304,13 @@ export function PluginConnectionPanel({
 
       <Card aria-labelledby="plugin-config-title" className="gap-0 overflow-hidden py-0" data-testid="plugin-fact-strip">
         <CardHeader className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
-          <CardTitle><h3 className="text-xs font-semibold" id="plugin-config-title">配置摘要</h3></CardTitle>
+          <CardTitle><h3 className="text-section font-medium" id="plugin-config-title">配置摘要</h3></CardTitle>
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Badge variant="outline">{pluginTypeLabel(draft.pluginType)}</Badge>
             <Badge variant={configReady ? "success" : "warning"}>
               {configReady ? "配置完整" : plugin.configState === "draft" ? "待完善" : "配置未知"}
             </Badge>
-            <span className="text-[11px] text-muted-foreground">配置修订 {plugin.revision}</span>
+            <span className="text-xs text-muted-foreground">配置修订 {plugin.revision}</span>
           </div>
         </CardHeader>
         <CardContent className="p-3">

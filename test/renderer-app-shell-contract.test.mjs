@@ -223,7 +223,7 @@ test('production React shell composes shadcn/Radix with the typed desktop bridge
   assert.match(styles,/prefers-reduced-motion: reduce/u);
   assert.match(styles,/overflow: hidden/u);
   assert.match(styles,/--primary: #37d7a0/u);
-  assert.match(styles,/--surface-selected: #24242e/u);
+  assert.match(styles,/--surface-selected: #17372b/u);
 
   assert.match(reactHtml,/style-src 'self' 'unsafe-inline'/u);
   assert.match(reactHtml,/connect-src 'none'/u);

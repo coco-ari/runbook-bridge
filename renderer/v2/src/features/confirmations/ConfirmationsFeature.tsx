@@ -549,7 +549,7 @@ export function ConfirmationsFeature({
               {filterOptions.map(([value, label, count]) => (
                 <ToggleGroupItem className="max-w-52 gap-1.5" key={value} value={value}>
                   <span className="truncate">{label}</span>
-                  <Badge className="h-4 min-w-4 justify-center px-1 font-mono text-[9px]" variant="outline">{count}</Badge>
+                  <Badge className="min-h-5 min-w-5 justify-center px-1 font-mono text-xs" variant="outline">{count}</Badge>
                 </ToggleGroupItem>
               ))}
             </ToggleGroup>
@@ -647,11 +647,11 @@ export function ConfirmationsFeature({
                     <CardHeader className="px-3 py-3">
                       <header className="flex flex-wrap items-start gap-3">
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-[11px] text-muted-foreground">
+                          <p className="truncate text-xs text-muted-foreground">
                             Agent 请求 / {names.project} / {names.environment}
                           </p>
                           <div className="mt-1 flex flex-wrap items-center gap-2">
-                            <h3 className="text-sm font-semibold">{capabilityLabel(item)}</h3>
+                            <h3 className="text-section font-medium">{capabilityLabel(item)}</h3>
                             <Badge variant={strong ? "danger" : "warning"}>{riskLabel(item.riskLevel)}</Badge>
                           </div>
                           <p className="mt-1 truncate text-xs text-muted-foreground" title={names.plugin}>目标插件：{names.plugin}</p>
@@ -686,7 +686,7 @@ export function ConfirmationsFeature({
                             variant="muted"
                           >
                             <ItemContent>
-                              <ItemDescription className="text-[10px] font-medium">{row.label}</ItemDescription>
+                              <ItemDescription className="text-xs font-medium">{row.label}</ItemDescription>
                               <ItemTitle className={`line-clamp-none w-full break-words text-xs ${row.mono ? "font-mono" : ""}`}>
                                 {row.value}
                               </ItemTitle>
@@ -698,8 +698,8 @@ export function ConfirmationsFeature({
                         <Table aria-label={capabilityLabel(item) + "操作参数"}>
                           <TableHeader>
                             <TableRow>
-                              <TableHead className="h-8 w-36 text-[10px]">参数</TableHead>
-                              <TableHead className="h-8 text-[10px]">确认值</TableHead>
+                              <TableHead className="h-8 w-36 text-xs">参数</TableHead>
+                              <TableHead className="h-8 text-xs">确认值</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -745,7 +745,7 @@ export function ConfirmationsFeature({
                     </CardContent>
 
                     <CardFooter className="flex-wrap justify-between gap-3 px-3 py-2.5">
-                      <span className="font-mono text-[11px] text-muted-foreground">
+                      <span className="font-mono text-xs text-muted-foreground">
                         只授权本次操作 / {remaining} 秒后过期
                       </span>
                       <ButtonGroup

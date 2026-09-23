@@ -1,3 +1,4 @@
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Slot } from "radix-ui"
 import { cva, type VariantProps } from "class-variance-authority"
 import type * as React from "react"
@@ -5,7 +6,7 @@ import type * as React from "react"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
-  "inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-50 active:translate-y-px [&_svg]:pointer-events-none [&_svg]:shrink-0",
+  "inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/60 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
@@ -17,11 +18,11 @@ const buttonVariants = cva(
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-9 px-3.5",
-        sm: "h-8 px-3 text-xs",
+        default: "h-8 px-3",
+        sm: "h-8 px-3 text-sm",
         xs: "h-7 px-2.5 text-xs",
-        lg: "h-10 px-5",
-        icon: "size-9",
+        lg: "h-9 px-4",
+        icon: "size-8",
         "icon-sm": "size-8",
         "icon-xs": "size-7",
       },
@@ -38,6 +39,7 @@ function Button({
   variant,
   size,
   asChild = false,
+  title,
   ...props
 }: React.ComponentProps<"button"> &
   VariantProps<typeof buttonVariants> & {
@@ -45,13 +47,15 @@ function Button({
   }) {
   const Comp = asChild ? Slot.Root : "button"
 
-  return (
+  const button = (
     <Comp
       className={cn(buttonVariants({ variant, size, className }))}
       data-slot="button"
+      aria-description={title}
       {...props}
     />
   )
+  return title ? <Tooltip><TooltipTrigger asChild>{button}</TooltipTrigger><TooltipContent>{title}</TooltipContent></Tooltip> : button
 }
 
 export { Button, buttonVariants }

@@ -1,3 +1,6 @@
+import { WorkspaceNotice } from "@/components/workspace/WorkspaceNotice"
+import { StatusIndicator } from "@/components/app-shell/StatusIndicator"
+import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from "@/components/ui/empty"
 import { lazy, Suspense, useId, useRef, useState } from "react"
 import { Copy, Database, PushPin, ShieldCheck } from "@phosphor-icons/react"
 import { toast } from "sonner"
@@ -71,7 +74,7 @@ function KeyDocument({ tab, refresh, more, field, clearField }: {
         </span>
       </div>
     </header>
-    {tab.error ? <div role="alert" className="redis-error" data-testid="redis-key-error">{tab.error}</div> : null}
+    {tab.error ? <WorkspaceNotice variant="destructive" data-testid="redis-key-error">{tab.error}</WorkspaceNotice> : null}
     {tab.loading ? <p role="status" className="redis-notice">正在读取…</p> : null}
     {metadata && !metadata.exists ? <div className="redis-empty" data-testid="redis-key-missing">Key 已过期或被删除。可刷新重新检查。</div>
       : content?.unsupported ? <div className="redis-empty">暂不支持 {content.type} 类型的内容查看，仍可查看类型与 TTL。</div>
@@ -149,8 +152,8 @@ export function RedisWorkspace({ api, scope, plugin, projectName, environmentNam
     <header className="redis-workspace-header">
       <WorkspaceBackButton label="返回 Redis 详情" testId="redis-workspace-back" onClick={onBack} />
       <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-sm font-semibold">{plugin.displayName}</h1><Badge variant="success">已连接</Badge><Badge variant="outline"><ShieldCheck className="size-3" />只读</Badge></div>
-        <p className="truncate text-[11px] text-muted-foreground" title={projectName + " / " + environmentName}>{projectName} / {environmentName} · DB {String(plugin.target?.db ?? 0)}</p>
+        <div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold">{plugin.displayName}</h1><StatusIndicator appearance="badge" status="connected" /><Badge variant="outline"><ShieldCheck className="size-3" />只读</Badge></div>
+        <p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName}>{projectName} / {environmentName} · DB {String(plugin.target?.db ?? 0)}</p>
       </div>
       <WorkspaceHeaderActions connected busy={disconnecting} onDisconnect={() => void disconnect()} onClose={() => setClosing(true)} prefix="redis-workspace" closeLabel="关闭 Redis 工作区" closeTitle="关闭工作区并清除浏览数据" />
     </header>
@@ -201,7 +204,7 @@ export function RedisWorkspace({ api, scope, plugin, projectName, environmentNam
               </div>
               <WorkspaceLayoutControls maximized={!sidebar} onToggle={() => { if (sidebarRef.current?.isCollapsed()) sidebarRef.current.expand(); else sidebarRef.current?.collapse() }} testId="redis-layout-toggle" controls={uniqueId + "-keys"} />
             </WorkspaceTabBar>
-            {!state.tabs.length ? <div className="redis-empty redis-welcome"><Database size={36} /><h2>查看 Redis 数据</h2><p>展开左侧目录查找 Key，或输入完整 Key 精确定位。</p><p>单击预览，双击固定标签；数据仅保留在当前会话。</p></div> : null}
+            {!state.tabs.length ? <Empty className="redis-welcome"><EmptyHeader><EmptyMedia variant="icon"><Database /></EmptyMedia><EmptyTitle>查看 Redis 数据</EmptyTitle><EmptyDescription>展开左侧目录查找 Key，或输入完整 Key 精确定位。<br />单击预览，双击固定标签；数据仅保留在当前会话。</EmptyDescription></EmptyHeader></Empty> : null}
             {state.tabs.map((tab) => <div className="redis-tab-panel" key={tab.id} id={uniqueId + "-panel-" + tab.id} role="tabpanel" aria-labelledby={uniqueId + "-tab-" + tab.id} hidden={tab.id !== state.activeId} inert={tab.id !== state.activeId}>
               <KeyDocument tab={tab} refresh={() => void state.readTab(tab.id)} more={() => void state.readTab(tab.id, true)} field={(name) => void state.readTab(tab.id, false, name)} clearField={() => state.clearField(tab.id)} />
             </div>)}

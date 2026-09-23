@@ -593,7 +593,7 @@ async function run() {
     await click(win,testId(`environment-trigger-${ENVIRONMENT_ID}`));
     await selectPluginDetails(win,OFFLINE_ID);
     assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('plugin-workspace-open')}').disabled`,true),true,'未连接的工作区入口必须禁用。');
-    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('plugin-workspace-open')}').title`,true),'请先连接数据库','离线入口必须说明不可用原因。');
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('plugin-workspace-open')}').getAttribute('aria-description')`,true),'请先连接数据库','离线入口必须说明不可用原因。');
     await win.webContents.executeJavaScript(`document.querySelector('${testId('plugin-workspace-open')}').click()`,true);
     assert.equal(await isVisible(win,'mysql-full-window-workspace'),false,'未连接不得展开工作区。');
     assert.equal(databaseCalls.length,0,'离线插件不得发起数据库请求。');

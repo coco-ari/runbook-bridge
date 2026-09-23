@@ -49,8 +49,14 @@
 }
 
 @theme inline {
-  --font-sans: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, monospace;
+  --font-sans: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", "Noto Sans SC", "Noto Sans CJK SC", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, Menlo, "Noto Sans Mono CJK SC", "Microsoft YaHei UI", monospace;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.125rem;
+  --text-section: 0.875rem;
+  --text-section--line-height: 1.25rem;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -90,10 +96,10 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  --radius-sm: calc(var(--radius) - 2px);
+  --radius-sm: 0.25rem;
   --radius-md: var(--radius);
-  --radius-lg: calc(var(--radius) + 2px);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.75rem;
   --animate-accordion-down: accordion-down 160ms ease-out;
   --animate-accordion-up: accordion-up 140ms ease-in;
 
@@ -110,32 +116,40 @@
 
 :root {
   color-scheme: light;
-  --radius: 0.5rem;
+  --radius: 0.375rem;
+  --control-height: 32px;
+  --control-height-compact: 28px;
+  --tree-row-height: 32px;
+  --tree-indent: 18px;
+  --workspace-header-height: 56px;
+  --workspace-toolbar-height: 36px;
+  --workspace-footer-height: 24px;
+  --folder-color: #946914;
   --background: oklch(0.968 0.006 260);
   --foreground: oklch(0.205 0.015 264);
   --card: oklch(0.988 0.003 260);
   --card-foreground: var(--foreground);
   --popover: oklch(0.995 0.002 260);
   --popover-foreground: var(--foreground);
-  --primary: oklch(0.49 0.18 276);
+  --primary: #087553;
   --primary-foreground: oklch(0.985 0.004 260);
   --secondary: oklch(0.932 0.009 260);
   --secondary-foreground: oklch(0.28 0.018 264);
   --muted: oklch(0.941 0.007 260);
   --muted-foreground: oklch(0.48 0.02 264);
-  --accent: oklch(0.922 0.026 276);
-  --accent-foreground: oklch(0.36 0.09 276);
+  --accent: #e5f1eb;
+  --accent-foreground: #075a41;
   --destructive: oklch(0.54 0.2 25);
   --input: oklch(0.84 0.012 260);
-  --ring: oklch(0.58 0.15 276);
+  --ring: var(--primary);
   --border: oklch(0.855 0.011 260);
   --surface: oklch(0.984 0.003 260);
   --surface-inset: oklch(0.944 0.008 260);
   --surface-raised: oklch(0.921 0.011 260);
   --surface-hover: oklch(0.91 0.014 260);
-  --surface-selected: oklch(0.918 0.035 276);
+  --surface-selected: #e0f0e8;
   --text-faint: oklch(0.59 0.016 264);
-  --success: oklch(0.52 0.14 156);
+  --success: var(--primary);
   --warning: oklch(0.58 0.135 76);
   --danger: var(--destructive);
   --danger-solid: var(--destructive);
@@ -175,7 +189,8 @@
   --surface-inset: #0e0e12;
   --surface-raised: #1a1a21;
   --surface-hover: #202027;
-  --surface-selected: #24242e;
+  --surface-selected: #17372b;
+  --folder-color: #ebc65d;
   --text-faint: #72727e;
   --success: var(--primary);
   --warning: #f0b84b;
@@ -193,49 +208,19 @@
   --sidebar-ring: var(--ring);
 }
 
-:root[data-theme="dark"] [data-slot="sidebar-menu-button"][data-active="true"],
-:root[data-theme="dark"] [data-shell-nav-item][aria-selected="true"],
-:root[data-theme="dark"] [data-slot="tabs-trigger"][data-state="active"],
-:root[data-theme="dark"] [data-slot="command-item"][data-selected="true"],
-:root[data-theme="dark"] [data-slot="select-item"][data-state="checked"],
-:root[data-theme="dark"] [data-slot="dropdown-menu-checkbox-item"][data-state="checked"],
-:root[data-theme="dark"] [data-slot="dropdown-menu-radio-item"][data-state="checked"],
-:root[data-theme="dark"] [data-slot="context-menu-checkbox-item"][data-state="checked"],
-:root[data-theme="dark"] [data-slot="context-menu-radio-item"][data-state="checked"] {
-  color: var(--primary);
+/* 基础继承放入基础层，避免覆盖组件的字号、字重和语义边框。 */
+@layer base {
+  * { border-color: var(--border); scrollbar-width: thin; scrollbar-color: var(--input) transparent; }
+  html, body, #root { height: 100%; min-height: 100%; overflow: hidden; }
+  body { margin: 0; min-width: 320px; background: var(--background); color: var(--foreground); font-family: var(--font-sans); font-size: var(--text-sm); line-height: var(--text-sm--line-height); font-variant-numeric: tabular-nums; text-rendering: optimizeLegibility; }
+  button, input, textarea, select { font: inherit; }
+  button { -webkit-tap-highlight-color: transparent; }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 }
 
-* {
-  border-color: var(--border);
-}
-
-html,
-body,
-#root {
-  height: 100%;
-  min-height: 100%;
-  overflow: hidden;
-}
-
-body {
-  margin: 0;
-  min-width: 320px;
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans);
-  font-variant-numeric: tabular-nums;
-  text-rendering: optimizeLegibility;
-}
-
-button,
-input,
-textarea,
-select {
-  font: inherit;
-}
-
-button {
-  -webkit-tap-highlight-color: transparent;
+@layer components {
+  :where([data-slot="sidebar-menu-button"][data-active="true"], [data-shell-nav-item][aria-current="page"], [data-settings-nav][aria-current="page"]) { background: var(--surface-selected); color: var(--primary); box-shadow: inset 2px 0 var(--primary); font-weight: 500; }
+  :where([data-slot="command-item"][data-selected="true"], [data-slot="select-item"][data-state="checked"], [data-slot="dropdown-menu-checkbox-item"][data-state="checked"], [data-slot="dropdown-menu-radio-item"][data-state="checked"], [data-slot="context-menu-checkbox-item"][data-state="checked"], [data-slot="context-menu-radio-item"][data-state="checked"]) { color: var(--primary); }
 }
 
 .app-shell-grid {

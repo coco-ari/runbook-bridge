@@ -30,7 +30,7 @@ export function RedisScopePicker({ database, patterns, patternId, visible, onCha
         <DropdownMenuLabel>已登记的 Key 范围</DropdownMenuLabel>
         <DropdownMenuRadioGroup value={patternId} onValueChange={(value) => { setOpen(false); onChange(value) }}>
           {patterns.map((pattern) => <DropdownMenuRadioItem key={pattern.patternId} value={pattern.patternId} data-testid={"redis-pattern-option-" + pattern.patternId}>
-            <span className="min-w-0"><span className="block truncate text-xs">{pattern.displayName}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{pattern.pattern === "*" ? "全部允许 Key（*）" : pattern.pattern}</span></span>
+            <span className="min-w-0"><span className="block truncate text-xs">{pattern.displayName}</span><span className="block truncate font-mono text-xs text-muted-foreground">{pattern.pattern === "*" ? "全部允许 Key（*）" : pattern.pattern}</span></span>
           </DropdownMenuRadioItem>)}
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>

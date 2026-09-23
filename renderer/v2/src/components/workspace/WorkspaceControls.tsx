@@ -1,3 +1,4 @@
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import type { ComponentProps } from "react"
 import { ArrowClockwise, ArrowLeft, ArrowsIn, ArrowsOut, LinkBreak, Plus, X } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
@@ -12,7 +13,7 @@ const icons = { refresh: ArrowClockwise, close: X, add: Plus, maximize: ArrowsOu
 
 export function WorkspaceIconButton({ action, label, busy = false, title, disabled, ...props }: IconButtonProps) {
   const Icon = icons[action]
-  return <Button size="icon-sm" variant="ghost" type="button" {...props} disabled={disabled || busy} aria-label={label} title={title ?? label}><Icon aria-hidden="true" className={busy && action === "refresh" ? "motion-safe:animate-spin" : undefined} /></Button>
+  return <Tooltip><TooltipTrigger asChild><Button size="icon-xs" variant="ghost" type="button" {...props} disabled={disabled || busy} aria-label={label} aria-description={title ?? label}><Icon aria-hidden="true" className={busy && action === "refresh" ? "motion-safe:animate-spin" : undefined} /></Button></TooltipTrigger><TooltipContent>{title ?? label}</TooltipContent></Tooltip>
 }
 
 export function WorkspaceBackButton({ onClick, testId, label }: { readonly onClick: () => void; readonly testId: string; readonly label: string }) {

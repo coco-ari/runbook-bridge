@@ -119,7 +119,7 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.doesNotMatch(footerButton,/<Kbd|\bcollapsed\b/u);
   assert.doesNotMatch(projectRail,/AvatarFallback|data-project-monogram|data-project-short-name|buildProjectRailIdentities/u);
   assert.match(projectRail,/data-project-compact-name>\s*\{project.name\}/u);
-  assert.match(projectRail,/"h-9 w-full justify-start/u);
+  assert.match(projectRail,/"h-8 w-full justify-start/u);
   assert.match(projectRail,/truncate text-left text-xs/u);
   assert.match(projectRail,/data-project-compact-status/u);
   assert.match(projectRail,/data-status="disconnected" title=\{statusLabel\(project.status\)\}/u);
@@ -169,8 +169,8 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(resourcePane,/<Accordion[\s\S]*?className="gap-2 py-2"/u);
   assert.match(resourcePane,/\[&_\[data-slot=accordion-trigger-icon\]\]:hidden/u);
   assert.match(resourcePane,/<ItemGroup className="gap-0">/u);
-  assert.match(resourcePane,/environmentSelected && "bg-primary\/\[0\.08\] before:bg-primary"/u);
-  assert.match(resourcePane,/selected && "bg-primary\/\[0\.08\][^"]*before:bg-primary/u);
+  assert.match(resourcePane,/environmentSelected && "bg-surface-selected before:bg-primary"/u);
+  assert.match(resourcePane,/selected && "bg-surface-selected[^"]*before:bg-primary/u);
   assert.match(resourcePane,/className="my-1 mr-1 shrink-0 self-center gap-1"/u);
   assert.match(resourcePane,/className="mr-1 shrink-0 self-center gap-1"/u);
   assert.doesNotMatch(resourcePane,/MagnifyingGlass|onOpenCommand|打开命令面板|搜索 Ctrl K/u);

@@ -55,7 +55,7 @@ export function DirectoryBookmarks({ scope, path, connected, visible, onNavigate
         <button type="button" className="server-bookmark-link" disabled={!connected} title={target} aria-label={"打开收藏目录 " + target} onClick={() => { setOpen(false); onNavigate(target) }}><code>{target}</code></button>
         <Button size="icon-sm" variant="ghost" aria-label={"移除收藏 " + target} title="移除收藏" onClick={() => change(target, false)}><X /></Button>
       </li>)}</ul> : <p className="py-2 text-xs text-muted-foreground">收藏常用的日志、配置或部署目录，方便下次打开。</p>}
-      <p className="text-[11px] text-muted-foreground">{connected ? "收藏仅保存在本机，按服务器分别管理。" : "服务器已断开，重新连接后可打开收藏目录。"}</p>
+      <p className="text-xs text-muted-foreground">{connected ? "收藏仅保存在本机，按服务器分别管理。" : "服务器已断开，重新连接后可打开收藏目录。"}</p>
     </PopoverContent>
   </Popover>
 }

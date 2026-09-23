@@ -1,4 +1,21 @@
-.workspace-tab-bar[data-workspace-tabbar] { display: flex; align-items: center; flex-shrink: 0; min-width: 0; height: 40px; min-height: 40px; gap: 0; padding: 0; border-bottom: 1px solid var(--border); background: var(--surface); }
+.workspace-tab-bar[data-workspace-tabbar] { display: flex; align-items: center; flex-shrink: 0; min-width: 0; height: var(--workspace-toolbar-height); min-height: var(--workspace-toolbar-height); gap: 0; padding: 0; border-bottom: 1px solid var(--border); background: var(--surface); }
 .workspace-layout-controls { display: flex; align-items: center; align-self: stretch; flex-shrink: 0; gap: 4px; margin-left: auto; padding: 0 8px; border-left: 1px solid var(--border); }
-.workspace-layout-controls > button { width: 32px; height: 32px; }
+.workspace-layout-controls > button { width: var(--control-height-compact); height: var(--control-height-compact); }
 .workspace-layout-controls > button > svg { width: 16px; height: 16px; }
+
+/* 各工作区共用框架尺寸，业务区域只定义自身布局。 */
+.server-workspace-header, .redis-workspace-header, .mysql-workspace-header { display: flex; min-height: var(--workspace-header-height); flex-shrink: 0; align-items: center; gap: 12px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.server-workspace-header h1, .redis-workspace-header h1, .mysql-workspace-header h1 { font-size: var(--text-base); font-weight: 600; line-height: 24px; }
+.server-workspace-footer, .redis-workspace-footer, .mysql-workspace-status { display: flex; min-height: var(--workspace-footer-height); flex-shrink: 0; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; border-top: 1px solid var(--border); background: var(--surface); color: var(--muted-foreground); font-size: var(--text-xs); }
+.server-tabs, .redis-tabs { display: flex; min-width: 0; overflow-x: auto; gap: 0; height: 100%; }
+.server-tab-item, .redis-tab { display: flex; align-items: center; flex-shrink: 0; min-width: 100px; max-width: 260px; height: 100%; border: 0; border-right: 1px solid var(--border); border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted-foreground); }
+.server-tab-item [role=tab], .redis-tab [role=tab] { display: flex; flex: 1; align-items: center; min-width: 0; gap: 8px; height: 100%; padding: 0 8px; font: 400 var(--text-sm)/20px var(--font-sans); text-align: left; }
+.server-tab-item[data-active=true], .redis-tab[data-active=true], .mysql-document-tabs .mysql-document-tab[data-state=active] { background: var(--background); color: var(--primary); border-bottom-color: var(--primary); }
+.mysql-document-tabs-row .mysql-document-tabs { height: 100%; min-height: 0; }
+.mysql-document-tabs .mysql-document-tab { min-width: 100px; max-width: 260px; height: 100%; min-height: 0; gap: 8px; padding: 0 12px; border: 0; border-right: 1px solid var(--border); border-bottom: 2px solid transparent; border-radius: 0; font-size: var(--text-sm); font-weight: 400; color: var(--muted-foreground); }
+.server-tab-close, .server-tab-add, .redis-tab-close { width: var(--control-height-compact); height: var(--control-height-compact); border-radius: var(--radius-md); }
+.server-tab-close:hover, .redis-tab-close:hover { background: var(--surface-hover); color: var(--foreground); }
+@media (max-width: 900px) { .server-workspace-header, .redis-workspace-header, .mysql-workspace-header { gap: 8px; padding-inline: 8px; } }
+@media (max-height: 620px) { .server-workspace-header, .redis-workspace-header, .mysql-workspace-header { min-height: 48px; padding-block: 2px; } .server-workspace-footer, .redis-workspace-footer, .mysql-workspace-status { display: none; } }
+
+.server-workspace-toolbar [data-slot="button"], .redis-toolbar [data-slot="button"], .redis-value-toolbar [data-slot="button"], .mysql-editor-toolbar [data-slot="button"], .mysql-table-toolbar > [data-slot="button"] { height: var(--control-height-compact); font-size: var(--text-xs); }

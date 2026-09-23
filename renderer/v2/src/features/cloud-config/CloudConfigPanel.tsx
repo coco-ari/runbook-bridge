@@ -1,3 +1,4 @@
+import { Checkbox } from "@/components/ui/checkbox"
 import { useEffect, useRef, useState } from "react"
 import { CaretDown, CheckCircle, ClockCounterClockwise, Cloud, Copy, Info, LinkBreak, LockKey, ShieldCheck, SpinnerGap, WarningCircle, X } from "@phosphor-icons/react"
 import type { AiOpsV2Api } from "@/bridge/ai-ops-v2"
@@ -204,8 +205,8 @@ export function CloudConfigPanel({ api, onChanged, onBusyChange }: { api: AiOpsV
             {creating ? <label className="grid gap-2 text-xs font-medium">部署管理员令牌<Input id="cloud-admin-token" type="password" autoComplete="off" value={adminToken} onChange={e => setAdminToken(e.target.value)} /></label> : null}
             <label className="grid gap-2 text-xs font-medium">仓库密码<Input id="cloud-password" type={showPassword ? "text" : "password"} autoComplete="off" value={password} onChange={e => setPassword(e.target.value)} placeholder="至少 16 个字符" /></label>
             <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
-              <label className="flex items-center gap-2 text-xs"><input className="size-3.5 accent-primary" type="checkbox" checked={showPassword} onChange={e => setShowPassword(e.target.checked)} />显示密码</label>
-              <label className="flex items-center gap-2 text-xs"><input className="size-3.5 accent-primary" type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} />在本机记住</label>
+              <label className="flex items-center gap-2 text-xs"><Checkbox   checked={showPassword} onCheckedChange={value => setShowPassword(value === true)} />显示密码</label>
+              <label className="flex items-center gap-2 text-xs"><Checkbox   checked={remember} onCheckedChange={value => setRemember(value === true)} />在本机记住</label>
               {creating ? <Button size="sm" variant="outline" onClick={() => { setPassword(randomPassword()); setShowPassword(true) }}>生成随机密码</Button> : null}
             </div>
           </div>

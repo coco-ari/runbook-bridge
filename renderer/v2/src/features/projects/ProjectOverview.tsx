@@ -154,7 +154,7 @@ export function ProjectOverview({
         ) : (
           <Card className="gap-0 py-0" size="sm">
             <CardHeader className="border-b border-border/70 px-3 py-2.5">
-              <CardTitle><h3 className="text-xs font-semibold">环境状态</h3></CardTitle>
+              <CardTitle><h3 className="text-section font-medium">环境状态</h3></CardTitle>
             </CardHeader>
             <CardContent className="p-0">
               <ItemGroup aria-label={project.name + "的环境状态"} className="gap-1 p-2 @md/project-overview:hidden">
@@ -176,9 +176,9 @@ export function ProjectOverview({
                 <Table aria-label={project.name + "的环境状态"}>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
-                      <TableHead className="h-8 text-[10px]">环境</TableHead>
-                      <TableHead className="h-8 text-right text-[10px]">插件</TableHead>
-                      <TableHead className="h-8 text-right text-[10px]">状态</TableHead>
+                      <TableHead className="h-8 text-xs">环境</TableHead>
+                      <TableHead className="h-8 text-right text-xs">插件</TableHead>
+                      <TableHead className="h-8 text-right text-xs">状态</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>

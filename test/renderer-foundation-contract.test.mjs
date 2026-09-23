@@ -78,7 +78,7 @@ test('production React Renderer is the unique packaged entry and preserves Elect
   assert.match(styles,/:root\[data-theme="dark"\]/u);
   assert.match(styles,/:root\[data-theme="dark"\][\s\S]*--primary: #37d7a0/u);
   assert.match(styles,/:root\[data-theme="dark"\][\s\S]*--background: #0b0b0f/u);
-  assert.match(styles,/\[data-shell-nav-item\]\[aria-selected="true"\][\s\S]*color: var\(--primary\)/u);
+  assert.match(styles,/\[data-shell-nav-item\]\[aria-current="page"\][\s\S]*color: var\(--primary\)/u);
   assert.match(styles,/prefers-reduced-motion: reduce/u);
   assert.match(styles,/:focus-visible/u);
 

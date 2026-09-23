@@ -1,3 +1,4 @@
+import { Checkbox } from "@/components/ui/checkbox"
 import { useEffect, useId, useState, type RefObject } from "react"
 import { MagnifyingGlass } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
@@ -57,7 +58,7 @@ export function RedisKeySearch({ value, mode, history, visible, disabled, inputR
       }} />
     <Button type="submit" size="icon-xs" variant="ghost" aria-label="搜索 Key" title="搜索 Key（Enter）" disabled={disabled} data-testid="redis-search-submit"><MagnifyingGlass /></Button>
     <label className="redis-exact-toggle" title="勾选后直接读取完整 Key；未勾选时支持关键词包含、* 任意字符和 ? 单个字符，区分大小写。">
-      <input type="checkbox" checked={mode === "exact"} onChange={(event) => { setOpen(false); setSelected(-1); onModeChange(event.target.checked ? "exact" : "keyword") }} aria-label="精确匹配 Key" data-testid="redis-search-exact" />
+      <Checkbox  checked={mode === "exact"} onCheckedChange={(value) => { setOpen(false); setSelected(-1); onModeChange(value === true ? "exact" : "keyword") }} aria-label="精确匹配 Key" data-testid="redis-search-exact" />
       <span>精确匹配</span>
     </label>
     {expanded ? <div className="redis-search-history" data-testid="redis-search-history">

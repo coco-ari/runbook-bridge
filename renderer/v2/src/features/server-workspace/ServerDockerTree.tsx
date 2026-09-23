@@ -1,3 +1,4 @@
+import { SelectControl, SelectItem } from "@/components/ui/select"
 import { useMemo, useState } from "react"
 import type { AiOpsV2Api, DockerContainer, DockerContainerPage, PluginScope } from "@/bridge/ai-ops-v2"
 import { Input } from "@/components/ui/input"
@@ -35,7 +36,7 @@ export function ServerDockerTree({ api, scope, connected, visible, binding, onOp
   return <section className="server-docker-tree" aria-label="Docker 容器列表">
     <div className="server-docker-list-toolbar"><span>Docker <span className="text-muted-foreground">{data?.total ?? ""}</span></span><WorkspaceIconButton action="refresh" label="刷新容器列表" disabled={!connected || busy} busy={busy} onClick={refresh} /></div>
     <div className="server-docker-filter"><Input aria-label="搜索容器" value={search} placeholder="搜索容器、镜像或 Compose" onChange={event => setSearch(event.target.value)} />
-      <select aria-label="容器状态筛选" value={state} onChange={event => setState(event.target.value)}><option value="all">全部状态</option><option value="running">运行中</option><option value="stopped">未运行</option></select>
+      <SelectControl aria-label="容器状态筛选" value={state} onValueChange={setState}><SelectItem value="all">全部状态</SelectItem><SelectItem value="running">运行中</SelectItem><SelectItem value="stopped">未运行</SelectItem></SelectControl>
     </div>
     {!connected ? <p className="server-docker-message">请先连接服务器。</p> : null}
     {error ? <p className="server-docker-message text-danger" role="alert">{error}{data ? " 当前列表为上次读取结果。" : ""}</p> : null}

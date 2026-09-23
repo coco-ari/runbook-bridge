@@ -538,14 +538,14 @@ export function QuickQuestionsFeature({
   const openingEditor = (
     <Card className="gap-0 py-0 ring-primary/25" data-testid="quick-opening-inline-editor">
       <CardHeader className="border-b border-border/70 px-3 py-3">
-        <CardTitle><h3 className="text-sm font-semibold" id="opening-title">编辑 Agent 开场词</h3></CardTitle>
+        <CardTitle><h3 className="text-section font-medium" id="opening-title">编辑 Agent 开场词</h3></CardTitle>
         <p className="text-xs leading-5 text-muted-foreground">该设置对所有环境生效，并且必须明确包含 AI Ops MCP。</p>
       </CardHeader>
       <CardContent className="space-y-3 px-3 py-3">
         <Field data-invalid={Boolean(openingValidation)}>
           <div className="flex items-center justify-between gap-3">
             <FieldLabel htmlFor="quick-opening-editor">开场词</FieldLabel>
-            <span className="text-[11px] tabular-nums text-muted-foreground">{Array.from(openingDraft).length} / 500</span>
+            <span className="text-xs tabular-nums text-muted-foreground">{Array.from(openingDraft).length} / 500</span>
           </div>
           <Textarea
             aria-describedby={[
@@ -607,7 +607,7 @@ export function QuickQuestionsFeature({
         <Field data-invalid={Boolean(questionValidation)}>
           <div className="flex items-center justify-between gap-3">
             <FieldLabel htmlFor="common-question-editor">问题正文</FieldLabel>
-            <span className="text-[11px] tabular-nums text-muted-foreground">{Array.from(questionDraft).length} / 1200</span>
+            <span className="text-xs tabular-nums text-muted-foreground">{Array.from(questionDraft).length} / 1200</span>
           </div>
           <Textarea
             aria-describedby={[
@@ -698,7 +698,7 @@ export function QuickQuestionsFeature({
               <Field className="gap-2.5">
                 <div className="flex items-center justify-between gap-3">
                   <FieldLabel className="text-base font-semibold" htmlFor="quick-question-input">要排查什么问题？</FieldLabel>
-                  <span className="text-[11px] tabular-nums text-muted-foreground">
+                  <span className="text-xs tabular-nums text-muted-foreground">
                     {Array.from(question).length} / 1200
                   </span>
                 </div>
@@ -813,7 +813,7 @@ export function QuickQuestionsFeature({
                     >
                       <CaretRight className={previewOpen ? "rotate-90" : ""} />
                       <span className="text-xs font-medium">最终复制内容</span>
-                      <span className="ml-auto text-[11px] font-normal">{previewOpen ? "收起预览" : "展开预览"}</span>
+                      <span className="ml-auto text-xs font-normal">{previewOpen ? "收起预览" : "展开预览"}</span>
                     </Button>
                   </CollapsibleTrigger>
                 </h3>
@@ -830,7 +830,7 @@ export function QuickQuestionsFeature({
                 <ItemContent>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <ItemTitle asChild><h3 className="text-xs text-muted-foreground" id="opening-title">Agent 开场词</h3></ItemTitle>
-                    <span className="text-[11px] text-muted-foreground">所有环境通用</span>
+                    <span className="text-xs text-muted-foreground">所有环境通用</span>
                   </div>
                   {loadingOpening ? (
                     <Skeleton className="mt-1 h-4 w-full" />
@@ -915,7 +915,7 @@ export function QuickQuestionsFeature({
                               <ItemTitle asChild className="line-clamp-2 w-full whitespace-normal break-all text-xs font-medium leading-5">
                                 <span>{item.text}</span>
                               </ItemTitle>
-                              <ItemDescription asChild className="text-[10px]">
+                              <ItemDescription asChild className="text-xs">
                                 <span>{formatQuickQuestionUpdatedAt(item.updatedAt)}</span>
                               </ItemDescription>
                             </span>

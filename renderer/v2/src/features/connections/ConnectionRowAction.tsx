@@ -133,7 +133,7 @@ function ConnectionActionButton({
           <Button
             aria-busy={action.pending || undefined}
             aria-label={help}
-            className="gap-1 px-2 text-[11px]"
+            className="gap-1 px-2 text-xs"
             data-connection-intent={action.kind}
             data-testid={testId}
             disabled={action.disabled}

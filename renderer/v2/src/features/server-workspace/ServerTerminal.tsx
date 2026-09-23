@@ -1,3 +1,5 @@
+import { Checkbox } from "@/components/ui/checkbox"
+import { SelectControl, SelectItem } from "@/components/ui/select"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
@@ -477,12 +479,12 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
       <Dialog open={colorHelp} onOpenChange={setColorHelp}>
         <DialogContent onCloseAutoFocus={(event) => { event.preventDefault(); if (visibleRef.current) terminalRef.current?.focus() }}>
           <DialogHeader><DialogTitle>终端目录配色</DialogTitle><DialogDescription>新终端自动设置目录颜色并提供 ll 命令；支持的 Bash 同时使用深青底、浅色字显示粘贴内容。配置仅影响当前会话。</DialogDescription></DialogHeader>
-          <label className="flex items-center gap-3 text-sm"><input type="checkbox" checked={defaultColors} onChange={(event) => {
-            const enabled = event.target.checked
+          <label className="flex items-center gap-3 text-sm"><Checkbox  checked={defaultColors} onCheckedChange={(value) => {
+            const enabled = value === true
             try { localStorage.setItem(DEFAULT_COLORS_KEY, String(enabled)); setDefaultColors(enabled) } catch { setError("无法保存自动配色偏好，请检查本地存储。") }
           }} />新建终端时自动启用配色</label>
           <p className="text-xs text-muted-foreground">开关仅影响之后新建的终端。已打开的终端可在空白 Bash / Zsh 提示符中填入下方命令，按 Enter 应用；未识别的 Shell 会跳过自动配置。</p>
-          <label className="flex items-center gap-3 text-sm">服务器类型<select className="rounded border bg-background px-2 py-1" aria-label="配色服务器类型" value={colorPlatform} onChange={(event) => setColorPlatform(event.target.value)}><option value="linux">Linux / GNU ls</option><option value="bsd">macOS / BSD ls</option></select></label>
+          <label className="flex items-center gap-3 text-sm">服务器类型<SelectControl  aria-label="配色服务器类型" value={colorPlatform} onValueChange={setColorPlatform}><SelectItem value="linux">Linux / GNU ls</SelectItem><SelectItem value="bsd">macOS / BSD ls</SelectItem></SelectControl></label>
           <p className="text-xs text-muted-foreground">目录：蓝色 · 软链接：青色 · 可执行文件：绿色。同时提供 ll 别名；Bash 粘贴高亮与鼠标选区分别配色。</p>
           <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded border bg-surface-inset p-3 font-mono text-xs">{colorCommand}</pre>
           <DialogFooter><Button variant="outline" onClick={() => setColorHelp(false)}>取消</Button><Button disabled={status !== "open" || !connected} onClick={() => { terminalRef.current?.paste(colorCommand); setColorHelp(false) }}>填入配色命令</Button></DialogFooter>
@@ -491,7 +493,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
       <Dialog open={Boolean(paste)} onOpenChange={(value) => { if (!value) setPaste("") }}>
         <DialogContent className="sm:max-w-lg" onCloseAutoFocus={(event) => { event.preventDefault(); if (visibleRef.current) terminalRef.current?.focus() }}>
           <DialogHeader><DialogTitle>确认粘贴到终端</DialogTitle><DialogDescription>确认后整段发送到当前终端。部分 Shell 会立即执行其中的换行，请检查内容和当前程序状态。</DialogDescription></DialogHeader>
-          <pre style={{ fontFamily: TERMINAL_FONT_FAMILY }} className="max-h-64 overflow-auto rounded-md border bg-surface-inset p-3 text-sm leading-6 whitespace-pre-wrap break-all">{paste}</pre>
+          <pre style={{ fontFamily: TERMINAL_FONT_FAMILY }} className="max-h-64 overflow-auto rounded-md border bg-surface-inset p-3 text-section leading-6 whitespace-pre-wrap break-all">{paste}</pre>
           <p className="text-xs text-muted-foreground">共 {lines.length} 行，保留缩进和空行。</p>
           <DialogFooter><Button variant="outline" onClick={() => setPaste("")}>取消</Button><Button disabled={status !== "open" || !connected} onClick={() => {
             if (insertPaste(paste)) setPaste("")

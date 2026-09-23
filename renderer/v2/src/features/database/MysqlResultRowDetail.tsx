@@ -54,7 +54,7 @@ export function MysqlResultRowDetail({ columns, row, rowNumber, prefix, id, onCl
         {columns.map((column) => (
           <div className="border-b border-border/70 py-3 last:border-b-0" key={column.name}>
             <dt className="mb-1.5 flex items-center gap-2">
-              <span className="min-w-0 flex-1 break-all font-mono text-[11px] text-muted-foreground">{column.name}</span>
+              <span className="min-w-0 flex-1 break-all font-mono text-xs text-muted-foreground">{column.name}</span>
               <Button
                 aria-label={`复制 ${column.name} 单元格`}
                 className="shrink-0"

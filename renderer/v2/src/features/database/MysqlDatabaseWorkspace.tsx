@@ -1,3 +1,4 @@
+import { StatusIndicator } from "@/components/app-shell/StatusIndicator"
 import { WorkspaceBackButton, WorkspaceHeaderActions, WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { WorkspaceLayoutControls, WorkspacePanelToggle, WorkspaceTabBar } from "@/components/workspace/WorkspaceLayoutControls"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
@@ -68,7 +69,7 @@ function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, envi
     <header className="mysql-workspace-header">
       <WorkspaceBackButton label="返回数据库详情" testId="mysql-workspace-back" onClick={onBack} />
       <span className="mysql-workspace-header-divider" />
-      <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-sm font-semibold" title={plugin.displayName}>{plugin.displayName}</h1><Badge variant={connected ? "success" : "outline"}>{connected ? "已连接" : "未连接"}</Badge><Badge variant="outline"><ShieldCheck className="size-3" />只读</Badge></div><p className="truncate text-[11px] text-muted-foreground" title={projectName + " / " + environmentName + " · " + database}>{projectName} / {environmentName} · {database}</p></div>
+      <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold" title={plugin.displayName}>{plugin.displayName}</h1><StatusIndicator appearance="badge" status={connected ? "connected" : "disconnected"} /><Badge variant="outline"><ShieldCheck className="size-3" />只读</Badge></div><p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName + " · " + database}>{projectName} / {environmentName} · {database}</p></div>
       <WorkspaceHeaderActions connected={connected} busy={disconnecting} onDisconnect={() => void disconnect()} onClose={() => setClosing(true)} prefix="mysql-workspace" closeLabel="关闭数据库工作区" closeTitle="关闭工作区并清除查询" />
     </header>
     <Dialog open={closing} onOpenChange={setClosing}><DialogContent><DialogHeader><DialogTitle>关闭数据库工作区</DialogTitle><DialogDescription>将清除当前工作区的 SQL、筛选条件和查询结果。数据库连接保持。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => { setClosing(false); onBack() }}>返回详情并保留</Button><Button data-testid="mysql-workspace-confirm-close" onClick={onClose}>关闭工作区</Button></DialogFooter></DialogContent></Dialog>
@@ -187,7 +188,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
                     </div>
                   ))}
                   {openTables.map(table => <div className="mysql-document-tab-group" key={table}>
-                    <TabsTrigger className="mysql-document-tab" data-testid="mysql-table-document-tab" data-table-name={table} title={table} value={"table:" + table}><TableIcon aria-hidden="true" /><span className="max-w-64 truncate font-mono">{table}</span></TabsTrigger>
+                    <TabsTrigger className="mysql-document-tab" data-testid="mysql-table-document-tab" data-table-name={table} title={table} value={"table:" + table}><TableIcon aria-hidden="true" /><span className="max-w-64 truncate">{table}</span></TabsTrigger>
                     <WorkspaceIconButton action="close" label={"关闭表 " + table} className="mysql-document-close" data-testid="mysql-table-close" data-table-name={table} onClick={() => closeTable(table)} />
                   </div>)}
                 </TabsList>

@@ -77,6 +77,7 @@ interface StatusIndicatorProps {
   readonly appearance?: "inline" | "badge"
   readonly className?: string
   readonly compact?: boolean
+  readonly label?: string
   readonly status: StatusKind
 }
 
@@ -85,6 +86,7 @@ export function StatusIndicator({
   className,
   compact = false,
   status,
+  label,
 }: StatusIndicatorProps) {
   const definition = statusDefinitions[status]
   const { Icon } = definition
@@ -92,7 +94,7 @@ export function StatusIndicator({
   const content = (
     <>
       <Icon aria-hidden="true" size={13} weight={status === "connected" ? "fill" : "regular"} />
-      <span className={compact ? "sr-only" : undefined}>{definition.label}</span>
+      <span className={compact ? "sr-only" : undefined}>{label ?? definition.label}</span>
     </>
   )
 
@@ -101,7 +103,7 @@ export function StatusIndicator({
       <Badge
         className={cn("gap-1 text-xs", definition.badgeClassName, className)}
         data-status={status}
-        title={definition.label}
+        title={label ?? definition.label}
         variant={definition.badgeVariant}
       >
         {content}
@@ -117,7 +119,7 @@ export function StatusIndicator({
         className,
       )}
       data-status={status}
-      title={definition.label}
+      title={label ?? definition.label}
     >
       {content}
     </span>

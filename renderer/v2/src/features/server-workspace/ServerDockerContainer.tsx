@@ -1,3 +1,4 @@
+import { SelectControl, SelectItem } from "@/components/ui/select"
 import { useState } from "react"
 import type { DockerContainer, DockerContainerDetails, DockerLogs, DockerStats } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
@@ -38,8 +39,8 @@ export function ServerDockerContainer({ container, ...props }: DockerViewProps &
         {([["inspect", "概览"], ["logs", "日志"], ["stats", "资源"]] as const).map(([id, label]) => <button type="button" key={id} aria-pressed={view === id} onClick={() => setView(id)}>{label}</button>)}
       </div>
       <span className="server-docker-id" title={container.id}>{container.id.slice(0, 12)}</span>
-      {view === "logs" ? <><select aria-label="日志时间范围" value={range} onChange={event => { setRange(event.target.value); setSince(event.target.value === "all" ? undefined : new Date(Date.now() - Number(event.target.value) * 60000).toISOString()); setCopied(false) }}><option value="all">最近记录</option><option value="15">最近 15 分钟</option><option value="60">最近 1 小时</option><option value="1440">最近 24 小时</option></select>
-        <select aria-label="日志行数" value={lines} onChange={event => { setLines(Number(event.target.value)); setCopied(false) }}>{[200, 500, 2000].map(value => <option key={value} value={value}>{value} 行</option>)}</select>
+      {view === "logs" ? <><SelectControl aria-label="日志时间范围" value={range} onValueChange={value => { setRange(value); setSince(value === "all" ? undefined : new Date(Date.now() - Number(value) * 60000).toISOString()); setCopied(false) }}><SelectItem value="all">最近记录</SelectItem><SelectItem value="15">最近 15 分钟</SelectItem><SelectItem value="60">最近 1 小时</SelectItem><SelectItem value="1440">最近 24 小时</SelectItem></SelectControl>
+        <SelectControl aria-label="日志行数" value={String(lines)} onValueChange={value => { setLines(Number(value)); setCopied(false) }}>{[200, 500, 2000].map(value => <SelectItem key={value} value={String(value)}>{value} 行</SelectItem>)}</SelectControl>
         <Button size="sm" variant="ghost" disabled={!logs.data} onClick={() => { void copy() }}>{copied ? "已复制" : "复制"}</Button></> : null}
       <WorkspaceIconButton action="refresh" label="刷新容器内容" disabled={!connected || result.busy} busy={result.busy} onClick={refresh} />
     </div>

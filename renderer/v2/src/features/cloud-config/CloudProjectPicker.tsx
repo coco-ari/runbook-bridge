@@ -1,3 +1,5 @@
+import { Checkbox } from "@/components/ui/checkbox"
+import { SelectControl, SelectItem } from "@/components/ui/select"
 import { useEffect, useRef, useState } from "react"
 import { ArrowRight, ArrowsClockwise, CloudArrowDown, CloudArrowUp, FolderSimple, MagnifyingGlass, SpinnerGap, WarningCircle, X } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
@@ -57,9 +59,9 @@ export function CloudProjectPicker({ busy, loading, loadError, direction, projec
           })}
         </div>
         <div className="flex max-w-full items-center gap-1">
-          {download ? <label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><span className="shrink-0">云端版本</span><select aria-label="云端版本" disabled={busy} value={snapshotId} onChange={e => onSnapshotChange(e.target.value)} className="h-8 min-w-0 max-w-28 rounded-md border bg-card px-2 text-xs text-foreground focus-visible:outline-2 focus-visible:outline-ring sm:max-w-44">
-            <option value="">最新版本</option>{versions.map(version => <option key={version.snapshotId} value={version.snapshotId}>{new Date(version.createdAt).toLocaleString()} · {Math.ceil(version.bytes / 1024)} KiB</option>)}
-          </select></label> : <span className="text-xs text-muted-foreground">本机 → 云端</span>}
+          {download ? <label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground"><span className="shrink-0">云端版本</span><SelectControl aria-label="云端版本" disabled={busy} value={snapshotId || "latest"} onValueChange={value => onSnapshotChange(value === "latest" ? "" : value)} className="h-8 min-w-0 max-w-28 rounded-md border bg-card px-2 text-xs text-foreground focus-visible:outline-2 focus-visible:outline-ring sm:max-w-44">
+            <SelectItem value="latest">最新版本</SelectItem>{versions.map(version => <SelectItem key={version.snapshotId} value={version.snapshotId}>{new Date(version.createdAt).toLocaleString()} · {Math.ceil(version.bytes / 1024)} KiB</SelectItem>)}
+          </SelectControl></label> : <span className="text-xs text-muted-foreground">本机 → 云端</span>}
           <Button size="icon-sm" variant="ghost" aria-label="刷新云配置" title="刷新项目列表" disabled={busy} onClick={onRefresh}><ArrowsClockwise aria-hidden="true" className={busy ? "motion-safe:animate-spin" : undefined} size={16} /></Button>
         </div>
       </div>
@@ -89,7 +91,7 @@ export function CloudProjectPicker({ busy, loading, loadError, direction, projec
       </div> : visible.length ? <div className="divide-y">{visible.map(project => {
         const checked = selectedIds.has(project.projectId)
         return <label key={project.projectId} data-testid="cloud-project-row" data-project-id={project.projectId} className={cn("flex min-h-11 cursor-pointer items-center gap-3 px-3 py-2.5 focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring/50 sm:px-4", checked ? "bg-primary/5" : "hover:bg-muted/40", busy && "cursor-wait opacity-60")}>
-          <input type="checkbox" className="size-4 shrink-0 accent-primary" disabled={busy} checked={checked} onChange={e => onSelectionChange(e.target.checked ? [...selected, project.projectId] : selected.filter(id => id !== project.projectId))} />
+          <Checkbox   disabled={busy} checked={checked} onCheckedChange={value => onSelectionChange(value === true ? [...selected, project.projectId] : selected.filter(id => id !== project.projectId))} />
           <FolderSimple size={17} className={cn("shrink-0", checked ? "text-primary" : "text-muted-foreground")} aria-hidden="true" />
           <span className="min-w-0 flex-1"><span className="block text-sm [overflow-wrap:anywhere]">{project.name}</span>{project.warnings?.length ? <span className="mt-0.5 flex items-center gap-1 text-xs text-warning"><WarningCircle size={13} aria-hidden="true" />{project.warnings.length} 项连接前检查，预览时查看</span> : null}</span>
         </label>

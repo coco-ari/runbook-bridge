@@ -473,6 +473,9 @@ async function nativePaste(text, shortcut = false) {
 async function setViewport(width, height) {
   win.setContentSize(width, height);
   await until(`innerWidth === ${width} && innerHeight === ${height}`, '固定内容区尺寸');
+  await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
+  win.webContents.invalidate();
+  await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   await wait(250);
 }
 async function assertFileSidebarLayout() {
@@ -496,7 +499,7 @@ async function assertFileSidebarLayout() {
     })()`);
     assert.equal(layout.buttons.length, 6, '目录工具栏包含定位当前终端按钮');
     assert.ok(layout.buttons.every(button => button.inside && Math.abs(button.centerY - layout.buttons[0].centerY) <= 1), zoom + ' 倍缩放下按钮保持单行且完整可见：' + JSON.stringify(layout));
-    assert.ok(Math.abs(layout.height - 43) <= 1, zoom + ' 倍缩放下工具栏不增加空白行');
+    assert.ok(Math.abs(layout.height - 36) <= 1, zoom + ' 倍缩放下工具栏不增加空白行');
     assert.ok(Math.abs(layout.unusedBottom) <= 1, '文件列表使用底部释放的空间');
   }
   win.webContents.setZoomFactor(1);
@@ -582,9 +585,9 @@ async function exerciseUploadReview() {
     assert.equal(clipboard.readText(), expected, '复制完整路径到系统剪贴板');
   }
   reviewHeld=false;
-  await until("!document.querySelector('[data-testid=upload-review-progress]') && !document.querySelector('[role=dialog] input[type=checkbox]').disabled", '检查完成后允许确认覆盖');
+  await until("!document.querySelector('[data-testid=upload-review-progress]') && !document.querySelector('[role=dialog] [role=checkbox]').disabled", '检查完成后允许确认覆盖');
   await snapshot('upload-confirm-dark.png');
-  await click('[role=dialog] input[type=checkbox]');
+  await click('[role=dialog] [role=checkbox]');
   const checksBeforeRemoval = preparationRuns;
   const expiresBeforeRemoval = uploadPreparation.expiresAt;
   const tokenBeforeRemoval = uploadPreparation.preparationId;
@@ -594,8 +597,8 @@ async function exerciseUploadReview() {
   assert.equal(uploadPreparation.expiresAt, expiresBeforeRemoval, '移除不延长原确认有效期');
   assert.notEqual(uploadPreparation.preparationId, tokenBeforeRemoval, '移除替换旧凭证');
   assert.ok(await evaluate("document.querySelector('.server-upload-total').textContent.includes('1 个文件') && document.querySelector('.server-upload-total').textContent.includes('976.6 KB')"), '数量和大小立即更新');
-  assert.equal(await evaluate("document.querySelector('[role=dialog] input[type=checkbox]').checked"), false, '移除后重新确认剩余同名覆盖');
-  assert.equal(await evaluate("document.querySelector('[role=dialog] input[type=checkbox]').disabled"), false, '移除后可以直接确认覆盖');
+  assert.equal(await evaluate("(document.querySelector('[role=dialog] [role=checkbox]').getAttribute('aria-checked') === 'true')"), false, '移除后重新确认剩余同名覆盖');
+  assert.equal(await evaluate("document.querySelector('[role=dialog] [role=checkbox]').disabled"), false, '移除后可以直接确认覆盖');
   await snapshot('upload-after-remove.png');
   uploadPreparation.status = 'error'; uploadPreparation.preparationId = null;
   uploadPreparation.error = {code:'UPLOAD_CONFIRMATION_EXPIRED',message:'上传确认已过期，请重新检查文件。'};
@@ -604,10 +607,10 @@ async function exerciseUploadReview() {
   await clickText('重新检查');
   await until("document.querySelector('.server-upload-review-error')?.textContent.includes('暂时不可写')", '文件重新检查失败可恢复');
   assert.ok(await evaluate(buttonDisabled), '失败后禁止旧凭证上传');
-  assert.equal(await evaluate("document.querySelector('[role=dialog] input[type=checkbox]').checked"), false, '重新检查清除覆盖选择');
+  assert.equal(await evaluate("(document.querySelector('[role=dialog] [role=checkbox]').getAttribute('aria-checked') === 'true')"), false, '重新检查清除覆盖选择');
   revisionFailure = false;
   await clickText('重新检查');
-  await until("!document.querySelector('[data-testid=upload-review-progress]') && !document.querySelector('.server-upload-review-error') && document.querySelector('[role=dialog] input[type=checkbox]')?.disabled === false", '原目录重新检查完成');
+  await until("!document.querySelector('[data-testid=upload-review-progress]') && !document.querySelector('.server-upload-review-error') && document.querySelector('[role=dialog] [role=checkbox]')?.disabled === false", '原目录重新检查完成');
   assert.equal(await evaluate("document.querySelectorAll('[data-testid=upload-file-row]').length"), 1, '后台重试保留移除后的文件清单');
   assert.ok(await evaluate(buttonDisabled), '重新检查后再次确认覆盖');
   assert.equal(await evaluate("document.querySelector('[data-testid=upload-destination-path]').textContent"), '/srv');
@@ -1264,7 +1267,7 @@ async function run() {
   await until(`document.querySelector('[role="dialog"]')?.textContent.includes('release.tar')`, '上传文件确认');
   await exerciseUploadReview();
   assert.ok(await evaluate(`[...document.querySelectorAll('[role="dialog"] button')].find(item => item.textContent.includes('开始上传')).disabled`), '覆盖必须明确选择');
-  await click('[role="dialog"] input[type="checkbox"]');
+  await click('[role="dialog"] [role="checkbox"]');
   await clickText('开始上传 1 个文件');
   assert.equal(uploads[0].path, '/srv/release.tar', '确认锁定目录');
   await until("document.querySelector('[data-testid=upload-speed]')?.textContent.includes('/s')", '显示上传速度');
@@ -1311,7 +1314,7 @@ async function run() {
   assert.ok(await evaluate(`document.querySelector('[aria-label="移除 release.tar"]').disabled`),'续传不能替换文件');
   assert.ok(await evaluate(`document.querySelector('[data-testid=upload-confirm-submit]').disabled`),'续传覆盖仍需明确确认');
   await snapshot('upload-resume-confirm.png');
-  await click('[role="dialog"] input[type="checkbox"]');
+  await click('[role="dialog"] [role="checkbox"]');
   await clickText('确认继续上传');
   await until(`!document.querySelector('[role="dialog"]')`,'续传确认关闭');
   assert.equal(uploads.length,1,'续传复用原任务');
@@ -1360,8 +1363,10 @@ async function run() {
   await until("document.querySelectorAll('.server-upload-row').length===0",'批量清除结束记录');
 
   await click('[aria-label="最大化工作区"]');
-  await wait(150);
-  assert.ok(await evaluate(`document.querySelector('.server-terminal-container').getBoundingClientRect().width > window.innerWidth - 60`), '最大化终端获得完整宽度');
+  await until(`document.querySelector('.server-terminal-container').getBoundingClientRect().width > window.innerWidth - 60`, '最大化终端获得完整宽度').catch(async (error) => {
+    console.error('最大化布局诊断', await evaluate(`JSON.stringify({ viewport: window.innerWidth, terminals: [...document.querySelectorAll('.server-terminal-container')].map(e => ({width:e.getBoundingClientRect().width, hidden:!!e.closest('[hidden]')})), panels:[...document.querySelectorAll('[data-slot=resizable-panel]')].map(e=>({width:e.getBoundingClientRect().width,style:e.getAttribute('style')})), restore:!!document.querySelector('[aria-label=恢复分栏]')})`));
+    throw error;
+  });
   await click('[aria-label="恢复分栏"]');
   await setViewport(1000, 750);
   assert.ok(await evaluate(`(() => { const rect = document.querySelector('.server-terminal-container').getBoundingClientRect(); return rect.height > 160 && rect.width > 350 && document.documentElement.scrollWidth <= window.innerWidth; })()`), '窄窗口终端仍可操作');
@@ -1392,9 +1397,9 @@ async function run() {
   await until("document.querySelector('[role=dialog]')?.textContent.includes('LS_COLORS')", '提供会话内标准配色设置');
   assert.equal(writes.length, beforeColors, '查看配色设置不发送命令');
   assert.ok(defaultColorOptions.every(value => value === true), '首次与新增终端默认自动配色');
-  assert.equal(await evaluate("document.querySelector('[role=dialog] input[type=checkbox]').checked"), true);
+  assert.equal(await evaluate("(document.querySelector('[role=dialog] [role=checkbox]').getAttribute('aria-checked') === 'true')"), true);
   const beforePreference = opened.length;
-  await click('[role=dialog] input[type=checkbox]');
+  await click('[role=dialog] [role=checkbox]');
   assert.equal(await evaluate("localStorage.getItem('runbook-bridge:terminal-default-colors:v1')"), 'false');
   assert.equal(opened.length, beforePreference, '更改开关不会重建现有终端');
   await clickText('填入配色命令');
@@ -1418,7 +1423,7 @@ async function run() {
   const retainedTerminalCount = opened.length;
   nativeTheme.themeSource = 'light';
   await evaluate(`localStorage.setItem('runbook-bridge:theme-preference:v1', 'light'); window.dispatchEvent(new StorageEvent('storage', { key:'runbook-bridge:theme-preference:v1' }))`);
-  await wait(150);
+  await until(`(() => { const probe=document.createElement('span'); probe.style.cssText='color:var(--foreground);transition:none;position:fixed;visibility:hidden'; document.body.append(probe); const stable=getComputedStyle(document.querySelector('.server-workspace h1')).color===getComputedStyle(probe).color; probe.remove(); return document.documentElement.dataset.theme==='light' && stable; })()`, '浅色主题颜色过渡完成');
   const lightColors = await evaluate("(() => { const probe = document.createElement('span'); probe.style.cssText='color:var(--foreground);transition:none;position:fixed;visibility:hidden'; document.body.appendChild(probe); const expected=getComputedStyle(probe).color; const actual=getComputedStyle(document.querySelector('.server-workspace h1')).color; const tree=getComputedStyle(document.querySelector('.server-tree-row:not([aria-selected=true])')).color; probe.remove(); return {expected,actual,tree}; })()");
   assert.equal(lightColors.actual, lightColors.expected, '浅色标题使用当前前景色');
   assert.equal(lightColors.tree, lightColors.expected, '浅色树使用当前前景色');

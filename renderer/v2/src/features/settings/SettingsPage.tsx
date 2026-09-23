@@ -23,18 +23,18 @@ export function SettingsPage({ api, onBack, onChanged }: {
       <Button className="justify-start sm:my-4" variant="ghost" size="sm" disabled={busy} data-testid="settings-back" onClick={onBack}><ArrowLeft />返回工作台</Button>
       <p className="mt-2 mb-2 hidden px-2 text-xs text-muted-foreground sm:block">应用配置</p>
       <nav className="flex gap-1 sm:flex-col">
-        <Button className="flex-1 justify-start sm:flex-none" variant={section === "appearance" ? "secondary" : "ghost"} size="sm" aria-current={section === "appearance" ? "page" : undefined} disabled={busy} data-testid="settings-appearance" onClick={() => setSection("appearance")}><Palette />外观主题</Button>
-        <Button className="flex-1 justify-start sm:flex-none" variant={section === "cloud" ? "secondary" : "ghost"} size="sm" aria-current={section === "cloud" ? "page" : undefined} disabled={busy} data-testid="settings-cloud" onClick={() => { if (!cloudVisited) setBusy(true); setCloudVisited(true); setSection("cloud") }}><Cloud />云配置</Button>
+        <Button data-settings-nav className="flex-1 justify-start sm:flex-none aria-[current=page]:bg-surface-selected aria-[current=page]:text-primary aria-[current=page]:shadow-[inset_2px_0_var(--primary)]" variant={section === "appearance" ? "secondary" : "ghost"} size="sm" aria-current={section === "appearance" ? "page" : undefined} disabled={busy} data-testid="settings-appearance" onClick={() => setSection("appearance")}><Palette />外观主题</Button>
+        <Button data-settings-nav className="flex-1 justify-start sm:flex-none aria-[current=page]:bg-surface-selected aria-[current=page]:text-primary aria-[current=page]:shadow-[inset_2px_0_var(--primary)]" variant={section === "cloud" ? "secondary" : "ghost"} size="sm" aria-current={section === "cloud" ? "page" : undefined} disabled={busy} data-testid="settings-cloud" onClick={() => { if (!cloudVisited) setBusy(true); setCloudVisited(true); setSection("cloud") }}><Cloud />云配置</Button>
       </nav>
     </aside>
     <main className={cn("min-h-0 min-w-0 flex-1 p-4 sm:p-6", section === "cloud" ? "flex flex-col overflow-hidden" : "overflow-y-auto")} aria-labelledby="settings-heading" data-testid="settings-main">
       <div className={cn("w-full max-w-6xl", section === "cloud" ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-6")}>
         <header className="shrink-0 space-y-1">
-          <h1 className="text-xl font-semibold tracking-tight outline-none" id="settings-heading" ref={headingRef} tabIndex={-1}>{section === "appearance" ? "外观主题" : "云配置"}</h1>
+          <h1 className="text-base font-semibold tracking-tight outline-none" id="settings-heading" ref={headingRef} tabIndex={-1}>{section === "appearance" ? "外观主题" : "云配置"}</h1>
           <p className="text-sm text-muted-foreground">{section === "appearance" ? "选择适合你的界面外观，设置会应用到整个工作台。" : "加密保存项目、插件与凭据，在其他电脑上下载使用。"}</p>
         </header>
-        {section === "appearance" ? <section className="max-w-xl space-y-5 rounded-xl border bg-card p-5 sm:p-6" aria-label="外观设置">
-          <div className="space-y-1"><h2 className="font-medium">界面主题</h2><p className="text-xs text-muted-foreground">选择浅色、深色，或跟随系统自动切换。</p></div>
+        {section === "appearance" ? <section className="max-w-xl space-y-4 rounded-lg border bg-card p-5 sm:p-6" aria-label="外观设置">
+          <div className="space-y-1"><h2 className="text-section font-medium">界面主题</h2><p className="text-xs text-muted-foreground">选择浅色、深色，或跟随系统自动切换。</p></div>
           <ThemeMenu />
           <p className="text-xs text-muted-foreground">更改立即生效，并保存在本机。</p>
         </section> : null}

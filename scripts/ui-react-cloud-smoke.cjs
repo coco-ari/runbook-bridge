@@ -33,7 +33,7 @@ async function fill(id,value) {
   await window.webContents.executeJavaScript(`(() => { const input = document.getElementById(${JSON.stringify(id)}); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)}); input.dispatchEvent(new Event('input',{bubbles:true})); })()`);
 }
 async function visibleProjects() {
-  return window.webContents.executeJavaScript('[...document.querySelectorAll("[data-testid=cloud-project-row]")].filter(row => row.getClientRects().length).map(row => ({id:row.dataset.projectId,checked:row.querySelector("input").checked}))');
+  return window.webContents.executeJavaScript('[...document.querySelectorAll("[data-testid=cloud-project-row]")].filter(row => row.getClientRects().length).map(row => ({id:row.dataset.projectId,checked:(row.querySelector("[role=checkbox]").getAttribute("aria-checked") === "true")}))');
 }
 async function assertSelected(count) {
   const preview = await window.webContents.executeJavaScript('(() => { const button=document.querySelector("[data-testid=cloud-preview]"); return {label:button?.getAttribute("aria-label"),disabled:button?.disabled}; })()');
@@ -67,7 +67,7 @@ async function assertScrollLayout() {
   window.webContents.sendInputEvent({type:'mouseMove',...center});
   window.webContents.sendInputEvent({type:'mouseWheel',...center,deltaY:-10000,canScroll:true});
   await wait('(() => { const list=document.querySelector("[data-testid=cloud-project-list]"); return list.scrollTop>0 && list.scrollTop+list.clientHeight>=list.scrollHeight-1; })()');
-  const checkbox = await window.webContents.executeJavaScript('(() => { const rect=document.querySelector("[data-testid=cloud-project-row]:last-child input").getBoundingClientRect(); return {x:Math.round(rect.left+rect.width/2),y:Math.round(rect.top+rect.height/2)}; })()');
+  const checkbox = await window.webContents.executeJavaScript('(() => { const rect=document.querySelector("[data-testid=cloud-project-row]:last-child [role=checkbox]").getBoundingClientRect(); return {x:Math.round(rect.left+rect.width/2),y:Math.round(rect.top+rect.height/2)}; })()');
   for (const count of [2,1]) {
     window.webContents.sendInputEvent({type:'mouseDown',...checkbox,button:'left',clickCount:1});
     window.webContents.sendInputEvent({type:'mouseUp',...checkbox,button:'left',clickCount:1});
@@ -76,8 +76,9 @@ async function assertScrollLayout() {
   await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-project-list]").scrollTop=0');
 }
 async function capture(suffix='') {
-  if (!process.env.RUNBOOK_BRIDGE_CLOUD_SCREENSHOT) return;
-  const original = path.resolve(process.env.RUNBOOK_BRIDGE_CLOUD_SCREENSHOT);
+  const destination = process.env.RUNBOOK_BRIDGE_CLOUD_SCREENSHOT || (process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR ? path.join(process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR, 'cloud-config.png') : null);
+  if (!destination) return;
+  const original = path.resolve(destination);
   const extension = path.extname(original);
   const target = suffix ? original.slice(0,extension ? -extension.length : undefined)+suffix+(extension || '.png') : original;
   assert.ok(target.toLowerCase() !== root.toLowerCase() && !target.toLowerCase().startsWith((root+path.sep).toLowerCase()),'截图必须保存在仓库外');
@@ -172,7 +173,7 @@ async function run() {
   assert.equal((await visibleProjects()).length,projectCount);
   assert.equal(await window.webContents.executeJavaScript('document.getElementById("cloud-project-search").getAttribute("aria-label")'),'搜索项目');
   await assertSelected(0);
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-project-row][data-project-id=cloud-demo] input").click()');
+  await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-project-row][data-project-id=cloud-demo] [role=checkbox]").click()');
   await assertSelected(1);
   await window.webContents.executeJavaScript('document.getElementById("cloud-project-search").focus()');
   await window.webContents.insertText('cLoUd uX');
@@ -244,7 +245,7 @@ async function run() {
   await clickText('重新读取');
   await wait('document.querySelectorAll("[data-testid=cloud-project-row]").length === '+projectCount+' && !document.querySelector("[data-testid=settings-back]").disabled');
   assert.equal(await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("项目读取失败")'),false,'重新读取成功后清除失败状态');
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-project-row][data-project-id=cloud-demo] input").click()');
+  await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-project-row][data-project-id=cloud-demo] [role=checkbox]").click()');
   await assertSelected(1);
   await assertLayout();
   await clickTestId('cloud-selected-only');
@@ -253,7 +254,7 @@ async function run() {
   await assertSelected(0);
   assert.deepEqual(await visibleProjects(),[],'清空选择后仅看已选显示明确空状态');
   await clickText('查看全部项目');
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-project-row][data-project-id=cloud-demo] input").click()');
+  await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-project-row][data-project-id=cloud-demo] [role=checkbox]").click()');
   await assertSelected(1);
   await clickTestId('cloud-view-repository');
   await clickTestId('cloud-view-sync');

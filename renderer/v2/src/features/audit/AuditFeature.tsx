@@ -443,7 +443,7 @@ export function AuditFeature({
               {displayEntries.map((row) => (
                 <Item className="min-w-0 items-start" key={row.key} role="listitem" size="xs" variant="muted">
                   <ItemContent>
-                    <div className="flex min-w-0 flex-wrap items-center gap-x-2 text-[10px] text-muted-foreground">
+                    <div className="flex min-w-0 flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
                       <span>{row.day}</span>
                       <span className="font-mono">
                         {row.instant ? row.instant.toLocaleTimeString("zh-CN", { hour12: false }) : "-"}
@@ -453,7 +453,7 @@ export function AuditFeature({
                     <ItemTitle className="line-clamp-none w-full break-words text-xs">
                       {row.operation} / {row.target}
                     </ItemTitle>
-                    <ItemDescription className="line-clamp-none break-words text-[11px] leading-4">
+                    <ItemDescription className="line-clamp-none break-words text-xs leading-4">
                       {row.detail}
                     </ItemDescription>
                   </ItemContent>
@@ -484,7 +484,7 @@ export function AuditFeature({
                       </TableRow>
                     ),
                     <TableRow key={row.key}>
-                      <TableCell className="font-mono text-[11px] text-muted-foreground">
+                      <TableCell className="font-mono text-xs text-muted-foreground">
                         {row.instant ? row.instant.toLocaleTimeString("zh-CN", { hour12: false }) : "-"}
                       </TableCell>
                       <TableCell className="text-xs">{row.actor}</TableCell>
@@ -492,7 +492,7 @@ export function AuditFeature({
                         <div className="truncate text-xs font-medium">
                           {row.operation} / {row.target}
                         </div>
-                        <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+                        <p className="mt-0.5 line-clamp-2 text-xs leading-4 text-muted-foreground">
                           {row.detail}
                         </p>
                       </TableCell>

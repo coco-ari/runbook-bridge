@@ -1,3 +1,4 @@
+import { WorkspaceNotice } from "@/components/workspace/WorkspaceNotice"
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
 import { CaretDown, CaretRight, Crosshair, DotsThree, FolderSimple, FolderOpen, Key, ListBullets, MagnifyingGlass, TreeStructure } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
@@ -135,7 +136,7 @@ export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, c
       </div>
       {search}
     </div>
-    {error ? <p role="alert" className="redis-error" data-testid="redis-scan-error">{error}</p> : null}
+    {error ? <WorkspaceNotice variant="destructive" data-testid="redis-scan-error">{error}</WorkspaceNotice> : null}
     <ContextMenu onOpenChange={(open) => { if (!open) setContextFolder(null) }}>
     <ContextMenuTrigger asChild disabled={!visible}>
     <div ref={scroll} className="redis-key-list" data-testid="redis-key-list" aria-busy={loading}
@@ -154,7 +155,7 @@ export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, c
             aria-expanded={folder ? open : undefined} aria-selected={node.key !== null && node.key === activeKey}
             aria-label={folder ? node.path + "，已加载 " + node.count + " 个 Key" : node.path}
             tabIndex={node.id === tabStop ? 0 : -1} title={folder ? node.path + " · 已加载 " + node.count + " 个 Key" : node.path}
-            style={{ paddingLeft: 8 + (view === "tree" ? Math.min(node.depth, 8) * 12 : 0) }}
+            style={{ paddingLeft: 12 + (view === "tree" ? Math.min(node.depth, 8) * 18 : 0) }}
             data-redis-key={node.key ?? undefined} data-redis-folder={folder ? node.path : undefined}
             onFocus={() => setFocusedId(node.id)}
             onClick={(event) => { if (event.detail > 1) return; setFocusedId(node.id); if (folder) toggle(node); else if (node.key !== null) onOpen(node.key) }}

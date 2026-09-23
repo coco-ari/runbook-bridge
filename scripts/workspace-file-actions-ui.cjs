@@ -11,6 +11,17 @@ module.exports = async function fileActionsUi({evaluate,click,clickText,until,wa
     await clickText('转到');
   };
   const setValue = async (selector, value, tag='input') => {
+    if (tag === 'select') {
+      await evaluate("document.querySelector("+JSON.stringify(selector)+").focus()");
+      win.webContents.sendInputEvent({type:'keyDown',keyCode:'Space'});
+      win.webContents.sendInputEvent({type:'keyUp',keyCode:'Space'});
+      await until("Boolean(document.querySelector('[role=option]'))", '等待选择菜单');
+      const index = await evaluate("[...document.querySelectorAll('[role=option]')].findIndex(item => item.dataset.value === "+JSON.stringify(value)+")");
+      assert.ok(index >= 0, '目标选项存在');
+      await click('[role=option][data-value="'+value+'"]');
+      await wait(80);
+      return;
+    }
     await evaluate("(() => { const element=document.querySelector("+JSON.stringify(selector)+"); Object.getOwnPropertyDescriptor("+(tag==='select'?'HTMLSelectElement':'HTMLInputElement')+".prototype,'value').set.call(element,"+JSON.stringify(value)+"); element.dispatchEvent(new Event('"+(tag==='select'?'change':'input')+"',{bubbles:true})); })()");
     await wait(80);
   };
@@ -95,7 +106,7 @@ module.exports = async function fileActionsUi({evaluate,click,clickText,until,wa
     assert.equal(confirmCount(),before,'改变冲突策略不提前开始上传');
     assert.ok(uploadRevisions.at(-1).decisions.some(item=>item.name==='conflict-b.txt'&&item.action==='overwrite'));
     await snapshot('upload-conflict-policies.png');
-    await click('[role=dialog] input[type=checkbox]');
+    await click('[role=dialog] [role=checkbox]');
     await clickText('开始上传 2 个文件');
     await until("!document.querySelector('[role=dialog]')",'提交混合策略');
     assert.equal(confirmCount(),before+1);

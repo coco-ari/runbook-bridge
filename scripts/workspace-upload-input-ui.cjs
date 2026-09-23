@@ -123,7 +123,7 @@ module.exports = async function testWorkspaceUploadInput({evaluate, click, click
       await click('[aria-label="收起上传提示"]');
     }
     const expectedShortcut = process.platform === 'darwin' ? '⌘V' : 'Ctrl+V';
-    assert.ok((await evaluate("document.querySelector('.server-file-tree [aria-label=上传文件]').title")).includes(expectedShortcut));
+    assert.ok((await evaluate("document.querySelector('.server-file-tree [aria-label=上传文件]').getAttribute('aria-description')")).includes(expectedShortcut));
     assert.equal(confirmCount(), beforeConfirm);
     assert.equal(writes.length, beforeWrites);
   } finally {
