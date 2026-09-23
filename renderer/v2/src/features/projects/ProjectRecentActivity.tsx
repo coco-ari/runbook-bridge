@@ -28,16 +28,12 @@ import {
   ItemTitle,
 } from "@/components/ui/item"
 import { Skeleton } from "@/components/ui/skeleton"
-import { auditOperationLabel, auditResult, auditResultLabel, auditResultVariant } from "@/lib/operation-copy"
+import { auditResultLabel, auditResultVariant } from "@/lib/operation-copy"
+
+import { actorLabels, presentAudit, type AuditDisplayEntry } from "@/features/audit/audit-display"
 
 type UnknownRecord = Record<string, unknown>
 
-interface ProjectAuditEntry extends UnknownRecord {
-  readonly auditId?: string
-  readonly result?: string
-  readonly time?: string | number
-  readonly type: string
-}
 
 class ProjectActivityError extends Error {
   readonly code: string
@@ -58,17 +54,16 @@ function asRecord(value: unknown): UnknownRecord {
   return value !== null && typeof value === "object" ? value as UnknownRecord : {}
 }
 
-function normalizeProjectAudit(value: unknown): readonly ProjectAuditEntry[] {
+function normalizeProjectAudit(value: unknown): readonly AuditDisplayEntry[] {
   const page = asRecord(value)
   const source = Array.isArray(value)
     ? value
     : Array.isArray(page.entries)
       ? page.entries
       : []
-  return source.flatMap((candidate) => {
-    const entry = asRecord(candidate)
-    if (typeof entry.type !== "string" || !entry.type) return []
-    return [{ ...entry, type: entry.type } satisfies ProjectAuditEntry]
+  return source.flatMap((candidate, index) => {
+    const entry = presentAudit(candidate, index)
+    return entry ? [entry] : []
   }).slice(0, 6)
 }
 
@@ -95,7 +90,7 @@ export function ProjectRecentActivity({
 }: ProjectRecentActivityProps) {
   const generationRef = useRef(0)
   const mountedRef = useRef(false)
-  const [entries, setEntries] = useState<readonly ProjectAuditEntry[]>([])
+  const [entries, setEntries] = useState<readonly AuditDisplayEntry[]>([])
   const [error, setError] = useState(false)
   const [loading, setLoading] = useState(true)
 
@@ -104,7 +99,7 @@ export function ProjectRecentActivity({
     setLoading(true)
     setError(false)
     try {
-      const value = unwrap(await getAiOpsV2().listAudit({ projectId, limit: 6 }) as IpcResult<unknown>)
+      const value = unwrap(await getAiOpsV2().listAudit({ projectId, view: "operations", limit: 6 }) as IpcResult<unknown>)
       if (!mountedRef.current || generation !== generationRef.current) return
       setEntries(normalizeProjectAudit(value))
     } catch {
@@ -123,6 +118,16 @@ export function ProjectRecentActivity({
       generationRef.current += 1
     }
   }, [load])
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const unsubscribe = getAiOpsV2().onWorkspaceChanged(change => {
+      if (change.projectId !== projectId || !["audit-appended", "audit-cleared"].includes(change.type)) return
+      clearTimeout(timer)
+      timer = setTimeout(() => { void load() }, 600)
+    })
+    return () => { unsubscribe(); clearTimeout(timer) }
+  }, [load, projectId])
 
   return (
     <Card className="mt-4 gap-0 py-0 @container/project-activity" data-testid="project-recent-activity" size="sm">
@@ -167,7 +172,7 @@ export function ProjectRecentActivity({
         ) : (
           <ItemGroup aria-label={`${projectName}的近期操作`} className="gap-1">
             {entries.map((entry, index) => {
-              const result = auditResult(entry)
+              const result = entry.result
               return (
                 <Item className="min-w-0 items-start @sm/project-activity:items-center" key={entry.auditId ?? `${entry.type}-${String(entry.time)}-${index}`} role="listitem" size="xs" variant="default">
                   <ItemMedia className={result === "success" ? "text-success" : "text-muted-foreground"} variant="icon">
@@ -176,8 +181,8 @@ export function ProjectRecentActivity({
                       : <WarningCircle aria-hidden="true" weight="fill" />}
                   </ItemMedia>
                   <ItemContent>
-                    <ItemTitle>{auditOperationLabel(entry.type)}</ItemTitle>
-                    <ItemDescription>{timeLabel(entry.time)}</ItemDescription>
+                    <ItemTitle>{actorLabels[entry.actor]} · {entry.title}</ItemTitle>
+                    <ItemDescription>{entry.pluginName} · {timeLabel(entry.time)}</ItemDescription>
                   </ItemContent>
                   <ItemActions className="ml-auto self-start @sm/project-activity:self-center">
                     <Badge variant={auditResultVariant(result)}>{auditResultLabel(result)}</Badge>

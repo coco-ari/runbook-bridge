@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { exerciseAuditHistory } = require('./audit-history-ui.cjs');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -1614,13 +1615,13 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
   await activateTab(win,'audit');
   await click(win,'[data-testid="audit-refresh-trigger"]','refresh recovery audit rows');
   await waitFor(win,`document.querySelector('[data-feature="audit"]')?.textContent.includes('业务成功记录') === true`,'audit rows available');
-  for (const [label,description] of [['已开始','只读操作开始记录'],['等待确认','写入操作确认记录']]) {
+  for (const [label,description] of [['结果未记录','只读操作开始记录'],['等待确认','写入操作确认记录']]) {
     await click(win,'[aria-label="筛选操作结果"]','filter audit lifecycle');
     await clickText(win,label,'[role="listbox"]');
     await waitFor(win,`(() => {
       const layouts = [...document.querySelectorAll('[data-audit-layout]')];
-      return layouts.length === 2 && layouts.every(layout => {
-        const badges = [...layout.querySelectorAll('[data-slot="badge"]')];
+      return layouts.length === 1 && layouts.every(layout => {
+        const badges = [...layout.querySelectorAll('[data-audit-result]')];
         return badges.length === 1 && badges[0].textContent === ${JSON.stringify(label)}
           && layout.textContent.includes(${JSON.stringify(description)});
       });
@@ -1637,6 +1638,8 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
   await click(win,'[aria-label="筛选操作结果"]','reset audit outcome');
   await clickText(win,'全部结果','[role="listbox"]');
   await waitFor(win,`document.querySelector('[data-feature="audit"]')?.textContent.includes('业务成功记录') === true`,'audit filter reset');
+
+  await exerciseAuditHistory({win,scope,root,dataRoot,ipcMain,registerRead,click,clickText,fill,waitFor,pressRendererKey,screenshotRoot});
 
   let pending = [
     {...scope,pluginInstanceId:'mock-server',requestId:'recover-approve',capability:'server.shell',summary:'执行模拟健康检查',approvalLevel:'strong',riskLevel:'critical',expiresAt:Date.now()+120000},

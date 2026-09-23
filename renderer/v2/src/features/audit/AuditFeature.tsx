@@ -1,115 +1,32 @@
-import {
-  ArrowClockwise,
-  ClockCounterClockwise,
-  MagnifyingGlass,
-  Trash,
-  WarningCircle,
-} from "@phosphor-icons/react"
-import {
-  useCallback,
-  useDeferredValue,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react"
+import { ArrowClockwise, ClockCounterClockwise, MagnifyingGlass, Trash, WarningCircle } from "@phosphor-icons/react"
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { focusWorkspaceElement } from "@/lib/workspace-focus"
-
-import {
-  getAiOpsV2,
-  type IpcResult,
-  type PublicError,
-} from "@/bridge/ai-ops-v2"
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogMedia,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
+import { getAiOpsV2, type IpcResult, type PublicError } from "@/bridge/ai-ops-v2"
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogMedia, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ButtonGroup } from "@/components/ui/button-group"
 import { FeatureToolbar } from "@/components/detail-workspace/FeatureToolbar"
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "@/components/ui/empty"
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from "@/components/ui/input-group"
-import {
-  Item,
-  ItemActions,
-  ItemContent,
-  ItemDescription,
-  ItemGroup,
-  ItemTitle,
-} from "@/components/ui/item"
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
-import { AuditRequestCoordinator } from "@/features/audit/audit-request-model"
-import {
-  auditOperationLabel,
-  auditResult,
-  auditResultLabel,
-  auditResultVariant,
-  type AuditResult,
-  localizeOperationalSummary,
-  publicErrorLabel,
-} from "@/lib/operation-copy"
-
-type UnknownRecord = Record<string, unknown>
-type AuditResultFilter = "all" | AuditResult
-
-interface AuditEntry extends UnknownRecord {
-  readonly auditId?: string
-  readonly type: string
-  readonly result?: string
-  readonly time?: string
-  readonly environmentId?: string
-  readonly pluginInstanceId?: string
-}
+import { AuditRequestCoordinator } from "./audit-request-model"
+import { AuditOperationList } from "./AuditOperationList"
+import { actorLabels, categoryLabels, presentAudit, type AuditDisplayEntry } from "./audit-display"
+import { auditResultLabel, publicErrorLabel, type AuditResult } from "@/lib/operation-copy"
 
 interface AuditPage {
-  readonly entries: readonly AuditEntry[]
+  readonly entries: readonly AuditDisplayEntry[]
   readonly nextCursor: string | null
+  readonly scanning: boolean
 }
 
 class FeatureApiError extends Error {
   readonly code: string
-
-  constructor(error: PublicError) {
-    super(error.message)
-    this.name = "FeatureApiError"
-    this.code = error.code
-  }
+  constructor(error: PublicError) { super(error.message); this.name = "FeatureApiError"; this.code = error.code }
 }
 
 function unwrap<T>(result: IpcResult<T>): T {
@@ -117,98 +34,22 @@ function unwrap<T>(result: IpcResult<T>): T {
   return result.data
 }
 
-function asRecord(value: unknown): UnknownRecord {
-  return value !== null && typeof value === "object"
-    ? (value as UnknownRecord)
-    : {}
-}
-
 function normalizeAuditPage(value: unknown): AuditPage {
-  const record = asRecord(value)
-  const entries = (Array.isArray(record.entries) ? record.entries : []).flatMap((entry) => {
-    const item = asRecord(entry)
-    if (typeof item.type !== "string" || !item.type) return []
-    return [{ ...item, type: item.type } satisfies AuditEntry]
-  })
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {}
+  const source = Array.isArray(record.entries) ? record.entries : []
   return {
-    entries,
+    entries: source.flatMap((entry, index) => { const row = presentAudit(entry, index); return row ? [row] : [] }),
     nextCursor: typeof record.nextCursor === "string" ? record.nextCursor : null,
+    scanning: record.scanning === true,
   }
 }
 
-export function auditScopeKey(
-  projectId: string,
-  environmentId: string,
-  pluginInstanceId: string | null,
-): string {
+export function auditScopeKey(projectId: string, environmentId: string, pluginInstanceId: string | null): string {
   return JSON.stringify([projectId, environmentId, pluginInstanceId])
 }
 
-function redactOperationalText(value: unknown): string {
-  const text = typeof value === "string" || typeof value === "number"
-    ? String(value)
-    : ""
-  return text
-    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^@\s/]+@/giu, "$1[已隐藏]@")
-    .replace(/(\b(?:Bearer|Basic)\s+)[A-Za-z0-9._~+/=\-]{8,}/giu, "$1[已隐藏]")
-    .replace(
-      /(\b(?:password|passwd|pwd|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key|secret)\b["']?\s*[:=：]\s*)[^\s,;]+/giu,
-      "$1[已隐藏]",
-    )
-    .slice(0, 2_000)
-}
-
-function operationName(entry: AuditEntry): string {
-  return auditOperationLabel(entry.type)
-}
-
-function actorName(entry: AuditEntry): string {
-  if (entry.actor === "agent" || ["plugin-operation", "policy-denied", "mysql-query"].includes(entry.type)) return "Agent"
-  if (entry.actor === "system" || entry.type === "auto-reconnect" || entry.result === "connection-lost") return "系统"
-  return "用户"
-}
-
-function auditPluginName(entry: AuditEntry, fallback: string): string {
-  if (!entry.pluginInstanceId) return fallback
-  return redactOperationalText(entry.pluginNameSnapshot) || "已删除的插件"
-}
-
-function description(entry: AuditEntry): string {
-  const operationalCopy = entry.description
-    ?? entry.operationSummary
-    ?? entry.summary
-    ?? entry.message
-  if (operationalCopy !== undefined && operationalCopy !== null) {
-    const text = redactOperationalText(operationalCopy)
-    if (/^[A-Z][A-Z0-9_]{1,127}$/u.test(text)) {
-      return publicErrorLabel(text, "操作状态已记录。")
-    }
-    return localizeOperationalSummary(text)
-  }
-  if (entry.errorCode) return publicErrorLabel(entry.errorCode, "操作未完成。")
-  return "操作状态已记录。"
-}
-
-function validInstant(value: unknown): Date | null {
-  if (typeof value !== "string" && typeof value !== "number") return null
-  const instant = new Date(value)
-  return Number.isNaN(instant.getTime()) ? null : instant
-}
-
-function dateLabel(instant: Date): string {
-  const today = new Date()
-  const startToday = new Date(today.getFullYear(), today.getMonth(), today.getDate())
-  const startDate = new Date(instant.getFullYear(), instant.getMonth(), instant.getDate())
-  const days = Math.round((startToday.getTime() - startDate.getTime()) / 86_400_000)
-  if (days === 0) return "今天"
-  if (days === 1) return "昨天"
-  return instant.toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })
-}
-
 function errorMessage(error: unknown, fallback = "读取操作记录失败，请稍后重试。"): string {
-  return error instanceof FeatureApiError
-    ? publicErrorLabel(error.code, fallback)
-    : fallback
+  return error instanceof FeatureApiError ? publicErrorLabel(error.code, fallback) : fallback
 }
 
 export interface AuditFeatureProps {
@@ -220,294 +61,161 @@ export interface AuditFeatureProps {
   readonly pluginName?: string
 }
 
-export function AuditFeature({
-  projectId,
-  environmentId,
-  pluginInstanceId,
-  projectName = "当前项目",
-  environmentName,
-  pluginName,
-}: AuditFeatureProps) {
-  const [entries, setEntries] = useState<readonly AuditEntry[]>([])
+const results: readonly AuditResult[] = ["success", "running", "pending", "approved", "rejected", "error", "blocked", "warning", "cancelled", "interrupted", "paused", "stopped", "expired", "invalidated", "unknown"]
+
+export function AuditFeature({ projectId, environmentId, pluginInstanceId, projectName = "当前项目", environmentName, pluginName }: AuditFeatureProps) {
+  const [entries, setEntries] = useState<readonly AuditDisplayEntry[]>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [scanning, setScanning] = useState(false)
   const [query, setQuery] = useState("")
-  const [resultFilter, setResultFilter] = useState<AuditResultFilter>("all")
+  const [search, setSearch] = useState("")
+  const [resultFilter, setResultFilter] = useState("all")
+  const [actorFilter, setActorFilter] = useState("all")
+  const [categoryFilter, setCategoryFilter] = useState("all")
+  const [range, setRange] = useState("all")
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
+  const [hasUpdates, setHasUpdates] = useState(false)
   const clearInFlightRef = useRef(false)
   const clearDialogRef = useRef<HTMLDivElement | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
   const [clearDialog, setClearDialog] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const deferredQuery = useDeferredValue(query.trim().toLocaleLowerCase("zh-CN"))
+  const deferredQuery = useDeferredValue(search.trim())
   const requestCoordinatorRef = useRef(new AuditRequestCoordinator<AuditPage>())
-
   const scopeKey = auditScopeKey(projectId, environmentId, pluginInstanceId)
+  const from = useMemo(() => range === "all" ? "" : new Date(Date.now() - Number(range) * 86400000).toISOString(), [range])
+  const requestedKey = JSON.stringify([scopeKey, deferredQuery, resultFilter, actorFilter, categoryFilter, from])
 
-  const loadAudit = useCallback((): Promise<AuditPage> => {
-    const requestedKey = auditScopeKey(projectId, environmentId, pluginInstanceId)
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(query), 250)
+    return () => window.clearTimeout(timer)
+  }, [query])
+
+  useEffect(() => {
+    setQuery(""); setSearch(""); setResultFilter("all"); setActorFilter("all"); setCategoryFilter("all"); setRange("all"); setClearDialog(false)
+  }, [scopeKey])
+
+  const loadAudit = useCallback((cursor: string | null = null, quiet = false): Promise<AuditPage> => {
     const coordinator = requestCoordinatorRef.current
-    const { lease, started } = coordinator.start(requestedKey, async () => {
-      const value = unwrap(
-        await getAiOpsV2().listAudit({
-          projectId,
-          environmentId,
-          ...(pluginInstanceId ? { pluginInstanceId } : {}),
-          limit: 200,
-        }) as unknown as IpcResult<unknown>,
-      )
-      return normalizeAuditPage(value)
-    })
+    const { lease, started } = coordinator.start(requestedKey, async () => normalizeAuditPage(unwrap(await getAiOpsV2().listAudit({
+      projectId, environmentId, ...(pluginInstanceId ? { pluginInstanceId } : {}),
+      view: "operations", limit: 50, query: deferredQuery, result: resultFilter, actor: actorFilter, category: categoryFilter,
+      ...(from ? { from } : {}), ...(cursor ? { cursor } : {}),
+    }) as IpcResult<unknown>)))
     if (!started) return lease.promise
-    setLoading(true)
+    if (!quiet) setLoading(true)
     setError(null)
-    return lease.promise
-      .then((page) => {
-        if (coordinator.isCurrent(lease.ticket)) setEntries(page.entries)
-        return page
-      })
-      .catch((caught) => {
-        if (coordinator.isCurrent(lease.ticket)) setError(errorMessage(caught))
-        throw caught
-      })
-      .finally(() => {
-        if (coordinator.isCurrent(lease.ticket)) setLoading(false)
-      })
-  }, [environmentId, pluginInstanceId, projectId])
+    return lease.promise.then((page) => {
+      if (coordinator.isCurrent(lease.ticket)) {
+        setEntries(previous => cursor
+          ? [...previous, ...page.entries.filter(entry => !previous.some(item => item.auditId === entry.auditId))]
+          : page.entries)
+        setNextCursor(page.nextCursor)
+        setScanning(page.scanning)
+        if (!cursor) setHasUpdates(false)
+      }
+      return page
+    }).catch((caught) => {
+      if (coordinator.isCurrent(lease.ticket)) setError(errorMessage(caught))
+      throw caught
+    }).finally(() => {
+      if (coordinator.isCurrent(lease.ticket)) setLoading(false)
+    })
+  }, [requestedKey, projectId, environmentId, pluginInstanceId, deferredQuery, resultFilter, actorFilter, categoryFilter, from])
 
   useEffect(() => {
     const coordinator = requestCoordinatorRef.current
-    coordinator.activateScope(scopeKey)
-    setEntries([])
-    setQuery("")
-    setResultFilter("all")
-    setError(null)
+    coordinator.activateScope(requestedKey)
+    setEntries([]); setNextCursor(null); setError(null); setHasUpdates(false)
     void loadAudit().catch(() => undefined)
-    return () => {
-      coordinator.deactivateScope(scopeKey)
-    }
-  }, [loadAudit, scopeKey])
+    return () => { coordinator.deactivateScope(requestedKey) }
+  }, [requestedKey, loadAudit])
 
-  const visibleEntries = useMemo(() => entries.filter((entry) => {
-    const result = auditResult(entry)
-    if (resultFilter !== "all" && result !== resultFilter) return false
-    if (!deferredQuery) return true
-    const haystack = [
-      operationName(entry),
-      auditPluginName(entry, environmentName),
-      description(entry),
-      actorName(entry),
-    ].join(" ").toLocaleLowerCase("zh-CN")
-    return haystack.includes(deferredQuery)
-  }), [deferredQuery, entries, environmentName, resultFilter])
-  const displayEntries = useMemo(() => visibleEntries.map((entry, index) => {
-    const instant = validInstant(entry.time)
-    const previous = index > 0 ? visibleEntries[index - 1] : undefined
-    const previousInstant = validInstant(previous?.time)
-    const day = instant ? dateLabel(instant) : "时间未知"
-    return {
-      entry,
-      key: entry.auditId ?? `${String(entry.time ?? "unknown")}:${entry.type}:${index}`,
-      instant,
-      day,
-      showDate: !previousInstant || !instant || dateLabel(previousInstant) !== day,
-      result: auditResult(entry),
-      operation: operationName(entry),
-      target: auditPluginName(entry, environmentName),
-      actor: actorName(entry),
-      detail: description(entry),
-    }
-  }), [environmentName, visibleEntries])
+  useEffect(() => {
+    let timer: number | undefined
+    const unsubscribe = getAiOpsV2().onWorkspaceChanged(change => {
+      if (!["audit-appended", "audit-cleared"].includes(change.type) || change.projectId !== projectId
+        || (change.environmentId && change.environmentId !== environmentId)
+        || (pluginInstanceId && change.pluginInstanceId && change.pluginInstanceId !== pluginInstanceId)
+        || clearInFlightRef.current) return
+      setHasUpdates(true)
+      window.clearTimeout(timer)
+      if (change.type === "audit-cleared") { void loadAudit().catch(() => undefined); return }
+      timer = window.setTimeout(() => {
+        const viewport = scrollRef.current?.querySelector("[data-radix-scroll-area-viewport]")
+        if ((viewport?.scrollTop ?? 0) < 20 && entries.length <= 50 && !clearInFlightRef.current) void loadAudit(null, true).catch(() => undefined)
+      }, 600)
+    })
+    return () => { unsubscribe(); window.clearTimeout(timer) }
+  }, [projectId, environmentId, pluginInstanceId, entries.length, loadAudit])
+
+  // 旧版桥接返回原始事件时仍提供本地筛选；正式查询由后端筛选全部历史。
+  const visibleEntries = useMemo(() => entries.filter(entry => {
+    if (entry.type === "audit-operation") return true
+    if (resultFilter !== "all" && entry.result !== resultFilter) return false
+    if (actorFilter !== "all" && !entry.participants.includes(actorFilter)) return false
+    if (categoryFilter !== "all" && entry.category !== categoryFilter) return false
+    return !deferredQuery || [entry.title, entry.target, entry.pluginName, actorLabels[entry.actor], auditResultLabel(entry.result)]
+      .join(" ").toLocaleLowerCase("zh-CN").includes(deferredQuery.toLocaleLowerCase("zh-CN"))
+  }), [entries, resultFilter, actorFilter, categoryFilter, deferredQuery])
+
+  function refreshAudit() {
+    scrollRef.current?.querySelector("[data-radix-scroll-area-viewport]")?.scrollTo({ top: 0 })
+    void loadAudit().catch(() => undefined)
+  }
 
   async function clearAudit() {
     if (clearInFlightRef.current) return
     focusWorkspaceElement(clearDialogRef.current)
     clearInFlightRef.current = true
-    const requestedKey = scopeKey
-    setClearing(true)
-    setError(null)
+    setClearing(true); setError(null)
     try {
       const coordinator = requestCoordinatorRef.current
       const pending = coordinator.invalidateScope(requestedKey)
       if (pending) await pending.catch(() => undefined)
-      unwrap(await getAiOpsV2().clearAudit({
-        projectId,
-        environmentId,
-        pluginInstanceId,
-      }))
+      unwrap(await getAiOpsV2().clearAudit({ projectId, environmentId, pluginInstanceId }))
       if (!coordinator.isScopeActive(requestedKey)) return
-      setEntries([])
-      setClearDialog(false)
+      setEntries([]); setNextCursor(null); setClearDialog(false)
       await loadAudit()
       toast.success(pluginInstanceId ? "当前插件记录已清除。" : "当前环境记录已清除。")
     } catch (caught) {
-      if (requestCoordinatorRef.current.isScopeActive(requestedKey)) {
-        setError(errorMessage(caught, "清除操作记录失败，请稍后重试。"))
-      }
+      if (requestCoordinatorRef.current.isScopeActive(requestedKey)) setError(errorMessage(caught, "清除操作记录失败，请稍后重试。"))
     } finally {
       clearInFlightRef.current = false
-      if (requestCoordinatorRef.current.isScopeActive(requestedKey)) setClearing(false)
+      setClearing(false)
     }
   }
 
   return (
-    <section
-      aria-labelledby="audit-feature-title"
-      className="flex min-h-0 flex-1 flex-col @container/audit"
-      data-feature="audit"
-      data-scope-key={scopeKey}
-    >
+    <section aria-labelledby="audit-feature-title" className="flex min-h-0 flex-1 flex-col @container/audit" data-feature="audit" data-scope-key={scopeKey}>
       <FeatureToolbar
-        actions={(
-          <ButtonGroup aria-label="操作记录管理">
-            <Button
-              aria-label="刷新操作记录"
-              data-testid="audit-refresh-trigger"
-              disabled={loading || clearing}
-              onClick={() => void loadAudit().catch(() => undefined)}
-              size="icon-xs"
-              variant="outline"
-            >
-              <ArrowClockwise className={loading ? "animate-spin" : ""} />
-            </Button>
-            <Button
-              disabled={entries.length === 0 || clearing}
-              data-testid="audit-clear-trigger"
-              onClick={() => { setError(null); setClearDialog(true) }}
-              size="xs"
-              variant="outline"
-            >
-              <Trash />
-              {pluginInstanceId ? "清除插件记录" : "清除环境记录"}
-            </Button>
-          </ButtonGroup>
-        )}
-        description="记录保存在本机；清除不会改变插件配置、连接状态或待确认操作。"
-        title={`${projectName} / ${pluginInstanceId ? pluginName ?? "当前插件" : environmentName} 操作记录`}
-        titleId="audit-feature-title"
+        actions={<ButtonGroup aria-label="操作记录管理">
+          <Button aria-label="刷新操作记录" data-testid="audit-refresh-trigger" disabled={loading || clearing} onClick={refreshAudit} size="icon-xs" variant="outline"><ArrowClockwise aria-hidden="true" className={loading ? "animate-spin motion-reduce:animate-none" : ""} /></Button>
+          <Button disabled={entries.length === 0 || clearing} data-testid="audit-clear-trigger" onClick={() => { setError(null); setClearDialog(true) }} size="xs" variant="outline"><Trash aria-hidden="true" />{pluginInstanceId ? "清除插件记录" : "清除环境记录"}</Button>
+        </ButtonGroup>}
+        description="查看谁做了什么，以及操作结果；展开记录可查看执行过程。"
+        title={`${projectName} / ${pluginInstanceId ? pluginName ?? "当前插件" : environmentName} 操作记录`} titleId="audit-feature-title"
       />
-
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <InputGroup className="min-w-52 flex-1">
+        <InputGroup className="min-w-40 flex-1">
           <InputGroupAddon><MagnifyingGlass aria-hidden="true" /></InputGroupAddon>
-          <InputGroupInput
-            aria-label="搜索操作记录"
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索操作、对象或结果"
-            type="search"
-            value={query}
-          />
+          <InputGroupInput aria-label="搜索操作记录" name="audit-search" autoComplete="off" spellCheck={false} onChange={event => setQuery(event.target.value)} placeholder="搜索动作、目标或失败原因…" type="search" value={query} />
         </InputGroup>
-        <Select value={resultFilter} onValueChange={(value) => setResultFilter(value as AuditResultFilter)}>
-          <SelectTrigger aria-label="筛选操作结果" className="w-32">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部结果</SelectItem>
-            <SelectItem value="success">成功</SelectItem>
-            <SelectItem value="started">已开始</SelectItem>
-            <SelectItem value="running">进行中</SelectItem>
-            <SelectItem value="pending">等待确认</SelectItem>
-            <SelectItem value="warning">部分成功</SelectItem>
-            <SelectItem value="cancelled">已取消</SelectItem>
-            <SelectItem value="blocked">已拦截</SelectItem>
-            <SelectItem value="error">失败</SelectItem>
-          </SelectContent>
-        </Select>
+        <Select value={actorFilter} onValueChange={setActorFilter}><SelectTrigger aria-label="筛选参与方" className="w-28"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部参与方</SelectItem>{Object.entries(actorLabels).map(([key,label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select>
+        <Select value={categoryFilter} onValueChange={setCategoryFilter}><SelectTrigger aria-label="筛选操作类型" className="w-28"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部类型</SelectItem>{Object.entries(categoryLabels).map(([key,label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select>
+        <Select value={resultFilter} onValueChange={setResultFilter}><SelectTrigger aria-label="筛选操作结果" className="w-32"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部结果</SelectItem>{results.map(result => <SelectItem key={result} value={result}>{auditResultLabel(result)}</SelectItem>)}</SelectContent></Select>
+        <Select value={range} onValueChange={setRange}><SelectTrigger aria-label="筛选记录时间" className="w-28"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部时间</SelectItem><SelectItem value="1">最近 24 小时</SelectItem><SelectItem value="7">最近 7 天</SelectItem><SelectItem value="30">最近 30 天</SelectItem></SelectContent></Select>
       </div>
-
-      {error && (
-        <Alert className="mb-3 w-auto" variant="destructive">
-          <WarningCircle aria-hidden="true" weight="fill" />
-          <AlertTitle>操作记录读取失败</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-
-      <ScrollArea className="min-h-0 flex-1">
-        {loading && entries.length === 0 ? (
-          <div className="space-y-2 p-4" aria-label="正在读取操作记录">
-            <Skeleton className="h-8 w-full" />
-            <Skeleton className="h-8 w-full" />
-            <Skeleton className="h-8 w-full" />
-          </div>
-        ) : visibleEntries.length === 0 ? (
-          <Empty className="min-h-48">
-            <EmptyHeader>
-              <EmptyMedia variant="icon"><ClockCounterClockwise aria-hidden="true" /></EmptyMedia>
-              <EmptyTitle>没有符合条件的操作记录</EmptyTitle>
-              <EmptyDescription>调整搜索或结果筛选后重试。</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <>
-            <ItemGroup aria-label="操作记录" className="gap-1.5 p-2 @lg/audit:hidden" data-audit-layout="compact">
-              {displayEntries.map((row) => (
-                <Item className="min-w-0 items-start" key={row.key} role="listitem" size="xs" variant="muted">
-                  <ItemContent>
-                    <div className="flex min-w-0 flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
-                      <span>{row.day}</span>
-                      <span className="font-mono">
-                        {row.instant ? row.instant.toLocaleTimeString("zh-CN", { hour12: false }) : "-"}
-                      </span>
-                      <span>{row.actor}</span>
-                    </div>
-                    <ItemTitle className="line-clamp-none w-full break-words text-xs">
-                      {row.operation} / {row.target}
-                    </ItemTitle>
-                    <ItemDescription className="line-clamp-none break-words text-xs leading-4">
-                      {row.detail}
-                    </ItemDescription>
-                  </ItemContent>
-                  <ItemActions className="ml-auto self-start">
-                    <Badge variant={auditResultVariant(row.result)}>{auditResultLabel(row.result)}</Badge>
-                  </ItemActions>
-                </Item>
-              ))}
-            </ItemGroup>
-
-            <div className="hidden @lg/audit:block" data-audit-layout="table">
-              <Table aria-label="操作记录" className="table-fixed">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-36">时间</TableHead>
-                    <TableHead className="w-20">来源</TableHead>
-                    <TableHead>操作</TableHead>
-                    <TableHead className="w-24 text-right">结果</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {displayEntries.map((row) => [
-                    row.showDate && (
-                      <TableRow className="bg-surface-inset hover:bg-surface-inset" key={`${row.key}:date`}>
-                        <TableCell className="h-7 py-1 text-xs font-medium text-muted-foreground" colSpan={4}>
-                          {row.day}
-                        </TableCell>
-                      </TableRow>
-                    ),
-                    <TableRow key={row.key}>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
-                        {row.instant ? row.instant.toLocaleTimeString("zh-CN", { hour12: false }) : "-"}
-                      </TableCell>
-                      <TableCell className="text-xs">{row.actor}</TableCell>
-                      <TableCell className="min-w-0 whitespace-normal py-2">
-                        <div className="truncate text-xs font-medium">
-                          {row.operation} / {row.target}
-                        </div>
-                        <p className="mt-0.5 line-clamp-2 text-xs leading-4 text-muted-foreground">
-                          {row.detail}
-                        </p>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Badge variant={auditResultVariant(row.result)}>{auditResultLabel(row.result)}</Badge>
-                      </TableCell>
-                    </TableRow>,
-                  ])}
-                </TableBody>
-              </Table>
-            </div>
-          </>
-        )}
+      {hasUpdates ? <div role="status" className="mb-2 flex items-center justify-between gap-2 rounded-md bg-surface-inset px-3 py-2 text-xs"><span>操作记录有更新</span><Button size="xs" variant="outline" disabled={loading || clearing} onClick={refreshAudit}>查看最新记录</Button></div> : null}
+      {error ? <Alert className="mb-3 w-auto" variant="destructive"><WarningCircle aria-hidden="true" weight="fill" /><AlertTitle>操作记录读取失败</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
+      <ScrollArea ref={scrollRef} className="min-h-0 flex-1">
+        {loading && entries.length === 0 ? <div className="space-y-2 p-4" aria-label="正在读取操作记录"><Skeleton className="h-16 w-full" /><Skeleton className="h-16 w-full" /><Skeleton className="h-16 w-full" /></div>
+          : visibleEntries.length === 0 ? <Empty className="min-h-48"><EmptyHeader><EmptyMedia variant="icon"><ClockCounterClockwise aria-hidden="true" /></EmptyMedia><EmptyTitle>{query || resultFilter !== "all" || actorFilter !== "all" || categoryFilter !== "all" || range !== "all" ? nextCursor ? "尚未找到匹配记录" : "没有符合条件的操作记录" : "还没有操作记录"}</EmptyTitle><EmptyDescription>{nextCursor ? "可继续查找更早的记录。" : "操作会按实际发起方和执行结果显示在这里。"}</EmptyDescription></EmptyHeader></Empty>
+          : <AuditOperationList entries={visibleEntries} />}
+        {nextCursor ? <div className="flex justify-center p-3"><Button data-testid="audit-load-more" disabled={loading || clearing} variant="outline" size="sm" onClick={() => void loadAudit(nextCursor).catch(() => undefined)}>{loading ? "读取中…" : scanning ? "继续查找更早记录" : "加载更多操作"}</Button></div> : null}
+        <p className="p-3 text-center text-xs text-muted-foreground" aria-live="polite">{visibleEntries.length ? `已显示 ${visibleEntries.length} 项操作` : ""}{visibleEntries.length && !nextCursor ? " · 已到记录末尾" : ""}</p>
       </ScrollArea>
-
       <AlertDialog open={clearDialog} onOpenChange={(open) => { if (!clearing) setClearDialog(open) }}>
         <AlertDialogContent
           ref={clearDialogRef}

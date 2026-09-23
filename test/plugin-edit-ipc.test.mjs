@@ -201,13 +201,14 @@ test('host-key trust storage failure preserves retryability and post-commit conn
   let failVault = true;
   let resumeCalls = 0;
   let rollbackCalls = 0;
+  const recorded = [];
   const handlers = ipcHarness({
     workspaceStore:{
       preparePluginConnectionUpdate:async () => ({before,after,change:{kind:'session-affecting',credentialMutation:'rebind-existing'}}),
       commitPluginSnapshot:async () => after,
       restorePluginSnapshot:async () => { rollbackCalls += 1; return before; },
       publicPlugin:(value) => value,
-      appendAudit:async () => undefined,
+      appendAudit:async (_projectId,entry) => { recorded.push(entry); },
     },
     credentialVault:{saveMerged:async () => {
       if (failVault) throw Object.assign(new Error('vault unavailable'),{code:'EIO'});
@@ -237,6 +238,7 @@ test('host-key trust storage failure preserves retryability and post-commit conn
   assert.equal(failed.ok,false);
   assert.equal(resumeCalls,0,'a failed trust transaction must not consume the challenge');
   assert.equal(rollbackCalls,1);
+  assert.equal(recorded.length,0,'凭据事务回滚后不得记录配置保存成功');
 
   failVault = false;
   const saved = await handlers.get('v2:connection-challenge-confirm')({},payload);
@@ -245,6 +247,7 @@ test('host-key trust storage failure preserves retryability and post-commit conn
   assert.equal(saved.data.connectionPlan.planId,'plan-1');
   assert.match(saved.data.runtimeWarning.message,/配置和密码已保存，但连接失败/u);
   assert.equal(resumeCalls,1);
+  assert.deepEqual(recorded.map(entry => entry.type),['server-host-key-trusted']);
 });
 
 function committedPlugin(overrides = {}) {

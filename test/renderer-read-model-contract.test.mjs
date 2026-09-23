@@ -426,7 +426,7 @@ test('overview components are prop-driven shadcn compositions', () => {
   assert.match(projectOverview,/data-testid="project-overview-isolated"/u);
   assert.match(projectOverview,/<ProjectRecentActivity/u);
   assert.match(projectActivity,/data-testid="project-recent-activity"/u);
-  assert.match(projectActivity,/\.listAudit\(\{ projectId, limit: 6 \}\)/u);
+  assert.match(projectActivity,/\.listAudit\(\{ projectId, view: "operations", limit: 6 \}\)/u);
   for (const primitive of ['Alert','Badge','Button','Card','Empty','Item','ItemGroup','Skeleton']) {
     assert.match(projectActivity,new RegExp(`\\b${primitive}\\b`,'u'));
   }

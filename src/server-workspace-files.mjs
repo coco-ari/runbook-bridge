@@ -326,8 +326,14 @@ export class ServerWorkspaceFiles {
   }
 
   async audit(job, result) {
+    if (result === 'started' || !job.auditOperationId) {
+      job.auditOperationId = crypto.randomUUID();
+      job.auditStartedAt = this.now();
+    }
     await this.workspaceStore.appendAudit(job.scope.projectId, {
-      ...job.scope, pluginType: 'server', type: job.direction === 'download' ? 'desktop-download' : 'desktop-upload', source: 'desktop-human', result, operation: { remotePath: job.path, bytes: job.bytes },
+      ...job.scope, actor:'user', operationId:job.auditOperationId, pluginNameSnapshot:job.plugin?.displayName,
+      ...(result !== 'started' ? {durationMs:Math.max(0,this.now() - job.auditStartedAt)} : {}),
+      pluginType: 'server', type: job.direction === 'download' ? 'desktop-download' : 'desktop-upload', source: 'desktop-human', result, operation: { remotePath: job.path, bytes: job.bytes },
     });
   }
 

@@ -140,6 +140,7 @@ export function useEnvironmentPlugins(
     let unsubscribe: () => void = () => undefined
     try {
       unsubscribe = getApi().onWorkspaceChanged((change) => {
+        if (["audit-appended", "audit-cleared"].includes(change.type)) return
         if (!active) return
         if (change.projectId && change.projectId !== projectId) return
         if (change.environmentId && change.environmentId !== environmentId) return

@@ -102,7 +102,7 @@ test('operation presentation copy localizes known values and never exposes unkno
 test('audit results distinguish execution events from confirmation requests',async () => {
   const {auditResult,auditResultLabel,auditResultVariant} = await importCopy();
   for (const [raw,result,label,variant] of [
-    ['started','started','已开始','info'],
+    ['started','unknown','结果未记录','outline'],
     ['running','running','进行中','info'],
     ['connecting','running','进行中','info'],
     ['pending-confirmation','pending','等待确认','info'],
@@ -110,7 +110,7 @@ test('audit results distinguish execution events from confirmation requests',asy
     ['error','error','失败','danger'],
     ['denied','blocked','已拦截','danger'],
     ['cancelled','cancelled','已取消','warning'],
-    ['unknown','error','失败','danger'],
+    ['unknown','unknown','结果未记录','outline'],
   ]) {
     assert.equal(auditResult({result:raw}),result);
     assert.equal(auditResultLabel(result),label);
@@ -126,13 +126,15 @@ test('audit results distinguish execution events from confirmation requests',asy
 });
 
 test('React audit feature keeps scope, search, filter, clear and request contracts',async () => {
-  const [source,model] = await Promise.all([
+  const [source,model,presentation,list] = await Promise.all([
     fs.readFile(path.join(
       root,'renderer','v2','src','features','audit','AuditFeature.tsx',
     ),'utf8'),
     fs.readFile(path.join(
       root,'renderer','v2','src','features','audit','audit-request-model.ts',
     ),'utf8'),
+    fs.readFile(path.join(root,'renderer','v2','src','features','audit','audit-display.ts'),'utf8'),
+    fs.readFile(path.join(root,'renderer','v2','src','features','audit','AuditOperationList.tsx'),'utf8'),
   ]);
   const all = `${source}\n${model}`;
 
@@ -152,11 +154,13 @@ test('React audit feature keeps scope, search, filter, clear and request contrac
   assert.match(source,/resultFilter/u);
   assert.match(source,/<Select/u);
   assert.match(source,/@container\/audit/u);
-  assert.match(source,/<ItemGroup[\s\S]*?@lg\/audit:hidden/u);
-  assert.match(source,/data-audit-layout="compact"/u);
-  assert.match(source,/data-audit-layout="table"/u);
-  assert.match(source,/hidden @lg\/audit:block/u);
-  assert.match(source,/<Table/u);
+  assert.match(source,/<AuditOperationList/u);
+  assert.match(list,/<summary/u);
+  assert.match(list,/data-audit-detail/u);
+  assert.match(list,/content-visibility:auto/u);
+  assert.match(source,/view: "operations"/u);
+  assert.match(source,/audit-load-more/u);
+  assert.match(source,/onWorkspaceChanged/u);
   assert.match(source,/<AlertDialog/u);
   assert.match(source,/if \(clearInFlightRef\.current\) return/u);
   assert.match(source,/clearInFlightRef\.current = true/u);
@@ -167,7 +171,8 @@ test('React audit feature keeps scope, search, filter, clear and request contrac
   assert.match(confirmation,/<AlertTitle>记录尚未清除<\/AlertTitle>/u);
   assert.match(confirmation,/focusWorkspaceElement\(trigger\)/u);
   assert.match(confirmation,/audit-refresh-trigger/u);
-  assert.match(source,/redactOperationalText/u);
+  assert.match(presentation,/safeDisplayText/u);
+  assert.doesNotMatch(presentation,/includes\(entry.type\).*Agent/u);
   assert.match(source,/publicErrorLabel/u);
   assert.doesNotMatch(source,/names\[entry\.type\] \?\? redactOperationalText\(entry\.type\)/u);
   assert.doesNotMatch(all,/dangerouslySetInnerHTML|console\.(?:log|debug|info|warn|error)/u);

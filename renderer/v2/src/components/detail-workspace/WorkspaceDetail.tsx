@@ -522,8 +522,8 @@ export function WorkspaceDetail({
       </header>
 
       <main className="min-h-0 flex-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60" data-selection-kind={hasPlugin ? "plugin" : hasEnvironment ? "environment" : "project"} id="detail-main" tabIndex={-1}>
-        <ScrollArea className="h-full">
-          <div className="mx-auto w-full max-w-5xl px-4 py-4">
+        <ScrollArea className="h-full" viewportClassName={activeTab === "audit" ? "[&>div]:h-full" : ""}>
+          <div className={activeTab === "audit" ? "mx-auto flex h-full min-h-0 w-full max-w-5xl flex-col px-4 py-4" : "mx-auto w-full max-w-5xl px-4 py-4"}>
             {saveNotice ? (
               <Alert className="mb-4 border-warning/30 bg-warning/5" data-testid="plugin-save-recovery-notice">
                 <WarningDiamond aria-hidden="true" className="text-warning" />
@@ -599,7 +599,7 @@ export function WorkspaceDetail({
                     </PersistentTabsContent>
                   </>
                 ) : null}
-                <TabsContent value="audit">
+                <TabsContent className="flex min-h-0 flex-1 flex-col" value="audit">
                   <AuditFeature
                     environmentId={environment.environmentId}
                     environmentName={environment.name}

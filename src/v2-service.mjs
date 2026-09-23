@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { auditExecutionContext, operationAuditMetadata } from './audit-record.mjs';
 import { AppError, toPublicError } from './errors.mjs';
 import { OperationGate, capabilityRule } from './operation-gate.mjs';
 import { assertPluginConfigurationReady } from './plugin-connection-adapters.mjs';
@@ -42,9 +43,8 @@ function operationSummary(plugin, capability, args) {
 }
 
 function auditSummary(plugin, capability, args) {
-  if (plugin.pluginType === 'mysql') return `${capability} · 固定数据库 ${plugin.target.database}`;
-  if (plugin.pluginType === 'redis') return `${capability} · 固定 DB ${plugin.target.db}`;
-  return `${capability} · ${String(args.path ?? args.remotePath ?? args.sourcePath ?? args.unit ?? args.actionId ?? args.sourceId ?? '服务器').slice(0, 120)}`;
+  const metadata = operationAuditMetadata(plugin, capability, args);
+  return capability + ' · ' + metadata.auditTarget;
 }
 
 function definedEntries(value) {
@@ -372,7 +372,7 @@ export class V2Service {
         return {
           plugin: preview ? {...plugin, limits:{...plugin.limits, maxRows:Math.min(plugin.limits.maxRows, 100)}} : plugin,
         };
-      }, 'user');
+      }, 'user', null, operation);
     };
     return this.mutationCoordinator
       ? this.mutationCoordinator.runEnvironmentOperation(scope.projectId, scope.environmentId, execute)
@@ -393,8 +393,9 @@ export class V2Service {
     return this.#invokeWithCallable(params, capability, args, () => this.requireCallable(params), 'agent');
   }
 
-  async #invokeWithCallable(params, capability, args, resolveCallable, actor, desktopExecute = null) {
+  async #invokeWithCallable(params, capability, args, resolveCallable, actor, desktopExecute = null, desktopOperation = '') {
     const requestId = String(params.requestId ?? crypto.randomUUID()).slice(0, 128);
+    const operationId = crypto.randomUUID();
     let plugin;
     let operationArgs = args;
     let confirmationId = null;
@@ -405,7 +406,7 @@ export class V2Service {
         operationArgs = await this.serverOperations.prepareMutation(plugin, capability, args);
       }
       const rule = capabilityRule(plugin.pluginType, capability);
-      const metadata = {};
+      const metadata = { ...operationAuditMetadata(plugin, capability, operationArgs, desktopOperation), pluginType:plugin.pluginType };
       if (rule.decision === 'confirm') {
         const project = await this.workspaceStore.getProject(params.projectId);
         Object.assign(metadata, {
@@ -426,9 +427,13 @@ export class V2Service {
       const repeatedPendingConfirmation = value.code === 'CONFIRMATION_REQUIRED' && value.details?.confirmationCreated === false;
       if (!repeatedPendingConfirmation) {
         await this.workspaceStore.appendAudit(params.projectId, {
-          type:'plugin-operation-decision', requestId, environmentId:params.environmentId,
+          type:'plugin-operation-decision', requestId, operationId, environmentId:params.environmentId,
           pluginInstanceId:params.pluginInstanceId, pluginType:attempted?.pluginType,
           pluginNameSnapshot:attempted?.displayName, actor, capability,
+          ...(attempted ? operationAuditMetadata(attempted, capability, operationArgs, desktopOperation) : {}),
+          ...(value.code === 'CONFIRMATION_REQUIRED' ? {
+            expiresAt:new Date(this.confirmationManager.list?.().find(item => item.requestId === value.details?.requestId)?.expiresAt ?? Date.now()).toISOString(),
+          } : {}),
           operationSummary:attempted ? auditSummary(attempted, capability, operationArgs) : String(capability),
           result:value.code === 'CONFIRMATION_REQUIRED' ? 'pending-confirmation' : 'blocked', errorCode:value.code,
           confirmationId:value.code === 'CONFIRMATION_REQUIRED' ? value.details?.requestId ?? null : null,
@@ -436,10 +441,14 @@ export class V2Service {
       }
       throw error;
     }
+    const auditMetadata = operationAuditMetadata(plugin, capability, operationArgs, desktopOperation);
+    if (plugin.pluginType === 'server' && operationArgs.fileId && ['logs','config','download'].includes(capability)) {
+      try { auditMetadata.auditTarget = operationAuditMetadata(plugin, capability, {path:this.serverOperations.describeFile(plugin, operationArgs.fileId).relativePath}).auditTarget; } catch { /* 旧文件引用无法解析时保留已有目标信息。 */ }
+    }
     const started = Date.now();
     try {
       await this.workspaceStore.appendAudit(plugin.projectId, {
-      type: 'plugin-operation-started', requestId, environmentId: plugin.environmentId,
+      type: 'plugin-operation-started', requestId, operationId, ...auditMetadata, environmentId: plugin.environmentId,
       pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, capability,
       pluginNameSnapshot: plugin.displayName, actor, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'started', confirmationId,
       });
@@ -450,12 +459,16 @@ export class V2Service {
     if (confirmationId) this.confirmationManager.executionStatus(confirmationId,'running');
     if (confirmationId) this.workspaceChanged?.({ type:'confirmation-execution', status:'running', confirmationId, projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId });
     try {
-      let result;
-      if (desktopExecute) result = await desktopExecute(plugin);
-      else if (plugin.pluginType === 'server') result = await this.invokeServer(plugin, capability, operationArgs, scopeOf(params));
-      else result = await this.pluginManager.invoke(plugin, capability, { ...operationArgs, policyApproved: true });
+      const result = await auditExecutionContext.run({
+        projectId:plugin.projectId,environmentId:plugin.environmentId,pluginInstanceId:plugin.pluginInstanceId,
+        operationId,confirmationId,actor,...auditMetadata,
+      }, () => {
+        if (desktopExecute) return desktopExecute(plugin);
+        if (plugin.pluginType === 'server') return this.invokeServer(plugin, capability, operationArgs, {...scopeOf(params), auditOperationId:operationId});
+        return this.pluginManager.invoke(plugin, capability, { ...operationArgs, policyApproved: true });
+      });
       const durationMs = Date.now() - started;
-      const auditFailed = await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor, capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'success', durationMs, confirmationId }).then(() => false, () => true);
+      const auditFailed = await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, operationId, ...auditMetadata, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor, capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'success', durationMs, confirmationId }).then(() => false, () => true);
       if (confirmationId) this.confirmationManager.executionStatus(confirmationId,'succeeded');
       if (confirmationId) this.workspaceChanged?.({ type:'confirmation-execution', status:'success', confirmationId, projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, durationMs });
       return auditFailed && result && typeof result === 'object' ? { ...result, auditWarning:true } : result;
@@ -463,7 +476,7 @@ export class V2Service {
       const durationMs = Date.now() - started;
       const errorCode = toPublicError(error).code;
       if (confirmationId) this.confirmationManager.executionStatus(confirmationId,'failed',errorCode);
-      await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor, capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'error', errorCode, durationMs, confirmationId }).catch(() => undefined);
+      await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, operationId, ...auditMetadata, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor, capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'error', errorCode, durationMs, confirmationId }).catch(() => undefined);
       if (confirmationId) this.workspaceChanged?.({ type:'confirmation-execution', status:'error', confirmationId, projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, durationMs, errorCode });
       throw error;
     }
@@ -473,7 +486,7 @@ export class V2Service {
     if (capability === 'status' || capability === 'diagnostics') return this.serverOperations.runAction(plugin, args.actionId, args.parameters ?? {});
     if (capability === 'service.inspect') return this.serverOperations.inspectService(plugin, args);
     if (capability === 'journal.read') return this.serverOperations.queryJournal(plugin, args);
-    if (['docker.list','docker.inspect','docker.logs','docker.stats'].includes(capability)) return this.serverOperations.docker.read('mcp:' + scope.clientInstanceId, { projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, kind:capability.slice(7), ...args });
+    if (['docker.list','docker.inspect','docker.logs','docker.stats'].includes(capability)) return this.serverOperations.docker.read('mcp:' + scope.clientInstanceId, { projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, kind:capability.slice(7), ...args }, scope.auditOperationId);
     if (capability === 'container.inspect') return this.serverOperations.inspectContainer(plugin, args);
     if (capability === 'logs') {
       if (args.operation === 'list') return this.serverOperations.listFiles(plugin, args);

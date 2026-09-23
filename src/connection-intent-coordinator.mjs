@@ -1,3 +1,4 @@
+import { auditExecutionContext } from './audit-record.mjs';
 import crypto from 'node:crypto';
 import { AppError, toPublicError } from './errors.mjs';
 import { pluginConnectionFingerprint } from './plugin-change-classifier.mjs';
@@ -526,7 +527,10 @@ export class ConnectionIntentCoordinator {
     this.operationGenerations.set(key,operation.generation);
     this.operationsById.set(operationId,operation);
     this.publishConnecting(operation);
-    operation.promise = this.runOperation(plan,operation)
+    operation.promise = auditExecutionContext.run({
+      projectId:operation.projectId,environmentId:operation.environmentId,pluginInstanceId:operation.pluginInstanceId,
+      planId:plan.planId,operationId,actor:plan.actor,pluginNameSnapshot:operation.plugin.displayName,
+    }, () => this.runOperation(plan,operation))
       .finally(() => {
         if (this.operations.get(key) === operation) this.operations.delete(key);
         this.pruneHistory();

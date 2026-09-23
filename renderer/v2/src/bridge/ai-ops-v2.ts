@@ -427,6 +427,12 @@ export interface PluginDatabaseListData {
 }
 
 export interface AuditListPayload extends ProjectScope {
+  readonly view?: "operations"
+  readonly actor?: string
+  readonly category?: string
+  readonly query?: string
+  readonly from?: string
+  readonly to?: string
   readonly environmentId?: string
   readonly pluginInstanceId?: string
   readonly type?: string

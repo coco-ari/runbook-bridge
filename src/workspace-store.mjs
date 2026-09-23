@@ -6,6 +6,8 @@ import readline from 'node:readline';
 import { isDeepStrictEqual } from 'node:util';
 import YAML from 'yaml';
 import { AppError } from './errors.mjs';
+import { AuditHistory } from './audit-history.mjs';
+import { auditActor, auditExecutionContext, safeAuditText } from './audit-record.mjs';
 import { normalizeDockerSocket } from './server-docker-reader.mjs';
 import { classifyPluginChange } from './plugin-change-classifier.mjs';
 import { assertPluginConfigurationReady } from './plugin-connection-adapters.mjs';
@@ -589,7 +591,7 @@ async function sha256File(file) {
   return hash.digest('hex');
 }
 
-async function* readLinesReverse(file, { chunkBytes = AUDIT_READ_CHUNK_BYTES, maxLineBytes = MAX_AUDIT_LINE_BYTES } = {}) {
+async function* readLinesReverse(file, { chunkBytes = AUDIT_READ_CHUNK_BYTES, maxLineBytes = MAX_AUDIT_LINE_BYTES, endPosition, withOffset = false } = {}) {
   let handle;
   try {
     handle = await fs.open(file, 'r');
@@ -598,7 +600,7 @@ async function* readLinesReverse(file, { chunkBytes = AUDIT_READ_CHUNK_BYTES, ma
     throw error;
   }
   try {
-    let position = Number((await handle.stat()).size);
+    let position = Math.min(endPosition ?? Infinity, Number((await handle.stat()).size));
     let carry = Buffer.alloc(0);
     let discardingOversizedLine = false;
     const decode = (buffer) => {
@@ -627,7 +629,7 @@ async function* readLinesReverse(file, { chunkBytes = AUDIT_READ_CHUNK_BYTES, ma
       for (let index = end - 1; index >= 0; index -= 1) {
         if (combined[index] !== 0x0a) continue;
         const line = decode(combined.subarray(index + 1, end));
-        if (line !== null) yield line;
+        if (line !== null) yield withOffset ? {line,offset:position + index + 1} : line;
         end = index;
       }
       carry = combined.subarray(0, end);
@@ -638,7 +640,7 @@ async function* readLinesReverse(file, { chunkBytes = AUDIT_READ_CHUNK_BYTES, ma
     }
     if (!discardingOversizedLine && carry.length) {
       const line = decode(carry);
-      if (line !== null) yield line;
+      if (line !== null) yield withOffset ? {line,offset:0} : line;
     }
   } finally {
     await handle.close();
@@ -695,6 +697,7 @@ export class WorkspaceStore {
     this.projectsRoot = path.join(dataRoot, 'projects');
     this.legacyStore = legacyStore;
     this.writeQueues = new Map();
+    this.auditHistory = new AuditHistory();
   }
 
   async init({ migrateLegacy = true } = {}) {
@@ -1650,19 +1653,32 @@ export class WorkspaceStore {
   }
 
   async appendAudit(projectId, entry) {
+    const parent = auditExecutionContext.getStore();
+    if (parent && parent.projectId === projectId && parent.environmentId === entry.environmentId
+      && parent.pluginInstanceId === entry.pluginInstanceId && ['execute','execute-approved','execute-blocked','connect'].includes(entry.type)) {
+      entry = {...entry,...parent,auditNested:true};
+    }
     return this.enqueue(`audit:${projectId}`, async () => {
       await this.getProject(projectId);
       const file = path.join(this.projectDir(projectId), 'audit', 'operations-v3.jsonl');
       await fs.mkdir(path.dirname(file), { recursive: true });
-      const record = { schemaVersion: 3, time: now(), ...entry };
+      const record = { schemaVersion: 3, time: now(), ...entry, projectId,
+        auditId:crypto.randomUUID(), auditSessionId:this.auditHistory.sessionId, actor:auditActor(entry),
+        ...(entry.auditTarget !== undefined ? {auditTarget:safeAuditText(entry.auditTarget)} : {}),
+        ...(entry.pluginNameSnapshot !== undefined ? {pluginNameSnapshot:safeAuditText(entry.pluginNameSnapshot,200)} : {}),
+      };
       await fs.appendFile(file, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 });
+      this.auditHistory.observe(record);
+      try { this.onAuditChanged?.({type:'audit-appended',projectId,environmentId:entry.environmentId,pluginInstanceId:entry.pluginInstanceId}); } catch { /* 界面通知失败不改变审计写入结果。 */ }
       return record;
     });
   }
 
-  async listAudit(projectId, { environmentId = null, pluginInstanceId = null, cursor = 0, limit = 100 } = {}) {
+  async listAudit(projectId, filters = {}) {
     await this.getProject(projectId);
     const file = path.join(this.projectDir(projectId), 'audit', 'operations-v3.jsonl');
+    if (filters.view === 'operations') return this.auditHistory.list(file, filters, readLinesReverse);
+    const { environmentId = null, pluginInstanceId = null, cursor = 0, limit = 100 } = filters;
     const offset = Math.max(Number(cursor) || 0, 0);
     const pageSize = Math.min(Math.max(Number(limit) || 100, 1), 200);
     const entries = [];
@@ -1691,6 +1707,7 @@ export class WorkspaceStore {
       const deletedCount = await rewriteJsonLines(file, (entry) => (
         entry.environmentId === environmentId && (!pluginInstanceId || entry.pluginInstanceId === pluginInstanceId)
       ));
+      try { this.onAuditChanged?.({type:'audit-cleared',projectId,environmentId,pluginInstanceId}); } catch { /* 清除已完成，通知失败不改变结果。 */ }
       return { deletedCount, environmentId, pluginInstanceId };
     });
   }

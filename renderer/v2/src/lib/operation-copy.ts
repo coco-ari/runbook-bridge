@@ -1,16 +1,17 @@
-export type AuditResult = "success" | "started" | "running" | "pending" | "warning" | "cancelled" | "blocked" | "error"
+export type AuditResult = "success" | "started" | "running" | "pending" | "warning" | "cancelled" | "blocked" | "error" | "unknown" | "approved" | "rejected" | "interrupted" | "paused" | "stopped" | "expired" | "invalidated"
 
 export function auditResult(entry: { readonly result?: unknown; readonly errorCode?: unknown }): AuditResult {
-  const value = String(entry.result ?? (entry.errorCode ? "error" : "success")).toLowerCase()
+  const value = String(entry.result ?? (entry.errorCode ? "error" : "unknown")).toLowerCase()
   if (["success", "connected", "disconnected", "complete", "completed", "already-satisfied"].includes(value)) return "success"
-  // Audit rows describe historical events; a start event is not a pending approval.
-  if (value === "started") return "started"
+  // 历史开始事件不能用于推断当前仍在执行。
+  if (value === "started") return "unknown"
   if (["running", "connecting"].includes(value)) return "running"
   if (value === "pending-confirmation") return "pending"
   if (["cancelled", "canceled"].includes(value)) return "cancelled"
-  if (["partial", "warning", "needs-action", "stopped"].includes(value)) return "warning"
+  if (["partial", "warning", "needs-action"].includes(value)) return "warning"
+  if (["unknown", "approved", "rejected", "interrupted", "paused", "stopped", "expired", "invalidated"].includes(value)) return value as AuditResult
   if (["blocked", "denied"].includes(value)) return "blocked"
-  return "error"
+  return value === "error" || value === "failed" || entry.errorCode ? "error" : "unknown"
 }
 
 export function auditResultLabel(result: AuditResult): string {
@@ -23,13 +24,14 @@ export function auditResultLabel(result: AuditResult): string {
     cancelled: "已取消",
     blocked: "已拦截",
     error: "失败",
+    unknown: "结果未记录", approved: "已批准待执行", rejected: "已拒绝", interrupted: "已中断", paused: "已暂停", stopped: "已结束", expired: "已过期", invalidated: "已失效",
   }[result]
 }
 
 export function auditResultVariant(result: AuditResult): "success" | "warning" | "danger" | "info" | "outline" {
   if (result === "success") return "success"
-  if (["started", "running", "pending"].includes(result)) return "info"
-  if (result === "warning" || result === "cancelled") return "warning"
+  if (["started", "running", "pending", "approved"].includes(result)) return "info"
+  if (["warning", "cancelled", "interrupted", "expired", "invalidated", "paused"].includes(result)) return "warning"
   if (result === "blocked" || result === "error") return "danger"
   return "outline"
 }
@@ -60,7 +62,16 @@ const AUDIT_OPERATION_LABELS: Readonly<Record<string, string>> = {
   "plugin-added": "添加插件",
   "plugin-connected": "连接插件",
   "plugin-disconnected": "断开插件",
-  "plugin-operation": "执行插件操作",
+  "plugin-operation": "插件操作",
+  "desktop-upload": "上传服务器文件",
+  "desktop-download": "下载服务器文件",
+  "desktop-file-action": "修改服务器文件",
+  "terminal-open": "打开终端会话",
+  "terminal-close": "结束终端会话",
+  "server-metrics-start": "开启资源监控",
+  "server-metrics-stop": "结束资源监控",
+  "server-metrics-status": "更新监控状态",
+  "docker-read": "读取容器信息",
   "plugin-operation-decision": "检查插件操作权限",
   "plugin-operation-started": "开始插件操作",
   "policy-denied": "策略拦截",
@@ -79,6 +90,8 @@ const CAPABILITY_LABELS: Readonly<Record<string, string>> = {
 }
 
 const ERROR_CODE_LABELS: Readonly<Record<string, string>> = {
+  AUDIT_CURSOR_STALE: "记录已清除或分页已失效，请刷新后重试。",
+  SERVICE_CONTROL_FAILED: "服务执行失败，请检查服务状态和日志。",
   AUTHENTICATION_FAILED: "身份验证失败，请检查连接凭据。",
   CAPABILITY_NOT_GRANTED: "当前 Agent 没有执行此操作的权限。",
   COMMAND_BLOCKED: "命令已被安全策略拦截。",

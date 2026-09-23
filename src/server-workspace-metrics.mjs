@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { AppError } from './errors.mjs';
 import { pluginConnectionFingerprint } from './plugin-change-classifier.mjs';
 import { cpuPercent, parseDiskMetrics, parseSystemMetrics } from './server-metrics-reader.mjs';
@@ -18,6 +19,8 @@ export class ServerWorkspaceMetrics {
     try {
       await this.workspaceStore.appendAudit(record.scope.projectId, {
         ...record.scope, pluginType:'server', origin:'desktop-human', type, result, generation:record.generation,
+        actor:type === 'server-metrics-start' || (type === 'server-metrics-stop' && result === 'paused') ? 'user' : 'system',
+        sessionId:record.auditSessionId, pluginNameSnapshot:record.pluginNameSnapshot,
       });
     } catch {
       if (required) throw new AppError('METRICS_AUDIT_UNAVAILABLE', '无法记录资源监控会话，请检查本地审计存储。');
@@ -37,7 +40,7 @@ export class ServerWorkspaceMetrics {
     let record = this.records.get(key);
     if (!record) {
       if (this.records.size >= 32) return Promise.reject(new AppError('METRICS_LIMIT_REACHED', '同时监控的服务器过多。'));
-      record = { key, scope, owners:new Set(), controller:new AbortController(), snapshot:empty(), previous:null, previousAt:0,
+      record = { key, scope, auditSessionId:crypto.randomUUID(), owners:new Set(), controller:new AbortController(), snapshot:empty(), previous:null, previousAt:0,
         nextAt:{system:0,disks:0}, pending:{system:null,disks:null}, initialization:null, generation:null, fingerprint:null, started:false, lastResult:{} };
       this.records.set(key, record);
     }
@@ -53,6 +56,7 @@ export class ServerWorkspaceMetrics {
   async initialize(record) {
     const plugin = await this.requirePlugin(record.scope);
     this.valid(record);
+    record.pluginNameSnapshot = plugin.displayName;
     record.generation = this.serverRuntime.status(plugin)?.generation;
     record.fingerprint = pluginConnectionFingerprint(plugin);
     await this.audit(record, 'server-metrics-start', 'started', true);

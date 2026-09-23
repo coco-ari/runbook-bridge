@@ -250,6 +250,10 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
         const rows = await success('mysqlQueryReadonly', {...databaseScope,sql:'SELECT id, label FROM records LIMIT 2'});
         assert.equal(rows.rowCount, 2);
         assert.deepEqual(rows.columns.map((item) => item.name), ['id','label']);
+        const audit = await success('listAudit', {...databaseScope,view:'operations',actor:'user',category:'read',limit:50});
+        assert.ok(audit.entries.some(entry => entry.title === '执行只读查询' && entry.actor === 'user' && entry.result === 'success'));
+        assert.ok(audit.entries.some(entry => entry.title === '预览数据表' && entry.eventCount === 2));
+        assert.doesNotMatch(JSON.stringify(audit),/SELECT id, label|loopback-value|fixture-secret/u);
         const beforeRejectedQuery = fixture.counts.mysqlQueries;
         for (const sql of ['DELETE FROM records','SELECT * FROM archive.records','SELECT 1; SELECT 2']) {
           const rejected = await invoke('mysqlQueryReadonly', {...databaseScope,sql});

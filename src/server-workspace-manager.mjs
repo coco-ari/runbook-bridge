@@ -83,6 +83,8 @@ export class ServerWorkspaceManager {
     try {
       await this.workspaceStore.appendAudit(record.scope.projectId, {
         ...record.scope, pluginType: 'server', type, origin: 'desktop-human',
+        actor:type === 'terminal-open' || ['user','user-closed','closed','workspace-closed','window-closed','application-closed'].includes(reason) ? 'user' : 'system',
+        pluginNameSnapshot:record.plugin?.displayName,
         sessionId: record.sessionId, generation: record.generation,
         ...(reason ? { reason } : {}),
       });

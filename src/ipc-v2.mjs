@@ -296,16 +296,21 @@ export function registerV2Ipc(ipcMain, services) {
     services.serverWorkspaceManager?.closeScope(scope, 'configuration-changed');
     services.serverWorkspaceFiles?.closeScope(scope);
   };
-  const commitPreparedPlugin = (prepared, payload) => {
+  const recordPluginChange = async (plugin, type) => {
+    if (typeof store.appendAudit !== 'function') return;
+    await store.appendAudit(plugin.projectId,{
+      type,environmentId:plugin.environmentId,pluginInstanceId:plugin.pluginInstanceId,pluginType:plugin.pluginType,
+      pluginNameSnapshot:plugin.displayName,actor:'user',result:'success',
+    }).catch(() => undefined);
+  };
+  const commitPreparedPlugin = async (prepared, payload) => {
     if (prepared.change.kind === 'none') return prepared.before;
     if (['session-affecting', 'dependency-affecting'].includes(prepared.change.kind)) invalidateServerWorkspace(payload);
-    if (prepared.after && typeof store.commitPluginSnapshot === 'function') {
-      return store.commitPluginSnapshot(prepared.after,prepared.before.revision);
-    }
-    return store.updatePlugin(
-      payload.projectId,payload.environmentId,payload.pluginInstanceId,
-      payload.patch,payload.expectedRevision,
-    );
+    const plugin = prepared.after && typeof store.commitPluginSnapshot === 'function'
+      ? await store.commitPluginSnapshot(prepared.after,prepared.before.revision)
+      : await store.updatePlugin(payload.projectId,payload.environmentId,payload.pluginInstanceId,payload.patch,payload.expectedRevision);
+    if (prepared.change.kind === 'metadata') await recordPluginChange(plugin,'plugin-metadata-updated');
+    return plugin;
   };
   const commitAgentPluginUpdate = async (prepared, payload) => {
     const plugin = await commitPreparedPlugin(prepared,payload);
@@ -314,10 +319,11 @@ export function registerV2Ipc(ipcMain, services) {
       confirmationManager.invalidatePlugin?.(
         payload.projectId,payload.environmentId,payload.pluginInstanceId,
       );
+      await recordPluginChange(plugin,'plugin-agent-updated');
     }
     return plugin;
   };
-  const commitConnectionPluginUpdate = (prepared, payload, {ownerId = null} = {}) => withConfigurationMutation(
+  const commitConnectionPluginUpdate = (prepared, payload, {ownerId = null, recordChange = true} = {}) => withConfigurationMutation(
     payload.projectId,payload.environmentId,payload.pluginInstanceId,
     async ({restoreOnFailure}) => {
       let transaction = null;
@@ -392,6 +398,7 @@ export function registerV2Ipc(ipcMain, services) {
       confirmationManager.invalidatePlugin?.(
         payload.projectId,payload.environmentId,payload.pluginInstanceId,
       );
+      if (recordChange) await recordPluginChange(plugin,'plugin-connection-updated');
       return {
         ...plugin,
         ...(runtimeWarning ? {runtimeWarning,manualReconnectRequired:true} : {}),
@@ -764,7 +771,7 @@ export function registerV2Ipc(ipcMain, services) {
       let persistenceWarning = null;
       let runtimeWarning = null;
       let plugin;
-      const committed = await commitConnectionPluginUpdate(prepared,trustPayload);
+      const committed = await commitConnectionPluginUpdate(prepared,trustPayload,{recordChange:false});
       ({persistenceWarning = null,runtimeWarning = null,...plugin} = committed);
       await Promise.resolve(store.appendAudit?.(challenge.projectId,{
         type:'server-host-key-trusted',
@@ -902,6 +909,7 @@ export function registerV2Ipc(ipcMain, services) {
       runtimeWarning = runtimeResult?.runtimeWarning ?? null;
     } catch (error) { runtimeWarning = toPublicError(error); }
     contextManager.invalidateEnvironment(projectId, environmentId);
+    await recordPluginChange(plugin,'plugin-added');
     return {...plugin,...(runtimeWarning ? {runtimeWarning,manualReconnectRequired:true} : {})};
   })));
   handle('plugin-metadata-update', (payload) => {
@@ -968,6 +976,7 @@ export function registerV2Ipc(ipcMain, services) {
     }
     contextManager.invalidateEnvironment(projectId, environmentId);
     confirmationManager.invalidatePlugin?.(projectId, environmentId, pluginInstanceId);
+    await recordPluginChange(plugin,'plugin-deleted');
     services.broadcast?.('v2:workspace-changed', { type:'plugin-deleted', projectId, environmentId, pluginInstanceId });
     return { ...value, credentialsPreserved:true,...(runtimeWarning ? {runtimeWarning} : {}) };
     }));
@@ -1087,19 +1096,28 @@ export function registerV2Ipc(ipcMain, services) {
   ]) {
     handle(channel, (payload) => services.v2Service.invokeDesktopMysql(payload, operation));
   }
+  store.onAuditChanged = change => services.broadcast?.('v2:workspace-changed',change);
+  confirmationManager.statuses?.on('status', id => {
+    const value = confirmationManager.statuses.entries.get(id)?.value;
+    if (!value || !['expired','invalidated'].includes(value.status)) return;
+    void store.appendAudit(value.projectId,{
+      type:'confirmation-' + value.status, environmentId:value.environmentId, pluginInstanceId:value.pluginInstanceId,
+      actor:'system', capability:value.capability, confirmationId:id, result:value.status,
+    }).catch(() => undefined);
+  });
   handle('audit-list', ({ projectId, ...filters }) => store.listAudit(projectId, filters));
   handle('audit-clear', ({ projectId, environmentId, pluginInstanceId = null }) => store.clearAudit(projectId, { environmentId, pluginInstanceId }));
   handle('confirmation-list', () => confirmationManager.list());
   handle('confirmation-approve', async (requestId) => {
     const pending = confirmationManager.list().find((item) => item.requestId === requestId);
     const result = confirmationManager.approve(requestId);
-    if (pending) await store.appendAudit(pending.projectId, { type:'confirmation-approved', environmentId:pending.environmentId, pluginInstanceId:pending.pluginInstanceId, pluginNameSnapshot:pending.pluginNameSnapshot, actor:'user', capability:pending.capability, operationSummary:pending.summary, confirmationId:requestId, result:'success' }).catch(() => undefined);
+    if (pending) await store.appendAudit(pending.projectId, { type:'confirmation-approved', environmentId:pending.environmentId, pluginInstanceId:pending.pluginInstanceId, pluginNameSnapshot:pending.pluginNameSnapshot, actor:'user', capability:pending.capability, auditAction:pending.auditAction, auditTarget:pending.auditTarget, pluginType:pending.pluginType, confirmationId:requestId, expiresAt:result.expiresAt, result:'success' }).catch(() => undefined);
     return result;
   });
   handle('confirmation-reject', async (requestId) => {
     const pending = confirmationManager.list().find((item) => item.requestId === requestId);
     const result = confirmationManager.reject(requestId);
-    if (pending) await store.appendAudit(pending.projectId, { type:'confirmation-rejected', environmentId:pending.environmentId, pluginInstanceId:pending.pluginInstanceId, pluginNameSnapshot:pending.pluginNameSnapshot, actor:'user', capability:pending.capability, operationSummary:pending.summary, confirmationId:requestId, result:'blocked' }).catch(() => undefined);
+    if (pending) await store.appendAudit(pending.projectId, { type:'confirmation-rejected', environmentId:pending.environmentId, pluginInstanceId:pending.pluginInstanceId, pluginNameSnapshot:pending.pluginNameSnapshot, actor:'user', capability:pending.capability, auditAction:pending.auditAction, auditTarget:pending.auditTarget, pluginType:pending.pluginType, confirmationId:requestId, result:'blocked' }).catch(() => undefined);
     return result;
   });
   connectionManager.on('changed', (state) => services.broadcast?.('v2:environment-status-changed',state));

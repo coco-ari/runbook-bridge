@@ -118,8 +118,11 @@ export class ServerWorkspaceActions {
     // 在任何异步工作之前消耗凭证，实际参数和前置条件始终来自主进程。
     this.records.delete(item.operationId);
     this.executions.add(item);
-    const audit = result => this.files.workspaceStore.appendAudit(item.scope.projectId, {
-      ...item.scope, pluginType: 'server', source: 'desktop-human', type: 'desktop-file-action', result,
+    const startedAt = Date.now();
+    const audit = (result, errorCode) => this.files.workspaceStore.appendAudit(item.scope.projectId, {
+      ...item.scope, pluginType: 'server', source: 'desktop-human', actor:'user', type: 'desktop-file-action', result,
+      operationId:item.operationId, pluginNameSnapshot:item.plugin.displayName,
+      ...(result !== 'started' ? {durationMs:Date.now() - startedAt} : {}), ...(errorCode ? {errorCode} : {}),
       operation: { kind: item.kind, path: item.selectedPath, ...(item.kind === 'delete' ? { type: item.source.type } : { destinationPath: item.logicalDestination }) },
     });
     try {
@@ -134,7 +137,7 @@ export class ServerWorkspaceActions {
       await audit('completed');
       return { kind: item.kind, path: item.selectedPath, ...(item.kind === 'delete' ? {} : { destinationPath: item.logicalDestination }), parentPath: item.parentPath };
     } catch (error) {
-      await audit('error').catch(() => {});
+      await audit('error', error instanceof AppError ? error.code : 'INTERNAL_ERROR').catch(() => {});
       throw error;
     } finally { this.executions.delete(item); }
   }

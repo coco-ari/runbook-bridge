@@ -31,7 +31,7 @@ export class ServerDockerManager {
     return plugin;
   }
 
-  async read(owner, payload) {
+  async read(owner, payload, parentAuditOperationId = null) {
     const { kind, requestId = crypto.randomUUID(), projectId, environmentId, pluginInstanceId, ...input } = payload;
     if (typeof requestId !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/u.test(requestId)) throw new AppError('INVALID_ARGUMENT', 'Docker 请求标识无效。');
     const request = dockerRequest(kind, input);
@@ -39,14 +39,18 @@ export class ServerDockerManager {
     const key = JSON.stringify([owner, scope, requestId]);
     if (this.disposed) throw cancelled();
     if (this.pending.size >= 64 || this.pending.has(key)) throw new AppError('DOCKER_BUSY', 'Docker 读取正在进行，请稍后重试。');
+    const operationId = parentAuditOperationId ?? crypto.randomUUID();
+    const actor = String(owner).startsWith('renderer:') ? 'user' : 'agent';
     const record = { key, owner, scope, controller:new AbortController() };
+    let pluginNameSnapshot;
     this.pending.set(key, record);
     try {
       const plugin = await this.plugin(scope);
+      pluginNameSnapshot = plugin.displayName;
       record.generation = this.serverRuntime.status(plugin).generation;
       record.fingerprint = pluginConnectionFingerprint(plugin);
       await this.verify(record);
-      await this.workspaceStore.appendAudit(projectId, { ...scope, pluginType:'server', type:'docker-read', origin:String(owner).startsWith('renderer:') ? 'desktop-human' : 'agent', operation:kind, containerId:request.containerId, result:'started' });
+      await this.workspaceStore.appendAudit(projectId, { ...scope, pluginType:'server', type:'docker-read', auditNested:Boolean(parentAuditOperationId), auditTarget:request.containerId ?? '', operationId, actor, pluginNameSnapshot, origin:String(owner).startsWith('renderer:') ? 'desktop-human' : 'agent', operation:kind, containerId:request.containerId, result:'started' });
       await this.verify(record);
       let result;
       if (request.cursor) {
@@ -68,11 +72,11 @@ export class ServerDockerManager {
           result = this.page(snapshot, 0, request.limit);
         }
       }
-      await this.workspaceStore.appendAudit(projectId, { ...scope, pluginType:'server', type:'docker-read', operation:kind, result:'success' });
+      await this.workspaceStore.appendAudit(projectId, { ...scope, pluginType:'server', type:'docker-read', auditNested:Boolean(parentAuditOperationId), auditTarget:request.containerId ?? '', operationId, actor, pluginNameSnapshot, operation:kind, result:'success' });
       await this.verify(record);
       return result;
     } catch (error) {
-      await this.workspaceStore.appendAudit(projectId, { ...scope, pluginType:'server', type:'docker-read', operation:kind, result:'error', errorCode:error instanceof AppError ? error.code : 'INTERNAL_ERROR' }).catch(() => {});
+      await this.workspaceStore.appendAudit(projectId, { ...scope, pluginType:'server', type:'docker-read', auditNested:Boolean(parentAuditOperationId), auditTarget:request.containerId ?? '', operationId, actor, pluginNameSnapshot, operation:kind, result:'error', errorCode:error instanceof AppError ? error.code : 'INTERNAL_ERROR' }).catch(() => {});
       throw error;
     } finally { this.pending.delete(key); }
   }

@@ -1975,7 +1975,7 @@ async function captureVisualScenario(win,{name,readySelector,theme,viewports = v
       const selectedRect = selectedTab?.getBoundingClientRect() ?? null;
       const viewportRect = viewport?.getBoundingClientRect() ?? null;
       const auditCompact = document.querySelector('[data-audit-layout="compact"]');
-      const auditTable = document.querySelector('[data-audit-layout="table"]');
+      const auditTable = document.querySelector('[data-audit-layout="operations"]');
       const visible = (element) => {
         if (!(element instanceof HTMLElement) || element.getClientRects().length === 0) return false;
         const style = getComputedStyle(element);
@@ -2070,7 +2070,7 @@ async function captureVisualScenario(win,{name,readySelector,theme,viewports = v
     if (name === 'audit') {
       assert.deepEqual(
         snapshot.auditLayouts,
-        width === 960 ? {compact:true,table:false} : {compact:false,table:true},
+        {compact:false,table:true},
         `${name} ${width}x${height} responsive layout`,
       );
     }

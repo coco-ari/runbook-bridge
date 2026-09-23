@@ -146,7 +146,8 @@ export function useWorkspaceOverview(
     let unsubscribe: () => void = () => undefined
     void coordinatorRef.current?.request()
     try {
-      unsubscribe = getApi().onWorkspaceChanged(() => {
+      unsubscribe = getApi().onWorkspaceChanged((change) => {
+        if (["audit-appended", "audit-cleared"].includes(change.type)) return
         if (active && epoch === apiEpochRef.current) reload()
       })
     } catch {
