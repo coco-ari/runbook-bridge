@@ -100,3 +100,8 @@ export function redisKeyAncestors(tree: RedisKeyTree, key: string): readonly str
   }
   return ancestors
 }
+
+export function redisFolderSearch(prefix: string): string {
+  // 目录名中的通配符按字面量转义，仅末尾星号用于匹配目录下的 Key。
+  return prefix.replace(/[\\*?]/gu, "\\$&") + "*"
+}

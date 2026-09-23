@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildRedisKeyTree, defaultRedisTreeExpansion, redisKeyTreeRows, redisKeyAncestors, REDIS_KEY_TREE_MAX_DEPTH } from '../renderer/v2/src/features/redis/redis-key-tree.ts';
+import { redisKeySearch } from '../src/redis-key-search.mjs';
+import { buildRedisKeyTree, defaultRedisTreeExpansion, redisKeyTreeRows, redisKeyAncestors, redisFolderSearch, REDIS_KEY_TREE_MAX_DEPTH } from '../renderer/v2/src/features/redis/redis-key-tree.ts';
 
 const keysOf = (tree) => [...tree.nodes.values()].filter(node => node.kind === 'key').map(node => node.key).sort();
 
@@ -60,4 +61,17 @@ test('深层或大量 Key 的目录深度有界，叶子仍保留精确原始名
   assert.equal(many.nodes.get('folder:cache:').count, 5000);
   assert.equal(many.nodes.size, 5002);
   assert.equal(redisKeyTreeRows(many, () => true).length, 5002);
+});
+
+
+test('目录搜索转义真实前缀中的通配符，不匹配相似目录或任意位置的片段', () => {
+  for (const prefix of ['cache:orders:', 'cache:a*b?:', 'cache:a\\b:', 'cache:[users]:', 'cache::']) {
+    const matches = redisKeySearch(redisFolderSearch(prefix));
+    assert.equal(matches(prefix + 'one'), true);
+    assert.equal(matches(prefix + 'child:two'), true);
+    assert.equal(matches('other:' + prefix + 'one'), false);
+    assert.equal(matches(prefix.slice(0, -1) + '-other:one'), false);
+  }
+  const special = redisKeySearch(redisFolderSearch('cache:a*b?:'));
+  assert.equal(special('cache:axby:one'), false);
 });

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
-import { CaretDown, CaretRight, Crosshair, DotsThree, FolderSimple, FolderOpen, Key, ListBullets, TreeStructure } from "@phosphor-icons/react"
+import { CaretDown, CaretRight, Crosshair, DotsThree, FolderSimple, FolderOpen, Key, ListBullets, MagnifyingGlass, TreeStructure } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu"
 import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { buildRedisKeyTree, defaultRedisTreeExpansion, redisKeyAncestors, redisKeyTreeRows, type RedisKeyTreeNode } from "./redis-key-tree"
 
@@ -19,6 +20,7 @@ interface Props {
   readonly visible: boolean
   readonly refreshDisabled: boolean
   readonly onRefresh: () => void
+  readonly onSearchFolder: (prefix: string) => void
 }
 
 function Highlight({ text, keyword }: { readonly text: string; readonly keyword: string }) {
@@ -26,14 +28,15 @@ function Highlight({ text, keyword }: { readonly text: string; readonly keyword:
   return index < 0 ? <>{text}</> : <>{text.slice(0, index)}<mark>{text.slice(index, index + keyword.length)}</mark>{text.slice(index + keyword.length)}</>
 }
 
-export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, complete, error, onOpen, identity, search, visible, refreshDisabled, onRefresh }: Props) {
+export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, complete, error, onOpen, identity, search, visible, refreshDisabled, onRefresh, onSearchFolder }: Props) {
   const tree = useMemo(() => buildRedisKeyTree(keys), [keys])
   const defaults = useMemo(() => defaultRedisTreeExpansion(tree, Boolean(keyword)), [tree, keyword])
   const [view, setView] = useState<"tree" | "list">("tree")
   const [overrides, setOverrides] = useState<ReadonlyMap<string, boolean>>(new Map())
   const [focusedId, setFocusedId] = useState("")
   const [menuOpen, setMenuOpen] = useState(false)
-  const menuAction = useRef<"locate" | null>(null)
+  const [contextFolder, setContextFolder] = useState<string | null>(null)
+  const menuAction = useRef<"locate" | "search" | null>(null)
   const buttons = useRef(new Map<string, HTMLButtonElement>())
   const scroll = useRef<HTMLDivElement>(null)
   const expanded = (id: string) => overrides.get(id) ?? defaults.has(id)
@@ -43,11 +46,12 @@ export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, c
   const selectedPath = focused?.path ?? activeKey ?? ""
   const canLocate = Boolean(activeKey && tree.nodes.has("key:" + activeKey))
 
-  useEffect(() => { if (!visible) { setMenuOpen(false); menuAction.current = null } }, [visible])
+  useEffect(() => { if (!visible) { setMenuOpen(false); setContextFolder(null); menuAction.current = null } }, [visible])
 
   useEffect(() => {
     setOverrides(new Map())
     setFocusedId("")
+    setContextFolder(null)
     if (scroll.current) scroll.current.scrollTop = 0
   }, [queryKey])
 
@@ -115,10 +119,13 @@ export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, c
               if (!visible) { event.preventDefault(); return }
               if (action) {
                 event.preventDefault()
-                if (activeKey) focus("key:" + activeKey)
+                if (action === "locate" && activeKey) focus("key:" + activeKey)
               }
             }}>
               <DropdownMenuItem disabled={!canLocate} data-testid="redis-tree-locate" onSelect={locate}><Crosshair />定位当前 Key</DropdownMenuItem>
+              <DropdownMenuItem disabled={focused?.kind !== "folder"} data-testid="redis-tree-search-folder" onSelect={() => {
+                if (focused?.kind === "folder") { menuAction.current = "search"; onSearchFolder(focused.path) }
+              }}><MagnifyingGlass />搜索所选目录</DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem disabled={view !== "tree" || !tree.folders.length} data-testid="redis-tree-expand-all" onSelect={() => setOverrides(new Map(tree.folders.map((node) => [node.id, true])))}><FolderOpen />展开全部目录</DropdownMenuItem>
               <DropdownMenuItem disabled={view !== "tree" || !tree.folders.length} data-testid="redis-tree-collapse-all" onSelect={() => setOverrides(new Map(tree.folders.map((node) => [node.id, false])))}><FolderSimple />折叠全部目录</DropdownMenuItem>
@@ -129,7 +136,14 @@ export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, c
       {search}
     </div>
     {error ? <p role="alert" className="redis-error" data-testid="redis-scan-error">{error}</p> : null}
-    <div ref={scroll} className="redis-key-list" data-testid="redis-key-list" aria-busy={loading}>
+    <ContextMenu onOpenChange={(open) => { if (!open) setContextFolder(null) }}>
+    <ContextMenuTrigger asChild disabled={!visible}>
+    <div ref={scroll} className="redis-key-list" data-testid="redis-key-list" aria-busy={loading}
+      onContextMenuCapture={(event) => {
+        const folder = (event.target as HTMLElement).closest<HTMLElement>("[data-redis-folder]")?.dataset.redisFolder
+        if (folder === undefined) { event.preventDefault(); return }
+        setContextFolder(folder); setFocusedId("folder:" + folder)
+      }}>
       {rows.length ? <div role="tree" aria-label={view === "tree" ? "Redis Key 目录" : "Redis Key 列表"} className="redis-key-tree">
         {rows.map(({ node, position, siblingCount }, index) => {
           const folder = node.kind === "folder"
@@ -152,8 +166,17 @@ export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, c
             {folder ? <span className="redis-tree-count" aria-hidden="true">{node.count}</span> : null}
           </button>
         })}
-      </div> : <div className="redis-empty">{loading ? "正在扫描…" : error ? "扫描失败，可重新扫描。" : complete ? "本轮扫描没有匹配的 Key" : "本批未找到匹配项，可继续扫描。"}</div>}
+      </div> : <div className="redis-empty">{loading ? "正在扫描…" : error ? "扫描失败，可重新扫描。" : complete ? "本轮扫描没有匹配的 Key" : "尚未找到匹配项，扫描未完成。"}</div>}
     </div>
+    </ContextMenuTrigger>
+    {visible && contextFolder !== null ? <ContextMenuContent onCloseAutoFocus={(event) => {
+      event.preventDefault()
+      if (menuAction.current !== "search" && visible) focus("folder:" + contextFolder)
+      menuAction.current = null
+    }}>
+      <ContextMenuItem data-testid="redis-folder-search" onSelect={() => { menuAction.current = "search"; onSearchFolder(contextFolder) }}><MagnifyingGlass />搜索此目录下的 Key</ContextMenuItem>
+    </ContextMenuContent> : null}
+    </ContextMenu>
     <div className="redis-browser-path" title={selectedPath || "单击目录展开，双击 Key 固定标签"} data-testid="redis-browser-path">{selectedPath || "单击目录展开，双击 Key 固定标签"}</div>
   </>
 }

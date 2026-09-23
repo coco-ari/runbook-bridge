@@ -310,3 +310,60 @@ test('独立读取通道保持主连接的 TLS 身份参数且不新建插件路
   reader.close();
   assert.equal(h.runtime.status(h.plugin).connected, true);
 });
+
+
+test('搜索自动合并空批次，通配符结果始终受已登记范围和插件条数限制', async (t) => {
+  const replies = [
+    ['8', []], ['9', ['cache:other', 'outside:user:1']],
+    ['0', ['cache:user:1', 'cache:user:2', 'cache:user:3']],
+  ];
+  const h = await harness(t, (args) => {
+    if (args[0] !== 'SCAN') return standard(args);
+    assert.equal(args[3], 'cache:*');
+    assert.equal(args[5], '2');
+    return replies.shift();
+  }, { maxKeys: 2 });
+  const first = await h.invoke('scan', { keyword: '*user*' });
+  assert.equal(first.ok, true);
+  assert.deepEqual(first.data.keys, ['cache:user:1', 'cache:user:2']);
+  assert.equal(first.data.complete, false);
+  const last = await h.invoke('scan', { keyword: '*user*', cursor: first.data.nextCursor });
+  assert.deepEqual(last.data.keys, ['cache:user:3']);
+  assert.equal(last.data.complete, true);
+  assert.equal(h.fixture.calls.filter((args) => args[0] === 'SCAN').length, 3);
+  assert.ok(!JSON.stringify(h.audits).includes('cache:user'));
+  assert.ok(!JSON.stringify(h.audits).includes('*user*'));
+});
+
+test('稀疏搜索每次请求最多扫描八批，空批次保留续查游标', async (t) => {
+  let scans = 0;
+  const h = await harness(t, (args) => args[0] === 'SCAN' ? [String(++scans), []] : standard(args));
+  const first = await h.invoke('scan', { keyword: 'missing' });
+  assert.equal(first.ok, true);
+  assert.ok(scans > 0 && scans <= 8);
+  assert.deepEqual(first.data.keys, []);
+  assert.equal(first.data.complete, false);
+  const before = scans;
+  const next = await h.invoke('scan', { keyword: 'missing', cursor: first.data.nextCursor });
+  assert.equal(next.ok, true);
+  assert.ok(scans > before && scans <= before + 8);
+  assert.equal(h.fixture.calls.filter((args) => args[0] === 'SCAN')[before][1], String(before));
+});
+
+test('搜索批次达到时间预算后返回已有结果，剩余扫描可续查', async (t) => {
+  let scans = 0;
+  const h = await harness(t, async (args) => {
+    if (args[0] !== 'SCAN') return standard(args);
+    scans += 1;
+    if (scans === 1) { await new Promise((resolve) => setTimeout(resolve, 120)); return ['7', ['cache:user:1']]; }
+    return ['0', ['cache:user:2']];
+  });
+  const first = await h.invoke('scan', { keyword: 'user' });
+  assert.equal(first.ok, true);
+  assert.equal(scans, 1);
+  assert.deepEqual(first.data.keys, ['cache:user:1']);
+  assert.equal(first.data.complete, false);
+  const next = await h.invoke('scan', { keyword: 'user', cursor: first.data.nextCursor });
+  assert.deepEqual(next.data.keys, ['cache:user:2']);
+  assert.equal(next.data.complete, true);
+});

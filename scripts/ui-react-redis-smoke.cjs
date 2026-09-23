@@ -41,13 +41,13 @@ const value = (text, truncated = false) => ({ text, hex: Buffer.from(text ?? [0,
 const typeOf = (key) => ({ 'cache:hash': 'hash', 'cache:list': 'list', 'cache:set': 'set', 'cache:zset': 'zset', 'cache:stream': 'stream' }[key] ?? 'string');
 const ok = (data) => ({ ok: true, data });
 const fail = (code, message) => ({ ok: false, error: { code, message } });
-const state = { hold: null, auditWarning: false, failScan: false, scanPages: [] };
+const state = { hold: null, auditWarning: false, failScan: false, scanPages: [], releaseScan: null };
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const testId = (id) => '[data-testid="' + id + '"]';
 const active = (id) => '.redis-tab-panel:not([hidden]) ' + testId(id);
 function register(name, handler) { channels.add(name); ipcMain.handle(name, handler); }
 function read(name, fn) { register(name, async (_event, payload) => ok(structuredClone(await fn(payload)))); }
-function mocks() {
+function mocks(redisKeySearch) {
   read('v2:workspace-overview', workspace);
   read('v2:project-list', () => workspace());
   read('v2:environment-list', () => [environment()]);
@@ -71,9 +71,14 @@ function mocks() {
     }
     if (operation === 'scan') {
       if (state.failScan) return fail('REDIS_READ_FAILED', '模拟扫描失败');
-      if (state.scanPages.length) return ok({ ...state.scanPages.shift(), unsupportedKeys: 0, readAt: stamp() });
+      if (state.scanPages.length) {
+        const { hold, ...page } = state.scanPages.shift();
+        const result = ok({ ...page, unsupportedKeys: 0, readAt: stamp() });
+        if (hold) return new Promise((resolve) => { state.releaseScan = () => resolve(result); });
+        return result;
+      }
       const selected = payload.patternId === 'cache' ? keys : ['session:one'];
-      return ok({ keys: selected.filter((key) => key.includes(payload.keyword ?? '')), nextCursor: null, complete: true, unsupportedKeys: 0, readAt: stamp(), auditWarning: state.auditWarning });
+      return ok({ keys: selected.filter(redisKeySearch(payload.keyword)), nextCursor: null, complete: true, unsupportedKeys: 0, readAt: stamp(), auditWarning: state.auditWarning });
     }
     if (!payload.key.startsWith(payload.patternId + ':')) return fail('POLICY_DENIED', 'Redis Key 不在允许范围内。');
     if (operation === 'inspect') return ok({ key: payload.key, type: typeOf(payload.key), exists: payload.key !== 'cache:expired', ttlSeconds: payload.key === 'cache:expired' ? -2 : payload.key === 'cache:text' ? 1680 : -1,
@@ -98,6 +103,14 @@ async function waitFor(win, expression, label) {
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) { if (await win.webContents.executeJavaScript(expression, true)) return; await wait(30); }
   throw new Error('等待超时：' + label);
+}
+async function takeScanHold() {
+  const deadline = Date.now() + 5000;
+  while (!state.releaseScan && Date.now() < deadline) await wait(20);
+  assert.ok(state.releaseScan, '扫描请求应进入等待');
+  const release = state.releaseScan;
+  state.releaseScan = null;
+  return release;
 }
 async function click(win, selector) {
   await waitFor(win, `document.querySelector(${JSON.stringify(selector)})?.getClientRects().length > 0`, selector);
@@ -161,7 +174,7 @@ async function shot(win, name) {
   await win.webContents.executeJavaScript("document.getElementById('redis-shot-motion')?.remove()", true);
 }
 async function run() {
-  await app.whenReady(); mocks();
+  await app.whenReady(); mocks((await import('../src/redis-key-search.mjs')).redisKeySearch);
   session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
     const blocked = !details.url.startsWith('file:') && !details.url.startsWith('devtools:');
     if (blocked) external.push(details.url);
@@ -276,27 +289,228 @@ async function run() {
     await fill(win, testId('redis-search-input'), 'hash');
     await click(win, testId('redis-search-submit'));
     await waitFor(win, 'document.querySelectorAll("[data-redis-key]").length === 1', '关键词筛选');
+    const historyInput = 'document.querySelector("[data-testid=redis-search-input]")';
+    const historyOptions = 'Array.from(document.querySelectorAll("[data-testid=redis-search-suggestion]"))';
+    const historyQueries = historyOptions + '.map(e=>e.title)';
+    const pressSearch = async (key, composing = false) => {
+      await win.webContents.executeJavaScript(`${historyInput}.dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(key)},bubbles:true,cancelable:true,isComposing:${composing}}))`, true);
+      await wait(60);
+    };
+    await win.webContents.executeJavaScript(historyInput + '.focus()', true);
+    await fill(win, testId('redis-search-input'), '');
+    await text(win, testId('redis-search-history'), 'hash');
+    const beforeHistory = calls.length;
+    await fill(win, testId('redis-search-input'), 'ha');
+    assert.deepEqual(await win.webContents.executeJavaScript(historyQueries, true), ['hash']);
+    await pressSearch('ArrowDown');
+    await pressSearch('Enter', true);
+    assert.equal(calls.length, beforeHistory, '输入、筛选历史和中文组词确认不访问 Redis');
+    await pressSearch('Escape');
+    await waitFor(win, '!document.querySelector("[data-testid=redis-search-history]")', 'Esc 关闭提示');
+    await pressSearch('ArrowDown');
+    await pressSearch('Enter');
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    assert.equal(calls.at(-1).payload.keyword, 'hash', '方向键与 Enter 复用完整关键词');
+    assert.equal(await win.webContents.executeJavaScript(historyInput + '.value', true), 'hash');
+    await fill(win, testId('redis-search-input'), '');
+    assert.equal((await win.webContents.executeJavaScript(historyQueries, true)).filter(query => query === 'hash').length, 1, '重复搜索历史去重');
+    const beforeHideHistory = calls.length;
+    await click(win, testId('redis-workspace-back'));
+    await waitFor(win, '!document.querySelector("[data-testid=redis-search-history]")', '隐藏工作区关闭历史提示');
+    await click(win, testId('plugin-workspace-open'));
+    await win.webContents.executeJavaScript(historyInput + '.focus()', true);
+    await fill(win, testId('redis-search-input'), '');
+    await text(win, testId('redis-search-history'), 'hash');
+    assert.equal(calls.length, beforeHideHistory, '返回保留历史，不自动读取');
+    await click(win, testId('redis-search-submit'));
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    await click(win, testId('redis-search-exact'));
+    await fill(win, testId('redis-search-input'), 'cache:text');
+    await click(win, testId('redis-search-submit'));
+    await text(win, active('redis-key-meta'), '读取于');
+    await click(win, testId('redis-search-exact'));
+    await fill(win, testId('redis-search-input'), 'cache:tex');
+    const beforeExactHistory = calls.filter(entry => entry.operation === 'scan').length;
+    await click(win, testId('redis-search-suggestion'));
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector("[data-testid=redis-search-exact]").checked', true), true, '历史恢复精确匹配模式');
+    assert.equal(calls.filter(entry => entry.operation === 'scan').length, beforeExactHistory, '精确历史直接读取 Key');
+    assert.equal(await win.webContents.executeJavaScript(historyInput + '.value', true), 'cache:text');
+
+    const folderSelector = '[data-redis-folder="cache:orders:"]';
+    const beforeFolderMenu = calls.length;
+    await win.webContents.executeJavaScript(`(() => {const e=document.querySelector(${JSON.stringify(folderSelector)});const r=e.getBoundingClientRect();e.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,button:2,clientX:r.x+20,clientY:r.y+10}));})()`, true);
+    await text(win, testId('redis-folder-search'), '搜索此目录');
+    assert.equal(calls.length, beforeFolderMenu, '打开目录菜单不读取 Redis');
+    await click(win, testId('redis-folder-search'));
+    await waitFor(win, '!document.querySelector("[role=menu]")', '目录菜单关闭');
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    assert.equal(calls.at(-1).payload.keyword, 'cache:orders:*');
+    assert.equal(calls.at(-1).payload.patternId, 'cache', '目录搜索保持已登记范围');
+    assert.equal(calls.at(-1).payload.cursor, undefined, '目录搜索创建新查询');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector("[data-testid=redis-search-exact]").checked', true), false);
+    assert.equal(await win.webContents.executeJavaScript('document.querySelectorAll("[data-redis-key]").length', true), 3);
+    await pressSearch('Escape');
+    await win.webContents.executeJavaScript('document.querySelector(\'[data-redis-folder="cache:orders:pending:"]\').focus()', true);
+    await menuAction(win, 'redis-browser-menu', 'redis-tree-search-folder');
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    assert.equal(calls.at(-1).payload.keyword, 'cache:orders:pending:*', '工具菜单也能按选中目录搜索');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelectorAll("[data-redis-key]").length', true), 2);
+    await pressSearch('Escape');
+
+    const beforeHiddenMenu = calls.length;
+    await win.webContents.executeJavaScript(`(() => {const e=document.querySelector(${JSON.stringify(folderSelector)});const r=e.getBoundingClientRect();e.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,button:2,clientX:r.x+20,clientY:r.y+10}));})()`, true);
+    await text(win, testId('redis-folder-search'), '搜索此目录');
+    await click(win, testId('redis-workspace-back'));
+    await waitFor(win, '!document.querySelector("[role=menu]")', '隐藏工作区关闭目录菜单');
+    await click(win, testId('plugin-workspace-open'));
+    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector("[role=menu]"))', true), false, '返回不重开旧目录菜单');
+    assert.equal(calls.length, beforeHiddenMenu);
+
+    await menuAction(win, 'redis-pattern', 'redis-pattern-option-session');
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    await win.webContents.executeJavaScript(historyInput + '.focus()', true);
+    await fill(win, testId('redis-search-input'), '');
+    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector("[data-testid=redis-search-history]"))', true), false, '其他范围不显示缓存范围的历史');
+    await fill(win, testId('redis-search-input'), 'one');
+    await click(win, testId('redis-search-submit'));
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    await menuAction(win, 'redis-pattern', 'redis-pattern-option-cache');
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    await win.webContents.executeJavaScript(historyInput + '.focus()', true);
+    await fill(win, testId('redis-search-input'), '');
+    await text(win, testId('redis-search-history'), 'cache:orders:*');
+    assert.ok(!(await win.webContents.executeJavaScript(historyQueries, true)).includes('one'));
+    await shot(win, 'redis-search-history');
+    const beforeClearHistory = calls.length;
+    await click(win, testId('redis-search-history-clear'));
+    await pressSearch('ArrowDown');
+    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector("[data-testid=redis-search-history]"))', true), false);
+    assert.equal(calls.length, beforeClearHistory, '清空历史不触发读取');
+    await menuAction(win, 'redis-pattern', 'redis-pattern-option-session');
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    await win.webContents.executeJavaScript(historyInput + '.focus()', true);
+    await fill(win, testId('redis-search-input'), '');
+    await text(win, testId('redis-search-history'), 'one');
+    await menuAction(win, 'redis-pattern', 'redis-pattern-option-cache');
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    await openKey(win, 'cache:text', true);
+
+    const beforeAuto = calls.filter((entry) => entry.operation === 'scan').length;
     state.scanPages = [
       { keys: [], nextCursor: 'cursor-one', complete: false },
-      { keys: ['cache:scan:1', 'cache:scan:1'], nextCursor: 'cursor-two', complete: false },
+      { keys: [], nextCursor: 'cursor-two', complete: false },
+      { keys: ['cache:scan:1', 'cache:scan:1'], nextCursor: 'cursor-three', complete: false },
       { keys: ['cache:scan:1', 'cache:scan:2'], nextCursor: null, complete: true },
     ];
+    await fill(win, testId('redis-search-input'), '*scan*');
+    await click(win, testId('redis-search-submit'));
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelectorAll("[data-redis-key]").length', true), 2, '一次提交自动跨越空批次，并跨批去重');
+    const autoCalls = calls.filter((entry) => entry.operation === 'scan').slice(beforeAuto);
+    assert.equal(autoCalls.length, 4);
+    assert.ok(autoCalls.every((entry) => entry.payload.keyword === '*scan*'));
+    assert.deepEqual(autoCalls.map((entry) => entry.payload.cursor), [undefined, 'cursor-one', 'cursor-two', 'cursor-three']);
+
+    state.scanPages = Array.from({ length: 5 }, (_, page) => ({
+      keys: Array.from({ length: 100 }, (_, index) => 'cache:scan:' + (page * 100 + index)),
+      nextCursor: 'page-' + page, complete: false,
+    }));
+    state.scanPages.push({ keys: ['cache:scan:0', 'cache:scan:500'], nextCursor: null, complete: true });
     await click(win, testId('redis-refresh-keys'));
-    await text(win, testId('redis-key-list'), '本批未找到');
-    await click(win, testId('redis-scan-more'));
-    await waitFor(win, 'document.querySelectorAll("[data-redis-key]").length === 1', '批内去重');
+    await text(win, testId('redis-scan-status'), '已加载一页');
+    assert.equal(state.scanPages.length, 1, '达到 500 个不同 Key 后暂停');
     await click(win, '[data-redis-folder="cache:scan:"]');
     await click(win, testId('redis-scan-more'));
-    await waitFor(win, 'document.querySelector(\'[data-redis-folder="cache:scan:"] .redis-tree-count\')?.textContent === "2"', '续页合并目录并去重');
-    assert.equal(await win.webContents.executeJavaScript('document.querySelector(\'[data-redis-folder="cache:scan:"]\').getAttribute("aria-expanded")', true), 'false', '继续扫描保留折叠状态');
-    await click(win, '[data-redis-folder="cache:scan:"]');
-    await waitFor(win, 'document.querySelectorAll("[data-redis-key]").length === 2', '跨批去重');
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(\'[data-redis-folder="cache:scan:"] .redis-tree-count\').textContent', true), '501');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(\'[data-redis-folder="cache:scan:"]\').getAttribute("aria-expanded")', true), 'false', '继续搜索保留折叠状态');
+
+    state.scanPages = [
+      { keys: ['cache:scan:first'], nextCursor: 'stop-one', complete: false },
+      { keys: ['cache:scan:second'], nextCursor: 'stop-two', complete: false, hold: true },
+      { keys: ['cache:scan:last'], nextCursor: null, complete: true },
+    ];
+    await click(win, testId('redis-refresh-keys'));
+    const releaseStopped = await takeScanHold();
+    await waitFor(win, 'document.querySelector(\'[data-redis-folder="cache:scan:"] .redis-tree-count\')?.textContent === "1"', '搜索中逐步显示结果');
+    await click(win, testId('redis-scan-stop'));
+    const stoppedCalls = calls.length;
+    releaseStopped();
+    await text(win, testId('redis-scan-status'), '已停止');
+    await wait(100);
+    assert.equal(calls.length, stoppedCalls, '停止后不再发起下一批');
+    assert.equal(state.scanPages.length, 1);
+    const queuedHold = { operation: 'inspect', data: { key: 'cache:text', type: 'string', exists: true, ttlSeconds: -1, length: 1, cardinality: null, readAt: stamp() } };
+    state.hold = queuedHold;
+    await click(win, active('redis-refresh-key'));
+    assert.ok(queuedHold.release);
+    await click(win, testId('redis-scan-more'));
+    await click(win, testId('redis-workspace-back'));
+    const queuedCalls = calls.length;
+    queuedHold.release(); await wait(100);
+    assert.equal(calls.length, queuedCalls, '隐藏时尚在排队的续查不得访问 Redis');
+    await click(win, testId('plugin-workspace-open'));
+    await text(win, testId('redis-scan-status'), '已停止');
+    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector("[data-testid=redis-scan-error]"))', true), false);
+    await click(win, testId('redis-scan-more'));
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    assert.equal(calls.at(-1).payload.cursor, 'stop-two', '停止后使用在途回复的新游标续查');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(\'[data-redis-folder="cache:scan:"] .redis-tree-count\').textContent', true), '3');
+
+    state.scanPages = [{ keys: ['cache:scan:old'], nextCursor: 'old-query', complete: false, hold: true }];
+    await click(win, testId('redis-refresh-keys'));
+    const releaseOldQuery = await takeScanHold();
+    await fill(win, testId('redis-search-input'), 'hash');
+    await click(win, testId('redis-search-submit'));
+    releaseOldQuery();
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    await waitFor(win, 'document.querySelectorAll("[data-redis-key]").length === 1 && Boolean(document.querySelector(\'[data-redis-key="cache:hash"]\'))', '新查询丢弃迟到结果');
+    assert.equal(calls.at(-1).payload.cursor, undefined);
+    assert.equal(calls.at(-1).payload.keyword, 'hash');
+
+    state.scanPages = [
+      { keys: ['cache:hash'], nextCursor: 'hidden-query', complete: false, hold: true },
+      { keys: [], nextCursor: null, complete: true },
+    ];
+    await click(win, testId('redis-refresh-keys'));
+    const releaseHidden = await takeScanHold();
+    await click(win, testId('redis-workspace-back'));
+    const hiddenCalls = calls.length;
+    releaseHidden(); await wait(100);
+    assert.equal(calls.length, hiddenCalls, '隐藏后不自动续扫');
+    await click(win, testId('plugin-workspace-open'));
+    await text(win, testId('redis-scan-status'), '已停止');
+    assert.equal(calls.length, hiddenCalls, '返回工作区不擅自重启搜索');
+    await click(win, testId('redis-scan-more'));
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    assert.equal(calls.at(-1).payload.cursor, 'hidden-query');
+
+    await win.webContents.executeJavaScript('window.__redisNow=performance.now.bind(performance);window.__redisClockOffset=0;performance.now=()=>window.__redisNow()+window.__redisClockOffset;void 0', true);
+    state.scanPages = [
+      { keys: [], nextCursor: 'budget-query', complete: false, hold: true },
+      { keys: ['cache:hash'], nextCursor: null, complete: true },
+    ];
+    await click(win, testId('redis-refresh-keys'));
+    const releaseBudget = await takeScanHold();
+    await win.webContents.executeJavaScript('window.__redisClockOffset=31000', true);
+    releaseBudget();
+    await text(win, testId('redis-scan-status'), '搜索预算');
+    assert.equal(state.scanPages.length, 1, '预算耗尽保留游标，不将空结果当成完成');
+    await win.webContents.executeJavaScript('performance.now=window.__redisNow;void 0', true);
+    await click(win, testId('redis-scan-more'));
+    await text(win, testId('redis-scan-status'), '搜索完成');
+    assert.equal(calls.at(-1).payload.cursor, 'budget-query');
+
     state.failScan = true;
     await click(win, testId('redis-refresh-keys'));
     await text(win, testId('redis-scan-error'), '模拟扫描失败');
     assert.equal(await win.webContents.executeJavaScript('document.querySelector("[data-testid=redis-key-list]").textContent.includes("没有匹配")', true), false);
     state.failScan = false;
+    state.scanPages = [{ keys: ['cache:hash:old-scope'], nextCursor: 'old-scope', complete: false, hold: true }];
+    await click(win, testId('redis-refresh-keys'));
+    const releaseScope = await takeScanHold();
     await menuAction(win, 'redis-pattern', 'redis-pattern-option-session');
+    releaseScope();
     await text(win, testId('redis-pattern-current'), 'session:*');
     await waitFor(win, 'document.querySelector(\'[data-redis-key="session:one"]\')?.getClientRects().length > 0', '新范围 Key 已加载');
     assert.equal(await win.webContents.executeJavaScript('document.querySelectorAll("[data-testid=redis-key-tab]").length', true), 0);
@@ -341,6 +555,9 @@ async function run() {
     await click(win, testId('plugin-workspace-open'));
     await waitFor(win, 'document.querySelector(\'[data-redis-key="cache:text"]\')?.getClientRects().length > 0', 'Key 已加载');
     assert.equal(await win.webContents.executeJavaScript('document.querySelectorAll("[data-testid=redis-key-tab]").length', true), 0);
+    await fill(win, testId('redis-search-input'), '');
+    await pressSearch('ArrowDown');
+    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector("[data-testid=redis-search-history]"))', true), false, '关闭工作区后历史清除');
     plugin.patterns = [{ ...plugin.patterns[0], pattern: '*' }];
     plugin.revision++; win.webContents.send('v2:workspace-changed', { ...scope, type: 'plugin-updated' });
     await waitFor(win, '!document.querySelector("[data-testid=redis-workspace]")', '配置修订销毁旧会话');

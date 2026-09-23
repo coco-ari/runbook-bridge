@@ -1,5 +1,5 @@
 import { useId, useRef, useState } from "react"
-import { Copy, Database, MagnifyingGlass, PushPin, ShieldCheck } from "@phosphor-icons/react"
+import { Copy, Database, PushPin, ShieldCheck } from "@phosphor-icons/react"
 import { toast } from "sonner"
 import { usePanelRef } from "react-resizable-panels"
 import type { AiOpsV2Api, PluginScope, RedisValuePreview } from "@/bridge/ai-ops-v2"
@@ -15,6 +15,8 @@ import { copyText } from "@/lib/clipboard"
 import { redisBytes, redisTtl, REDIS_MAX_KEYS } from "./redis-workspace-model"
 import { useRedisWorkspace, type RedisTab } from "./use-redis-workspace"
 import { RedisKeyBrowser } from "./RedisKeyBrowser"
+import { RedisKeySearch, type RedisSearchEntry, type RedisSearchMode } from "./RedisKeySearch"
+import { redisFolderSearch } from "./redis-key-tree"
 import { RedisScopePicker } from "./RedisScopePicker"
 import "./redis-workspace.css"
 
@@ -123,7 +125,9 @@ function KeyDocument({ tab, refresh, more, field, clearField }: {
 export function RedisWorkspace({ api, scope, plugin, projectName, environmentName, visible, onBack, onClose }: Props) {
   const state = useRedisWorkspace(api, scope, plugin, visible)
   const [search, setSearch] = useState("")
-  const [searchMode, setSearchMode] = useState<"keyword" | "exact">("keyword")
+  const [searchMode, setSearchMode] = useState<RedisSearchMode>("keyword")
+  const [searchHistory, setSearchHistory] = useState<readonly RedisSearchEntry[]>([])
+  const searchScope = JSON.stringify([scope.projectId, scope.environmentId, scope.pluginInstanceId, plugin.revision, plugin.target?.db, state.patternId])
   const [closing, setClosing] = useState(false)
   const [disconnecting, setDisconnecting] = useState(false)
   const [sidebar, setSidebar] = useState(true)
@@ -140,9 +144,19 @@ export function RedisWorkspace({ api, scope, plugin, projectName, environmentNam
     } catch (error) { toast.error(error instanceof Error ? error.message : "断开失败") }
     finally { setDisconnecting(false) }
   }
-  function submitSearch() {
-    if (searchMode === "exact") { if (search) state.openKey(search, true) }
-    else void state.scan(false, state.patternId, search)
+  function submitSearch(query = search, mode = searchMode) {
+    if (!state.patternId || !visible) return
+    setSearch(query); setSearchMode(mode)
+    if (query && query.length <= 1024) {
+      // 搜索记录仅驻留当前工作区内存，按已登记范围隔离，并限制总条数。
+      setSearchHistory((current) => [{ scope: searchScope, query, mode }, ...current.filter((entry) => entry.scope !== searchScope || entry.query !== query || entry.mode !== mode)].slice(0, 20))
+    }
+    if (mode === "exact") { state.stopScan(); if (query) state.openKey(query, true) }
+    else void state.scan(false, state.patternId, query)
+  }
+  function searchFolder(prefix: string) {
+    submitSearch(redisFolderSearch(prefix), "keyword")
+    requestAnimationFrame(() => searchRef.current?.focus())
   }
   return <section className="redis-workspace" aria-label="Redis 工作区" data-testid="redis-workspace" onKeyDown={(event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
@@ -167,19 +181,16 @@ export function RedisWorkspace({ api, scope, plugin, projectName, environmentNam
               refreshDisabled={!state.patternId} onRefresh={() => void state.scan(false)}
               identity={<RedisScopePicker database={String(plugin.target?.db ?? 0)} patterns={state.patterns} patternId={state.patternId} visible={visible}
                 onChange={(value) => { setSearch(""); state.changePattern(value) }} />}
-              search={<form className="redis-searchbox" onSubmit={(event) => { event.preventDefault(); submitSearch() }}>
-                <Input ref={searchRef} aria-label={searchMode === "exact" ? "完整 Key" : "Key 关键词"} placeholder={searchMode === "exact" ? "输入完整 Key" : "搜索 Key，Enter 查找"}
-                  value={search} onChange={(event) => setSearch(event.target.value)} data-testid="redis-search-input" />
-                <Button type="submit" size="icon-xs" variant="ghost" aria-label="搜索 Key" title="搜索 Key（Enter）" disabled={!state.patternId || state.loading} data-testid="redis-search-submit"><MagnifyingGlass /></Button>
-                <label className="redis-exact-toggle" title="勾选后直接读取完整 Key；未勾选时按关键词查找。">
-                  <input type="checkbox" checked={searchMode === "exact"} onChange={(event) => setSearchMode(event.target.checked ? "exact" : "keyword")} aria-label="精确匹配 Key" data-testid="redis-search-exact" />
-                  <span>精确匹配</span>
-                </label>
-              </form>}
+              onSearchFolder={searchFolder}
+              search={<RedisKeySearch key={searchScope} value={search} mode={searchMode} inputRef={searchRef} visible={visible && sidebar} disabled={!state.patternId}
+                history={searchHistory.filter((entry) => entry.scope === searchScope)}
+                onChange={(value) => { state.stopScan(); setSearch(value) }} onModeChange={(mode) => { state.stopScan(); setSearchMode(mode) }}
+                onSubmit={submitSearch} onClearHistory={() => setSearchHistory((current) => current.filter((entry) => entry.scope !== searchScope))} />}
               complete={state.complete} error={state.error || (!state.patterns.length ? "没有可用的已登记范围，请检查插件配置。" : "")} onOpen={(key, pinned) => state.openKey(key, pinned)} />
-            <div className="redis-key-footer"><span title="目录按 : 分组，数量仅统计已加载的 Key。">{state.keyword ? "包含：" + state.keyword + " · " : ""}已加载 {state.keys.length} 个 Key</span>
-              {state.cursor ? <Button size="sm" variant="outline" disabled={state.loading || state.keys.length >= REDIS_MAX_KEYS} onClick={() => void state.scan(true)} data-testid="redis-scan-more">{state.loading ? "读取中…" : "继续扫描"}</Button> : null}
-              <span>{state.complete ? "本轮扫描完成" : "扫描未完成"}</span>
+            <div className="redis-key-footer"><span title="目录按 : 分组，数量仅统计已加载的 Key。">{state.keyword ? "搜索：" + state.keyword + " · " : ""}已加载 {state.keys.length} 个 Key</span>
+              {state.loading ? <Button size="sm" variant="outline" disabled={state.stopping} onClick={state.stopScan} data-testid="redis-scan-stop">{state.stopping ? "正在停止…" : "停止搜索"}</Button>
+                : state.cursor ? <Button size="sm" variant="outline" disabled={state.keys.length >= REDIS_MAX_KEYS} onClick={() => void state.scan(true)} data-testid="redis-scan-more">继续搜索</Button> : null}
+              <span role="status" data-testid="redis-scan-status">{state.scanStatus}</span>
             </div>
           </aside>
         </ResizablePanel><ResizableHandle aria-label="调整 Key 列表宽度" withHandle />
@@ -216,7 +227,7 @@ export function RedisWorkspace({ api, scope, plugin, projectName, environmentNam
       </ResizablePanelGroup>
     </div>
     <footer className="redis-workspace-footer"><span><ShieldCheck size={12} />只读 · 固定 DB {String(plugin.target?.db ?? 0)}</span><span>最近扫描 {time(state.readAt)}</span><span>数据可能变化 · 仅会话保留</span></footer>
-    <Dialog open={closing} onOpenChange={setClosing}><DialogContent><DialogHeader><DialogTitle>关闭 Redis 工作区</DialogTitle><DialogDescription>将清除搜索条件、标签和浏览数据。Redis 插件连接保持。</DialogDescription></DialogHeader><DialogFooter>
+    <Dialog open={closing} onOpenChange={setClosing}><DialogContent><DialogHeader><DialogTitle>关闭 Redis 工作区</DialogTitle><DialogDescription>将清除搜索条件、搜索历史、标签和浏览数据。Redis 插件连接保持。</DialogDescription></DialogHeader><DialogFooter>
       <Button variant="outline" onClick={() => { setClosing(false); onBack() }}>返回详情并保留</Button><Button data-testid="redis-workspace-confirm-close" onClick={onClose}>关闭工作区</Button>
     </DialogFooter></DialogContent></Dialog>
   </section>

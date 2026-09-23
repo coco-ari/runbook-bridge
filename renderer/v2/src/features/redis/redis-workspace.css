@@ -18,10 +18,17 @@
 .redis-scope-trigger { flex: 1; justify-content: flex-start; gap: 3px; padding: 0 3px; }
 .redis-scope-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .redis-scope-trigger > svg { width: 12px; height: 12px; flex-shrink: 0; color: var(--muted-foreground); }
-.redis-searchbox { display: flex; min-width: 0; height: 32px; align-items: center; border: 1px solid var(--border); border-radius: 6px; background: var(--background); }
+.redis-searchbox { position: relative; display: flex; min-width: 0; height: 32px; align-items: center; border: 1px solid var(--border); border-radius: 6px; background: var(--background); }
 .redis-searchbox:focus-within { border-color: var(--ring); outline: 1px solid var(--ring); }
 .redis-searchbox > input { flex: 1; min-width: 0; height: 30px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; font-size: 12px; box-shadow: none; outline: none; }
 .redis-searchbox > button { flex-shrink: 0; color: var(--muted-foreground); }
+.redis-search-history { position: absolute; z-index: 20; top: calc(100% + 5px); left: 0; right: 0; max-height: 300px; overflow: auto; padding: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 5px 16px color-mix(in srgb, var(--foreground) 12%, transparent); }
+.redis-search-history-heading { display: flex; align-items: center; justify-content: space-between; padding-left: 6px; color: var(--muted-foreground); font-size: 11px; }
+.redis-search-history-heading button { height: 24px; font-size: 11px; }
+.redis-search-suggestion { display: flex; width: 100%; align-items: center; gap: 8px; padding: 6px; border-radius: 3px; text-align: left; }
+.redis-search-suggestion:hover, .redis-search-suggestion[aria-selected=true] { background: var(--accent); color: var(--accent-foreground); }
+.redis-search-suggestion > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 12px; }
+.redis-search-suggestion > small { flex-shrink: 0; color: var(--muted-foreground); font-size: 10px; }
 .redis-exact-toggle { display: flex; flex-shrink: 0; align-items: center; gap: 4px; height: 18px; padding: 0 7px; border-left: 1px solid var(--border); color: var(--muted-foreground); font-size: 11px; white-space: nowrap; cursor: pointer; }
 .redis-exact-toggle:has(input:checked) { color: var(--primary); }
 .redis-exact-toggle input { width: 12px; height: 12px; margin: 0; accent-color: var(--primary); cursor: pointer; }

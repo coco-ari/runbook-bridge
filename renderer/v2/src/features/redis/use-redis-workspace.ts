@@ -3,6 +3,10 @@ import type { AiOpsV2Api, IpcResult, PluginScope, RedisContentPage, RedisKeyInfo
 import type { PluginConfigurationRecord } from "@/features/plugins/plugin-types"
 import { mergeRedisRows, redisCacheBytes, redisPatterns, REDIS_CACHE_BYTES, REDIS_MAX_KEYS, REDIS_MAX_TABS } from "./redis-workspace-model"
 
+const SEARCH_PAGE_KEYS = 500
+const SEARCH_BUDGET_MS = 30_000
+const SEARCH_MAX_REQUESTS = 1000
+
 export interface RedisTab {
   readonly id: string
   readonly key: string
@@ -27,8 +31,12 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
   const [keys, setKeys] = useState<readonly string[]>([])
   const keysRef = useRef(keys)
   const [cursor, setCursor] = useState<string | null>(null)
+  const cursorRef = useRef<string | null>(null)
   const [complete, setComplete] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [scanStatus, setScanStatus] = useState("尚未搜索")
+  const [stopping, setStopping] = useState(false)
+  const scanRun = useRef<{ stopped: boolean } | null>(null)
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
   const [readAt, setReadAt] = useState("")
@@ -68,30 +76,92 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
     return pending
   }
 
+  function stopScan() {
+    if (!scanRun.current) return
+    scanRun.current.stopped = true
+    setStopping(true)
+    setScanStatus("正在停止…")
+  }
+
   async function scan(next = false, selectedPattern = patternId, search = keywordRef.current) {
-    if (!selectedPattern) return
+    if (!selectedPattern || !visibleRef.current || (next && (scanRun.current || !cursorRef.current))) return
+    if (scanRun.current) scanRun.current.stopped = true
+    const run = { stopped: false }
+    scanRun.current = run
     const sequence = ++scanSequence.current
     const captured = epoch.current
     const current = () => mounted.current && captured === epoch.current && sequence === scanSequence.current
-    const nextCursor = next ? cursor : null
-    setLoading(true); setError(""); setNotice("")
-    if (!next) { keysRef.current = []; setKeys([]); setCursor(null); setComplete(false); keywordRef.current = search; setKeyword(search) }
+    let nextCursor = next ? cursorRef.current : null
+    if (!next) {
+      keysRef.current = []; setKeys([]); cursorRef.current = null; setCursor(null)
+      setComplete(false); keywordRef.current = search; setKeyword(search)
+    }
+    const initialCount = keysRef.current.length
+    const started = performance.now()
+    let batches = 0
+    let finished = false
+    let requestStarted = false
+    let unsupportedKeys = 0
+    let auditWarning = false
+    setLoading(true); setStopping(false); setError(""); setNotice(""); setScanStatus("搜索中…")
     try {
-      const result = await enqueue(() => api.redisWorkspaceScan({ ...scope, patternId: selectedPattern, keyword: search, ...(nextCursor ? { cursor: nextCursor } : {}) }).then(unwrap))
-      if (!current()) return
-      const combined = [...new Set([...(next ? keysRef.current : []), ...result.keys])]
-      const shown = combined.slice(0, REDIS_MAX_KEYS)
-      if (redisCacheBytes({ keys: shown, tabs: tabsRef.current }) > REDIS_CACHE_BYTES) {
-        setCursor(null); setComplete(false)
-        throw new Error("浏览缓存已达上限，请关闭标签或收窄搜索。")
+      while (current() && !run.stopped && visibleRef.current) {
+        requestStarted = false
+        const result = await enqueue(async () => {
+          // 排队期间可能已换词或停止，旧请求不得再访问 Redis。
+          if (!current() || run.stopped) return null
+          if (batches && performance.now() - started >= SEARCH_BUDGET_MS) {
+            setScanStatus("已达本次搜索预算，可继续搜索")
+            return null
+          }
+          requestStarted = true
+          return api.redisWorkspaceScan({ ...scope, patternId: selectedPattern, keyword: search, ...(nextCursor ? { cursor: nextCursor } : {}) }).then(unwrap)
+        })
+        if (!current()) return
+        if (!result) break
+        batches += 1
+        const combined = [...new Set([...keysRef.current, ...result.keys])]
+        const shown = combined.slice(0, REDIS_MAX_KEYS)
+        if (redisCacheBytes({ keys: shown, tabs: tabsRef.current }) > REDIS_CACHE_BYTES) {
+          throw new Error("浏览缓存已达上限，请关闭标签或收窄搜索。")
+        }
+        keysRef.current = shown; setKeys(shown)
+        nextCursor = result.nextCursor; cursorRef.current = nextCursor; setCursor(nextCursor)
+        finished = result.complete && combined.length <= REDIS_MAX_KEYS
+        setComplete(finished); setReadAt(result.readAt)
+        unsupportedKeys += result.unsupportedKeys
+        auditWarning ||= Boolean(result.auditWarning)
+        if (auditWarning) setNotice("本次读取已完成，但操作记录未能保存。")
+        else if (unsupportedKeys) setNotice(`本轮跳过 ${unsupportedKeys} 个不支持的二进制或超长 Key。`)
+        if (combined.length >= REDIS_MAX_KEYS) {
+          setNotice("已加载 5,000 个 Key，请收窄搜索后继续。")
+          setScanStatus(finished ? "搜索完成" : "已达结果上限，扫描未完成")
+          break
+        }
+        if (finished) { setScanStatus("搜索完成"); break }
+        // 停止时保留在途批次及最新游标，继续搜索不会重复消费旧游标。
+        if (run.stopped || !visibleRef.current) break
+        if (keysRef.current.length - initialCount >= SEARCH_PAGE_KEYS) { setScanStatus("已加载一页，扫描未完成"); break }
+        if (performance.now() - started >= SEARCH_BUDGET_MS || batches >= SEARCH_MAX_REQUESTS) {
+          setScanStatus("已达本次搜索预算，可继续搜索")
+          break
+        }
+        // 批次之间让出界面与读取队列，停止操作和 Key 预览可以及时响应。
+        await new Promise((resolve) => setTimeout(resolve, 20))
       }
-      keysRef.current = shown; setKeys(shown)
-      setCursor(result.nextCursor); setComplete(result.complete && combined.length <= REDIS_MAX_KEYS); setReadAt(result.readAt)
-      if (combined.length >= REDIS_MAX_KEYS) setNotice("已加载 5,000 个 Key，请收窄搜索后继续。")
-      else if (result.unsupportedKeys) setNotice(`本批跳过 ${result.unsupportedKeys} 个不支持的二进制或超长 Key。`)
-      if (result.auditWarning) setNotice("本次读取已完成，但操作记录未能保存。")
-    } catch (failure) { if (current()) setError(message(failure)) }
-    finally { if (current()) setLoading(false) }
+      if (current() && !finished && (run.stopped || !visibleRef.current)) setScanStatus("已停止，扫描未完成")
+    } catch (failure) {
+      if (current()) {
+        // 隐藏时队列会拒绝尚未发出的读取，此时旧游标仍然有效。
+        if (!requestStarted && (run.stopped || !visibleRef.current)) setScanStatus("已停止，扫描未完成")
+        else {
+          cursorRef.current = null; setCursor(null); setComplete(false)
+          setError(message(failure)); setScanStatus("搜索失败，请重新搜索")
+        }
+      }
+    } finally {
+      if (current()) { scanRun.current = null; setLoading(false); setStopping(false) }
+    }
   }
 
   async function readTab(id: string, more = false, field?: string) {
@@ -163,10 +233,17 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
   }
 
   useEffect(() => {
+    if (!visible) stopScan()
+    // 隐藏后暂停自动续扫；重新打开只恢复已保留的结果。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible])
+
+  useEffect(() => {
     mounted.current = true
     epoch.current += 1
     void scan(false)
     return () => {
+      if (scanRun.current) scanRun.current.stopped = true
       mounted.current = false
       epoch.current += 1
       scanSequence.current += 1
@@ -178,5 +255,5 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
   }, [])
 
   return { patterns, patternId, changePattern, keys, cursor, complete, loading, error, notice, setNotice, readAt, keyword,
-    scan, tabs, activeId, setActiveId, openKey, closeTab, readTab, clearField: (id: string) => patchTab(id, { fieldContent: null, fieldName: null }) }
+    scan, stopScan, scanStatus, stopping, tabs, activeId, setActiveId, openKey, closeTab, readTab, clearField: (id: string) => patchTab(id, { fieldContent: null, fieldName: null }) }
 }

@@ -22,6 +22,7 @@ async function startLoopbackFixtures() {
   const acceptedPasswords = new Set([password]);
   const sockets = new Set();
   const servers = [];
+  let redisScanPages = [];
   const counts = { sshAuth: 0, sshRejected: 0, mysqlAuth: 0, mysqlRejected: 0,
     mysqlQueries: 0, redisAuth: 0, redisRejected: 0, redisPing: 0 };
   const track = (socket) => {
@@ -153,7 +154,7 @@ async function startLoopbackFixtures() {
           else if (command === 'PING') { counts.redisPing += 1; socket.write('+PONG\r\n'); }
           else if (command === 'SELECT' && ['0','3'].includes(args[1])) socket.write('+OK\r\n');
           else if (command === 'CLIENT' && args[1]?.toUpperCase() === 'SETINFO') socket.write('+OK\r\n');
-          else if (command === 'SCAN') socket.write(redisFixtureReply(['0',['cache:fixture']]));
+          else if (command === 'SCAN') socket.write(redisFixtureReply(redisScanPages.length ? redisScanPages.shift() : ['0',['cache:fixture']]));
           else if (command === 'TYPE') socket.write(redisFixtureReply(args[1] === 'cache:fixture' ? 'string' : 'none'));
           else if (command === 'TTL') socket.write(redisFixtureReply(3600));
           else if (command === 'STRLEN') socket.write(redisFixtureReply(13));
@@ -165,6 +166,7 @@ async function startLoopbackFixtures() {
     });
     const redisPort = await listen(redis);
     return {password,replacement,hostKeyFingerprint,sshPort,mysqlPort,redisPort,counts,stop,
+      setRedisScanPages:(pages) => { redisScanPages = pages; },
       usePassword:(value) => { acceptedPasswords.clear(); acceptedPasswords.add(value); }};
   } catch (error) { await stop(); throw error; }
 }
@@ -268,6 +270,11 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
         const patternId = plugin.patterns[0].patternId;
         const scanned = await success('redisWorkspaceScan', {...redisScope,patternId});
         assert.deepEqual(scanned.keys, ['cache:fixture']);
+        const searched = await success('redisWorkspaceScan', {...redisScope,patternId,keyword:'*fixt?re*'});
+        assert.deepEqual(searched.keys, ['cache:fixture']);
+        const absent = await success('redisWorkspaceScan', {...redisScope,patternId,keyword:'outside:*'});
+        assert.deepEqual(absent.keys, []);
+        assert.equal(absent.complete, true);
         const info = await success('redisWorkspaceInspect', {...redisScope,patternId,key:'cache:fixture'});
         assert.equal(info.type, 'string');
         assert.equal(info.ttlSeconds, 3600);
@@ -300,6 +307,21 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
         await clickUi('[data-redis-folder="cache:"]');
         await clickUi('[data-redis-key="cache:fixture"]');
         await waitUi('document.querySelector("[data-testid=redis-value]")?.textContent.includes("fixture-value")', '内容展示');
+        // 多个空批次跨越后端单次预算，验证界面通过真实 IPC 自动续查。
+        fixture.setRedisScanPages([
+          ...Array.from({length:9}, (_,index) => [String(index + 1), []]),
+          ['0', ['cache:fixture']],
+        ]);
+        await cdp.evaluate(`(() => {
+          const input = document.querySelector('[data-testid=redis-search-input]');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '*fixt?re*');
+          input.dispatchEvent(new Event('input', {bubbles:true}));
+        })()`);
+        await waitUi('document.querySelector("[data-testid=redis-search-input]")?.value === "*fixt?re*"', '通配符输入');
+        await clickUi('[data-testid=redis-search-submit]');
+        await waitUi('document.querySelector(".redis-key-footer")?.textContent.includes("搜索：*fixt?re*")', '搜索已提交');
+        await waitUi('document.querySelector("[data-testid=redis-scan-status]")?.textContent === "搜索完成"', '自动搜索完成');
+        await waitUi('document.querySelector(' + JSON.stringify('[data-redis-key="cache:fixture"]') + ')', '跨空批次找到 Key');
         await clickUi('[data-testid=redis-workspace-close]');
         await clickUi('[data-testid=redis-workspace-confirm-close]');
         await waitUi('!document.querySelector("[data-testid=redis-workspace]")', '关闭清空');

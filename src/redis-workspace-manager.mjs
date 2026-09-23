@@ -3,6 +3,7 @@ import { isUtf8 } from 'node:buffer';
 import { AppError } from './errors.mjs';
 import { findRedisPattern, redisKeyAllowed } from './redis-plugin-runtime.mjs';
 import { normalizeRedisCursor } from './pagination-cursor.mjs';
+import { redisKeySearch } from './redis-key-search.mjs';
 
 const SCOPE = ['projectId', 'environmentId', 'pluginInstanceId'];
 const FIELDS = {
@@ -203,17 +204,25 @@ export class RedisWorkspaceManager {
 
   async scan(record, payload, pattern, command) {
     const state = this.takeCursor(record, payload, 'keys', 100);
+    const matches = redisKeySearch(payload.keyword);
+    const started = Date.now();
+    let rounds = 0;
     let unsupportedKeys = 0;
-    if (!state.pending.length && !state.complete) {
+    // 搜索合并少量批次以减少空批次往返；每条 SCAN 仍受插件限制。
+    // MATCH 始终使用授权范围，用户搜索模式仅进一步收窄结果。
+    while (state.pending.length < state.limit && !state.complete
+      && rounds < (payload.keyword ? 8 : 1) && (rounds === 0 || Date.now() - started < 100)) {
+      if (rounds === 0 && state.pending.length) break;
       const reply = scanReply(await command('SCAN', state.cursor, 'MATCH', pattern.pattern, 'COUNT', state.limit));
+      rounds += 1;
       state.cursor = reply.cursor;
       state.complete = reply.cursor === '0';
-      state.pending = reply.entries.filter((entry) => {
+      state.pending.push(...reply.entries.filter((entry) => {
         buffer(entry);
         if (!entry.length || entry.length > 1024 || !isUtf8(entry)) { unsupportedKeys += 1; return false; }
         const text = entry.toString('utf8');
-        return redisKeyAllowed(pattern.pattern, text) && text.includes(payload.keyword ?? '');
-      });
+        return redisKeyAllowed(pattern.pattern, text) && matches(text);
+      }));
     }
     const keys = [];
     let bytes = 0;
