@@ -73,6 +73,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
     onSessionChange?.(tabId, status === "open" ? sessionRef.current : null)
     return () => onSessionChange?.(tabId, null)
   }, [onSessionChange, tabId, status])
+  const [commandAudit, setCommandAudit] = useState<"available" | "unavailable" | "failed" | null>(null)
   const [defaultColors, setDefaultColors] = useState(readDefaultColors)
   const [colorHelp, setColorHelp] = useState(false)
   const [colorPlatform, setColorPlatform] = useState("linux")
@@ -177,6 +178,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
     const generation = ++generationRef.current
     const focusAtStart = document.activeElement
     setStatus("opening")
+    setCommandAudit(null)
     setError("")
     resize()
     const terminal = terminalRef.current
@@ -219,6 +221,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
       while (mountedRef.current && generation === generationRef.current && sessionRef.current === session.sessionId) {
         const chunk = unwrapWorkspaceResult(await api.serverTerminalRead({ ...scope, sessionId: session.sessionId }))
         if (!mountedRef.current || generation !== generationRef.current) break
+        if (chunk.commandAudit) setCommandAudit(chunk.commandAudit)
         // 等待 xterm 消化本批输出，再读取下一批，避免高频日志挤满渲染内存。
         if (chunk.data.byteLength) await new Promise<void>((resolve) => terminal.write(new Uint8Array(chunk.data), resolve))
         if (!mountedRef.current || generation !== generationRef.current) break
@@ -452,6 +455,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
             : <Button size="sm" variant="ghost" disabled={!connected || status === "opening"} onClick={() => { void open() }}><Plus />打开终端</Button>}
         </div>
       </div>
+      {status === "open" && commandAudit ? <p className="shrink-0 px-3 py-1 text-xs text-muted-foreground" data-terminal-command-audit={commandAudit}>{commandAudit === "available" ? "命令完成后记录脱敏摘要和退出码" : commandAudit === "failed" ? "命令记录写入失败，请检查本地审计存储。" : "当前 Shell 未提供逐条命令记录，仅记录会话活动。"}</p> : null}
       <TerminalSearch ref={searchRef} engine={searchEngine} visible={visible} theme={theme} />
       {error ? <div role="alert" className="server-workspace-error">{error}<Button size="sm" variant="ghost" aria-label="收起终端提示" onClick={() => setError("")}>收起</Button></div> : null}
       <ContextMenu><ContextMenuTrigger asChild><div className="server-terminal-container" ref={containerRef} data-path-drag-over={pathDragOver || undefined}

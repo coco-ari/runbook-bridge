@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { createTerminalCommandAudit } from './server-terminal-audit.mjs';
 import { ServerWorkspaceMetrics } from './server-workspace-metrics.mjs';
 import { createTerminalStartup } from './server-terminal-startup.mjs';
 import { AppError } from './errors.mjs';
@@ -160,10 +161,21 @@ export class ServerWorkspaceManager {
       }
       record.channel = channel;
       record.status = 'open';
-      record.startup = channel.desktopStartupCommand ? createTerminalStartup(channel.desktopStartupCommand, { identifyShell:channel.desktopTrackDirectory === true }) : null;
+      record.commandAudit = channel.desktopStartupCommand ? createTerminalCommandAudit(event => {
+        if (record.initializing || record.status !== 'open') return;
+        void this.workspaceStore.appendAudit(record.scope.projectId,{
+          ...record.scope,pluginType:'server',type:'terminal-command',actor:'user',
+          pluginNameSnapshot:record.plugin?.displayName,sessionId:record.sessionId,operationId:crypto.randomUUID(),
+          auditAction:event.known ? 'shell.execute' : 'terminal',auditTarget:event.summary,
+          result:event.known ? event.exitCode === 0 ? 'success' : 'error' : 'unknown',
+          ...(event.known ? {exitCode:event.exitCode} : {}),
+        }).catch(() => { record.commandAuditFailed = true; });
+      }) : null;
+      record.startup = channel.desktopStartupCommand ? createTerminalStartup(channel.desktopStartupCommand + "; " + record.commandAudit.command, { identifyShell:channel.desktopTrackDirectory === true }) : null;
       record.onData = (chunk, stderr = false) => {
         let buffer = Buffer.from(chunk);
         if (record.startup) buffer = stderr && !record.startup.done ? Buffer.alloc(0) : record.startup.consume(buffer);
+        if (record.commandAudit && buffer.length) buffer = record.commandAudit.consume(buffer);
         if (!buffer.length || record.status === 'closed') return;
         record.chunks.push(buffer);
         record.queuedBytes += buffer.length;
@@ -277,7 +289,7 @@ export class ServerWorkspaceManager {
       }
       // 先排空 SSH 原始字节，再报告 EOF；UTF-8 的跨包字符由终端解码器拼接。
       const closed = record.status === 'closed' && !record.queuedBytes;
-      return { data, status: closed ? 'closed' : 'open', ...(record.exitCode !== null ? { exitCode: record.exitCode } : {}),
+      return { data, commandAudit:record.commandAuditFailed ? 'failed' : record.commandAudit?.available ? 'available' : 'unavailable', status: closed ? 'closed' : 'open', ...(record.exitCode !== null ? { exitCode: record.exitCode } : {}),
         ...(closed ? { closeReason: record.closeReason, recoverable: this.canRecover(record) } : {}) };
     } finally {
       record.reading = false;
@@ -313,6 +325,7 @@ export class ServerWorkspaceManager {
     }
     const record = await this.requireRecord(ownerId, payload);
     const data = Buffer.from(payload.data, encoding === 'binary' ? 'latin1' : 'utf8');
+    record.commandAudit?.noteInput(data);
     return this.writeRecord(record, data);
   }
 

@@ -14,7 +14,8 @@ async function exerciseAuditHistory({win,scope,root,dataRoot,ipcMain,registerRea
     const item = {...base,operationId:`fixture-${index}`,capability:'fs.find',auditTarget:index === 0 ? '/fixture/history-oldest.log' : `/fixture/logs/file-${index}.log`,time:new Date(Date.UTC(2026,8,23,1,0,index)).toISOString()};
     rows.push({...item,type:'plugin-operation-started',result:'started'},{...item,type:'plugin-operation',result:'success',durationMs:120});
   }
-  rows.push({...base,type:'plugin-operation',operationId:'desktop-query',actor:'user',pluginType:'mysql',pluginNameSnapshot:'测试数据库',capability:'select',auditAction:'mysql.select',auditTarget:'固定数据库 fixture',result:'success',time:'2026-09-23T02:00:00Z'});
+  rows.push({...base,type:'plugin-operation',operationId:'desktop-query',actor:'user',pluginType:'mysql',pluginNameSnapshot:'测试数据库',capability:'select',auditAction:'mysql.select',auditTarget:'固定数据库 fixture · 表 records',rowCount:2,result:'success',time:'2026-09-23T02:00:00Z'});
+  rows.push({...base,type:'terminal-command',operationId:'desktop-command',actor:'user',auditAction:'shell.execute',auditTarget:'systemctl restart fixture.service',exitCode:1,result:'error',time:'2026-09-23T02:30:00Z'});
   const approval = {...base,confirmationId:'fixture-confirmation',capability:'service.control',auditAction:'service.restart',auditTarget:'fixture.service',time:'2026-09-23T03:00:00Z'};
   rows.push({...approval,type:'plugin-operation-decision',result:'pending-confirmation'},
     {...approval,type:'confirmation-approved',actor:'user',result:'success'},
@@ -40,8 +41,11 @@ async function exerciseAuditHistory({win,scope,root,dataRoot,ipcMain,registerRea
   await fill(win,'input[aria-label="搜索操作记录"]','');
   await click(win,'[aria-label="筛选参与方"]');
   await clickText(win,'用户','[role="listbox"]');
-  await waitFor(win,'document.querySelectorAll("[data-audit-operation]").length === 3','用户筛选包含人工审批');
+  await waitFor(win,'document.querySelectorAll("[data-audit-operation]").length === 4','用户筛选包含人工审批');
   const queryActor = await win.webContents.executeJavaScript('[...document.querySelectorAll("[data-audit-operation] summary")].find(item=>item.textContent.includes("执行只读查询"))?.textContent',true);
+  assert.ok(queryActor.includes('表 records') && queryActor.includes('返回 2 行'));
+  const terminalText = await win.webContents.executeJavaScript('[...document.querySelectorAll("[data-audit-operation] summary")].find(item=>item.textContent.includes("systemctl restart"))?.textContent',true);
+  assert.ok(terminalText.includes('用户') && terminalText.includes('退出码 1') && terminalText.includes('失败'));
   assert.ok(queryActor.includes('用户') && !queryActor.includes('Agent'),'人工数据库查询归属用户');
   await waitFor(win,'document.querySelector("[role=listbox]") === null','参与方菜单关闭');
   await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))',true);

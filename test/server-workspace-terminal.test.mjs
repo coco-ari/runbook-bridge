@@ -382,7 +382,8 @@ test('默认配色先于人工输入发送，新标签执行一次，复用与�
   assert.ok(channels[1].writes[0].toString().startsWith(DEFAULT_TERMINAL_COLORS));
   assert.notDeepEqual(startupMarker(channels[0].writes[0].toString()), startupMarker(channels[1].writes[0].toString()));
   assert.equal(channels[2].writes.length, 1);
-  assert.ok(channels[2].writes[0].toString().startsWith(':; printf'));
+  assert.ok(channels[2].writes[0].toString().startsWith(':; if'));
+  assert.match(channels[2].writes[0].toString(),/runbook-command:/u);
   assert.ok(!channels[2].writes[0].toString().includes('LS_COLORS'));
   assert.deepEqual(options.map(item => item.defaultColors), [true, true, false]);
   for (const defaultColors of [null, 'true', 1, {}]) await assert.rejects(manager.openTerminal(1, { ...scope, defaultColors }), { code: 'INVALID_ARGUMENT' });
@@ -761,4 +762,47 @@ test('主动断开可关联同轮通道关闭事件，但其他系统断开不�
       assert.equal((await manager.readTerminal(1, { ...scope, sessionId:session.sessionId })).recoverable, reason === 'user-plugin-disconnect');
     });
   }
+});
+
+test('终端命令独立写入用户操作记录，记录失败反馈给界面', async t => {
+  let commandToken;
+  let counter = 1;
+  const {manager,audits,store} = fixture(t,{openTerminal:async () => {
+    const channel = new TerminalChannel();
+    channel.desktopStartupCommand = ':';
+    channel._write = (chunk,_encoding,callback) => {
+      const text = chunk.toString();
+      if (text.includes('runbook-ready:')) {
+        commandToken = text.match(/runbook-command:([a-f0-9]{32})/u)[1];
+        setImmediate(() => channel.push(Buffer.concat([startupMarker(text),Buffer.from('\x1b]runbook-command:' + commandToken + ':1:0:\x07')])));
+      } else {
+        const command = text.trim();
+        setImmediate(() => channel.push(Buffer.from('\x1b]runbook-command:' + commandToken + ':' + (++counter) + ':' + (command === 'false' ? 1 : 0) + ':' + Buffer.from(command).toString('hex') + '\x07')));
+      }
+      callback();
+    };
+    return channel;
+  }});
+  const session = await manager.openTerminal(1,scope);
+  const payload = {...scope,sessionId:session.sessionId};
+  await manager.writeTerminal(1,{...payload,data:'ls -lah /fixture\r'});
+  await delay(10);
+  await manager.writeTerminal(1,{...payload,data:'false\r'});
+  await delay(10);
+  const commands = audits.filter(entry => entry.type === 'terminal-command');
+  assert.equal(commands.length,2);
+  assert.equal(commands[0].actor,'user');
+  assert.equal(commands[0].auditTarget,'ls -lah /fixture');
+  assert.equal(commands[0].result,'success');
+  assert.equal(commands[1].exitCode,1);
+  assert.equal(commands[1].result,'error');
+  assert.notEqual(commands[0].operationId,commands[1].operationId);
+  const append = store.appendAudit;
+  store.appendAudit = async (projectId,event) => {
+    if (event.type === 'terminal-command') throw new Error('存储失败');
+    return append(projectId,event);
+  };
+  await manager.writeTerminal(1,{...payload,data:'pwd\r'});
+  await delay(10);
+  assert.equal((await manager.readTerminal(1,payload)).commandAudit,'failed');
 });

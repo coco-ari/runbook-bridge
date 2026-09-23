@@ -468,7 +468,7 @@ export class V2Service {
         return this.pluginManager.invoke(plugin, capability, { ...operationArgs, policyApproved: true });
       });
       const durationMs = Date.now() - started;
-      const auditFailed = await this.workspaceStore.appendAudit(plugin.projectId, { type: 'plugin-operation', requestId, operationId, ...auditMetadata, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor, capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'success', durationMs, confirmationId }).then(() => false, () => true);
+      const auditFailed = await this.workspaceStore.appendAudit(plugin.projectId, { ...(plugin.pluginType === 'mysql' && Number.isSafeInteger(result?.rowCount) ? {rowCount:result.rowCount,truncated:result.truncated === true} : {}), type: 'plugin-operation', requestId, operationId, ...auditMetadata, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor, capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'success', durationMs, confirmationId }).then(() => false, () => true);
       if (confirmationId) this.confirmationManager.executionStatus(confirmationId,'succeeded');
       if (confirmationId) this.workspaceChanged?.({ type:'confirmation-execution', status:'success', confirmationId, projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, durationMs });
       return auditFailed && result && typeof result === 'object' ? { ...result, auditWarning:true } : result;

@@ -456,6 +456,7 @@ export interface ServerTerminalSession {
 }
 
 export interface ServerTerminalRead {
+  readonly commandAudit?: "available" | "unavailable" | "failed"
   readonly data: Uint8Array
   readonly status: "open" | "closed"
   readonly exitCode?: number | null

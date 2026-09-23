@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { validateMysqlSelect } from './mysql-policy.mjs';
+import { summarizeTerminalCommand } from './server-terminal-audit.mjs';
 
 export const auditExecutionContext = new AsyncLocalStorage();
 
@@ -86,12 +88,17 @@ export function operationAuditMetadata(plugin, capability, args = {}, desktopOpe
   if (plugin.pluginType === 'mysql') {
     action = `mysql.${{listTables:'tables',describeTable:'table',previewTable:'preview',queryReadonly:'select'}[desktopOperation]
       ?? (capability === 'describe' ? args.table ? 'table' : 'tables' : capability)}`;
-    target = `固定数据库 ${plugin.target?.database ?? ''}`;
+    let tables = typeof args.table === 'string' ? [args.table] : [];
+    if (!tables.length && typeof args.sql === 'string') {
+      try { tables = validateMysqlSelect(args.sql).tables; } catch { /* 无法安全解析时不提取查询正文。 */ }
+    }
+    target = `固定数据库 ${plugin.target?.database ?? ''}` + (tables.length ? ' · 表 ' + tables.slice(0,20).join('、') : '');
   } else if (plugin.pluginType === 'redis') {
     action = `redis.${capability}`;
     target = `固定 DB ${plugin.target?.db ?? ''}`;
   } else if (capability === 'logs') action = `logs.${['list','search'].includes(args.operation) ? args.operation : 'read'}`;
   else if (capability === 'service.control' && ['start','stop','restart','reload'].includes(args.action)) action = `service.${args.action}`;
+  if (capability === 'shell.execute') target = summarizeTerminalCommand(args.command);
   if (capability === 'fs.move' && args.destinationPath) target = `${target} → ${args.destinationPath}`;
   return { auditAction:action, auditTarget:safeAuditText(target), pluginNameSnapshot:safeAuditText(plugin.displayName, 200) };
 }
@@ -161,6 +168,8 @@ export function presentAuditEvent(entry, offset = 0) {
     pluginNameSnapshot:safeAuditText(entry.pluginNameSnapshot,200) || (entry.pluginInstanceId ? '插件名称未记录' : '当前环境'),
     target:safeAuditText(entry.auditTarget ?? legacyTarget(entry)), result, phase,
     errorCode, errorSummary:auditErrorSummary(errorCode),
+    ...(Number.isInteger(entry.exitCode) && entry.exitCode >= 0 && entry.exitCode <= 255 ? {exitCode:entry.exitCode} : {}),
+    ...(Number.isSafeInteger(entry.rowCount) && entry.rowCount >= 0 ? {rowCount:entry.rowCount,truncated:entry.truncated === true} : {}),
     ...(Number.isFinite(entry.durationMs) && entry.durationMs >= 0 ? {durationMs:entry.durationMs} : {}),
     ...(Number.isFinite(entry.operation?.bytes) ? {bytes:entry.operation.bytes} : {}),
   };

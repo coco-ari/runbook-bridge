@@ -221,3 +221,20 @@ test('桌面成功 Redis 扫描默认降噪，异常和其他来源保留且原�
   assert.equal(raw.entries.length,100);
   assert.equal(await fs.readFile(file,'utf8'),before);
 });
+
+
+test('终端同一会话内每条命令独立展示，保留退出码且不混入开关会话', async t => {
+  const {write,list} = await fixture(t);
+  const base = {actor:'user',sessionId:'terminal-session'};
+  await write([
+    {...base,type:'terminal-open',result:'success'},
+    {...base,type:'terminal-command',operationId:'command-one',auditAction:'shell.execute',auditTarget:'pwd',exitCode:0,result:'success'},
+    {...base,type:'terminal-command',operationId:'command-two',auditAction:'shell.execute',auditTarget:'false',exitCode:1,result:'error'},
+    {...base,type:'terminal-close',result:'success'},
+  ]);
+  const page = await list({actor:'user'});
+  assert.equal(page.entries.length,3);
+  const commands = page.entries.filter(entry=>entry.action === 'shell.execute');
+  assert.deepEqual(commands.map(entry=>[entry.target,entry.exitCode,entry.result]),[['false',1,'error'],['pwd',0,'success']]);
+  assert.ok(commands.every(entry=>entry.eventCount === 1));
+});

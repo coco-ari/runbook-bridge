@@ -108,6 +108,7 @@ test('desktop table pagination and structure stay within the configured database
   assert.ok(h.queries.every((query) => query.values[0] === 'example' && query.timeout === 2500));
   assert.equal(h.authorizations.length,3);
   assert.equal(h.audits.length,6);
+  assert.match(h.audits.at(-1).auditTarget,/表 alpha/u);
   assert.ok(h.audits.every((audit) => audit.actor === 'user'));
 });
 
@@ -117,6 +118,8 @@ test('desktop SELECT retains parameters, configured limits and excludes SQL or r
   const result = await h.invoke('query-readonly',{sql,params:['parameter-marker']});
   assert.equal(result.ok,true,JSON.stringify(result));
   assert.deepEqual(result.data.rows,[{id:1}]);
+  assert.match(h.audits.at(-1).auditTarget,/表 alpha/u);
+  assert.equal(h.audits.at(-1).rowCount,1);
   assert.deepEqual(result.data.limitsApplied,{maxRows:500,maxBytes:65_536,timeoutMs:2500});
   assert.match(h.queries.at(-1).sql,/LIMIT 501/u);
   assert.deepEqual(h.queries.at(-1).values,['parameter-marker']);
@@ -138,6 +141,9 @@ test('desktop preview caps rows at 100 and respects a lower configured row or by
     assert.equal(result.ok,true,JSON.stringify(result));
     assert.equal(result.data.rowCount,expectedRows);
     assert.equal(result.data.truncated,true);
+    assert.match(h.audits.at(-1).auditTarget,/表 alpha/u);
+    assert.equal(h.audits.at(-1).rowCount,expectedRows);
+    assert.equal(h.audits.at(-1).truncated,true);
     assert.deepEqual(result.data.limitsApplied,{maxRows:Math.min(maxRows,100),maxBytes,timeoutMs:700});
     assert.equal(h.plugin.limits.maxRows,maxRows);
   }

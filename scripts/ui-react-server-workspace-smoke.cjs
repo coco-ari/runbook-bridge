@@ -270,7 +270,7 @@ function register() {
     scoped(input);
     const item = terminalSessions.get(input.sessionId);
     if (!item.chunks.length) await wait(100);
-    return { data: new Uint8Array(item.chunks.shift() ?? []), status: item.status, closeReason:item.closeReason, recoverable:item.recoverable, exitCode:item.exitCode };
+    return { data: new Uint8Array(item.chunks.shift() ?? []), commandAudit: "available", status: item.status, closeReason:item.closeReason, recoverable:item.recoverable, exitCode:item.exitCode };
   });
   handle('server-terminal-write', (input) => {
     scoped(input);
@@ -735,6 +735,7 @@ async function run() {
     completed = true; return;
   }
   await until(`document.querySelector('.xterm-rows')?.textContent.includes('operator@demo')`, '真实 xterm 收到输出');
+  assert.ok(await evaluate("document.querySelector('[data-terminal-command-audit=available]')?.textContent.includes('命令完成后记录')"));
   assert.equal(opened.length, 1, '首次点击只创建一个会话');
   await assertFileSidebarLayout();
   if (liveFileUiProbe) {

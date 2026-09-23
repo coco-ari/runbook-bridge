@@ -29,6 +29,8 @@ export function AuditOperationList({ entries }: { readonly entries: readonly Aud
                 </div>
                 <div className="col-span-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground @lg/audit:col-start-2">
                   <span>{categoryLabels[entry.category]}</span>
+                  {entry.exitCode !== null ? <span>退出码 {entry.exitCode}</span> : null}
+                  {entry.rowCount !== null ? <span>返回 {entry.rowCount} 行{entry.truncated ? "（已截断）" : ""}</span> : null}
                   {entry.durationMs !== null ? <span>耗时 {durationLabel(entry.durationMs)}</span> : null}
                   {entry.approval ? <span>{entry.approval === "approved" ? "用户已批准" : "用户已拒绝"}</span> : null}
                   {entry.errorCode ? <span className="text-danger">{entry.errorSummary || publicErrorLabel(entry.errorCode)}</span> : null}
