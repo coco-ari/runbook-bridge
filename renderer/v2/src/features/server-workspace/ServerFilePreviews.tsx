@@ -1,9 +1,10 @@
 import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
-import { useCallback, useEffect, useId, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { FileText, SpinnerGap } from "@phosphor-icons/react"
 import type { AiOpsV2Api, PluginScope, ServerDirectoryEntry, ServerFilePreview } from "@/bridge/ai-ops-v2"
 import { WorkspaceTabs } from "./WorkspaceTabs"
-import { formatTransferBytes, isWorkspacePathStale, parentRemotePath, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
+import { workspaceReadQueue } from "./workspace-read-queue"
+import { formatTransferBytes, isWorkspacePathStale, parentRemotePath, serverWorkspaceKey, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
 
 interface PreviewTab { id: string; path: string; name: string; loading: boolean; data?: ServerFilePreview | undefined; error?: string | undefined }
 interface ServerFilePreviewsProps {
@@ -24,12 +25,17 @@ export function ServerFilePreviews({ api, scope, connected, request, onOpenChang
   const requests = useRef(new Map<string, number>())
   const sequence = useRef(0)
   const mounted = useRef(true)
+  const connectedRef = useRef(connected)
+  connectedRef.current = connected
+  const readQueue = useMemo(() => workspaceReadQueue(api), [api])
+  const readOwner = useRef({}).current
   tabsRef.current = tabs
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; requests.current.clear() } }, [])
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; requests.current.clear(); readQueue.cancel(readOwner) } }, [readQueue, readOwner])
   useEffect(() => { onOpenChange(tabs.length > 0) }, [tabs.length, onOpenChange])
   const read = useCallback(async (file: Pick<ServerDirectoryEntry, "path" | "name">) => {
     if (!connected) return
     const existing = tabsRef.current.find((tab) => tab.path === file.path)
+    if (requests.current.has(file.path)) { if (existing) setActive(existing.id); return }
     if (!existing && tabsRef.current.length >= 12) { setNotice("最多同时查看 12 个文件，请先关闭不需要的标签。"); return }
     const generation = ++sequence.current
     const id = existing?.id ?? "file-" + generation
@@ -38,23 +44,27 @@ export function ServerFilePreviews({ api, scope, connected, request, onOpenChang
     setActive(id)
     setTabs((current) => existing ? current.map((tab) => tab.id === id ? { ...tab, loading: true, error: undefined } : tab) : [...current, { id, path: file.path, name: file.name, loading: true }])
     try {
-      const data = unwrapWorkspaceResult(await api.serverWorkspaceReadFile({ ...scope, path: file.path }))
+      const result = await readQueue.run(readOwner, file.path,
+        () => api.serverWorkspaceReadFile({ ...scope, path: file.path }),
+        () => mounted.current && connectedRef.current && requests.current.get(file.path) === generation, { kind: "file", resource: serverWorkspaceKey(scope) })
+      if (result === undefined) return
+      const data = unwrapWorkspaceResult(result)
       if (mounted.current && requests.current.get(file.path) === generation) setTabs((current) => current.map((tab) => tab.id === id ? { ...tab, data, loading: false } : tab))
     } catch (failure) {
       if (mounted.current && requests.current.get(file.path) === generation) {
         setTabs((current) => current.map((tab) => tab.id === id ? { ...tab, data: undefined, loading: false, error: workspaceErrorMessage(failure) } : tab))
         if (isWorkspacePathStale(failure)) onStale(file.path)
       }
-    }
-  }, [api, scope, connected, onStale])
+    } finally { if (requests.current.get(file.path) === generation) requests.current.delete(file.path) }
+  }, [api, scope, connected, onStale, readQueue, readOwner])
   useEffect(() => { if (request) void read(request.file) }, [request])
   useEffect(() => {
-    if (!connected) { requests.current.clear(); setTabs((current) => current.map((tab) => tab.loading ? { ...tab, loading: false, error: "服务器连接已断开。" } : tab)) }
-  }, [connected])
+    if (!connected) { requests.current.clear(); readQueue.cancel(readOwner); setTabs((current) => current.map((tab) => tab.loading ? { ...tab, loading: false, error: "服务器连接已断开。" } : tab)) }
+  }, [connected, readQueue, readOwner])
   const close = (id: string) => {
     const index = tabs.findIndex((tab) => tab.id === id)
     const closed = tabs[index]
-    if (closed) requests.current.delete(closed.path)
+    if (closed) { requests.current.delete(closed.path); readQueue.cancel(readOwner, closed.path) }
     const remaining = tabs.filter((tab) => tab.id !== id)
     setTabs(remaining)
     setNotice("")

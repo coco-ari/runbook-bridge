@@ -36,7 +36,7 @@ export class ServerWorkspaceActions {
         size: entry.size, mtime: entry.mtime, mode: entry.mode,
         canonicalPath: entry.canonicalPath, ...(entry.type === 'symlink' ? { linkTarget: entry.canonicalPath, linkTargetType } : {}),
         observedAt: this.files.now() };
-    }));
+    }, { pipelineMetadata: true, reuseWorkspace: true }));
   }
 
   active(item) {

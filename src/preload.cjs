@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('aiOps', {
     serverTerminalResize: (payload) => ipcRenderer.invoke('v2:server-terminal-resize', payload),
     serverTerminalClose: (payload) => ipcRenderer.invoke('v2:server-terminal-close', payload),
     serverWorkspaceListDirectory: (payload) => ipcRenderer.invoke('v2:server-workspace-list-directory', payload),
+    serverWorkspaceCancelDirectoryRead: (payload) => ipcRenderer.invoke('v2:server-workspace-cancel-directory-read', payload),
     serverWorkspaceFileInfo: payload => ipcRenderer.invoke('v2:server-workspace-file-info', payload),
     serverWorkspacePrepareFileAction: payload => ipcRenderer.invoke('v2:server-workspace-prepare-file-action', payload),
     serverWorkspaceConfirmFileAction: payload => ipcRenderer.invoke('v2:server-workspace-confirm-file-action', payload),

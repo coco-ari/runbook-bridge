@@ -37,6 +37,7 @@ export class ServerWorkspaceFiles {
   constructor({ workspaceStore, serverRuntime, serverOperations, now = Date.now }) {
     Object.assign(this, { workspaceStore, serverRuntime, serverOperations, now });
     this.directoryCache = new ServerWorkspaceDirectoryCache(this);
+    this.directoryRequests = new Map();
     this.actions = new ServerWorkspaceActions(this);
     this.preparations = new Map();
     this.uploadReviews = new ServerUploadReviews(this);
@@ -90,7 +91,7 @@ export class ServerWorkspaceFiles {
   }
 
   withPathReader(plugin, operation, options = {}) {
-    if (this.serverRuntime.withRemoteReadSession) return this.serverRuntime.withRemoteReadSession(plugin, (reader) => operation((target) => reader.statPath(target)), options);
+    if (this.serverRuntime.withRemoteReadSession) return this.serverRuntime.withRemoteReadSession(plugin, (reader) => operation((target) => reader.statPath(target), reader), options);
     return operation((target) => this.serverRuntime.statRemotePath(plugin, target));
   }
 
@@ -105,36 +106,65 @@ export class ServerWorkspaceFiles {
     return { ...target, canonicalPath };
   }
 
+  directoryRequest(ownerId, payload, operation) {
+    if (payload.requestId === undefined) return operation();
+    this.ownerEpoch(ownerId);
+    const scope = scopeOf(payload);
+    if (typeof payload.requestId !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/u.test(payload.requestId)) throw new AppError('INVALID_ARGUMENT', '目录请求标识无效。');
+    const key = JSON.stringify([ownerId, scope, payload.requestId]);
+    if (this.directoryRequests.has(key) || this.directoryRequests.size >= 64) throw new AppError('WORKSPACE_BUSY', '目录请求正在进行，请稍后重试。');
+    const record = { ownerId, scope, controller:new AbortController() };
+    this.directoryRequests.set(key, record);
+    const done = () => { if (this.directoryRequests.get(key) === record) this.directoryRequests.delete(key); };
+    try {
+      return Promise.resolve(operation(record.controller.signal)).then(value => {
+        if (record.controller.signal.aborted) throw new AppError('WORKSPACE_READ_CANCELLED', '目录读取已取消。');
+        return value;
+      }).finally(done);
+    } catch (error) { done(); throw error; }
+  }
+
+  cancelDirectoryRead(ownerId, payload) {
+    this.ownerEpoch(ownerId);
+    const scope = scopeOf(payload);
+    if (typeof payload.requestId !== 'string' || !/^[a-zA-Z0-9_-]{1,80}$/u.test(payload.requestId)) throw new AppError('INVALID_ARGUMENT', '目录请求标识无效。');
+    const record = this.directoryRequests.get(JSON.stringify([ownerId, scope, payload.requestId]));
+    record?.controller.abort();
+    return { cancelled:Boolean(record) };
+  }
+
   listDirectory(ownerId, payload) {
     const selectedPath = remotePath(payload.path);
     if (payload.cursor != null && !/^\d{1,7}$/u.test(String(payload.cursor))) throw new AppError('INVALID_ARGUMENT', '目录分页位置无效。');
     if ((payload.deferLinks !== undefined && typeof payload.deferLinks !== 'boolean') || (payload.resolveLinks !== undefined && typeof payload.resolveLinks !== 'boolean') || (payload.snapshotId !== undefined && (typeof payload.snapshotId !== 'string' || !/^[a-f0-9-]{36}$/u.test(payload.snapshotId))) || (payload.resolveLinks && !payload.snapshotId)) throw new AppError('INVALID_ARGUMENT', '目录缓存参数无效。');
-    if (this.serverRuntime.withWorkspaceReadSession) return this.read(ownerId, payload, (plugin, binding) => this.directoryCache.list(ownerId, { ...payload, path: selectedPath }, plugin, binding));
-    return this.read(ownerId, payload, (plugin) => this.withPathReader(plugin, async (stat) => {
-      const resolved = await this.resolvePath(plugin, selectedPath, 'directory', stat);
-      const page = await this.serverOperations.listDirectory(plugin, { path: resolved.canonicalPath, cursor: payload.cursor, limit: 200 });
-      const listed = page.entries.filter((entry) => entry.name !== '.' && entry.name !== '..');
-      const entries = listed.map((entry) => ({ ...entry, path: path.posix.join(selectedPath, entry.name) }));
-      let next = 0;
-      // 链接元数据共用一个 SFTP 会话，最多四个并发；行标识始终使用浏览路径。
-      await Promise.all(Array.from({ length: Math.min(4, entries.length) }, async () => {
-        for (;;) {
-          const index = next++;
-          if (index >= entries.length) return;
-          if (entries[index].type !== 'symlink') continue;
-          const original = listed[index];
-          try {
-            const target = await this.resolvePath(plugin, original.path, null, stat);
-            Object.assign(entries[index], { linkTarget: target.canonicalPath, linkTargetType: target.type });
-          } catch {
-            Object.assign(entries[index], { linkTargetType: 'unavailable' });
+    return this.directoryRequest(ownerId, payload, signal => {
+      if (this.serverRuntime.withWorkspaceReadSession) return this.read(ownerId, payload, (plugin, binding) => this.directoryCache.list(ownerId, { ...payload, path: selectedPath }, plugin, binding, { signal }));
+      return this.read(ownerId, payload, (plugin) => this.withPathReader(plugin, async (stat) => {
+        const resolved = await this.resolvePath(plugin, selectedPath, 'directory', stat);
+        const page = await this.serverOperations.listDirectory(plugin, { path: resolved.canonicalPath, cursor: payload.cursor, limit: 200 });
+        const listed = page.entries.filter((entry) => entry.name !== '.' && entry.name !== '..');
+        const entries = listed.map((entry) => ({ ...entry, path: path.posix.join(selectedPath, entry.name) }));
+        let next = 0;
+        // 链接元数据共用一个 SFTP 会话，最多四个并发；行标识始终使用浏览路径。
+        await Promise.all(Array.from({ length: Math.min(4, entries.length) }, async () => {
+          for (;;) {
+            const index = next++;
+            if (index >= entries.length) return;
+            if (entries[index].type !== 'symlink') continue;
+            const original = listed[index];
+            try {
+              const target = await this.resolvePath(plugin, original.path, null, stat);
+              Object.assign(entries[index], { linkTarget: target.canonicalPath, linkTargetType: target.type });
+            } catch {
+              Object.assign(entries[index], { linkTargetType: 'unavailable' });
+            }
           }
-        }
-      }));
-      const after = await this.resolvePath(plugin, selectedPath, 'directory', stat);
-      if (after.canonicalPath !== resolved.canonicalPath) throw new AppError('WORKSPACE_PATH_CHANGED', '目录链接目标已变化，请刷新后重试。');
-      return { ...page, path: selectedPath, canonicalPath: resolved.canonicalPath, entries };
-    }));
+        }));
+        const after = await this.resolvePath(plugin, selectedPath, 'directory', stat);
+        if (after.canonicalPath !== resolved.canonicalPath) throw new AppError('WORKSPACE_PATH_CHANGED', '目录链接目标已变化，请刷新后重试。');
+        return { ...page, path: selectedPath, canonicalPath: resolved.canonicalPath, entries };
+      }, { signal }));
+    });
   }
 
   async assertPath(plugin, selectedPath, type, readStat = (target) => this.serverRuntime.statRemotePath(plugin, target)) {
@@ -147,13 +177,14 @@ export class ServerWorkspaceFiles {
 
   readFile(ownerId, payload) {
     const selectedPath = remotePath(payload.path);
-    return this.read(ownerId, payload, (plugin) => this.withPathReader(plugin, async (stat) => {
+    return this.read(ownerId, payload, (plugin) => this.withPathReader(plugin, async (stat, reader) => {
       const resolved = await this.resolvePath(plugin, selectedPath, 'file', stat);
-      const result = await this.serverOperations.readFile(plugin, { path: resolved.canonicalPath, maxBytes: 262_144 });
+      // 预览复用已经占用的读取会话，避免多个预览互相等待嵌套的读取名额。
+      const result = await this.serverOperations.readFile(plugin, { path: resolved.canonicalPath, maxBytes: 262_144 }, { reader });
       const after = await this.resolvePath(plugin, selectedPath, 'file', stat);
       if (after.canonicalPath !== resolved.canonicalPath) throw new AppError('WORKSPACE_PATH_CHANGED', '文件链接目标已变化，请重新打开。');
       return { ...result, path: selectedPath, canonicalPath: resolved.canonicalPath };
-    }));
+    }, { pipelineMetadata: true, reuseWorkspace: true, pipelineReadValidation: true }));
   }
 
   fileInfo(ownerId, payload) { return this.actions.info(ownerId, payload); }
@@ -164,11 +195,14 @@ export class ServerWorkspaceFiles {
   normalizeUploadPath(input) { return remotePath(input); }
 
   async assertUploadDirectory(plugin, directory, options = {}) {
-    return this.withPathReader(plugin, async stat => {
+    const verify = async stat => {
       const resolved = await this.resolvePath(plugin, directory.path, 'directory', stat);
       if (resolved.canonicalPath !== directory.canonicalPath) throw new AppError('WORKSPACE_PATH_CHANGED', '上传目录链接目标已变化，请重新选择文件并确认。');
       await this.assertPath(plugin, directory.canonicalPath, 'directory', stat);
-    }, options);
+    };
+    // 上传提交已有独占通道时就地复核；其他阶段和旧适配器仍取得受限读取会话。
+    if (options.reader) return verify(target => options.reader.statPath(target));
+    return this.withPathReader(plugin, verify, options);
   }
 
   prepareUploadResume(ownerId, payload) { return this.uploadResumes.prepare(ownerId, payload); }
@@ -323,10 +357,10 @@ export class ServerWorkspaceFiles {
         signal: job.controller.signal, resumable: true, checkpoint: job.checkpoint,
         shouldPause: () => job.pauseRequested === true,
         onCheckpoint: value => { if (job.controller === controller && ACTIVE.has(job.status) && !controller.signal.aborted) job.checkpoint = { ...value }; },
-        beforeCommit: async () => {
+        beforeCommit: async reader => {
           const current = await this.requirePlugin(job.ownerId, job.scope, job);
           controller.signal.throwIfAborted();
-          await this.assertUploadDirectory(current.plugin, job.uploadDirectory);
+          await this.assertUploadDirectory(current.plugin, job.uploadDirectory, { reader });
           await this.requirePlugin(job.ownerId, job.scope, job);
         },
         onProgress: ({ transferredBytes, phase }) => {
@@ -427,11 +461,17 @@ export class ServerWorkspaceFiles {
     const scope = scopeOf(payload);
     const job = this.jobs.get(payload.jobId);
     if (!job || job.ownerId !== ownerId || !sameScope(job.scope, scope)) throw new AppError('UPLOAD_NOT_FOUND', '上传任务不存在。');
-    this.stopJob(job, 'cancelled', job.status === 'queued' ? '已取消排队。' : '正在取消传输。');
+    // 暂停或中断后取消只释放恢复信息；明确说明临时文件可能保留，清理仍走单项删除确认。
+    const retainedPartial = !job.inFlight && job.direction !== 'download' && job.checkpoint?.owned === true;
+    const message = job.status === 'queued' ? '已取消排队。' : retainedPartial
+      ? '上传已取消；服务器可能保留本任务的临时文件，请在目标目录核对后删除。'
+      : job.inFlight ? '正在取消传输。' : '传输已取消。';
+    this.stopJob(job, 'cancelled', message);
     return publicJob(job);
   }
 
   interruptScope(scope) {
+    for (const record of this.directoryRequests.values()) if (includesScope(record.scope, scope)) record.controller.abort();
     this.actions.clear(item => includesScope(item.scope, scope));
     this.uploadReviews.clear(item => includesScope(item.scope, scope));
     this.directoryCache.clear(item => includesScope(item.binding.scope, scope));
@@ -440,6 +480,7 @@ export class ServerWorkspaceFiles {
   }
 
   closeScope(scope, reason = '服务器配置或连接已经变化。') {
+    for (const record of this.directoryRequests.values()) if (includesScope(record.scope, scope)) record.controller.abort();
     this.actions.clear(item => includesScope(item.scope, scope));
     this.uploadReviews.clear(item => includesScope(item.scope, scope));
     this.directoryCache.clear((item) => includesScope(item.binding.scope, scope));
@@ -448,6 +489,7 @@ export class ServerWorkspaceFiles {
   }
 
   closeOwner(ownerId) {
+    for (const record of this.directoryRequests.values()) if (record.ownerId === ownerId) record.controller.abort();
     this.actions.clear(item => item.ownerId === ownerId);
     this.uploadReviews.clear(item => item.ownerId === ownerId);
     this.directoryCache.clear((item) => item.ownerId === ownerId);
@@ -460,6 +502,7 @@ export class ServerWorkspaceFiles {
   }
 
   dispose() {
+    for (const record of this.directoryRequests.values()) record.controller.abort();
     this.actions.clear(() => true);
     this.uploadReviews.clear(() => true);
     this.directoryCache.clear(() => true);

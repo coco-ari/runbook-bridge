@@ -12,11 +12,18 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 import { quoteRemotePath, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
 import { terminalOpenQueue, type TerminalConnection } from "./terminal-recovery"
 import { resetTerminalForReconnect } from "./terminal-history"
+import { createTerminalResizeScheduler } from "./terminal-resize"
 import type { WorkspacePathDrag } from "./workspace-path-drag"
 import "@xterm/xterm/css/xterm.css"
 
 const TERMINAL_FONT_FAMILY = "\"Cascadia Mono\", \"Cascadia Code\", Consolas, Menlo, Monaco, \"Noto Sans Mono CJK SC\", \"Microsoft YaHei UI\", \"PingFang SC\", \"Noto Sans CJK SC\", monospace"
 const PASTE_COLORS_COMMAND = "if [ -n \"${BASH_VERSION-}\" ]; then builtin bind 'set active-region-start-color \\e[27;48;5;23;38;5;195m' 2>/dev/null; builtin bind 'set active-region-end-color \\e[0m' 2>/dev/null; fi"
+
+// 复用主题对象，让标签显示和尺寸适配不触发 xterm 的重复配色及布局更新。
+const TERMINAL_THEMES = {
+  dark: { background: "#0c0e13", foreground: "#d9e0e9", cursor: "#34d399", selectionBackground: "#234e46", selectionForeground: "#ecfdf5", selectionInactiveBackground: "#234e46", black: "#171b24", red: "#f87171", green: "#4ade80", yellow: "#facc15", blue: "#60a5fa", magenta: "#c084fc", cyan: "#22d3ee", white: "#e2e8f0", brightBlack: "#8995a7", brightRed: "#fca5a5", brightGreen: "#86efac", brightYellow: "#fde047", brightBlue: "#93c5fd", brightMagenta: "#d8b4fe", brightCyan: "#67e8f9", brightWhite: "#ffffff" },
+  light: { background: "#fbfcfd", foreground: "#202a3a", cursor: "#059669", selectionBackground: "#bbf7d0", selectionForeground: "#16382d", selectionInactiveBackground: "#d4ede2", black: "#1f2937", red: "#b91c1c", green: "#047857", yellow: "#a16207", blue: "#1d4ed8", magenta: "#7e22ce", cyan: "#0e7490", white: "#e5e7eb", brightBlack: "#6b7280", brightRed: "#b91c1c", brightGreen: "#166534", brightYellow: "#854d0e", brightBlue: "#1e40af", brightMagenta: "#86198f", brightCyan: "#155e75", brightWhite: "#374151" },
+}
 
 const DEFAULT_COLORS_KEY = "runbook-bridge:terminal-default-colors:v1"
 function readDefaultColors() {
@@ -38,6 +45,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  const resizeSchedulerRef = useRef<ReturnType<typeof createTerminalResizeScheduler> | null>(null)
   const searchRef = useRef<TerminalSearchHandle>(null)
   const [searchEngine, setSearchEngine] = useState<TerminalSearchEngine | null>(null)
   const sessionRef = useRef<string | null>(null)
@@ -72,6 +80,8 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
   const [pathDragOver, setPathDragOver] = useState(false)
   const isMac = /Mac/u.test(navigator.platform)
   const { theme } = useTheme()
+  const themeRef = useRef(theme)
+  themeRef.current = theme
   if (visibleRef.current !== visible) interactionEpochRef.current += 1
   visibleRef.current = visible
   connectedRef.current = connected
@@ -121,11 +131,12 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
     if (!visibleRef.current || !container || !terminal || container.clientWidth < 40 || container.clientHeight < 40) return
     fitRef.current?.fit()
     const sessionId = sessionRef.current
-    if (sessionId) void api.serverTerminalResize({ ...scope, sessionId, cols: terminal.cols, rows: terminal.rows })
-  }, [api, scope])
+    if (sessionId) resizeSchedulerRef.current?.update({ sessionId, cols: terminal.cols, rows: terminal.rows })
+  }, [])
 
   const finish = useCallback((message: string, recovery: { sessionId: string; eligible: boolean; waitForSequence?: number } | null = null) => {
     sessionRef.current = null
+    resizeSchedulerRef.current?.reset()
     openingRef.current = false
     generationRef.current += 1
     interactionEpochRef.current += 1
@@ -195,6 +206,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
       openingRef.current = false
       terminal.options.disableStdin = !connectedRef.current
       setStatus("open")
+      resize()
       setReconnected(automatic)
       // 自动恢复不改变焦点；手动打开也不抢走等待期间用户移到其他控件的焦点。
       if (!automatic && connectedRef.current && visibleRef.current && document.activeElement === focusAtStart) terminal.focus()
@@ -246,8 +258,14 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
     const container = containerRef.current
     if (!container) return
     mountedRef.current = true
+    const resizeScheduler = createTerminalResizeScheduler(async size => {
+      if (!mountedRef.current || !visibleRef.current || !connectedRef.current || sessionRef.current !== size.sessionId) return false
+      return (await api.serverTerminalResize({ ...scope, ...size })).ok
+    })
+    resizeSchedulerRef.current = resizeScheduler
     const terminal = new Terminal({
       cursorBlink: true,
+      theme: TERMINAL_THEMES[themeRef.current],
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: 14,
       lineHeight: 1.35,
@@ -309,10 +327,10 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
       acceptPaste(event.clipboardData?.getData("text/plain") ?? "")
     }
     container.addEventListener("paste", onPaste, true)
-    let resizeTimer = 0
+    let resizeFrame = 0
     const observer = new ResizeObserver(() => {
-      window.clearTimeout(resizeTimer)
-      resizeTimer = window.setTimeout(resize, 80)
+      if (resizeFrame) return
+      resizeFrame = requestAnimationFrame(() => { resizeFrame = 0; resize() })
     })
     observer.observe(container)
     // 首次入口点击授权打开终端；延迟一拍避免 StrictMode 的试挂载建立重复会话。
@@ -327,7 +345,9 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
       sessionRef.current = null
       if (sessionId) void api.serverTerminalClose({ ...scope, sessionId })
       window.clearTimeout(initialOpen)
-      window.clearTimeout(resizeTimer)
+      cancelAnimationFrame(resizeFrame)
+      resizeScheduler.dispose()
+      if (resizeSchedulerRef.current === resizeScheduler) resizeSchedulerRef.current = null
       observer.disconnect()
       container.removeEventListener("paste", onPaste, true)
       input.dispose()
@@ -387,10 +407,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
   useEffect(() => {
     const terminal = terminalRef.current
     if (!terminal) return
-    terminal.options.fontSize = 14
-    terminal.options.theme = theme === "dark"
-      ? { background: "#0c0e13", foreground: "#d9e0e9", cursor: "#34d399", selectionBackground: "#234e46", selectionForeground: "#ecfdf5", selectionInactiveBackground: "#234e46", black: "#171b24", red: "#f87171", green: "#4ade80", yellow: "#facc15", blue: "#60a5fa", magenta: "#c084fc", cyan: "#22d3ee", white: "#e2e8f0", brightBlack: "#8995a7", brightRed: "#fca5a5", brightGreen: "#86efac", brightYellow: "#fde047", brightBlue: "#93c5fd", brightMagenta: "#d8b4fe", brightCyan: "#67e8f9", brightWhite: "#ffffff" }
-      : { background: "#fbfcfd", foreground: "#202a3a", cursor: "#059669", selectionBackground: "#bbf7d0", selectionForeground: "#16382d", selectionInactiveBackground: "#d4ede2", black: "#1f2937", red: "#b91c1c", green: "#047857", yellow: "#a16207", blue: "#1d4ed8", magenta: "#7e22ce", cyan: "#0e7490", white: "#e5e7eb", brightBlack: "#6b7280", brightRed: "#b91c1c", brightGreen: "#166534", brightYellow: "#854d0e", brightBlue: "#1e40af", brightMagenta: "#86198f", brightCyan: "#155e75", brightWhite: "#374151" }
+    terminal.options.theme = TERMINAL_THEMES[theme]
     const frame = requestAnimationFrame(() => { resize(); if (visible) terminal.focus() })
     return () => cancelAnimationFrame(frame)
   }, [resize, theme, visible])

@@ -758,7 +758,7 @@ async function main() {
     assert.equal(inspection.noPageOverflow, true);
     assert.equal(inspection.overviewOk, true);
     assert.equal(inspection.projectCount, 0);
-    assert.equal(inspection.apiCount, 97);
+    assert.equal(inspection.apiCount, 98);
     const fileActionContract = await running.cdp.evaluate("(async () => { const scope={projectId:'file-action-probe',environmentId:'probe',pluginInstanceId:'probe'}; return {info:await window.aiOps.v2.serverWorkspaceFileInfo({...scope,path:'/srv'}),prepare:await window.aiOps.v2.serverWorkspacePrepareFileAction({...scope,kind:'mkdir',path:'/srv',name:'fixture'}),invalid:await window.aiOps.v2.serverWorkspaceConfirmFileAction({...scope,operationId:'missing',destinationPath:'/other'}),confirm:await window.aiOps.v2.serverWorkspaceConfirmFileAction({...scope,operationId:'missing'}),cancel:await window.aiOps.v2.serverWorkspaceCancelFileAction({...scope,operationId:'missing'})}; })()");
     assert.equal(fileActionContract.info.ok, false);
     assert.equal(fileActionContract.prepare.ok, false);
@@ -885,7 +885,7 @@ async function main() {
       return {ok: overview?.ok === true, projectCount: Array.isArray(overview?.data) ? overview.data.length : -1,
         apiCount: Object.keys(window.aiOps.v2).length};
     })()`);
-    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 97});
+    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 98});
     assert.deepEqual(running.httpRequests, []);
     await selectThemePreference(running.cdp, 'system');
     await emulateSystemTheme(running.cdp, 'dark');
@@ -905,7 +905,7 @@ async function main() {
         availableWidth: compactSearch.availableWidth, nativeTextBox: compactSearch.nativeBox?.source ?? 'conservative-cancel-budget'},
     })}\n`);
     process.stdout.write(
-      `Packaged React UI smoke passed (97 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
+      `Packaged React UI smoke passed (98 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
     );
   } catch (error) {
     if (running) {

@@ -13,6 +13,7 @@ import { uploadWithCheckpoints } from './server-upload-transfer.mjs';
 import { uploadTimeouts } from './server-upload-progress.mjs';
 import { evaluateCommandPolicy } from './command-policy.mjs';
 import { createProxySocket } from './proxy.mjs';
+import { SftpReadPool } from './sftp-read-pool.mjs';
 
 const MAX_COMMAND_OUTPUT = 512 * 1024;
 const CONTEXT_TTL_MS = 30 * 60 * 1000;
@@ -138,7 +139,7 @@ function transferError(error) {
   return new AppError('TRANSFER_FAILED', '文件传输失败。');
 }
 
-function withSftp(client, action, { timeoutMs = 0, inactivityMs = 0, timeoutCode = 'TRANSFER_TIMEOUT', timeoutMessage = '文件传输超时。', signal = null } = {}) {
+function withSftp(client, action, { timeoutMs = 0, inactivityMs = 0, timeoutCode = 'TRANSFER_TIMEOUT', timeoutMessage = '文件传输超时。', signal = null, releaseSftp = null, discardSftp = null } = {}) {
   return new Promise((resolve, reject) => {
     const controller = new AbortController();
     let sftp = null;
@@ -153,7 +154,7 @@ function withSftp(client, action, { timeoutMs = 0, inactivityMs = 0, timeoutCode
       if (!sftp || closing) return;
       closing = true;
       try {
-        sftp.end();
+        if (!discardSftp?.(sftp)) sftp.end();
       } catch {
         // A closed channel needs no further cleanup. Runtime errors remain
         // observed by onSftpError until the channel emits close.
@@ -179,7 +180,12 @@ function withSftp(client, action, { timeoutMs = 0, inactivityMs = 0, timeoutCode
       clearTimeout(inactivityTimer);
       clearTimeout(forceCloseTimer);
       signal?.removeEventListener('abort', onExternalAbort);
-      safeEnd();
+      // 只有成功且未中断的桌面读取才能归还通道；失败与取消仍关闭当前通道。
+      if (!error && !controller.signal.aborted && releaseSftp?.(sftp)) {
+        sftp.removeListener('error', onSftpError);
+        sftp.removeListener('end', onSftpEnd);
+        sftp.removeListener('close', onSftpClose);
+      } else safeEnd();
       if (error) reject(transferError(error));
       else resolve(value);
     };
@@ -317,25 +323,52 @@ function sftpCloseHandle(sftp, handle) {
 }
 
 // 人工工作区对同一目录句柄流水线读取，按请求顺序合并，减少大目录的往返等待。
-async function sftpReadWorkspaceDirectory(sftp, remotePath, maxEntries, lifecycle) {
+async function sftpReadWorkspaceDirectory(sftp, remotePath, maxEntries, lifecycle, afterRead) {
   const handle = await sftpOpenDirectory(sftp, remotePath);
   const entries = [];
   let primaryError = null;
   try {
-    let done = false;
-    while (!done && entries.length < maxEntries) {
+    let done = false, issued = 0, committed = 0, received = 0;
+    const ready = new Map();
+    const readPage = async () => {
       throwIfAborted(lifecycle.signal);
-      const results = await Promise.allSettled(Array.from({ length: entries.length ? 4 : 1 }, () => sftpReadDirectory(sftp, handle)));
-      for (const result of results) {
-        if (result.status === 'rejected') throw result.reason;
-        if (!result.value?.length) { done = true; continue; }
-        entries.push(...result.value.slice(0, maxEntries - entries.length));
+      const index = issued++;
+      const page = await sftpReadDirectory(sftp, handle);
+      throwIfAborted(lifecycle.signal);
+      if (!page?.length) done = true;
+      received += page?.length ?? 0;
+      ready.set(index, page?.slice(0, maxEntries) ?? []);
+      // 乱序返回只影响补发时机；展示快照仍按请求顺序合并，并保留总条目上限。
+      while (ready.has(committed)) {
+        entries.push(...ready.get(committed).slice(0, maxEntries - entries.length));
+        ready.delete(committed++);
       }
-    }
+    };
+    // 首批即填满四个名额，避免先等一页再并行；完成一个就补位，EOF、错误、取消或达到上限后只排空已发请求。
+    await Promise.all(Array.from({ length: 4 }, async () => {
+      try {
+        while (!done && !primaryError && received < maxEntries) {
+          await readPage();
+        }
+      } catch (error) { primaryError ??= error; }
+    }));
   } catch (error) { primaryError = error; }
-  // 所有在途 READDIR 已结束，之后才关闭句柄，避免失败或 EOF 时留下悬挂请求。
-  try { await sftpCloseHandle(sftp, handle); } catch (error) { primaryError ??= error; }
+  // 所有目录页结束后，关闭句柄与路径复核可重叠；两者都结束前不交付结果或归还通道。
+  let closed = false, validatedBeforeClose = false;
+  const finishing = [sftpCloseHandle(sftp, handle).then(() => { closed = true; })];
+  if (!primaryError && afterRead) finishing.push(Promise.resolve().then(() => {
+    throwIfAborted(lifecycle.signal);
+    return afterRead();
+  }).then(() => { validatedBeforeClose = !closed; }));
+  for (const result of await Promise.allSettled(finishing)) {
+    if (result.status === 'rejected') primaryError ??= result.reason;
+  }
   if (primaryError) throw primaryError;
+  // 关闭响应比整轮校验更晚时，再复核一次，避免交付长时间等待前的路径状态。
+  if (validatedBeforeClose) {
+    throwIfAborted(lifecycle.signal);
+    await afterRead();
+  }
   return entries;
 }
 
@@ -569,8 +602,14 @@ function snapshotMatches(actual, expected) {
     && (!actual?.exists || (actual.type === expected.type && actual.size === expected.size && actual.mtime === expected.mtime && actual.mode === expected.mode));
 }
 
-async function readRemoteSnapshot(sftp, remotePath) {
+async function readRemoteSnapshot(sftp, remotePath, { pipeline = false } = {}) {
   try {
+    if (pipeline) {
+      // 人工路径查询按原顺序发出两个只读请求；全部收尾后再交付，失败时不提前结束通道。
+      const [attributes, resolved] = await Promise.allSettled([sftpLstat(sftp, remotePath), sftpRealpath(sftp, remotePath)]);
+      if (attributes.status === 'rejected') throw attributes.reason;
+      return remoteSnapshot(remotePath, attributes.value, resolved.status === 'fulfilled' ? resolved.value : null);
+    }
     const stats = await sftpLstat(sftp, remotePath);
     let canonicalPath = null;
     try { canonicalPath = await sftpRealpath(sftp, remotePath); } catch { /* Broken symlink. */ }
@@ -582,11 +621,28 @@ async function readRemoteSnapshot(sftp, remotePath) {
   }
 }
 
-async function statRemotePathOnSftp(sftp, remotePath) {
+async function statRemotePathOnSftp(sftp, remotePath, options) {
   const normalized = normalizeAbsoluteRemotePath(remotePath);
-  const snapshot = await readRemoteSnapshot(sftp, normalized);
+  const snapshot = await readRemoteSnapshot(sftp, normalized, options);
   if (!snapshot.exists) throw new AppError('SOURCE_NOT_FOUND', '服务器路径不存在。');
   return snapshot;
+}
+
+// 提交校验只借用当前通道的路径读取能力；回调结束即失效，不暴露写入方法。
+async function checkUploadCommitOnSftp(sftp, lifecycle, callback) {
+  let active = true;
+  const available = () => {
+    if (!active) throw new AppError('SFTP_UNAVAILABLE', '上传路径校验已经结束。');
+    lifecycle.signal.throwIfAborted();
+  };
+  const reader = Object.freeze({ statPath:async remotePath => {
+    available();
+    const result = await statRemotePathOnSftp(sftp, remotePath);
+    available();
+    return result;
+  } });
+  try { return await callback(reader); }
+  finally { active = false; }
 }
 
 async function listRemoteDirectoryOnSftp(sftp, remotePath, { offset = 0, limit = 10_000, sortByName = false } = {}) {
@@ -624,7 +680,7 @@ async function listRemoteDirectoryOnSftp(sftp, remotePath, { offset = 0, limit =
   return result;
 }
 
-async function readRemoteBufferOnSftp(sftp, remotePath, start = 0, maxBytes = 262_144, lifecycle = {}, { allowGrowth = false, tail = false } = {}) {
+async function readRemoteBufferOnSftp(sftp, remotePath, start = 0, maxBytes = 262_144, lifecycle = {}, { allowGrowth = false, tail = false } = {}, { pipelineReadValidation = false } = {}) {
   const requestedLimit = Number(maxBytes);
   if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > SFTP_BINARY_READ_MAX_BYTES) {
     throw new AppError('INVALID_ARGUMENT', '二进制读取范围必须在 1 字节到 64 MiB 之间。', {
@@ -648,9 +704,16 @@ async function readRemoteBufferOnSftp(sftp, remotePath, start = 0, maxBytes = 26
   if (buffer.length !== expectedBytes) {
     throw new AppError('SOURCE_CHANGED', '服务器文件在读取期间发生变化，请重新搜索。', { path:canonical });
   }
-  let currentStats;
+  let currentStats, resolvedPath;
   try {
-    currentStats = await sftpStat(sftp, canonical);
+    if (pipelineReadValidation) {
+      // 正文和句柄均已收尾；两个末次校验全部完成后，仍优先处理属性错误和变化。
+      const [attributes, resolved] = await Promise.allSettled([sftpStat(sftp, canonical), sftpRealpath(sftp, normalized)]);
+      throwIfAborted(lifecycle.signal);
+      if (attributes.status === 'rejected') throw attributes.reason;
+      currentStats = attributes.value;
+      resolvedPath = resolved;
+    } else currentStats = await sftpStat(sftp, canonical);
   } catch (error) {
     const mapped = transferError(error);
     if (mapped.code === 'SOURCE_NOT_FOUND') {
@@ -665,8 +728,12 @@ async function readRemoteBufferOnSftp(sftp, remotePath, start = 0, maxBytes = 26
     || (Number(currentStats.mtime ?? 0) !== Number(stats.mtime ?? 0)
       && !(allowGrowth && sourceGrew && Number(currentStats.mtime ?? 0) >= Number(stats.mtime ?? 0)))
     || Number(currentStats.mode ?? 0) !== Number(stats.mode ?? 0)
-    || await sftpRealpath(sftp, normalized) !== canonical
   ) {
+    throw new AppError('SOURCE_CHANGED', '服务器文件在读取期间发生变化，请重新搜索。', { path:canonical });
+  }
+  if (resolvedPath?.status === 'rejected') throw resolvedPath.reason;
+  const currentPath = resolvedPath ? resolvedPath.value : await sftpRealpath(sftp, normalized);
+  if (currentPath !== canonical) {
     throw new AppError('SOURCE_CHANGED', '服务器文件在读取期间发生变化，请重新搜索。', { path:canonical });
   }
   return {
@@ -681,10 +748,49 @@ async function readRemoteBufferOnSftp(sftp, remotePath, start = 0, maxBytes = 26
   };
 }
 
-async function readRemoteRangeOnSftp(sftp, remotePath, start = 0, maxBytes = 262_144, lifecycle = {}, options = {}) {
+function remoteTextPage(result, limit, { tail = false } = {}) {
+  const buffer = result.content;
+  const continuation = byte => (byte & 0xc0) === 0x80;
+  const tooSmall = minimumBytes => new AppError('INVALID_ARGUMENT', 'maxBytes 不足以返回一个完整的 UTF-8 字符；请保留当前 cursor，增大 maxBytes 后重试。', {
+    field:'maxBytes', minimumBytes, suggestedValue:Math.max(4, minimumBytes),
+  });
+  let first = 0;
+  if (tail && buffer.length && result.startByte > 0 && continuation(buffer[0])) {
+    // 尾读只略过窗口开头的残缺字符，最多三个续字节；更长的序列按原有非法字节处理。
+    while (first < buffer.length && first < 4 && continuation(buffer[first])) first += 1;
+    if (first === 4) first = 0;
+    else if (first === buffer.length) throw tooSmall(4);
+  }
+  let end = first, outputBytes = 0, minimumBytes = 1;
+  const hasFollowingBytes = result.endByte < Math.max(result.size, result.observedSize ?? result.size);
+  while (end < buffer.length) {
+    const lead = buffer[end];
+    const width = lead < 0x80 ? 1 : lead >= 0xc2 && lead <= 0xdf ? 2 : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 1;
+    let consumed = 1, encoded = width === 1 && lead >= 0x80 ? 3 : width;
+    while (consumed < width && end + consumed < buffer.length) {
+      const byte = buffer[end + consumed];
+      if (!continuation(byte) || (consumed === 1 && ((lead === 0xe0 && byte < 0xa0) || (lead === 0xed && byte > 0x9f) || (lead === 0xf0 && byte < 0x90) || (lead === 0xf4 && byte > 0x8f)))) break;
+      consumed += 1;
+    }
+    if (consumed < width) {
+      // 已读窗口外还有字节时保留残缺前缀；真正到文件尾的非法 UTF-8 仍使用替换字符。
+      if (end + consumed === buffer.length && hasFollowingBytes) { minimumBytes = width; break; }
+      encoded = 3;
+    }
+    minimumBytes = encoded;
+    if (outputBytes + encoded > limit) break;
+    outputBytes += encoded;
+    end += consumed;
+  }
+  if (end === first && first < buffer.length) throw tooSmall(minimumBytes);
+  const endByte = result.startByte + end;
+  return { ...result, content:buffer.subarray(first, end).toString('utf8'), startByte:result.startByte + first, endByte, truncated:endByte < result.size };
+}
+
+async function readRemoteRangeOnSftp(sftp, remotePath, start = 0, maxBytes = 262_144, lifecycle = {}, options = {}, validation = {}) {
   const limit = Math.trunc(Math.min(Math.max(Number(maxBytes) || 1, 1), 1024 * 1024));
-  const result = await readRemoteBufferOnSftp(sftp, remotePath, start, limit, lifecycle, options);
-  return { ...result, content:result.content.toString('utf8') };
+  const result = await readRemoteBufferOnSftp(sftp, remotePath, start, limit, lifecycle, options, validation);
+  return remoteTextPage(result, limit, options);
 }
 
 async function requireRemoteSnapshot(sftp, remotePath, expected) {
@@ -920,6 +1026,8 @@ export class SshBroker {
           resolve({ client, observedFingerprint });
         });
         client.connect(connectionConfig);
+        // 目录与终端依赖小包往返，禁用客户端合包等待；隧道通道由 ssh2 自行判断是否支持。
+        client.setNoDelay?.(true);
       });
       this.assertPendingConnection(projectId, attempt);
       if (!config.ssh.hostKeyFingerprint && session.observedFingerprint) {
@@ -941,6 +1049,7 @@ export class SshBroker {
       const clearInterruptedSession = (reason) => {
         if (this.sessions.get(projectId) === record) {
           this.sessions.delete(projectId);
+          record.workspaceReads?.dispose();
           if (this.generations.get(projectId) === record.generation) this.generations.delete(projectId);
           this.lifecycleHandler?.({ projectId, type: 'lost', generation: record.generation, reason });
           this.invalidateProjectContexts(projectId);
@@ -1009,6 +1118,7 @@ export class SshBroker {
     const session = this.sessions.get(projectId);
     if (!session) return { connected: false };
     this.sessions.delete(projectId);
+    session.workspaceReads?.dispose();
     this.lifecycleHandler?.({ projectId, type: 'disconnected', generation: session.generation, reason });
     if (this.generations.get(projectId) === session.generation) this.generations.delete(projectId);
     this.invalidateProjectContexts(projectId);
@@ -1229,31 +1339,38 @@ export class SshBroker {
     });
   }
 
-  async withInternalSftp(projectId, operation, { timeoutMs = SFTP_READ_INACTIVITY_MS, inactivityMs = 0, signal = null, timeoutMessage } = {}) {
+  async withInternalSftp(projectId, operation, { timeoutMs = SFTP_READ_INACTIVITY_MS, inactivityMs = 0, signal = null, timeoutMessage, reuseWorkspace = false } = {}) {
     const session = this.requireSession(projectId);
+    const pool = reuseWorkspace ? session.workspaceReads ??= new SftpReadPool(session.client) : null;
     return withSftp(
-      session.client,
+      pool ?? session.client,
       (sftp, lifecycle) => operation(sftp, session, lifecycle),
       {
         timeoutMs,
         signal,
         timeoutCode: 'SFTP_OPERATION_TIMEOUT',
         inactivityMs,
+        releaseSftp: pool ? channel => pool.release(channel) : null,
+        discardSftp: pool ? channel => pool.discard(channel) : null,
         timeoutMessage: timeoutMessage ?? '服务器文件操作超过时限。日志搜索请指定单个文件、合并 queries 并缩小 maxScanBytes；目录和 stat 正常时无需重新连接。',
       },
     );
   }
 
-  async withRemoteReadSession(projectId, operation, { signal = null } = {}) {
+  withWorkspaceReadSession(projectId, operation, { signal = null } = {}) {
+    return this.withRemoteReadSession(projectId, operation, { signal, reuseWorkspace: true });
+  }
+
+  async withRemoteReadSession(projectId, operation, { signal = null, reuseWorkspace = false, pipelineMetadata = false, pipelineReadValidation = false } = {}) {
     if (typeof operation !== 'function') throw new AppError('INVALID_ARGUMENT', '服务器只读会话操作无效。');
     return this.withInternalSftp(projectId, async (sftp, session, lifecycle) => operation({
       generation: session.generation,
-      statPath: (remotePath) => statRemotePathOnSftp(sftp, remotePath),
+      statPath: (remotePath) => statRemotePathOnSftp(sftp, remotePath, { pipeline: reuseWorkspace || pipelineMetadata }),
       inspectDeletePath: (remotePath) => inspectWorkspaceDeletePath(sftp, remotePath),
       listDirectory: (remotePath) => listRemoteDirectoryOnSftp(sftp, remotePath),
       // 人工目录树直接使用 READDIR 属性，链接目标由后续批次查询。
-      listDirectoryEntries: async (remotePath) => {
-        const entries = await sftpReadWorkspaceDirectory(sftp, normalizeAbsoluteRemotePath(remotePath), 10_003, lifecycle);
+      listDirectoryEntries: async (remotePath, { afterRead } = {}) => {
+        const entries = await sftpReadWorkspaceDirectory(sftp, normalizeAbsoluteRemotePath(remotePath), 10_003, lifecycle, afterRead);
         const valid = entries.filter((entry) => entry.filename !== '.' && entry.filename !== '..');
         return {
           truncated: valid.length > 10_000,
@@ -1266,11 +1383,12 @@ export class SshBroker {
           })),
         };
       },
-      readRange: (remotePath, start, maxBytes, options) => readRemoteRangeOnSftp(sftp, remotePath, start, maxBytes, lifecycle, options),
-      readBuffer: (remotePath, start, maxBytes, options) => readRemoteBufferOnSftp(sftp, remotePath, start, maxBytes, lifecycle, options),
+      readRange: (remotePath, start, maxBytes, options) => readRemoteRangeOnSftp(sftp, remotePath, start, maxBytes, lifecycle, options, { pipelineReadValidation }),
+      readBuffer: (remotePath, start, maxBytes, options) => readRemoteBufferOnSftp(sftp, remotePath, start, maxBytes, lifecycle, options, { pipelineReadValidation }),
     }), {
       timeoutMs: SFTP_READ_SESSION_TIMEOUT_MS,
       signal,
+      reuseWorkspace,
     });
   }
 
@@ -1332,7 +1450,8 @@ export class SshBroker {
     assertNotCancelled();
     const source = path.resolve(String(localPath ?? ''));
     const target = normalizeAbsoluteRemotePath(remotePath);
-    if (resumable) return uploadWithCheckpoints(this, projectId, source, target, precondition, { onProgress, signal, beforeCommit, checkpoint, onCheckpoint, shouldPause }, {
+    const verifyCommit = beforeCommit ? (sftp, lifecycle) => checkUploadCommitOnSftp(sftp, lifecycle, beforeCommit) : undefined;
+    if (resumable) return uploadWithCheckpoints(this, projectId, source, target, precondition, { onProgress, signal, beforeCommit:verifyCommit, checkpoint, onCheckpoint, shouldPause }, {
       lstat: value => fsp.lstat(value), openLocal: value => fsp.open(value, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0)),
       requireRemoteSnapshot, rename: sftpRename, timeouts: uploadTimeouts,
     });
@@ -1404,7 +1523,7 @@ export class SshBroker {
         }
         const uploaded = await sftpStat(sftp, temporary);
         if (Number(uploaded.size) !== before.size) throw new AppError('TRANSFER_INTEGRITY_FAILED', '远端临时文件大小与本地文件不一致。');
-        await beforeCommit?.();
+        await verifyCommit?.(sftp, lifecycle);
         await requireRemoteSnapshot(sftp, target, precondition.remote);
         throwIfAborted(lifecycle.signal);
         await sftpRename(sftp, temporary, target, { overwrite: precondition.remote.exists });
@@ -1435,7 +1554,7 @@ export class SshBroker {
         const written = await sftpStat(sftp, temporary);
         if (Number(written.size) !== buffer.length) throw new AppError('TRANSFER_INTEGRITY_FAILED', '远端临时文件大小与写入内容不一致。');
         await requireRemoteSnapshot(sftp, target, precondition.remote);
-        await sftpRename(sftp, temporary, target);
+        await sftpRename(sftp, temporary, target, { overwrite: precondition.remote.exists });
       } catch (error) {
         if (!lifecycle.signal.aborted && !isSftpInterruptedError(error)) await sftpUnlink(sftp, temporary);
         throw error;
@@ -1452,8 +1571,13 @@ export class SshBroker {
       || precondition.destination?.exists !== false) throw new AppError('INVALID_ARGUMENT', '文件操作参数无效。');
     return this.withInternalSftp(projectId, async (sftp, _session, lifecycle) => {
       const checkParent = async () => {
-        const actual = await sftpRealpath(sftp, parentPath);
-        const entry = await readRemoteSnapshot(sftp, canonicalParent);
+        // 独立读取重叠等待；两路均收尾后再检查，保留原错误优先级和提交前的再次复核。
+        const reads = await Promise.allSettled([
+          sftpRealpath(sftp, parentPath),
+          readRemoteSnapshot(sftp, canonicalParent),
+        ]);
+        for (const result of reads) if (result.status === 'rejected') throw result.reason;
+        const [actual, entry] = reads.map(result => result.value);
         if (actual !== canonicalParent || !entry.exists || entry.type !== 'directory' || entry.canonicalPath !== canonicalParent) {
           throw new AppError('WORKSPACE_PATH_CHANGED', '目标父目录已变化，请重新确认。');
         }
@@ -1509,7 +1633,7 @@ export class SshBroker {
     return this.withInternalSftp(projectId, async (sftp) => {
       await requireRemoteSnapshot(sftp, source, precondition.source);
       await requireRemoteSnapshot(sftp, destination, precondition.destination);
-      await sftpRename(sftp, source, destination);
+      await sftpRename(sftp, source, destination, { overwrite: precondition.destination.exists });
       return { sourcePath:source, destinationPath:destination, moved:true };
     });
   }

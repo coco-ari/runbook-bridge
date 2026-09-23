@@ -170,6 +170,7 @@ export class BrokerServer {
         maxDepth:params.maxDepth,
         maxFiles:params.maxFiles,
         maxMatches:params.maxMatches,
+        maxResultBytes:params.maxResultBytes,
         cursor:params.cursor,
         refresh:params.refresh,
         maxLines:params.maxLines,

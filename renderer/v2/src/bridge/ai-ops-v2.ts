@@ -708,7 +708,8 @@ export interface AiOpsV2Api {
   serverTerminalClipboard(payload: PluginScope & { sessionId: string } & ({ action: "copy"; text: string } | { action: "paste" })): Promise<IpcResult<{ text?: string }>>
   serverTerminalResize(payload: PluginScope & { sessionId: string; cols: number; rows: number }): Promise<IpcResult<OpaqueData>>
   serverTerminalClose(payload: PluginScope & { sessionId: string }): Promise<IpcResult<OpaqueData>>
-  serverWorkspaceListDirectory(payload: PluginScope & { path: string; cursor?: string | null; snapshotId?: string; deferLinks?: boolean; resolveLinks?: boolean }): Promise<IpcResult<ServerDirectoryPage>>
+  serverWorkspaceListDirectory(payload: PluginScope & { path: string; cursor?: string | null; snapshotId?: string; deferLinks?: boolean; resolveLinks?: boolean; requestId?: string }): Promise<IpcResult<ServerDirectoryPage>>
+  serverWorkspaceCancelDirectoryRead(payload: PluginScope & { requestId: string }): Promise<IpcResult<{ cancelled: boolean }>>
   serverWorkspaceFileInfo(payload: PluginScope & { path: string }): Promise<IpcResult<ServerFileInfo>>
   serverWorkspacePrepareFileAction(payload: PluginScope & ({ kind: "mkdir" | "rename"; path: string; name: string } | { kind: "delete"; path: string })): Promise<IpcResult<ServerFileActionPreparation>>
   serverWorkspaceConfirmFileAction(payload: PluginScope & { operationId: string }): Promise<IpcResult<ServerFileActionResult>>
@@ -809,6 +810,7 @@ export const AI_OPS_V2_API_NAMES = [
   "serverTerminalResize",
   "serverTerminalClose",
   "serverWorkspaceListDirectory",
+  "serverWorkspaceCancelDirectoryRead",
   "serverWorkspaceFileInfo",
   "serverWorkspacePrepareFileAction",
   "serverWorkspaceConfirmFileAction",

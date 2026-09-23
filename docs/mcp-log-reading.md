@@ -20,6 +20,14 @@
 
 以上仅列操作参数；实际 MCP 请求还需要当前环境的作用域字段和有效上下文。`tail:true` 不能与 `cursor` 同时使用；分页继续使用返回的 `nextCursor`。`size` 是本次开始读取时的文件大小，`observedSize` 和 `sourceGrew` 表示随后观察到的增长。
 
+## 普通文本的字节分页
+
+server_read_file、server_read_log 和 server_read_config 返回完整 UTF-8 字符，实际正文可能少于 maxBytes；请使用返回的 nextCursor，不要用原预算自行计算下一页位置。普通文件和日志的原始 READ 不扩大到请求预算之外，正文解码后也受预算限制；配置仍按原有 1 MiB 上限读取并校验，然后在内存中分页。
+
+当预算连下一个完整字符都无法容纳时，返回 INVALID_ARGUMENT，details.field 为 maxBytes，minimumBytes 和 suggestedValue 给出可用预算。例如 A中B 用 2 字节预算先返回 A 和 nextCursor:1，随后同一 cursor:1 会提示至少容纳 3 字节；增大预算后可以继续。非空成功页不会产生不前进的游标。这里的数字字节游标允许调整 maxBytes，和 server_search_logs 必须保持参数一致的不透明游标不同。
+
+尾读窗口若从多字节字符中间开始，会向文件末尾方向跳过开头残缺字符，并返回实际 startByte；窗口过小则提示增加预算。非 UTF-8 输入保持替换字符语义，返回预算仍生效；手工把普通文件或日志的字节 cursor 放到字符中间可能得到替换字符。配置读取拥有完整文本，可以明确拒绝这种 cursor。有效 UTF-8 从文件开头按工具返回的游标读取不会因分页产生替换字符。
+
 ## ZIP / GZIP 轮转日志
 
 搜索支持 `.zip`、`.gz`、`.gzip`，也会识别普通扩展名下的压缩魔数。`pattern:"*.log"` 同时匹配对应归档文件名。使用单个文件路径、日期文件名模式和一次多个 `queries` 可以减少重复传输。

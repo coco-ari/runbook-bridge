@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { ServerWorkspaceFiles } from '../src/server-workspace-files.mjs';
 import { ServerOperations } from '../src/server-operations.mjs';
 import { workspaceEntryName } from '../src/server-workspace-actions.mjs';
@@ -256,4 +257,101 @@ test('目录读取不能确定结束时有界停止，关闭句柄且不给删�
   assert.equal(f.workspace.actions.records.size,0);
   assert.equal(f.counters.rmdirs,0);
   assert.equal(f.files.has('/srv/empty'),true);
+});
+
+// 保留真实 SFTP 请求，只延迟指定回调，以验证双路检查均结束前不会执行变更。
+test('重命名两轮父目录检查并行等待，任一路未完成时不能提交', { timeout:15000 }, async t => {
+  const f = await setup(t), prepared = await f.prepare('rename', '/srv/app.jar', 'parallel.jar');
+  const client = f.broker.requireSession('fixture').client, originalSftp = client.sftp;
+  const gates = [];
+  let intercept = true, parentReads = 0, snapshotsFinished = 0, commits = 0;
+  f.beforeCommit(() => { commits += 1; });
+  client.sftp = function(callback) {
+    return originalSftp.call(this, (error, channel) => {
+      if (error) { callback(error); return; }
+      const realpath = channel.realpath, lstat = channel.lstat;
+      let parentPaths = 0;
+      channel.lstat = function(target, done) {
+        if (target === '/srv') parentReads += 1;
+        return lstat.call(this, target, done);
+      };
+      channel.realpath = function(target, done) {
+        const index = target === '/srv' ? parentPaths++ : -1;
+        return realpath.call(this, target, (failure, value) => {
+          if (intercept && (index === 0 || index === 2)) gates.push((() => { let released = false; return () => { if (!released) { released = true; done(failure, value); } }; })());
+          else { if (index === 1 || index === 3) snapshotsFinished += 1; done(failure, value); }
+        });
+      };
+      callback(null, channel);
+    });
+  };
+  const pending = f.confirm(prepared);
+  pending.catch(() => {});
+  const waitFor = async predicate => {
+    for (let attempt = 0; attempt < 200 && !predicate(); attempt += 1) await delay(10);
+    assert.ok(predicate(), '父目录路径与属性读取应独立完成');
+  };
+  try {
+    for (let phase = 0; phase < 2; phase += 1) {
+      await waitFor(() => gates.length === phase + 1 && snapshotsFinished === phase + 1);
+      assert.equal(parentReads, phase + 1);
+      assert.equal(commits, phase); assert.equal(f.counters.renames, 0);
+      gates[phase]();
+    }
+    await pending;
+    assert.equal(f.counters.renames, 1);
+    assert.equal(f.files.get('/srv/parallel.jar').toString(), 'fixture');
+  } finally {
+    intercept = false;
+    // 清理仅释放仍被测试扣留的回调，避免失败断言让共享连接悬挂。
+    for (const release of gates) release();
+    await pending.catch(() => {});
+    client.sftp = originalSftp;
+  }
+});
+
+test('并行父目录检查失败、路径变化或取消时不执行重命名', { timeout:15000 }, async t => {
+  for (const scenario of ['snapshot-error', 'path-changed', 'cancel']) await t.test(scenario, async child => {
+    const f = await setup(child), prepared = await f.prepare('rename', '/srv/app.jar', 'must-stay-absent.jar');
+    const client = f.broker.requireSession('fixture').client, originalSftp = client.sftp;
+    let release, captured = false, siblingFinished = false, settled = false;
+    client.sftp = function(callback) {
+      return originalSftp.call(this, (error, channel) => {
+        if (error) { callback(error); return; }
+        const realpath = channel.realpath, lstat = channel.lstat;
+        channel.lstat = function(target, done) {
+          return lstat.call(this, target, (failure, value) => {
+            if (target === '/srv' && scenario === 'snapshot-error') {
+              siblingFinished = true; done(Object.assign(new Error('synthetic permission failure'), { code:3 }));
+            } else done(failure, value);
+          });
+        };
+        channel.realpath = function(target, done) {
+          const hold = target === '/srv' && !captured;
+          if (hold) captured = true;
+          return realpath.call(this, target, (failure, value) => {
+            if (hold) release = () => done(failure, scenario === 'path-changed' ? '/other' : value);
+            else { if (target === '/srv') siblingFinished = true; done(failure, value); }
+          });
+        };
+        callback(null, channel);
+      });
+    };
+    const pending = f.confirm(prepared);
+    pending.then(() => { settled = true; }, () => { settled = true; });
+    try {
+      for (let attempt = 0; attempt < 200 && (!release || !siblingFinished); attempt += 1) await delay(10);
+      assert.ok(release && siblingFinished);
+      assert.equal(settled, false);
+      if (scenario === 'cancel') f.workspace.closeOwner(owner);
+      else { const complete = release; release = null; complete(); }
+      await assert.rejects(pending, { code:scenario === 'cancel' ? 'TRANSFER_CANCELLED' : scenario === 'path-changed' ? 'WORKSPACE_PATH_CHANGED' : 'SOURCE_ACCESS_DENIED' });
+      assert.equal(f.counters.renames, 0);
+      assert.equal(f.files.get('/srv/app.jar').toString(), 'fixture');
+      assert.equal(f.files.has('/srv/must-stay-absent.jar'), false);
+      await assert.rejects(f.confirm(prepared), { code:'WORKSPACE_ACTION_EXPIRED' });
+    } finally {
+      release?.(); await pending.catch(() => {}); client.sftp = originalSftp;
+    }
+  });
 });

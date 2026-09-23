@@ -4,38 +4,139 @@ import { AppError } from './errors.mjs';
 export const UPLOAD_BLOCK_BYTES = 32 * 1024;
 export const UPLOAD_WINDOW_BLOCKS = 32;
 
-// 每批最多 1 MiB；只在整批写入回执到齐后推进可恢复的连续偏移。
-export async function writeUploadBlocks({ sftp, handle, localHandle, size, start = 0, hash = crypto.createHash('sha256'), signal, onAcknowledged, onCheckpoint, checkPause }) {
+const connectionWriteWindows = new WeakMap();
+
+// 同一 SSH 连接的上传共用额度，避免两个 SFTP 通道各自积压一整批。
+class UploadWriteWindow {
+  constructor() {
+    this.jobs = [];
+    this.active = 0;
+    this.users = 0;
+    this.generation = 0;
+    this.pumping = false;
+  }
+  enter(now) {
+    if (this.users++ === 0) {
+      this.now = now;
+      this.limit = 1;
+      this.baseline = Infinity;
+      this.fastAcks = 0;
+      this.generation += 1;
+    }
+  }
+  resize(limit) {
+    this.limit = limit;
+    this.fastAcks = 0;
+    this.generation += 1;
+  }
+  acknowledged(elapsed, generation, baselineProbe) {
+    // 只有无其他在途写入的单请求可重测基线，不能用旧窗口的排队回执抬高阈值。
+    this.baseline = baselineProbe && generation === this.generation ? elapsed : Math.min(this.baseline, elapsed);
+    if (elapsed >= 2000 || elapsed > Math.max(this.baseline * 1.5, this.baseline + 50)) {
+      this.resize(Math.max(1, Math.floor(this.limit / 2)));
+    } else if (generation === this.generation && ++this.fastAcks >= this.limit) {
+      // 稳定高 RTT 仍可扩窗；只有实际回执变慢才收缩，不按 RTT 线性封顶。
+      // 扩窗保留同一代次的有效确认；只有缩窗或空闲重启才隔离旧确认。
+      this.limit = Math.min(UPLOAD_WINDOW_BLOCKS, this.limit * 2);
+      this.fastAcks = 0;
+    }
+  }
+  finish(job, error) {
+    if (job.done) return;
+    job.done = true;
+    job.signal?.removeEventListener('abort', job.abort);
+    const index = this.jobs.indexOf(job);
+    if (index !== -1) this.jobs.splice(index, 1);
+    if (error) job.reject(error);
+    else job.resolve();
+  }
+  run(options) {
+    return new Promise((resolve, reject) => {
+      const job = { ...options, resolve, reject, offset:0, remaining:Math.ceil(options.buffer.length / UPLOAD_BLOCK_BYTES), done:false };
+      job.abort = () => {
+        this.finish(job, job.signal.reason ?? new AppError('TRANSFER_CANCELLED', '文件传输已停止。'));
+        this.pump();
+      };
+      this.jobs.push(job);
+      job.signal?.addEventListener('abort', job.abort, {once:true});
+      if (job.signal?.aborted) job.abort();
+      else this.pump();
+    });
+  }
+  pump() {
+    if (this.pumping) return;
+    this.pumping = true;
+    try {
+      while (this.active < this.limit) {
+        const index = this.jobs.findIndex(job => job.offset < job.buffer.length);
+        if (index === -1) break;
+        const [job] = this.jobs.splice(index, 1);
+        this.jobs.push(job);
+        if (job.signal?.aborted) { job.abort(); continue; }
+        const offset = job.offset, bytes = Math.min(UPLOAD_BLOCK_BYTES, job.buffer.length - offset);
+        const started = this.now(), generation = this.generation, baselineProbe = this.limit === 1 && this.active === 0;
+        job.offset += bytes;
+        this.active += 1;
+        let returned = false;
+        const complete = error => {
+          if (returned) return;
+          returned = true;
+          this.active -= 1;
+          // 迟到回执只归还连接额度，不更新进度，也不复活已失败或取消的批次。
+          if (!job.done) {
+            if (error) {
+              this.resize(Math.max(1, Math.floor(this.limit / 2)));
+              this.finish(job, error);
+            } else if (job.signal?.aborted) job.abort();
+            else {
+              this.acknowledged(Math.max(0, this.now() - started), generation, baselineProbe);
+              try {
+                job.onAcknowledged(bytes);
+                if (!job.done && --job.remaining === 0) this.finish(job);
+              } catch (callbackError) { this.finish(job, callbackError); }
+            }
+          }
+          this.pump();
+        };
+        // 同步失败也必须先撤销该批次，再考虑发出下一块。
+        try { job.sftp.write(job.handle, job.buffer, offset, bytes, job.position + offset, complete); }
+        catch (error) { complete(error); }
+      }
+    } finally { this.pumping = false; }
+  }
+}
+
+// 每批最多 1 MiB；读取、哈希和可恢复偏移仍只在整批回执到齐后推进。
+export async function writeUploadBlocks({ sftp, handle, localHandle, size, start = 0, hash = crypto.createHash('sha256'), signal, onAcknowledged, onCheckpoint, checkPause, writeScope = sftp, now = () => performance.now() }) {
+  let window = connectionWriteWindows.get(writeScope);
+  if (!window) { window = new UploadWriteWindow(); connectionWriteWindows.set(writeScope, window); }
+  window.enter(now);
   let position = start;
   let acknowledged = start;
-  checkPause?.();
-  while (position < size) {
-    signal?.throwIfAborted();
-    const buffer = Buffer.allocUnsafe(Math.min(UPLOAD_BLOCK_BYTES * UPLOAD_WINDOW_BLOCKS, size - position));
-    let filled = 0;
-    while (filled < buffer.length) {
-      const { bytesRead } = await localHandle.read(buffer, filled, buffer.length - filled, position + filled);
-      if (!bytesRead) throw new AppError('LOCAL_FILE_CHANGED', '本地文件在上传期间发生变化。');
-      filled += bytesRead;
+  try {
+    checkPause?.();
+    while (position < size) {
       signal?.throwIfAborted();
-    }
-    hash.update(buffer);
-    const writes = [];
-    for (let offset = 0; offset < buffer.length; offset += UPLOAD_BLOCK_BYTES) {
-      const bytes = Math.min(UPLOAD_BLOCK_BYTES, buffer.length - offset);
-      writes.push(sftpCall(sftp, 'write', handle, buffer, offset, bytes, position + offset).then(() => {
-        if (signal?.aborted) return;
+      const buffer = Buffer.allocUnsafe(Math.min(UPLOAD_BLOCK_BYTES * UPLOAD_WINDOW_BLOCKS, size - position));
+      let filled = 0;
+      while (filled < buffer.length) {
+        const { bytesRead } = await localHandle.read(buffer, filled, buffer.length - filled, position + filled);
+        if (!bytesRead) throw new AppError('LOCAL_FILE_CHANGED', '本地文件在上传期间发生变化。');
+        filled += bytesRead;
+        signal?.throwIfAborted();
+      }
+      hash.update(buffer);
+      await window.run({sftp, handle, buffer, position, signal, onAcknowledged:bytes => {
         acknowledged += bytes;
         onAcknowledged?.(acknowledged);
-      }));
+      }});
+      signal?.throwIfAborted();
+      position += buffer.length;
+      onCheckpoint?.({ bytes: position, sha256: hash.copy().digest('hex') });
+      checkPause?.();
     }
-    await abortable(Promise.all(writes), signal);
-    signal?.throwIfAborted();
-    position += buffer.length;
-    onCheckpoint?.({ bytes: position, sha256: hash.copy().digest('hex') });
-    checkPause?.();
-  }
-  return { bytes: position, sha256: hash.digest('hex') };
+    return { bytes: position, sha256: hash.digest('hex') };
+  } finally { window.users -= 1; }
 }
 
 export function sftpCall(sftp, method, ...args) {
@@ -177,7 +278,7 @@ export async function uploadWithCheckpoints(broker, projectId, source, target, p
             if (targetFile.stat.size !== expected.size || await remoteHash(sftp, remoteHandle, expected.size, lifecycle) !== expected.sha256
               || !sameRemote(targetFile.stat, await call('fstat', remoteHandle))) throw new AppError('REMOTE_CHANGED', '上次提交结果无法确认，请核对服务器文件。');
             await call('close', remoteHandle); remoteHandle = null;
-            await beforeCommit?.();
+            await beforeCommit?.(sftp, lifecycle);
             if (!sameLocal(await localHandle.stat()) || !sameLocal(await helpers.lstat(source))) throw new AppError('LOCAL_FILE_CHANGED', '本地文件在检查期间发生变化。');
             reconciled = true;
             return;
@@ -196,7 +297,7 @@ export async function uploadWithCheckpoints(broker, projectId, source, target, p
         state.phase = 'uploading'; publish();
         let lastPublished = 0;
         const result = await writeUploadBlocks({
-          sftp, handle:remoteHandle, localHandle, size:expected.size, start:state.bytes, hash:local.prefix, signal:lifecycle.signal, checkPause,
+          sftp, handle:remoteHandle, localHandle, size:expected.size, start:state.bytes, hash:local.prefix, signal:lifecycle.signal, checkPause, writeScope:_session?.client ?? sftp,
           onAcknowledged: bytes => {
             lifecycle.reportProgress({phase:'uploading',transferredBytes:bytes,totalBytes:expected.size});
             if (Date.now()-lastPublished >= 250 || bytes === expected.size) { lastPublished=Date.now(); onProgress?.({transferredBytes:bytes,phase:'uploading'}); }
@@ -208,7 +309,7 @@ export async function uploadWithCheckpoints(broker, projectId, source, target, p
         const complete = await call('fstat', remoteHandle);
         if (!validRegular(complete, expected.size) || complete.size !== expected.size) throw new AppError('TRANSFER_INTEGRITY_FAILED', '临时文件大小与源文件不一致。');
         await call('close', remoteHandle); remoteHandle = null;
-        await beforeCommit?.();
+        await beforeCommit?.(sftp, lifecycle);
         await abortable(helpers.requireRemoteSnapshot(sftp, target, precondition.remote), lifecycle.signal);
         lifecycle.signal.throwIfAborted();
         const named = await call('lstat', state.temporary);

@@ -105,6 +105,18 @@ test('正式上传通道：取消及时退出且不提交', {timeout:15000}, asy
   assert.equal(f.files.size,0);
 });
 
+test('正式上传通道：取消后迟到写入不复活文件，共享 SSH 连接仍可用', {timeout:15000}, async t => {
+  const f=await setup(t), controller=new AbortController();
+  f.faults.onWrite=() => controller.abort();
+  await assert.rejects(f.send({signal:controller.signal}), {code:'TRANSFER_CANCELLED'});
+  f.faults.onWrite=null;
+  assert.equal(f.files.size,0);
+  assert.equal(f.broker.status('fixture').connected,true);
+  const probe=await f.broker.executeApproved('fixture','probe');
+  assert.equal(probe.exitCode,0); assert.equal(f.counters.probes,1);
+  assert.equal(f.files.size,0);
+});
+
 test('正式上传通道：提交前目录授权失败或目标出现时不发布', async t=>{
   for(const cause of ['scope','target']) await t.test(cause,async child=>{
     const f=await setup(child);
@@ -138,6 +150,8 @@ test('正式上传通道：保留覆盖目标权限，不支持覆盖时保留�
 
 test('真实断线事件经桌面任务、重新确认、原任务续传至完成', {timeout:30000},async t=>{
   const f=await setup(t);
+  // 提交检查通过真实通道读取目录，夹具需提供实际根目录属性。
+  f.files.set('/', Buffer.alloc(0)); f.modes.set('/', 0o40755);
   const scope={projectId:'fixture',environmentId:'fixture-env',pluginInstanceId:'fixture-server'};
   const plugin={...scope,revision:1,pluginType:'server',configState:'ready',target:{hostKeyFingerprint:f.fingerprint}};
   const runtime=new EventEmitter();

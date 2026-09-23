@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import test from 'node:test';
+import { ServerOperations } from '../src/server-operations.mjs';
+import { BoundedReadScheduler } from '../src/bounded-read-scheduler.mjs';
 import { ServerWorkspaceFiles } from '../src/server-workspace-files.mjs';
 import { registerServerWorkspaceIpc } from '../src/server-workspace-ipc.mjs';
 
@@ -551,6 +553,38 @@ test('目录快照绑定窗口、路径、配置和连接代次，刷新替换�
   await assert.rejects(h.files.listDirectory(owner, { ...h.input, snapshotId: refreshed.snapshotId, cursor: '200' }), { code: 'WORKSPACE_PATH_CHANGED' });
 });
 
+test('并发首次目录读取共享完整校验，不为等待者另开会话，后续分页和刷新仍重新校验', async t => {
+  const h = cachedHarness(); t.after(() => h.files.dispose());
+  let release; h.setScan(() => new Promise(resolve => { release = resolve; }));
+  const pending = Promise.all([1,2].map(() => h.files.listDirectory(owner, h.input)));
+  await flush(); assert.equal(h.calls.scans, 1); release();
+  const [first, joined] = await pending;
+  assert.equal(first.snapshotId, joined.snapshotId); assert.deepEqual(first.entries, joined.entries);
+  assert.equal(h.calls.sessions, 1, '等待同一首次扫描的调用不再申请第二次读取会话');
+  assert.deepEqual(h.calls.stats, [h.input.path, h.input.path], '共享结果仍经过扫描前后两次路径检查');
+  await h.files.listDirectory(owner, { ...h.input, snapshotId:first.snapshotId, cursor:first.nextCursor });
+  assert.equal(h.calls.sessions, 2); assert.equal(h.calls.stats.length, 3, '后来的分页请求仍复核路径');
+  h.setScan(async () => {});
+  const refreshed = await h.files.listDirectory(owner, h.input);
+  assert.notEqual(refreshed.snapshotId, first.snapshotId); assert.equal(h.calls.scans, 2);
+  assert.equal(h.calls.stats.length, 5, '完成后的显式刷新重新执行前后检查');
+});
+
+test('并发首次目录读取遇到路径或配置变化时全部拒绝，不留下可用快照', async t => {
+  for (const change of ['path','revision']) await t.test(change, async child => {
+    const h = cachedHarness(); child.after(() => h.files.dispose());
+    let release; h.setScan(() => new Promise(resolve => { release = resolve; }));
+    const pending = Promise.allSettled([1,2].map(() => h.files.listDirectory(owner, h.input)));
+    await flush();
+    if (change === 'path') h.setCanonical('/srv/changed'); else h.plugin.revision += 1;
+    release();
+    const results = await pending;
+    assert.ok(results.every(result => result.status === 'rejected'));
+    assert.ok(results.every(result => result.reason.code === (change === 'path' ? 'WORKSPACE_PATH_CHANGED' : 'WORKSPACE_CHANGED')));
+    assert.equal(h.files.directoryCache.snapshots.size, 0);
+  });
+});
+
 test('并发首次读取合并扫描，窗口关闭中止读取且迟到响应不能重建缓存', async (t) => {
   const h = cachedHarness(); t.after(() => h.files.dispose());
   let release; h.setScan(() => new Promise((resolve) => { release = resolve; }));
@@ -921,4 +955,147 @@ test('退出统计覆盖多个工作区、暂停和取消尚未收尾任务，�
   assert.deepEqual(h.files.exitSummary(),{active:5,resumable:2});
   h.files.jobs.clear();
   assert.deepEqual(h.files.exitSummary(),{active:0,resumable:0});
+});
+
+test('两个并发文件预览复用各自的有界读取会话，不再次排队占用名额', async t => {
+  const h = harness(); t.after(() => h.files.dispose());
+  const scheduler = new BoundedReadScheduler({ maxConcurrent: 2, maxPerKey: 2, queueTimeoutMs: 100 });
+  const operations = new ServerOperations(h.runtime, h.store);
+  t.after(() => operations.docker.dispose());
+  h.files.serverOperations = operations;
+  let sessions = 0; let nestedReads = 0;
+  const stats = [];
+  const reads = [];
+  const readRange = async (target, offset, limit, options) => {
+    reads.push({ target, offset, limit, options });
+    return { canonicalPath: target, content: 'fixture', startByte: 0, endByte: 7, size: 7, mtime: 1, truncated: false };
+  };
+  h.runtime.withRemoteReadSession = (_plugin, operation) => scheduler.run('server', 1, async () => {
+    sessions += 1;
+    await flush();
+    return operation({
+      statPath: async target => { stats.push(target); return { type: 'file', canonicalPath: target }; },
+      readRange,
+    });
+  });
+  h.runtime.readRemoteRange = (_plugin, ...args) => {
+    nestedReads += 1;
+    return scheduler.run('server', 1, () => readRange(...args));
+  };
+  const paths = ['/one.txt', '/two.txt'];
+  const result = await Promise.all(paths.map(selected => h.files.readFile(owner, { ...scope, path: selected })));
+  assert.deepEqual(result.map(item => item.path), paths);
+  assert.ok(result.every(item => item.content === 'fixture' && item.nextCursor === null));
+  assert.equal(sessions, 2);
+  assert.equal(nestedReads, 0);
+  assert.equal(reads.length, 2);
+  assert.ok(reads.every(item => item.offset === 0 && item.limit === 262_144 && item.options.allowGrowth === true));
+  for (const selected of paths) assert.equal(stats.filter(target => target === selected).length, 2, '读取前后仍检查同一路径');
+});
+
+test('取消暂停或中断任务明确提示临时文件保留，排队取消不显示仍在等待', async t => {
+  for (const status of ['paused', 'interrupted', 'queued']) await t.test(status, async child => {
+    const h = harness(); child.after(() => h.files.dispose());
+    const job = {
+      ownerId: owner, scope, jobId: 'cancel-feedback', status, inFlight: false, direction: 'upload',
+      controller: new AbortController(), checkpoint: status === 'queued' ? undefined : { owned: true, temporary: '/private-partial', bytes: 50 },
+      args: { localPath: 'private-source' }, name: 'sample.bin', path: '/srv/sample.bin', bytes: 100, transferred: 50,
+    };
+    h.files.jobs.set(job.jobId, job);
+    const result = h.files.cancelUpload(owner, { ...scope, jobId: job.jobId });
+    assert.equal(result.status, 'cancelled');
+    assert.equal(result.canRemove, true);
+    assert.equal(result.message.includes('临时文件'), status !== 'queued');
+    assert.equal(result.message.includes('正在取消'), false);
+    assert.equal(JSON.stringify(result).includes('/private-partial'), false);
+    assert.equal(job.checkpoint, undefined);
+    assert.equal(job.args, undefined);
+    assert.equal(h.uploads.length, 0, '取消反馈不隐式启动上传或删除');
+  });
+});
+
+
+test('已取消的目录读取不创建扫描或缓存', async t => {
+  const h=cachedHarness();t.after(()=>h.files.dispose());
+  const binding=await h.files.requirePlugin(owner,h.input), controller=new AbortController();controller.abort();
+  await assert.rejects(h.files.directoryCache.list(owner,h.input,h.plugin,binding,{signal:controller.signal}),{code:'WORKSPACE_READ_CANCELLED'});
+  assert.equal(h.calls.sessions,0);assert.equal(h.files.directoryCache.snapshots.size,0);
+});
+
+test('共享首次扫描取消一个读取者不打断另一个，最后一个取消才中止扫描', async t => {
+  for(const cancelBoth of [false,true]) await t.test(String(cancelBoth),async child=>{
+    const h=cachedHarness();child.after(()=>h.files.dispose());
+    const binding=await h.files.requirePlugin(owner,h.input), controllers=[new AbortController(),new AbortController()];
+    let release;h.setScan(()=>new Promise(resolve=>{release=resolve;}));
+    const reads=controllers.map(controller=>h.files.directoryCache.list(owner,h.input,h.plugin,binding,{signal:controller.signal}));
+    const settled=Promise.allSettled(reads);let firstCode;reads[0].catch(error=>{firstCode=error.code;});
+    await flush();assert.equal(h.calls.scans,1);controllers[0].abort();await flush();
+    try {
+      assert.equal(firstCode,'WORKSPACE_READ_CANCELLED');assert.equal(h.calls.cancelled,0);
+      if(cancelBoth){controllers[1].abort();await flush();assert.equal(h.calls.cancelled,1);assert.equal(h.files.directoryCache.snapshots.size,0);}
+    } finally {release();}
+    const result=await settled;
+    assert.equal(result[0].status,'rejected');assert.equal(result[1].status,cancelBoth?'rejected':'fulfilled');
+    assert.equal(h.files.directoryCache.snapshots.size,cancelBoth?0:1);
+  });
+});
+
+
+test('目录取消按窗口作用域和请求标识隔离，只释放被取消读取者的名额', async t => {
+  const h=cachedHarness();t.after(()=>h.files.dispose());let release;h.setScan(()=>new Promise(resolve=>{release=resolve;}));
+  const one=h.files.listDirectory(owner,{...h.input,requestId:'read-one'}), two=h.files.listDirectory(owner,{...h.input,requestId:'read-two'});
+  const rejected=assert.rejects(one,{code:'WORKSPACE_READ_CANCELLED'});await flush();
+  assert.equal(h.files.cancelDirectoryRead('renderer:other',{...scope,requestId:'read-one'}).cancelled,false);
+  assert.equal(h.files.cancelDirectoryRead(owner,{...scope,pluginInstanceId:'other',requestId:'read-one'}).cancelled,false);
+  assert.equal(h.files.readCounts.get(owner),2);assert.equal(h.calls.scans,1);
+  h.files.cancelDirectoryRead(owner,{...scope,requestId:'read-one'});await rejected;
+  assert.equal(h.files.readCounts.get(owner),1);assert.equal(h.calls.cancelled,0);
+  release();await two;assert.equal(h.files.readCounts.size,0);assert.equal(h.files.directoryRequests.size,0);
+});
+
+test('目录取消在异步插件校验期间生效，不在迟到校验后启动扫描', async t => {
+  const h=cachedHarness();t.after(()=>h.files.dispose());let release;
+  const original=h.files.workspaceStore.getPlugin;
+  h.files.workspaceStore.getPlugin=()=>new Promise(resolve=>{release=()=>resolve(h.plugin);});
+  const read=h.files.listDirectory(owner,{...h.input,requestId:'before-read'});
+  const rejected=assert.rejects(read,{code:'WORKSPACE_READ_CANCELLED'});
+  h.files.cancelDirectoryRead(owner,{...scope,requestId:'before-read'});
+  h.files.workspaceStore.getPlugin=original;release();await rejected;
+  assert.equal(h.calls.sessions,0);assert.equal(h.files.directoryRequests.size,0);assert.equal(h.files.readCounts.size,0);
+});
+
+test('目录取消拒绝空或非法标识，重复标识不覆盖原请求', async t => {
+  const h=cachedHarness();t.after(()=>h.files.dispose());let release;h.setScan(()=>new Promise(resolve=>{release=resolve;}));
+  for(const requestId of ['',null,'../other','x'.repeat(81)]) {
+    assert.throws(()=>h.files.listDirectory(owner,{...h.input,requestId}),{code:'INVALID_ARGUMENT'});
+    assert.throws(()=>h.files.cancelDirectoryRead(owner,{...scope,requestId}),{code:'INVALID_ARGUMENT'});
+  }
+  const read=h.files.listDirectory(owner,{...h.input,requestId:'same'});await flush();
+  assert.throws(()=>h.files.listDirectory(owner,{...h.input,requestId:'same'}),{code:'WORKSPACE_BUSY'});
+  release();await read;assert.equal(h.files.directoryRequests.size,0);
+});
+
+test('取消链接查询后的迟到结果不污染快照或移除新查询', async t => {
+  const h=cachedHarness();t.after(()=>h.files.dispose());h.setEntries([{name:'link',type:'symlink'}]);
+  const page=await h.files.listDirectory(owner,h.input), binding=await h.files.requirePlugin(owner,h.input), pending=[];
+  h.setStat(target=>new Promise(resolve=>pending.push({target,resolve})));
+  const input={...h.input,snapshotId:page.snapshotId,resolveLinks:true}, controller=new AbortController();
+  const first=h.files.directoryCache.list(owner,input,h.plugin,binding,{signal:controller.signal});
+  const rejected=assert.rejects(first,{code:'WORKSPACE_READ_CANCELLED'});await flush();controller.abort();await rejected;
+  const second=h.files.directoryCache.list(owner,input,h.plugin,binding);await flush();assert.equal(pending.length,2);
+  pending[0].resolve({type:'file',canonicalPath:'/old-target'});await flush();
+  const item=h.files.directoryCache.snapshots.get(page.snapshotId);
+  assert.equal(item.metadata.size,1,'旧操作收尾不能删除新查询');assert.equal(item.entries[0].linkTargetType,undefined);
+  pending[1].resolve({type:'file',canonicalPath:pending[1].target});const result=await second;
+  assert.equal(result.entries[0].linkTargetType,'file');assert.equal(item.metadata.size,0);
+});
+
+test('目录取消 IPC 拒绝非主框架和额外路径字段，保留精确作用域', async () => {
+  const handlers=new Map(), calls=[];
+  const sender=Object.assign(new EventEmitter(),{id:1,mainFrame:{},isDestroyed:()=>false});
+  registerServerWorkspaceIpc({handle:(name,fn)=>handlers.set(name,fn)},{isWorkspaceRenderer:()=>true,serverWorkspaceFiles:{cancelDirectoryRead:(...args)=>{calls.push(args);return {cancelled:true};}}});
+  const cancel=handlers.get('v2:server-workspace-cancel-directory-read'), event={sender,senderFrame:sender.mainFrame}, input={...scope,requestId:'owned'};
+  assert.equal((await cancel({...event,senderFrame:{}},input)).error.code,'WORKSPACE_ACCESS_DENIED');
+  assert.equal((await cancel(event,{...input,path:'/'})).error.code,'INVALID_ARGUMENT');
+  assert.equal((await cancel(event,input)).ok,true);assert.deepEqual(calls,[[owner,input]]);
 });

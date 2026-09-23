@@ -1,4 +1,4 @@
-import { cloneElement, useEffect, useRef, useState, type HTMLAttributes, type ReactElement } from "react"
+import { cloneElement, useEffect, useMemo, useRef, useState, type HTMLAttributes, type ReactElement } from "react"
 import { toast } from "sonner"
 import type { AiOpsV2Api, PluginScope, ServerDirectoryEntry, ServerFileInfo, ServerFileActionPreparation, ServerFileActionResult } from "@/bridge/ai-ops-v2"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu"
@@ -6,7 +6,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { copyText } from "@/lib/clipboard"
-import { formatTransferBytes, parentRemotePath, serverEntryType, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
+import { workspaceReadQueue } from "./workspace-read-queue"
+import { formatTransferBytes, parentRemotePath, serverWorkspaceKey, serverEntryType, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
 
 type MenuTarget = { entry: ServerDirectoryEntry | null; directory: string }
 type Action = { kind: "mkdir" | "rename"; path: string; name: string }
@@ -38,6 +39,8 @@ export function ServerFileMenu({ api, scope, serverLabel, connected, visible, re
   const [error, setError] = useState("")
   const cancelButton = useRef<HTMLButtonElement>(null)
   const sequence = useRef(0)
+  const readQueue = useMemo(() => workspaceReadQueue(api), [api])
+  const readOwner = useRef({}).current
   const busyRef = useRef(false)
   const preparedRef = useRef<ServerFileActionPreparation | null>(null)
   const dialogRef = useRef(dialog)
@@ -49,17 +52,22 @@ export function ServerFileMenu({ api, scope, serverLabel, connected, visible, re
   }
   const close = () => {
     sequence.current += 1
+    readQueue.cancel(readOwner)
     cancelPrepared()
     setPrepared(null); setDialog(null); setError(""); setBusy(false); busyRef.current = false
   }
   useEffect(() => { if (!connected || !visible) close() }, [connected, visible])
-  useEffect(() => () => { sequence.current += 1; cancelPrepared() }, [api, scope])
+  useEffect(() => () => { sequence.current += 1; readQueue.cancel(readOwner); cancelPrepared() }, [api, scope, readQueue, readOwner])
   const copy = (value: string) => { void copyText(value).then(() => toast.success("已复制"), () => toast.error("复制失败，请重试")) }
   const readInfo = async (selectedPath: string) => {
     const version = ++sequence.current
     setDialog("info"); setInfo(null); setInfoPath(selectedPath); setError(""); setBusy(true)
     try {
-      const result = unwrapWorkspaceResult(await api.serverWorkspaceFileInfo({ ...scope, path: selectedPath }))
+      const response = await readQueue.run(readOwner, selectedPath,
+        () => api.serverWorkspaceFileInfo({ ...scope, path: selectedPath }),
+        () => sequence.current === version, { kind: "file", resource: serverWorkspaceKey(scope) })
+      if (response === undefined) return
+      const result = unwrapWorkspaceResult(response)
       if (sequence.current === version) setInfo(result)
     } catch (failure) { if (sequence.current === version) setError(workspaceErrorMessage(failure)) }
     finally { if (sequence.current === version) setBusy(false) }

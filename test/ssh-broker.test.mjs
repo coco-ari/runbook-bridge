@@ -399,7 +399,13 @@ test('SSH broker confirms host key, executes through the live session, and revok
     auth: { type: 'password' },
     proxy: { type: 'direct' },
   });
-  const broker = new SshBroker(store);
+  const lowLatencyCalls = [];
+  const broker = new SshBroker(store, { clientFactory: () => {
+    const client = new ssh2.Client();
+    const original = client.setNoDelay.bind(client);
+    client.setNoDelay = value => { lowLatencyCalls.push(value); return original(value); };
+    return client;
+  } });
   let required;
   await assert.rejects(
     () => broker.connect(project.id, { password: 'test-password' }),
@@ -413,6 +419,7 @@ test('SSH broker confirms host key, executes through the live session, and revok
     acceptHostKey: required.details.fingerprint,
   });
   assert.equal(connected.connected, true);
+  assert.deepEqual(lowLatencyCalls, [true, true], '首次校验与确认后的连接均启用低延迟小包发送');
   assert.equal((await store.get(project.id)).ssh.hostKeyFingerprint, required.details.fingerprint);
   const { docsHash } = await store.readContext(project.id);
   const { contextToken } = await broker.openContext(project.id, docsHash);

@@ -6,6 +6,23 @@ export class ServerFileDiscovery {
   constructor({ now = Date.now } = {}) {
     this.now = now;
     this.cache = new BoundedReadCache({ now, ttlMs:15_000 });
+    this.refreshes = new Map();
+  }
+
+  async readListing(key, load, refresh) {
+    if (!refresh) return this.cache.read(key, load);
+    const existing = this.refreshes.get(key);
+    if (existing) return { ...structuredClone(await existing), hit:true };
+    if (this.refreshes.size >= this.cache.maxPending) throw new AppError('READ_BUSY', '目录刷新队列已满，请稍后重试。', { phase:'queue', retryAfterMs:1000 });
+    const previous = this.cache.pending.get(key);
+    // 显式刷新等待旧读取收尾后重新获取，同一目录的并发刷新只启动一次新读取。
+    const pending = Promise.resolve().then(async () => {
+      if (previous) await previous.catch(() => undefined);
+      return this.cache.read(key, load, { refresh:true });
+    });
+    this.refreshes.set(key, pending);
+    try { return structuredClone(await pending); }
+    finally { if (this.refreshes.get(key) === pending) this.refreshes.delete(key); }
   }
 
   async find(reader, { path:remotePath, pattern = '*', maxDepth = 6, maxResults = 500, acceptsFile = null, cacheScope = null, rootIdentity = null, refresh = false, timeBudgetMs = 20_000 } = {}) {
@@ -34,7 +51,7 @@ export class ServerFileDiscovery {
           return {entries:[...entries],truncated:Boolean(entries.truncated)};
         };
         const result = identity
-          ? await this.cache.read(JSON.stringify([cacheScope,reader.generation,current.path,identity.size,identity.mtime]),load,{refresh})
+          ? await this.readListing(JSON.stringify([cacheScope,reader.generation,current.path,identity.size,identity.mtime]),load,refresh)
           : {value:await load(),hit:false};
         if (result.hit) cacheHits += 1;
         return {current,...result.value,cached:result.hit};

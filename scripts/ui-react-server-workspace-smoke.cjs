@@ -31,6 +31,9 @@ const terminalSessions = new Map();
 const writes = [];
 const resizes = [];
 const directoryReads = [];
+const mixedReadPressure = process.env.RUNBOOK_BRIDGE_MIXED_READ_PRESSURE_SMOKE === '1';
+const directoryScenario = mixedReadPressure ? './server-mixed-read-pressure-ui.cjs' : process.env.RUNBOOK_BRIDGE_DIRECTORY_PRESSURE_SMOKE === '1' ? './server-directory-pressure-ui.cjs' : process.env.RUNBOOK_BRIDGE_DIRECTORY_LIFECYCLE_SMOKE === '1' ? './server-directory-lifecycle-ui.cjs' : null;
+const directoryLifecycle = directoryScenario ? require(directoryScenario).createHarness() : null;
 const directoryState = { requests: [], delay: 0, fail: false };
 const previewReads = [];
 const dockerState = { reads:[], cancels:[], delay:0, missing:false };
@@ -50,6 +53,10 @@ const closed = [];
 const errors = [];
 const externalRequests = [];
 let uploads = [];
+let uploadStatusReads = 0;
+let responseDownloadId = 0;
+const transferResponseProbe = process.env.RUNBOOK_BRIDGE_TRANSFER_RESPONSE_PROBE === '1';
+const visibleResponseProbe = process.env.RUNBOOK_BRIDGE_VISIBLE_RESPONSE_PROBE === '1';
 let uploadConfirmCalls = 0;
 let pausedResumeRequests = 0;
 const uploadedPaths = new Set();
@@ -93,6 +100,9 @@ let clipboardDelay = 0;
 let clipboardReads = 0;
 let completed = false;
 let workspaceFiles;
+let liveDirectoryProbe;
+let liveFileUiProbe;
+let liveTerminalUiProbe;
 let stagedRoot;
 let releaseRootMetadata;
 const rootMetadataReady = new Promise(resolve => { releaseRootMetadata = resolve; });
@@ -143,6 +153,7 @@ const fileActionCalls = [];
 function register() {
   handle('server-workspace-file-info', input => {
     scoped(input); fileActionCalls.push({kind:'info',path:input.path});
+    if (mixedReadPressure) return directoryLifecycle.info(input);
     return {...fixtureStat(input.path),path:input.path,name:path.posix.basename(input.path),size:256,mtime:1,mode:0o100644,observedAt:Date.now()};
   });
   handle('server-workspace-prepare-file-action', input => {
@@ -313,7 +324,9 @@ function register() {
     return { path: input.path, entries: entries.filter(item => !removedPaths.has(item.path)).slice(offset, offset + 200), nextCursor: entries.length > offset + 200 ? String(offset + 200) : null, truncated: entries.length > offset + 200 };
   };
   workspaceFiles.serverOperations.listDirectory = async (_plugin, input) => { if (input.path !== '/') await wait(120); return listDirectory({ ...scope, ...input }); };
-  handle('server-workspace-list-directory', async (input) => {
+  if (liveDirectoryProbe) liveDirectoryProbe.register(ipcMain,sender=>sender===win?.webContents);
+  else handle('server-workspace-list-directory', async (input) => {
+    if (directoryLifecycle) { scoped(input); return directoryLifecycle.read(input); }
     if (input.resolveLinks && input.snapshotId === stagedRoot?.snapshotId) { await rootMetadataReady; return stagedRoot; }
     const page = await workspaceFiles.listDirectory('renderer:1', input);
     if (input.path === '/' && input.deferLinks && !input.cursor && !stagedRoot) {
@@ -322,8 +335,9 @@ function register() {
     }
     return page;
   });
+  handle('server-workspace-cancel-directory-read', input => { scoped(input); return directoryLifecycle ? directoryLifecycle.cancel?.(input) ?? { cancelled:false } : workspaceFiles.cancelDirectoryRead('renderer:1', input); });
   workspaceFiles.serverOperations.readFile = async (_plugin, input) => { previewReads.push(input.path); if (previewDelay) await wait(previewDelay); return { path: input.path, content: '# 示例配置\nsource = ' + input.path + '\nserver_name = demo\nport = 8080\n' + (input.path.endsWith('.log') ? '日志示例\n'.repeat(200) : ''), size: 52, startByte: 0, endByte: 52, mtime: 1, truncated: false, nextCursor: null }; };
-  handle('server-workspace-read-file', (input) => { scoped(input); if (previewFailure) throw Object.assign(new Error('没有文件读取权限。'), { code: previewFailure }); return workspaceFiles.readFile('renderer:1', input); });
+  handle('server-workspace-read-file', (input) => { scoped(input); if (mixedReadPressure) return directoryLifecycle.preview(input); if (previewFailure) throw Object.assign(new Error('没有文件读取权限。'), { code: previewFailure }); return workspaceFiles.readFile('renderer:1', input); });
   handle('server-workspace-prepare-upload-resume', async input => {
     scoped(input);
     const job=uploads.find(item=>item.jobId===input.jobId);
@@ -391,7 +405,7 @@ function register() {
     return input.fileNames.length?makePreparation(uploadPreparation.sourcePath,input.fileNames,revisionFailure):null;
   });
   handle('server-workspace-confirm-upload', input => { scoped(input); uploadConfirmCalls += 1; assert.equal(input.preparationId, uploadPreparation.preparationId); if(uploadPreparation.files.some(file=>file.exists&&file.action!=='skip'&&file.action!=='keep-both')) assert.equal(input.overwrite, true); uploads = uploadPreparation.files.filter(file=>file.action!=='skip').map((file, index) => ({ jobId: 'upload-job-' + index, name: path.posix.basename(file.remotePath), path: file.remotePath, bytes: file.bytes, transferred: 0, status: 'running', canPause:true, phase:'uploading', bytesPerSecond:80000, etaSeconds:12 })); return { jobs: uploads }; });
-  handle('server-workspace-uploads', (input) => { scoped(input); if (uploadReadFailure) throw new Error('已有上传任务状态暂时无法读取。'); uploads = uploads.map((job) => { if (job.status !== 'running') return job; const transferred = Math.min(job.bytes, job.transferred + 80000); return { ...job, transferred, status: transferred === job.bytes ? 'completed' : 'running' }; }); return { jobs: uploads.map(job=>({...job,canPause:job.direction!=='download'&&job.status==='running',canRemove:['completed','cancelled','error'].includes(job.status)})) }; });
+  handle('server-workspace-uploads', (input) => { uploadStatusReads += 1; scoped(input); if (directoryLifecycle) { directoryLifecycle.uploadPolls += 1; return {jobs:directoryLifecycle.jobs.map(job=>({...job}))}; } if (uploadReadFailure) throw new Error('已有上传任务状态暂时无法读取。'); uploads = uploads.map((job) => { if (job.status !== 'running') return job; const transferred = Math.min(job.bytes, job.transferred + 80000); return { ...job, transferred, status: transferred === job.bytes ? 'completed' : 'running' }; }); return { jobs: uploads.map(job=>({...job,canPause:job.direction!=='download'&&job.status==='running',canRemove:['completed','cancelled','error'].includes(job.status)})) }; });
   handle('server-workspace-pause-upload', input => {
     scoped(input);const job=uploads.find(item=>item.jobId===input.jobId);
     assert.equal(job.status,'running');
@@ -407,14 +421,22 @@ function register() {
   handle('server-workspace-download', input => {
     scoped(input);assert.equal(input.path,'/srv/release.tar');
     if (downloadFailure) throw Object.assign(new Error('本地保存位置空间不足，请选择其他磁盘。'), {code:'DOWNLOAD_DISK_FULL'});
-    const job={jobId:'download-job',name:'release.tar',path:input.path,localPath:'D:/下载/release.tar',direction:'download',bytes:400000,transferred:0,status:'running'};
+    const job={jobId:transferResponseProbe?'response-download-'+(++responseDownloadId):'download-job',name:'release.tar',path:input.path,localPath:'D:/下载/release.tar',direction:'download',bytes:transferResponseProbe?1024:400000,transferred:0,status:'running'};
     uploads.push(job);return job;
   });
-  handle('server-workspace-cancel-upload', (input) => { scoped(input); uploads = uploads.map((job) => ({ ...job, status: 'cancelled' })); return uploads[0]; });
+  handle('server-workspace-cancel-upload', (input) => {
+    scoped(input);
+    const job = uploads.find(item => item.jobId === input.jobId);
+    assert.ok(job);
+    const retainedPartial = ['paused', 'interrupted'].includes(job.status) && job.direction !== 'download';
+    Object.assign(job, { status: 'cancelled', canPause: false, canResume: false, canRemove: true,
+      message: retainedPartial ? '上传已取消；服务器可能保留本任务的临时文件，请在目标目录核对后删除。' : '传输已取消。' });
+    return job;
+  });
 }
 async function evaluate(source) { try { return await win.webContents.executeJavaScript(source, true); } catch (error) { throw new Error("界面脚本执行失败：" + source.slice(0, 700), { cause: error }); } }
 async function until(source, label) {
-  const deadline = Date.now() + 10000;
+  const deadline = Date.now() + (liveDirectoryProbe || liveTerminalUiProbe ? 45000 : 10000);
   while (Date.now() < deadline) { if (await evaluate(source)) return; await wait(40); }
   throw Error('等待超时：' + label);
 }
@@ -521,6 +543,7 @@ async function assertPasteAppearance(theme) {
 }
 
 async function snapshot(name) {
+  if (mixedReadPressure) return;
   const folder = process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR;
   if (!folder) return;
   const absolute = path.resolve(folder);
@@ -642,12 +665,30 @@ async function assertWorkspaceCoexistence() {
 
 async function run() {
   await app.whenReady();
+  if (mixedReadPressure) for (const key of ['RUNBOOK_BRIDGE_VISIBLE_RESPONSE_PROBE', 'RUNBOOK_BRIDGE_LIVE_DIRECTORY_PROBE', 'RUNBOOK_BRIDGE_LIVE_FILE_UI_PROBE', 'RUNBOOK_BRIDGE_LIVE_TRANSFER_UI_PROBE', 'RUNBOOK_BRIDGE_LIVE_TERMINAL_UI_PROBE']) assert.notEqual(process.env[key], '1', '混合读取专项禁止可见窗口与真实连接');
   const { createTransferExitGuard } = await import('../src/desktop-transfer-exit-guard.mjs');
-  savedClipboard = { text: clipboard.readText(), html: clipboard.readHTML(), rtf: clipboard.readRTF(), image: clipboard.readImage() };
+  if (!mixedReadPressure && process.env.RUNBOOK_BRIDGE_LIVE_TERMINAL_UI_PROBE !== '1') savedClipboard = { text: clipboard.readText(), html: clipboard.readHTML(), rtf: clipboard.readRTF(), image: clipboard.readImage() };
   const { ServerWorkspaceFiles } = await import('../src/server-workspace-files.mjs');
   workspaceFiles = new ServerWorkspaceFiles({ workspaceStore: { getPlugin: async () => plugin }, serverRuntime: { status: () => ({ connected, generation: 1 }), statRemotePath: async (_plugin, target) => fixtureStat(target) }, serverOperations: {} });
+  if (process.env.RUNBOOK_BRIDGE_LIVE_DIRECTORY_PROBE === '1') {
+    assert.ok(visibleResponseProbe, '真实目录专项使用可见窗口');
+    const {openLiveDirectoryProbe}=await import('./server-live-directory-ui.mjs');
+    liveDirectoryProbe=await openLiveDirectoryProbe(scope);
+  }
+  if (process.env.RUNBOOK_BRIDGE_LIVE_FILE_UI_PROBE === '1' || process.env.RUNBOOK_BRIDGE_LIVE_TRANSFER_UI_PROBE === '1') {
+    assert.ok(visibleResponseProbe && !liveDirectoryProbe, '真实文件专项使用独立可见窗口');
+    const { openLiveFileUiProbe } = await import('./server-live-file-ui.mjs');
+    liveFileUiProbe = await openLiveFileUiProbe(scope, { transfers: process.env.RUNBOOK_BRIDGE_LIVE_TRANSFER_UI_PROBE === '1' });
+  }
+  if (process.env.RUNBOOK_BRIDGE_LIVE_TERMINAL_UI_PROBE === '1') {
+    assert.ok(visibleResponseProbe && !liveDirectoryProbe && !liveFileUiProbe, '真实终端专项使用独立可见窗口');
+    const { openLiveTerminalUiProbe } = await import('./server-live-terminal-ui.mjs');
+    liveTerminalUiProbe = await openLiveTerminalUiProbe(scope);
+  }
   register();
-  win = new BrowserWindow({ enableLargerThanScreen:true, useContentSize:true, width: 1440, height: 920, show: process.platform === 'darwin', webPreferences: { preload: path.join(root, 'src/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
+  liveTerminalUiProbe?.register(ipcMain, sender => sender === win?.webContents);
+  liveFileUiProbe?.register(ipcMain, sender => sender === win?.webContents);
+  win = new BrowserWindow({ enableLargerThanScreen:true, useContentSize:true, width: 1440, height: 920, show: mixedReadPressure ? false : visibleResponseProbe || process.platform === 'darwin', webPreferences: { preload: path.join(root, 'src/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
   let exitAnswer, exitPrompts=0, requestedQuits=0;
   const exitGuard=createTransferExitGuard({
     summary:() => ({active:1,resumable:1}),
@@ -681,9 +722,187 @@ async function run() {
   assert.equal(opened.length, 0, '打开详情不会建立终端');
   await snapshot('server-workspace-detail-dark.png');
   await click('[data-testid="plugin-open-workspace"]');
+  if (liveTerminalUiProbe) {
+    await until("document.querySelector('.xterm-rows')?.textContent.includes('probe>')", '真实隔离终端就绪');
+    assert.equal(liveTerminalUiProbe.snapshot().sessions.length, 1, '首次点击只创建一个真实会话');
+    const result = await require('./server-terminal-interaction-ui.cjs')({ evaluate, until, wait, win, setViewport, probe: liveTerminalUiProbe });
+    assert.equal(errors.length, 0, '真实终端专项无 Renderer 错误');
+    assert.equal(externalRequests.length, 0, '真实终端专项无外部页面请求');
+    process.stdout.write(JSON.stringify({ ok: true, liveTerminalUi: true, ...result }) + '\n');
+    completed = true; return;
+  }
   await until(`document.querySelector('.xterm-rows')?.textContent.includes('operator@demo')`, '真实 xterm 收到输出');
   assert.equal(opened.length, 1, '首次点击只创建一个会话');
   await assertFileSidebarLayout();
+  if (liveFileUiProbe) {
+    const result = await require(liveFileUiProbe.transfers ? './server-transfer-interaction-ui.cjs' : './server-file-interaction-ui.cjs')({ evaluate, until, wait, win, probe: liveFileUiProbe });
+    assert.equal(errors.length, 0, '真实文件专项无 Renderer 错误');
+    assert.equal(externalRequests.length, 0, '真实文件专项无外部页面请求');
+    process.stdout.write(JSON.stringify({ ok: true, liveFileUi: true, ...result }) + '\n');
+    completed = true; return;
+  }
+  if (liveDirectoryProbe) {
+    win.focus(); win.webContents.focus();
+    await until(`document.querySelector('[role=treeitem][title="/usr"]')`, '授权服务器系统目录');
+    const samples=[];
+    for (const target of ['/usr','/usr/bin']) {
+      const selector='[role=treeitem][title="'+target+'"]';
+      await evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center'})`);
+      await wait(50);
+      const point=await evaluate(`(() => {
+        const row=document.querySelector(${JSON.stringify(selector)});
+        const bounds=row.getBoundingClientRect();
+        window.liveDirectorySample=new Promise((resolve,reject)=>{
+          let started,feedbackMs,trusted;
+          const cleanup=()=>{observer.disconnect();row.removeEventListener('click',clicked,true);clearTimeout(timer)};
+          const timer=setTimeout(()=>{window.liveDirectoryFailure={clicked:started!==undefined,trusted,feedbackMs,expanded:row.getAttribute('aria-expanded'),visible:document.visibilityState,focused:document.hasFocus()};cleanup();reject(new Error('真实目录读取超时'))},45000);
+          const clicked=event=>{started=performance.now();trusted=event.isTrusted};
+          const observer=new MutationObserver(()=>{
+            if(started===undefined)return;
+            if(feedbackMs===undefined&&row.getAttribute('aria-expanded')==='true')feedbackMs=performance.now()-started;
+            const child=[...document.querySelectorAll('[role=treeitem]')].some(item=>item.getAttribute('title')?.startsWith(${JSON.stringify(target+'/')}));
+            if(feedbackMs!==undefined&&child){
+              const contentMs=performance.now()-started;observer.disconnect();
+              requestAnimationFrame(()=>requestAnimationFrame(()=>{cleanup();resolve({trusted,feedbackMs,contentMs,twoFramesMs:performance.now()-started})}));
+            }
+          });
+          row.addEventListener('click',clicked,true);
+          observer.observe(document.querySelector('.server-tree-scroll'),{subtree:true,attributes:true,childList:true});
+        });
+        return{x:Math.round(bounds.left+60),y:Math.round(bounds.top+bounds.height/2)};
+      })()`);
+      win.webContents.sendInputEvent({type:'mouseMove',...point});
+      win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});
+      win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point});
+      try { samples.push(await evaluate('window.liveDirectorySample')); }
+      catch(error) { process.stdout.write(JSON.stringify({liveDirectoryFailure:await evaluate('window.liveDirectoryFailure ?? null'),sample:samples.length,...liveDirectoryProbe.summary()})+'\n');throw error; }
+    }
+    process.stdout.write(JSON.stringify({liveDirectoryUncached:samples,windowVisible:win.isVisible(),minimized:win.isMinimized(),...liveDirectoryProbe.summary()})+'\n');
+    const cached=await require('./server-directory-interaction-ui.cjs')({evaluate,win,until,targetPath:'/usr/bin'});
+    const beforeLocalReads=liveDirectoryProbe.summary().reads.length;
+    await evaluate(`document.querySelector('[role=treeitem][title="/usr/bin"]').focus()`);
+    for(const [keyCode,expected] of [['Left','false'],['Right','true']]) {
+      win.webContents.sendInputEvent({type:'keyDown',keyCode});
+      win.webContents.sendInputEvent({type:'keyUp',keyCode});
+      await until(`document.querySelector('[role=treeitem][title="/usr/bin"]')?.getAttribute('aria-expanded')===${JSON.stringify(expected)}`,'真实目录键盘展开收起');
+    }
+    for(const expected of ['true','false']) {
+      await click('[aria-label="显示隐藏文件"]');
+      assert.equal(await evaluate(`document.querySelector('[aria-label="显示隐藏文件"]').getAttribute('aria-pressed')`),expected);
+    }
+    await click('[aria-label="常用目录"]');
+    await clickText('收藏当前目录');
+    await until(`document.querySelector('[aria-label="打开收藏目录 /usr/bin"]')`,'收藏固定系统目录');
+    await click('[aria-label="常用目录"]');
+    await click('[aria-label="根目录"]');
+    await click('[aria-label="常用目录"]');
+    await click('[aria-label="打开收藏目录 /usr/bin"]');
+    await until(`document.querySelector('[role=treeitem][title="/usr/bin"]')?.getAttribute('aria-selected')==='true'`,'收藏定位已缓存目录');
+    await click('[aria-label="常用目录"]');
+    await click('[aria-label="移除收藏 /usr/bin"]');
+    await click('[aria-label="常用目录"]');
+    const scroll=await evaluate(`(async()=>{
+      const tree=document.querySelector('.server-tree-scroll');
+      const top=tree.scrollTop,intervals=[];
+      let previous=performance.now(),maxRows=0;
+      for(let index=0;index<60;index+=1){
+        await new Promise(resolve=>requestAnimationFrame(resolve));
+        const now=performance.now();intervals.push(now-previous);previous=now;
+        tree.scrollTop=(index%30)/29*(tree.scrollHeight-tree.clientHeight);
+        tree.dispatchEvent(new Event('scroll'));
+        maxRows=Math.max(maxRows,document.querySelectorAll('[role=treeitem]').length);
+      }
+      tree.scrollTop=top;tree.dispatchEvent(new Event('scroll'));
+      intervals.sort((a,b)=>a-b);
+      return{frames:intervals.length,medianMs:intervals[30],p95Ms:intervals[56],maxMs:intervals[59],maxRows};
+    })()`);
+    assert.equal(liveDirectoryProbe.summary().reads.length,beforeLocalReads,'缓存键盘导航、隐藏开关、收藏和滚动不请求服务器');
+    assert.ok(scroll.maxRows<70,'真实大目录滚动保持虚拟行数量有界');
+    assert.ok(samples.every(item=>item.trusted),'真实目录从可信鼠标输入开始');
+    assert.deepEqual(errors,[]);assert.deepEqual(externalRequests,[]);
+    completed=true;
+    process.stdout.write(JSON.stringify({ok:true,liveDirectory:true,uncached:samples,cached,localNavigation:true,scroll,...liveDirectoryProbe.summary()})+'\n');
+    return;
+  }
+
+  if (process.env.RUNBOOK_BRIDGE_TERMINAL_THEME_SMOKE === '1') {
+    releaseRootMetadata();
+    const result=await require('./server-terminal-theme-ui.cjs')({evaluate,until,wait,click,nativeTheme});
+    assert.equal(errors.length,0);assert.equal(externalRequests.length,0);
+    completed=true;process.stdout.write(JSON.stringify({ok:true,terminalTheme:true,...result})+'\n');return;
+  }
+
+  if (process.env.RUNBOOK_BRIDGE_TRANSFER_CANCEL_SMOKE === '1') {
+    releaseRootMetadata();
+    uploads.push({ jobId:'cancel-feedback', name:'paused.bin', path:'/srv/paused.bin', bytes:8*1024*1024,
+      transferred:1024*1024, status:'paused', canResume:true, canPause:false });
+    await until('document.querySelector(".server-upload-tray-header")?.textContent.includes("可继续")', '暂停记录已显示');
+    await click('.server-upload-tray-header button');
+    await until(`document.querySelector('[aria-label="取消上传 paused.bin"]')`, '暂停任务可取消');
+    await click('[role=treeitem][title="/srv"]');
+    await until(`document.querySelector('[role=treeitem][title="/srv/config"]')`, '先缓存目标目录');
+    fileActionEntries.set('/srv/paused.bin.part-fixture', 'file');
+    const actionsBefore = fileActionCalls.length;
+    await click('[aria-label="取消上传 paused.bin"]');
+    await until('document.querySelector(".server-upload-row p")?.textContent.includes("临时文件")', '取消后解释临时文件保留');
+    assert.equal(await evaluate('document.querySelector(".server-upload-row p").classList.contains("text-danger")'), false, '主动取消使用信息提示');
+    await assertTransferActionLayout('取消任务');
+    await setViewport(1000, 750);
+    win.webContents.setZoomFactor(1.25);
+    await wait(250);
+    await assertTransferActionLayout('取消任务窄窗口及 125% 缩放');
+    win.webContents.setZoomFactor(1);
+    await setViewport(1440, 920);
+    await click('[aria-label="打开 paused.bin 的目标目录"]');
+    await until(`document.querySelector('[role=treeitem][aria-selected=true]')?.getAttribute("title") === "/srv"`, '取消后可定位目标目录');
+    await until(`document.querySelector('[role=treeitem][title="/srv/paused.bin.part-fixture"]')`, '定位刷新目录并显示临时文件');
+    assert.equal(fileActionCalls.length, actionsBefore, '查看目录不会隐式删除文件');
+    assert.equal(await evaluate('Boolean(document.querySelector("[role=dialog]"))'), false, '查看目录直接导航');
+    await click('[aria-label="移除记录 paused.bin"]');
+    await until('document.querySelectorAll(".server-upload-row").length === 0', '移除取消记录');
+    assert.ok(fileActionEntries.has('/srv/paused.bin.part-fixture'), '移除记录保留文件');
+    assert.deepEqual(errors, []); assert.deepEqual(externalRequests, []);
+    completed = true;
+    process.stdout.write(JSON.stringify({ok:true,transferCancelFeedback:true})+'\n');
+    return;
+  }
+  if (directoryLifecycle) {
+    const result = await require(directoryScenario).run({ state:directoryLifecycle,evaluate,click,doubleClick,clickText,until,wait,win });
+    assert.deepEqual(errors,[]); assert.deepEqual(externalRequests,[]);
+    completed=true; process.stdout.write(JSON.stringify({ok:true,directoryLifecycle:result})+'\n'); return;
+  }
+  if (transferResponseProbe) {
+    releaseRootMetadata();
+    uploadedPaths.add('/srv/release.tar');
+    await until('document.querySelector(\'[role=treeitem][title="/srv"]\')', '响应探针目录');
+    await click('[role=treeitem][title="/srv"]');
+    await until('document.querySelector(\'[aria-label="下载 release.tar"]\')', '响应探针文件');
+    const samples = [];
+    for (let index = 0; index < 3; index += 1) {
+      const before = uploadStatusReads;
+      const deadline = Date.now() + 5000;
+      while (uploadStatusReads === before && Date.now() < deadline) await wait(5);
+      assert.ok(uploadStatusReads > before, '先等到空闲查询完成，再触发新传输');
+      samples.push(await evaluate(`new Promise((resolve, reject) => {
+        const start = performance.now();
+        const timer = setTimeout(() => { observer.disconnect(); reject(new Error('传输反馈超时')); }, 5000);
+        const observer = new MutationObserver(() => {
+          if (!document.querySelector('.server-upload-row')?.textContent.includes('已完成')) return;
+          observer.disconnect(); clearTimeout(timer); resolve(performance.now() - start);
+        });
+        observer.observe(document.body, {subtree:true,childList:true,characterData:true});
+        document.querySelector('[aria-label="下载 release.tar"]').click();
+      })`));
+      await clickText('清除已结束');
+      await until('document.querySelectorAll(".server-upload-row").length === 0', '响应探针清理记录');
+    }
+    process.stdout.write('Transfer response evidence: '+JSON.stringify({samplesMs:samples,windowVisible:win.isVisible(),backgroundThrottling:false})+'\n');
+    if (process.env.RUNBOOK_BRIDGE_TRANSFER_RESPONSE_ASSERT === '1') assert.ok(Math.max(...samples) < 500, '新传输立即唤醒查询，不等待空闲轮询');
+    assert.deepEqual(errors, []); assert.deepEqual(externalRequests, []);
+    completed = true;
+    process.stdout.write(JSON.stringify({ok:true,transferResponse:true})+'\n');
+    return;
+  }
   if (process.env.RUNBOOK_BRIDGE_UPLOAD_INPUT_SMOKE === '1') {
     releaseRootMetadata();
     await require('./workspace-upload-input-ui.cjs')({evaluate,click,clickText,until,wait,win,temporaryRoot,imports:uploadImports,writes,confirmCount:()=>uploadConfirmCalls,snapshot});
@@ -810,6 +1029,42 @@ async function run() {
   const treeHas = (value) => 'document.querySelector(' + JSON.stringify('[role="treeitem"][title="' + value + '"]') + ')';
   await click('[role="treeitem"][title="/srv/config"]');
   await until(treeHas('/srv/config/example.conf'), '缓存多层子目录');
+  // 测量已缓存分支从点击、提交展开状态到下一帧的时间，不包含模拟网络等待。
+  const cachedExpansionTiming = await evaluate(`(async () => {
+    const selector = '[role="treeitem"][title="/srv/config"]';
+    const samples = [];
+    for (let index = 0; index < 20; index += 1) {
+      const row = document.querySelector(selector);
+      const expected = row.getAttribute('aria-expanded') !== 'true' ? 'true' : 'false';
+      samples.push(await new Promise((resolve, reject) => {
+        const start = performance.now();
+        let observed = false;
+        const timer = setTimeout(() => { observer.disconnect(); reject(new Error('目录展开未响应')); }, 3000);
+        const observer = new MutationObserver(() => {
+          if (observed || document.querySelector(selector)?.getAttribute('aria-expanded') !== expected) return;
+          observed = true; observer.disconnect();
+          const commitMs = performance.now() - start;
+          requestAnimationFrame(() => { clearTimeout(timer); resolve({ commitMs, frameCallbackMs: performance.now() - start }); });
+        });
+        observer.observe(document.querySelector('.server-tree-scroll'), { subtree: true, attributes: true, attributeFilter: ['aria-expanded'] });
+        row.click();
+      }));
+    }
+    const summarize = key => { const values = samples.map(item => item[key]).sort((left, right) => left - right); return { medianMs: values[10], p95Ms: values[19] }; };
+    return { samples: samples.length, documentVisible: document.visibilityState, commit: summarize('commitMs'), frameCallback: summarize('frameCallbackMs') };
+  })()`);
+  process.stdout.write('Cached directory response evidence: ' + JSON.stringify(cachedExpansionTiming) + '\n');
+  if (visibleResponseProbe) {
+    const evidence = await require('./server-directory-interaction-ui.cjs')({evaluate,win,until});
+    process.stdout.write('Visible directory interaction evidence: '+JSON.stringify(evidence)+'\n');
+  }
+  if (process.env.RUNBOOK_BRIDGE_DIRECTORY_RESPONSE_PROBE === '1') {
+    assert.deepEqual(externalRequests, [], '目录测量不连接外部服务');
+    assert.deepEqual(errors, [], '目录测量没有渲染错误');
+    completed = true;
+    process.stdout.write(JSON.stringify({ ok: true, directoryResponse: cachedExpansionTiming, windowVisible: win.isVisible() }) + '\n');
+    return;
+  }
   const cachedReads = directoryReads.length;
   await click('[aria-label="当前目录"] [aria-current="location"]');
   await until(treeHas('/srv/config/example.conf'), '面包屑定位已读取目录');
@@ -1125,6 +1380,7 @@ async function run() {
   assert.notEqual(firstTerminal, secondTerminal, '新标签使用独立会话');
   await paste('second-tab-input');
   assert.equal(writes.at(-1).sessionId, secondTerminal, '输入只发送给当前标签');
+  await require('./server-terminal-theme-ui.cjs')({evaluate,until,wait,click,nativeTheme,createTab:false});
   terminalSessions.get(firstTerminal).chunks.push(Buffer.from('\r\nbackground-first-tab\r\n'));
   await wait(200);
   await click('[role="tab"][title="终端 1"]');
@@ -1633,4 +1889,16 @@ async function testWorkspaceConveniences() {
   assert.deepEqual(externalRequests,[],'搜索和收藏不连接外部服务');
 }
 
-run().catch((error) => { process.stderr.write(error.stack + '\n'); }).finally(() => { if (savedClipboard) clipboard.write(savedClipboard); workspaceFiles?.dispose(); win?.destroy(); app.exit(completed ? 0 : 1); });
+run().catch((error) => { process.stderr.write(error.stack + '\n'); }).finally(async () => {
+  try {
+    if (savedClipboard) clipboard.write(savedClipboard);
+    workspaceFiles?.dispose();
+    win?.destroy();
+    await liveDirectoryProbe?.dispose();
+    await liveFileUiProbe?.dispose();
+    await liveTerminalUiProbe?.dispose();
+  } catch (error) {
+    completed = false;
+    process.stderr.write(JSON.stringify({ status: 'cleanup-failed', code: error.code ?? error.name }) + '\n');
+  } finally { app.exit(completed ? 0 : 1); }
+});

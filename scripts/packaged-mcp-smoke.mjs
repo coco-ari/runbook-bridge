@@ -34,6 +34,7 @@ try {
   assert.equal(logSearch.inputSchema.properties.cursor.pattern, '^[a-f0-9]{64}$');
   assert.equal(logSearch.inputSchema.properties.refresh.type, 'boolean');
   assert.deepEqual([logSearch.inputSchema.properties.maxResultBytes.minimum, logSearch.inputSchema.properties.maxResultBytes.maximum], [16384, 2097152]);
+  assert.match(result.tools.find(tool => tool.name === 'server_control_service').description, /SERVICE_CONTROL_FAILED/u);
   const confirmation = result.tools.find(tool => tool.name === 'get_confirmation_status');
   assert.equal(confirmation.annotations.readOnlyHint, true);
   assert.equal(confirmation.inputSchema.properties.waitMs.maximum, 10000);
@@ -44,6 +45,11 @@ try {
   assert.equal(logSearch.inputSchema.allOf.length, 2);
   assert.match(logSearch.inputSchema.properties.maxExpandedBytes.description, /单个归档条目/u);
   assert.equal(result.tools.find((tool) => tool.name === 'server_read_file').inputSchema.properties.tail.type, 'boolean');
+  for (const name of ['server_read_file','server_read_log','server_read_config']) {
+    const tool = result.tools.find(item => item.name === name);
+    assert.match(tool.description, /UTF-8/u); assert.match(tool.description, /INVALID_ARGUMENT/u);
+    assert.equal(tool.inputSchema.properties.maxBytes.minimum, 1);
+  }
   assert.match(client.getInstructions(), /coverage、truncated、skipped 和 guidance/u);
 } finally {
   await client.close().catch(() => undefined);
@@ -89,10 +95,41 @@ const archiveSmoke = [
   "const waiting = manager.status(scope,entry.requestId,1000); manager.approve(entry.requestId);",
   "assert.equal((await waiting).status,'approved'); assert.equal(manager.approved.size,1);",
   "await assert.rejects(manager.status({...scope,clientInstanceId:'other'},entry.requestId),{code:'CONFIRMATION_NOT_FOUND'});",
+  "const failedService = new ServerOperations({executeApproved:async () => ({exitCode:1,stdout:'fixture-output',stderr:'fixture-output'})}, {});",
+  "await assert.rejects(failedService.mutate({},'service.control',{unit:'fixture.service',action:'reload'}), error => error.code === 'SERVICE_CONTROL_FAILED' && error.details.exitCode === 1 && !JSON.stringify(error).includes('fixture-output'));",
+  "const successfulService = new ServerOperations({executeApproved:async () => ({exitCode:0,stdout:'',stderr:''})}, {});",
+  "assert.equal((await successfulService.mutate({},'service.control',{unit:'fixture.service',action:'start'})).exitCode,0);",
+  "const { BrokerServer } = await import(pathToFileURL(process.env.AI_OPS_BROKER_MODULE).href);",
+  "const forwarding = new BrokerServer({dataRoot:process.cwd(),token:'fixture-token',v2Service:{invoke:(_params,_capability,args) => args}});",
+  "assert.equal(forwarding.dispatchV2('serverSearchLogs',{maxResultBytes:16384}).maxResultBytes,16384);",
+  "const { SshBroker } = await import(pathToFileURL(process.env.AI_OPS_SSH_MODULE).href);",
+  "let utfBody = Buffer.from('A中B'), readBytes = 0;",
+  "const utfSftp = {realpath:(name, done) => done(null,name),stat:(_name,done) => done(null,{size:utfBody.length,mtime:1,mode:33188,isFile:() => true}),open:(...args) => args.at(-1)(null,Buffer.from('h')),close:(_handle,done) => done(),read:(_handle,buffer,offset,length,position,done) => {const part=utfBody.subarray(position,position+length);part.copy(buffer,offset);readBytes+=part.length;done(null,part.length,buffer);}};",
+  "const utfBroker = new SshBroker({}); utfBroker.withInternalSftp = (_id,operation) => operation(utfSftp,{},{});",
+  "const firstText = await utfBroker.readRemoteRange('fixture','/fixture.log',0,2); assert.equal(firstText.content,'A'); assert.equal(firstText.endByte,1); assert.equal(readBytes,2);",
+  "await assert.rejects(utfBroker.readRemoteRange('fixture','/fixture.log',1,2),error => error.code==='INVALID_ARGUMENT' && error.details.minimumBytes===3); assert.equal(readBytes,4);",
+  "const continuedText=await utfBroker.readRemoteRange('fixture','/fixture.log',1,3); assert.equal(continuedText.content,'中'); assert.equal(continuedText.endByte,4); assert.equal(readBytes,7);",
+  "utfBody=Buffer.from([0x80,0x80,0x80]); let invalidOffset=0; for(let index=0;index<3;index+=1){const page=await utfBroker.readRemoteRange('fixture','/fixture.log',invalidOffset,3);assert.equal(page.content,'�');assert.equal(Buffer.byteLength(page.content),3);assert.ok(page.endByte>invalidOffset);invalidOffset=page.endByte;} assert.equal(invalidOffset,3);",
+  "utfBody=Buffer.from('A中B'); const configOps=new ServerOperations({readRemoteRange:(_plugin,...args)=>utfBroker.readRemoteRange('fixture',...args)},{});",
+  "const configSource={sourceId:'config',kind:'config',root:'/fixture',patterns:['*.conf'],maxFileBytes:1048576};const configPlugin={projectId:'package',environmentId:'test',pluginInstanceId:'server',sources:[configSource]};const configId=configOps.rememberFile(configPlugin,configSource,{canonicalPath:'/fixture/sample.conf',size:utfBody.length,mtime:1});",
+  "const configPage=await configOps.readConfig(configPlugin,{fileId:configId,maxBytes:2});assert.equal(configPage.content,'A');assert.equal(configPage.nextCursor,'1');await assert.rejects(configOps.readConfig(configPlugin,{fileId:configId,cursor:'1',maxBytes:2}),error=>error.code==='INVALID_ARGUMENT'&&error.details.minimumBytes===3);configOps.docker.dispose();",
+  "const { ServerWorkspaceFiles } = await import(pathToFileURL(process.env.AI_OPS_WORKSPACE_FILES_MODULE).href);",
+  "const { registerServerWorkspaceIpc } = await import(pathToFileURL(process.env.AI_OPS_WORKSPACE_IPC_MODULE).href);",
+  "const { EventEmitter } = await import('node:events'); const directoryScope={projectId:'packaged-directory',environmentId:'test',pluginInstanceId:'server'};",
+  "let releasePlugin; const directoryPlugin={...directoryScope,pluginType:'server',configState:'ready',revision:1};",
+  "const directoryFiles=new ServerWorkspaceFiles({workspaceStore:{getPlugin:()=>new Promise(resolve=>{releasePlugin=()=>resolve(directoryPlugin);})},serverRuntime:{status:()=>({connected:true,generation:1}),withWorkspaceReadSession:async()=>{throw new Error('已取消请求不得创建通道');}},serverOperations:{}});",
+  "const directoryHandlers=new Map(), directorySender=Object.assign(new EventEmitter(),{id:77,mainFrame:{},isDestroyed:()=>false});",
+  "registerServerWorkspaceIpc({handle:(name,handler)=>directoryHandlers.set(name,handler)},{serverWorkspaceFiles:directoryFiles,isWorkspaceRenderer:sender=>sender===directorySender});",
+  "const directoryEvent={sender:directorySender,senderFrame:directorySender.mainFrame}, directoryRead=directoryHandlers.get('v2:server-workspace-list-directory'), directoryCancel=directoryHandlers.get('v2:server-workspace-cancel-directory-read');",
+  "assert.equal((await directoryCancel({...directoryEvent,senderFrame:{}},{...directoryScope,requestId:'owned'})).error.code,'WORKSPACE_ACCESS_DENIED');",
+  "assert.equal((await directoryCancel(directoryEvent,{...directoryScope,requestId:'owned',path:'/'})).error.code,'INVALID_ARGUMENT');",
+  "const cancelledDirectory=directoryRead(directoryEvent,{...directoryScope,path:'/',deferLinks:true,requestId:'owned'});",
+  "assert.equal((await directoryCancel(directoryEvent,{...directoryScope,requestId:'owned'})).data.cancelled,true);releasePlugin();",
+  "assert.equal((await cancelledDirectory).error.code,'WORKSPACE_READ_CANCELLED');assert.equal(directoryFiles.directoryRequests.size,0);directoryFiles.dispose();",
   "process.stdout.write('archive-ok');",
 ].join('\n');
 const archiveResult = await execFileAsync(executable, ['--input-type=module', '--eval', archiveSmoke], {
-  env: { ...process.env, AI_OPS_ARCHIVE_MODULE: archiveModule, AI_OPS_CONFIRMATION_MODULE:path.join(path.dirname(archiveModule), 'confirmation-manager.mjs'), AI_OPS_OPERATIONS_MODULE:path.join(path.dirname(archiveModule), 'server-operations.mjs'), ELECTRON_RUN_AS_NODE: '1' },
+  env: { ...process.env, AI_OPS_ARCHIVE_MODULE: archiveModule, AI_OPS_WORKSPACE_FILES_MODULE:path.join(path.dirname(archiveModule), 'server-workspace-files.mjs'), AI_OPS_WORKSPACE_IPC_MODULE:path.join(path.dirname(archiveModule), 'server-workspace-ipc.mjs'), AI_OPS_SSH_MODULE:path.join(path.dirname(archiveModule), 'ssh-broker.mjs'), AI_OPS_BROKER_MODULE:path.join(path.dirname(archiveModule), 'broker-server.mjs'), AI_OPS_CONFIRMATION_MODULE:path.join(path.dirname(archiveModule), 'confirmation-manager.mjs'), AI_OPS_OPERATIONS_MODULE:path.join(path.dirname(archiveModule), 'server-operations.mjs'), ELECTRON_RUN_AS_NODE: '1' },
   timeout: 30_000,
   windowsHide: true,
 });

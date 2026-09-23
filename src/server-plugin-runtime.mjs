@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { SshBroker } from './ssh-broker.mjs';
-import { createProxySocket } from './proxy.mjs';
+import { createConnectionSocket, createProxySocket, waitForConnection } from './proxy.mjs';
 import { AppError } from './errors.mjs';
 import { BoundedReadScheduler } from './bounded-read-scheduler.mjs';
 
@@ -21,14 +21,18 @@ class ScopedServerStoreAdapter {
   constructor(workspaceStore) {
     this.workspaceStore = workspaceStore;
     this.overrides = new Map();
+    this.overrideOwners = new Map();
   }
 
-  setOverride(key, plugin) {
+  setOverride(key, plugin, owner) {
     this.overrides.set(key,plugin);
+    this.overrideOwners.set(key, owner);
   }
 
-  clearOverride(key) {
+  clearOverride(key, owner) {
+    if (this.overrideOwners.get(key) !== owner) return;
     this.overrides.delete(key);
+    this.overrideOwners.delete(key);
   }
 
   async get(key) {
@@ -124,6 +128,7 @@ export class ServerPluginRuntime extends EventEmitter {
     this.adapter = new ScopedServerStoreAdapter(workspaceStore);
     this.broker = new SshBroker(this.adapter);
     this.connectAttempts = new Map();
+    this.connectionControllers = new Map();
     this.readScheduler = new BoundedReadScheduler({ maxConcurrent:4, maxPerKey:2 });
     this.downloadScheduler = new BoundedReadScheduler({ maxConcurrent:2 });
     this.broker.setLifecycleHandler((event) => this.emit('lifecycle', { ...event, ...parseScopeKey(event.projectId), resourceKey: event.projectId }));
@@ -137,48 +142,48 @@ export class ServerPluginRuntime extends EventEmitter {
     return this.broker.status(this.key(plugin));
   }
 
-  async createUplinkSocket(plugin, secrets) {
+  async createUplinkSocket(plugin, secrets, { signal = null } = {}) {
+    const assertActive = () => {
+      if (signal?.aborted) throw new AppError('CONNECT_CANCELLED', '连接已取消。');
+    };
     if (plugin.uplink?.type === 'socks5' || plugin.uplink?.type === 'http') {
-      const candidates = await this.resolver.resolve(plugin.target.host, plugin.target.addressFamily);
+      const candidates = await waitForConnection(() => this.resolver.resolve(plugin.target.host, plugin.target.addressFamily), signal);
       let lastError;
       for (const candidate of candidates) {
+        assertActive();
         try {
           return await createProxySocket(
             { ...plugin.uplink, remoteDns: false },
             { host: candidate.address, port: plugin.target.port },
             secrets,
             Math.min(plugin.limits?.timeoutMs ?? 10_000, 15_000),
+            { signal, pauseOnConnect: true },
           );
         } catch (error) {
+          assertActive();
           lastError = error;
         }
       }
       throw lastError ?? new AppError('ROUTE_UNAVAILABLE', '代理无法连接 Server。');
     }
-    const candidates = await this.resolver.resolve(plugin.target.host, plugin.target.addressFamily);
+    const candidates = await waitForConnection(() => this.resolver.resolve(plugin.target.host, plugin.target.addressFamily), signal);
     let lastError;
     for (const candidate of candidates) {
+      assertActive();
       try {
         let localAddress;
         if (plugin.uplink?.type === 'windowsVpn') {
-          const route = await this.vpnGuard.assertRoute(candidate.address, candidate.family, plugin.uplink.interfaceAlias);
+          const route = await waitForConnection(() => this.vpnGuard.assertRoute(candidate.address, candidate.family, plugin.uplink.interfaceAlias), signal);
           if (route?.verified !== true || !route.localAddress) throw new AppError('VPN_REQUIRED', '系统 VPN 路由尚未验证。');
           ({ localAddress } = route);
         }
-        const net = await import('node:net');
-        const socket = await new Promise((resolve, reject) => {
-          const value = net.default.connect({ host: candidate.address, port: plugin.target.port, family: candidate.family, ...(localAddress ? { localAddress } : {}) });
-          const timer = setTimeout(() => {
-            value.destroy();
-            const error = new Error('timeout');
-            error.code = 'ETIMEDOUT';
-            reject(error);
-          }, Math.min(plugin.limits?.timeoutMs ?? 10_000, 10_000));
-          value.once('connect', () => { clearTimeout(timer); resolve(value); });
-          value.once('error', (error) => { clearTimeout(timer); reject(error); });
-        });
-        return socket;
+        return await createConnectionSocket(
+          { host: candidate.address, port: plugin.target.port, family: candidate.family, ...(localAddress ? { localAddress } : {}) },
+          Math.min(plugin.limits?.timeoutMs ?? 10_000, 10_000),
+          { signal },
+        );
       } catch (error) {
+        assertActive();
         if (error instanceof AppError && ['VPN_REQUIRED', 'INVALID_ARGUMENT'].includes(error.code)) throw error;
         lastError = error;
       }
@@ -190,44 +195,43 @@ export class ServerPluginRuntime extends EventEmitter {
     if (plugin.pluginType !== 'server' || plugin.configState !== 'ready') throw new AppError('PLUGIN_CONFIG_INCOMPLETE', 'Server 插件配置不完整。');
     const resource = this.key(plugin);
     const owner = attemptToken ?? Symbol('server-connect');
+    this.connectionControllers.get(resource)?.abort();
+    const controller = new AbortController();
+    this.connectionControllers.set(resource, controller);
+    const externalSignal = signal;
+    const relayAbort = () => controller.abort();
+    signal = controller.signal;
+    externalSignal?.addEventListener('abort', relayAbort, { once: true });
+    if (externalSignal?.aborted) controller.abort();
     this.connectAttempts.set(resource, owner);
     let connected = false;
     const assertOwned = () => {
       if (signal?.aborted || this.connectAttempts.get(resource) !== owner) throw new AppError('CONNECT_CANCELLED', '连接已被更新的尝试取代。');
     };
     const transient = plugin.pluginInstanceId.startsWith('diagnostic-');
-    if (transient) this.adapter.setOverride(resource,plugin);
-    let saved = null;
-    try {
-      saved = await this.credentialVault.load(plugin);
-    } catch (error) {
-      if (!Object.keys(suppliedSecrets).length) {
-        if (transient) this.adapter.clearOverride(resource);
-        if (this.connectAttempts.get(resource) === owner) this.connectAttempts.delete(resource);
-        throw error;
-      }
-    }
-    try { assertOwned(); }
-    catch (error) {
-      if (transient) this.adapter.clearOverride(resource);
-      if (this.connectAttempts.get(resource) === owner) this.connectAttempts.delete(resource);
-      throw error;
-    }
-    const secrets = { ...(saved ?? {}), ...suppliedSecrets };
-    if (plugin.auth.type === 'password' && !secrets.password) {
-      if (transient) this.adapter.clearOverride(resource);
-      if (this.connectAttempts.get(resource) === owner) this.connectAttempts.delete(resource);
-      throw new AppError('CREDENTIAL_UNAVAILABLE', 'Server 密码尚未保存。');
-    }
+    const override = transient ? { ...plugin } : null;
+    if (override) this.adapter.setOverride(resource, override, controller);
     let sock;
     const abort = () => {
       sock?.destroy();
-      this.broker.cancelPendingConnection?.(resource);
+      if (this.connectAttempts.get(resource) === owner) this.broker.cancelPendingConnection?.(resource);
     };
-    signal?.addEventListener('abort', abort, { once:true });
+    signal.addEventListener('abort', abort, { once: true });
     try {
-      if (signal?.aborted) throw new AppError('CONNECT_CANCELLED', '连接已取消。');
-      sock = await this.createUplinkSocket(plugin,secrets);
+      assertOwned();
+      let saved = null;
+      try {
+        saved = await waitForConnection(() => this.credentialVault.load(plugin), signal);
+      } catch (error) {
+        assertOwned();
+        if (!Object.keys(suppliedSecrets).length) throw error;
+      }
+      assertOwned();
+      const secrets = { ...(saved ?? {}), ...suppliedSecrets };
+      if (plugin.auth.type === 'password' && !secrets.password) {
+        throw new AppError('CREDENTIAL_UNAVAILABLE', 'Server 密码尚未保存。');
+      }
+      sock = await this.createUplinkSocket(plugin, secrets, { signal });
       assertOwned();
       const result = await this.broker.connect(resource,secrets,{sock,signal});
       assertOwned();
@@ -235,19 +239,23 @@ export class ServerPluginRuntime extends EventEmitter {
       return result;
     } catch (error) {
       sock?.destroy();
-      if (transient) this.adapter.clearOverride(resource);
+      if (override) this.adapter.clearOverride(resource, controller);
       throw error;
     } finally {
-      signal?.removeEventListener('abort', abort);
+      signal.removeEventListener('abort', abort);
+      externalSignal?.removeEventListener('abort', relayAbort);
+      if (this.connectionControllers.get(resource) === controller) this.connectionControllers.delete(resource);
       if (!connected && this.connectAttempts.get(resource) === owner) this.connectAttempts.delete(resource);
     }
   }
 
   async disconnect(plugin, reason = 'environment-disconnect') {
     const resource = this.key(plugin);
+    const overrideOwner = this.adapter.overrideOwners.get(resource);
+    this.connectionControllers.get(resource)?.abort();
     this.connectAttempts.delete(resource);
     try { return await this.broker.disconnect(resource,reason); }
-    finally { if (plugin.pluginInstanceId.startsWith('diagnostic-')) this.adapter.clearOverride(resource); }
+    finally { this.adapter.clearOverride(resource, overrideOwner); }
   }
 
   forceDisconnect(plugin, reason = 'forced-disconnect', {attemptToken = null} = {}) {
@@ -272,7 +280,7 @@ export class ServerPluginRuntime extends EventEmitter {
   }
 
   readDocker(plugin, request, options = {}) {
-    return this.boundedRead(plugin, () => this.broker.readDocker(this.key(plugin), plugin.target.dockerSocket, request, { ...options, timeoutMs:Math.min(10000, plugin.limits?.timeoutMs ?? 10000) }));
+    return this.boundedRead(plugin, () => this.broker.readDocker(this.key(plugin), plugin.target.dockerSocket, request, { ...options, timeoutMs:Math.min(10000, plugin.limits?.timeoutMs ?? 10000) }), { signal:options.signal, cancelCode:'DOCKER_CANCELLED' });
   }
 
   readWorkspaceMetrics(plugin, kind, options = {}) {
@@ -288,7 +296,7 @@ export class ServerPluginRuntime extends EventEmitter {
   }
 
   withWorkspaceReadSession(plugin, operation, options = {}) {
-    return this.broker.withRemoteReadSession(this.key(plugin), operation, options);
+    return this.broker.withWorkspaceReadSession(this.key(plugin), operation, options);
   }
 
   withRemoteReadSession(plugin, operation, options = {}) {
@@ -326,13 +334,13 @@ export class ServerPluginRuntime extends EventEmitter {
     }));
   }
 
-  boundedRead(plugin, operation) {
+  boundedRead(plugin, operation, options = {}) {
     const resource = this.key(plugin);
     const session = this.broker.requireSession(resource);
     return this.readScheduler.run(resource,1,() => {
       if (this.broker.requireSession(resource) !== session) throw new AppError('PLUGIN_RECONNECTING', '等待读取期间连接已更新，请重新查询。');
       return operation();
-    });
+    }, options);
   }
 
   uploadRemoteFile(plugin, localPath, remotePath, precondition, options = {}) {
@@ -360,6 +368,19 @@ export class ServerPluginRuntime extends EventEmitter {
   }
 
   async closeAll() {
-    return this.broker.closeAll();
+    const controllers = [...this.connectionControllers];
+    const attempts = [...this.connectAttempts];
+    const overrides = [...this.adapter.overrideOwners];
+    for (const [, controller] of controllers) controller.abort();
+    try { return await this.broker.closeAll(); }
+    finally {
+      for (const [resource, controller] of controllers) {
+        if (this.connectionControllers.get(resource) === controller) this.connectionControllers.delete(resource);
+      }
+      for (const [resource, owner] of attempts) {
+        if (this.connectAttempts.get(resource) === owner) this.connectAttempts.delete(resource);
+      }
+      for (const [resource, owner] of overrides) this.adapter.clearOverride(resource, owner);
+    }
   }
 }

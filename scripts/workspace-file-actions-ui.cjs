@@ -33,16 +33,23 @@ module.exports = async function fileActionsUi({evaluate,click,clickText,until,wa
     assert.ok(await evaluate("(() => { const item=[...document.querySelectorAll('[role=menuitem]')].find(item=>item.textContent.trim()==="+JSON.stringify(label)+"); if(!item||item.getAttribute('aria-disabled')==='true') return false; item.click(); return true; })()"), '菜单操作：'+label);
     await wait(100);
   };
+  const copied = async (expected, label) => {
+    // 复制是异步操作，菜单关闭不代表系统剪贴板写入完成；仍核对准确内容。
+    const deadline = Date.now() + 3000;
+    while (clipboard.readText() !== expected && Date.now() < deadline) await wait(20);
+    assert.ok(clipboard.readText() === expected, label);
+  };
   const ready = async () => until("document.querySelector('[aria-label=\"批量处理同名文件\"]')?.disabled === false && !document.querySelector('[data-testid=upload-review-progress]') && !document.querySelector('.server-upload-review-error')", '冲突预检完成');
   try {
     await enterPath('/srv');
     await until(has(row('/srv/example.conf')), '测试目录');
     await click(row('/srv/example.log'));
+    clipboard.writeText('等待文件菜单复制');
     await menu('/srv/example.conf'); await choose('复制名称');
     await until("!document.querySelector('[role=menu]')", '关闭复制菜单');
-    assert.ok(clipboard.readText()==='example.conf','复制右键所在文件名称');
+    await copied('example.conf','复制右键所在文件名称');
     await menu('/srv/example.conf'); await choose('复制完整路径');
-    assert.ok(clipboard.readText()==='/srv/example.conf','复制路径使用右键目标');
+    await copied('/srv/example.conf','复制路径使用右键目标');
     await menu('/srv/example.conf'); await choose('查看属性');
     await until("document.querySelector('.server-file-properties')?.textContent.includes('256 B')", '实时属性');
     assert.equal(fileActionCalls.at(-1).path,'/srv/example.conf');

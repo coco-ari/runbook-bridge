@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { setImmediate as yieldRead } from 'node:timers/promises';
+import { StringDecoder } from 'node:string_decoder';
 import { AppError } from './errors.mjs';
 import { parseOffsetCursor } from './pagination-cursor.mjs';
 import { globMatches, withinRoot, capText, normalizeRemotePath, namePattern, archiveSuffix, assertLogReadIdentity } from './server-read-utils.mjs';
@@ -16,9 +17,13 @@ const MAX_CONFIG_BYTES = 1024 * 1024;
 function sliceUtf8(value, start, maxBytes) {
   const buffer = Buffer.from(String(value), 'utf8');
   let offset = Math.min(Math.max(Number(start) || 0, 0), buffer.length);
-  while (offset < buffer.length && (buffer[offset] & 0xc0) === 0x80) offset += 1;
+  if (offset < buffer.length && (buffer[offset] & 0xc0) === 0x80) throw new AppError('INVALID_ARGUMENT', 'cursor 位于 UTF-8 字符中间；请使用上一页 nextCursor，或从 cursor:0 重新读取。', { field:'cursor', suggestedValue:0 });
   let end = Math.min(offset + maxBytes, buffer.length);
   while (end > offset && end < buffer.length && (buffer[end] & 0xc0) === 0x80) end -= 1;
+  if (end === offset && offset < buffer.length) {
+    const minimumBytes = buffer[offset] < 0xe0 ? 2 : buffer[offset] < 0xf0 ? 3 : 4;
+    throw new AppError('INVALID_ARGUMENT', 'maxBytes 不足以返回一个完整的 UTF-8 字符；请保留当前 cursor，增大 maxBytes 后重试。', { field:'maxBytes', minimumBytes, suggestedValue:Math.max(4, minimumBytes) });
+  }
   return { content: buffer.subarray(offset, end).toString('utf8'), startByte: offset, endByte: end, size: buffer.length, truncated: end < buffer.length };
 }
 
@@ -298,12 +303,15 @@ export class ServerOperations {
     });
   }
 
-  async readFile(plugin, { path: remotePath, cursor, maxBytes = 262_144, tail = false } = {}) {
+  async readFile(plugin, { path: remotePath, cursor, maxBytes = 262_144, tail = false } = {}, { reader } = {}) {
     const offset = parseOffsetCursor(cursor);
     const requestedPath = normalizeRemotePath(remotePath);
     const limit = Math.min(Math.max(Number(maxBytes) || 262_144, 1), 1024 * 1024);
     if (typeof tail !== 'boolean' || (tail && cursor != null)) throw new AppError('INVALID_ARGUMENT', 'tail 不能与 cursor 同时使用。');
-    const result = await this.serverRuntime.readRemoteRange(plugin, requestedPath, offset, limit, { allowGrowth:!archiveSuffix(requestedPath), tail });
+    const options = { allowGrowth:!archiveSuffix(requestedPath), tail };
+    const result = reader?.readRange
+      ? await reader.readRange(requestedPath, offset, limit, options)
+      : await this.serverRuntime.readRemoteRange(plugin, requestedPath, offset, limit, options);
     return { path:result.canonicalPath, content:result.content, startByte:result.startByte, endByte:result.endByte, size:result.size, mtime:result.mtime, observedSize:result.observedSize ?? result.size, sourceGrew:result.sourceGrew === true, nextCursor:result.truncated ? String(result.endByte) : null, truncated:result.truncated };
   }
 
@@ -323,13 +331,16 @@ export class ServerOperations {
         let cursor = 0;
         let lineBase = 0;
         let carry = '';
+        const decoder = typeof reader.readBuffer === 'function' ? new StringDecoder('utf8') : null;
         scannedFiles += 1;
         while (scannedBytes < scanLimit && matches.length < matchLimit) {
           const remaining = scanLimit - scannedBytes;
-          const page = await reader.readRange(file.path, cursor, Math.min(1024 * 1024, remaining));
+          const page = await (decoder ? reader.readBuffer : reader.readRange).call(reader, file.path, cursor, Math.min(1024 * 1024, remaining));
           const bytes = page.endByte - page.startByte;
           scannedBytes += bytes;
-          const text = carry + page.content;
+          let content = decoder ? decoder.write(Buffer.isBuffer(page.content) ? page.content : Buffer.from(page.content ?? [])) : page.content;
+          if (decoder && (!page.truncated || bytes === 0)) content += decoder.end();
+          const text = carry + content;
           const lines = text.split(/\r?\n/);
           carry = page.truncated ? lines.pop() ?? '' : '';
           for (let index = 0; index < lines.length && matches.length < matchLimit; index += 1) {
@@ -425,12 +436,21 @@ export class ServerOperations {
     return args;
   }
 
+  async controlService(plugin, { action, unit }) {
+    const result = await this.serverRuntime.executeApproved(plugin, `LC_ALL=C systemctl ${action} -- ${quotePosix(unit)}`);
+    // 服务控制按 systemctl 的结果判断成功；远端正文不能进入错误或审计。
+    if (result.exitCode !== 0) throw new AppError('SERVICE_CONTROL_FAILED', '服务操作未成功完成，请检查服务状态和日志后再决定是否重试。', {
+      unit, action, exitCode: Number.isInteger(result.exitCode) ? result.exitCode : null,
+    });
+    return result;
+  }
+
   mutate(plugin, capability, args) {
     if (capability === 'fs.upload') return this.serverRuntime.uploadRemoteFile(plugin, args.localPath, args.remotePath, args._precondition);
     if (capability === 'fs.write') return this.serverRuntime.writeRemoteFile(plugin, args.path, args.content, args._precondition);
     if (capability === 'fs.move') return this.serverRuntime.moveRemotePath(plugin, args.sourcePath, args.destinationPath, args._precondition);
     if (capability === 'fs.delete') return this.serverRuntime.deleteRemotePath(plugin, args.path, args._precondition);
-    if (capability === 'service.control') return this.serverRuntime.executeApproved(plugin, `LC_ALL=C systemctl ${args.action} -- ${quotePosix(args.unit)}`);
+    if (capability === 'service.control') return this.controlService(plugin, args);
     if (capability === 'shell.execute') return this.serverRuntime.executeApproved(plugin, args.command, args.workingDirectory);
     throw new AppError('CAPABILITY_NOT_IMPLEMENTED', 'Server 变更操作尚未实现。');
   }

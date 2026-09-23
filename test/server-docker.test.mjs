@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { dockerRequest, dockerCommand, normalizeDockerSocket, parseDockerResult, readDockerChannel } from '../src/server-docker-reader.mjs';
 import { ServerDockerManager } from '../src/server-docker-manager.mjs';
 import { SshBroker } from '../src/ssh-broker.mjs';
+import { ServerPluginRuntime } from '../src/server-plugin-runtime.mjs';
 import { EnvironmentContextManager } from '../src/context-manager.mjs';
 import { registerServerWorkspaceIpc } from '../src/server-workspace-ipc.mjs';
 import { tools } from '../src/mcp-tool-contract.mjs';
@@ -251,4 +252,38 @@ test('Server 配置往返保留自定义 Socket，旧配置无需迁移且拒绝
   for (const socket of [0,null,'tcp://host.example.invalid:2375','relative.sock']) {
     assert.throws(() => workspaceInternals.normalizePlugin({target:{dockerSocket:socket}},scope,legacy),{code:'INVALID_ARGUMENT'});
   }
+});
+
+test('Docker 在等待队列内取消后立即移除，不占用后续请求且不调用 Broker', async t => {
+  const { manager, runtime, store, state, plugin } = fixture(t);
+  const actual = new ServerPluginRuntime(store, { load:async () => null });
+  const session = {}; let brokerCalls = 0;
+  actual.broker.requireSession = () => session;
+  actual.broker.readDocker = async (_key, _socket, _request, options) => {
+    brokerCalls += 1;
+    if (options.signal?.aborted) throw Object.assign(new Error('fixture cancelled'), { code:'DOCKER_CANCELLED' });
+    return raw('');
+  };
+  runtime.readDocker = actual.readDocker.bind(actual);
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  const active = [1,2].map(() => actual.boundedRead(plugin, () => gate));
+  const pending = manager.read('renderer:1', { ...scope, kind:'list', requestId:'queued-cancel' });
+  const rejected = assert.rejects(pending, { code:'DOCKER_CANCELLED' }); rejected.catch(() => undefined);
+  try {
+    for (let index = 0; index < 50 && !actual.readScheduler.queue.length; index++) await flush();
+    assert.equal(actual.readScheduler.active, 2);
+    assert.equal(actual.readScheduler.queue.length, 1);
+    manager.cancel('renderer:1', { ...scope, requestId:'queued-cancel' });
+    await flush();
+    assert.equal(actual.readScheduler.queue.length, 0, '取消应立即移除排队请求');
+    assert.equal(manager.pending.size, 0, '不必等待前面两个读取完成即可反馈取消');
+    assert.equal(actual.readScheduler.active, 2, '取消排队请求不提前释放其他读取的并发名额');
+  } finally {
+    release(); await Promise.all(active); await pending.catch(() => undefined);
+  }
+  await rejected;
+  assert.equal(brokerCalls, 0, '已取消的排队请求不进入 SSH Broker');
+  assert.equal(state.connected, true);
+  const next = await manager.read('renderer:1', { ...scope, kind:'list', requestId:'after-cancel' });
+  assert.deepEqual(next.items, []); assert.equal(brokerCalls, 1);
 });

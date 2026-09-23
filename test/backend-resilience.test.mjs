@@ -212,10 +212,13 @@ test('server runtime forwards cancellation to the SSH broker', async () => {
   const controller = new AbortController();
   runtime.broker.connect = async (_resource,_secrets,options) => {
     assert.equal(options.sock,socket);
-    assert.equal(options.signal,controller.signal);
+    assert.equal(options.signal.aborted, false);
+    controller.abort();
+    assert.equal(options.signal.aborted, true);
     return {connectedAt:'now'};
   };
-  await runtime.connect(plugin,{}, {signal:controller.signal,attemptToken:1});
+  await assert.rejects(runtime.connect(plugin,{}, {signal:controller.signal,attemptToken:1}), { code:'CONNECT_CANCELLED' });
+  assert.equal(socket.destroyed, true);
 });
 
 test('a slow cancellation audit cannot suppress cleanup for a later cancelled attempt', async () => {

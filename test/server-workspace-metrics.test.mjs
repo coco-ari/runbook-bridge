@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
+import crypto from 'node:crypto';
+import ssh2 from 'ssh2';
 import { setTimeout as delay } from 'node:timers/promises';
 import { cpuPercent, metricsCommand, parseDiskMetrics, parseSystemMetrics, readMetricsChannel } from '../src/server-metrics-reader.mjs';
 import { ServerWorkspaceMetrics } from '../src/server-workspace-metrics.mjs';
@@ -88,6 +90,92 @@ test('采集支持取消、限制标准输出与错误总量，并清理连接�
     assert.equal(client.listenerCount('close'),0);
     assert.equal(client.listenerCount('error'),0);
   }
+});
+
+// ssh2 的 close 事件可能等待未消费流的 end，协议释放需核对通道登记与双向关闭状态。
+test('真实本地 SSH 在采样超时或取消后释放迟到通道，共享连接仍可继续读取', { timeout:15000 }, async t => {
+  const privateKey = crypto.generateKeyPairSync('rsa', {
+    modulusLength:2048,
+    privateKeyEncoding:{ type:'pkcs1', format:'pem' },
+    publicKeyEncoding:{ type:'spki', format:'pem' },
+  }).privateKey;
+  const fingerprint = crypto.createHash('sha256').update(ssh2.utils.parseKey(privateKey).getPublicSSH()).digest('hex');
+  const connections = new Set();
+  let acceptPending, receiveExec, openedStream;
+  const server = new ssh2.Server({ hostKeys:[privateKey] }, connection => {
+    connections.add(connection);
+    connection.on('error', () => {});
+    connection.once('close', () => connections.delete(connection));
+    connection.on('authentication', context => {
+      if (context.method === 'password' && context.username === 'fixture' && context.password === 'fixture-password') context.accept();
+      else context.reject();
+    });
+    connection.on('ready', () => connection.on('session', accept => {
+      const session = accept();
+      session.on('exec', (approve, _reject, info) => {
+        assert.equal(info.command, metricsCommand('system'));
+        const respond = () => {
+          const stream = approve();
+          stream.on('error', () => {});
+          stream.resume();
+          stream.write(system()); stream.stderr.write('fixture-stderr');
+          stream.exit(0); stream.end();
+          return stream;
+        };
+        if (receiveExec) {
+          const notify = receiveExec; receiveExec = null;
+          acceptPending = respond; notify();
+        } else respond();
+      });
+    }));
+  });
+  const client = new ssh2.Client();
+  client.on('error', () => {});
+  t.after(async () => {
+    client.destroy();
+    for (const connection of connections) connection.end();
+    await new Promise(resolve => server.close(resolve));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const ready = once(client, 'ready');
+  client.connect({ host:'127.0.0.1', port:server.address().port, username:'fixture', password:'fixture-password',
+    hostHash:'sha256', hostVerifier:actual => actual === fingerprint });
+  await ready; client.setNoDelay(true);
+  const originalExec = client.exec;
+  client.exec = function(command, options, callback) {
+    return originalExec.call(this, command, options, (error, stream) => {
+      if (openedStream) { const notify = openedStream; openedStream = null; notify(stream); }
+      callback(error, stream);
+    });
+  };
+  const waitFor = async predicate => {
+    for (let attempt = 0; attempt < 400 && !predicate(); attempt += 1) await delay(10);
+    assert.ok(predicate(), '迟到通道应完成协议关闭并移出连接登记');
+  };
+  for (const reason of ['timeout', 'cancel']) await t.test(reason, async () => {
+    const closeListeners = client.listenerCount('close'), errorListeners = client.listenerCount('error');
+    const received = new Promise(resolve => { receiveExec = resolve; });
+    const opened = new Promise(resolve => { openedStream = resolve; });
+    const controller = new AbortController();
+    const pending = readMetricsChannel(client, 'system', { timeoutMs:reason === 'timeout' ? 150 : 5000, signal:controller.signal });
+    const rejected = assert.rejects(pending, { code:reason === 'timeout' ? 'METRICS_TIMEOUT' : 'METRICS_CANCELLED' });
+    await received;
+    if (reason === 'cancel') controller.abort();
+    await rejected;
+    assert.equal(client.listenerCount('close'), closeListeners);
+    assert.equal(client.listenerCount('error'), errorListeners);
+    const remote = acceptPending();
+    const late = await opened;
+    assert.ok(late);
+    await waitFor(() => late.incoming.state === 'closed' && late.outgoing.state === 'closed'
+      && client._chanMgr.get(late.incoming.id) === undefined
+      && remote.incoming.state === 'closed' && remote.outgoing.state === 'closed');
+    const recovered = await readMetricsChannel(client, 'system', { timeoutMs:3000 });
+    assert.equal(recovered.exitCode, 0);
+    assert.equal(recovered.stdout, system());
+    assert.equal(client.listenerCount('close'), closeListeners);
+    assert.equal(client.listenerCount('error'), errorListeners);
+  });
 });
 
 function harness(t) {
