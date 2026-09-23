@@ -11,7 +11,7 @@ test('冒号目录保留完整 Key，目录计数按去重后的已加载叶子�
   assert.deepEqual(keysOf(tree), [...new Set(keys)].sort());
   assert.equal(tree.nodes.get('folder:cache:').count, 3);
   assert.equal(tree.nodes.get('folder:cache:user:').count, 2);
-  assert.deepEqual(tree.nodes.get('folder:cache:user:').children.map(node => node.label), ['2', '10']);
+  assert.deepEqual(tree.nodes.get('folder:cache:user:').children.map(node => node.label), ['cache:user:2', 'cache:user:10']);
   assert.deepEqual(tree.nodes.get('folder:cache:').children.map(node => node.kind), ['folder', 'key']);
   assert.deepEqual(redisKeyAncestors(tree, 'cache:user:10'), ['folder:cache:', 'folder:cache:user:']);
 });
@@ -23,7 +23,8 @@ test('同名 Key 和目录、连续冒号、尾部冒号、中文与特殊字符
   assert.equal(tree.nodes.get('key:a:b').key, 'a:b');
   assert.equal(tree.nodes.get('folder:a:b:').count, 1);
   assert.equal(tree.nodes.get('folder:a::').label, '（空分段）');
-  assert.equal(tree.nodes.get('key:a:').label, '（空名称）');
+  assert.equal(tree.nodes.get('key:a:').label, 'a:');
+  for (const key of keys) assert.equal(tree.nodes.get('key:' + key).label, key, '叶子显示完整 Key，保留尾部分隔符');
   assert.deepEqual(redisKeyAncestors(tree, 'missing'), []);
 });
 

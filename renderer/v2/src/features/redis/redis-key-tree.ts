@@ -54,7 +54,7 @@ export function buildRedisKeyTree(keys: readonly string[]): RedisKeyTree {
       start = separator + 1
       depth += 1
     }
-    const leaf: RedisKeyTreeNode = { id: "key:" + key, kind: "key", label: key.slice(start) || "（空名称）", path: key, key, parentId, depth, count: 1, children: [] }
+    const leaf: RedisKeyTreeNode = { id: "key:" + key, kind: "key", label: key || "（空 Key）", path: key, key, parentId, depth, count: 1, children: [] }
     nodes.set(leaf.id, leaf)
     children.push(leaf)
   }

@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from "react"
+import { lazy, Suspense, useId, useRef, useState } from "react"
 import { Copy, Database, PushPin, ShieldCheck } from "@phosphor-icons/react"
 import { toast } from "sonner"
 import { usePanelRef } from "react-resizable-panels"
@@ -20,6 +20,12 @@ import { redisFolderSearch } from "./redis-key-tree"
 import { RedisScopePicker } from "./RedisScopePicker"
 import "./redis-workspace.css"
 
+const ValueViewer = lazy(async () => ({ default: (await import("./RedisValueViewer")).RedisValueViewer }))
+
+function RedisValueViewer({ value }: { readonly value: RedisValuePreview }) {
+  return <Suspense fallback={<div className="redis-empty">正在准备内容视图…</div>}><ValueViewer value={value} /></Suspense>
+}
+
 interface Props {
   readonly api: AiOpsV2Api
   readonly scope: PluginScope
@@ -36,29 +42,6 @@ async function copy(value: string) {
 }
 function time(value: string) { return value ? new Date(value).toLocaleTimeString() : "尚未读取" }
 
-function ValueViewer({ value }: { readonly value: RedisValuePreview }) {
-  const [view, setView] = useState<"text" | "json" | "hex">("text")
-  let json: string | null = null
-  if (!value.truncated && value.text !== null) {
-    try { json = JSON.stringify(JSON.parse(value.text), null, 2) } catch { /* 非 JSON 内容继续以原文展示。 */ }
-  }
-  const active = value.text === null ? "hex" : view === "json" && json === null ? "text" : view
-  const shown = active === "json" ? json! : active === "hex" ? value.hex.match(/.{1,32}/gu)?.join("\n") ?? "" : value.text ?? ""
-  return <div className="redis-value-viewer">
-    <div className="redis-value-toolbar">
-      <div className="redis-view-modes" role="group" aria-label="内容显示方式">
-        {(["text", "json", "hex"] as const).map((mode) => <Button key={mode} aria-pressed={active === mode} data-testid={"redis-view-" + mode}
-          disabled={mode === "text" && value.text === null || mode === "json" && json === null}
-          size="xs" variant="ghost" onClick={() => setView(mode)}>{mode === "text" ? "文本" : mode === "json" ? "JSON" : "十六进制"}</Button>)}
-      </div>
-      <div className="redis-value-actions"><Button size="xs" variant="ghost" className="redis-copy-content" aria-label={value.truncated ? "复制已加载部分" : "复制当前内容"} title={value.truncated ? "复制已加载部分" : "复制当前显示的内容"} data-testid="redis-copy-content" onClick={() => void copy(shown)}><Copy aria-hidden="true" />{value.truncated ? "复制已加载部分" : "复制内容"}</Button></div>
-    </div>
-    {value.truncated ? <p className="redis-notice" role="status">内容已截断：已显示 {redisBytes(value.shownBytes)} / {redisBytes(value.bytes)}，不能作为完整数据使用。</p> : null}
-    {value.text === null ? <p className="redis-muted px-3 pt-2">二进制内容 · 十六进制预览</p> : null}
-    <pre tabIndex={0} className="redis-value" data-testid="redis-value">{shown || (value.bytes === 0 ? "（空字符串）" : "（当前预算不足以展示完整字符）")}</pre>
-  </div>
-}
-
 function KeyDocument({ tab, refresh, more, field, clearField }: {
   readonly tab: RedisTab; readonly refresh: () => void; readonly more: () => void
   readonly field: (name: string) => void; readonly clearField: () => void
@@ -73,7 +56,7 @@ function KeyDocument({ tab, refresh, more, field, clearField }: {
     <header className="redis-key-heading">
       <div className="redis-key-title">
         {metadata ? <Badge variant="outline" className="redis-type-badge" title={"数据类型：" + metadata.type}>{metadata.type}</Badge> : null}
-        <h2 title={tab.key}>{tab.key}</h2>
+        <h2 title={tab.key} tabIndex={0} aria-label="完整 Key">{tab.key}</h2>
         <Button size="icon-xs" variant="ghost" className="redis-inline-action" aria-label="复制 Key" title="复制完整 Key" data-testid="redis-copy-key" onClick={() => void copy(tab.key)}><Copy aria-hidden="true" /></Button>
       </div>
       <div className="redis-key-meta" data-testid="redis-key-meta">
@@ -92,7 +75,7 @@ function KeyDocument({ tab, refresh, more, field, clearField }: {
     {tab.loading ? <p role="status" className="redis-notice">正在读取…</p> : null}
     {metadata && !metadata.exists ? <div className="redis-empty" data-testid="redis-key-missing">Key 已过期或被删除。可刷新重新检查。</div>
       : content?.unsupported ? <div className="redis-empty">暂不支持 {content.type} 类型的内容查看，仍可查看类型与 TTL。</div>
-        : content?.value ? <ValueViewer value={content.value} />
+        : content?.value ? <RedisValueViewer value={content.value} />
           : content && ["hash", "list", "set", "zset"].includes(content.type) ? <>
             {content.type === "hash" ? <form className="redis-field-search" onSubmit={(event) => { event.preventDefault(); if (fieldInput) field(fieldInput) }}>
               <Input aria-label="精确 Hash 字段" placeholder="输入完整字段名" value={fieldInput} onChange={(event) => setFieldInput(event.target.value)} data-testid="redis-field-input" />
@@ -115,7 +98,7 @@ function KeyDocument({ tab, refresh, more, field, clearField }: {
             {tab.fieldName !== null || currentRow ? <section className="redis-member-preview" aria-label="成员内容">
               <div className="redis-toolbar"><span className="truncate">{tab.fieldName !== null ? "字段：" + tab.fieldName : "成员内容"}</span><WorkspaceIconButton action="close" label="关闭成员预览" onClick={() => { setSelectedRowId(null); clearField() }} /></div>
               {tab.fieldContent?.fieldExists === false ? <p className="redis-notice">字段不存在或已被删除。</p>
-                : selectedValue ? <ValueViewer value={selectedValue} />
+                : selectedValue ? <RedisValueViewer value={selectedValue} />
                   : <p className="redis-notice">{tab.fieldContent?.truncated ? "字段值超过读取上限（" + redisBytes(tab.fieldContent.valueBytes ?? 0) + "），未读取正文。" : "正在读取字段…"}</p>}
             </section> : null}
           </> : !tab.loading && !tab.error ? <div className="redis-empty">点击刷新读取内容。</div> : null}
@@ -159,7 +142,7 @@ export function RedisWorkspace({ api, scope, plugin, projectName, environmentNam
     requestAnimationFrame(() => searchRef.current?.focus())
   }
   return <section className="redis-workspace" aria-label="Redis 工作区" data-testid="redis-workspace" onKeyDown={(event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+    if (!event.defaultPrevented && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
       event.preventDefault(); sidebarRef.current?.expand(); requestAnimationFrame(() => searchRef.current?.focus())
     }
   }}>

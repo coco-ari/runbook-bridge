@@ -154,7 +154,7 @@ export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, c
             aria-expanded={folder ? open : undefined} aria-selected={node.key !== null && node.key === activeKey}
             aria-label={folder ? node.path + "，已加载 " + node.count + " 个 Key" : node.path}
             tabIndex={node.id === tabStop ? 0 : -1} title={folder ? node.path + " · 已加载 " + node.count + " 个 Key" : node.path}
-            style={{ paddingLeft: 8 + (view === "tree" ? Math.min(node.depth, 8) * 16 : 0) }}
+            style={{ paddingLeft: 8 + (view === "tree" ? Math.min(node.depth, 8) * 12 : 0) }}
             data-redis-key={node.key ?? undefined} data-redis-folder={folder ? node.path : undefined}
             onFocus={() => setFocusedId(node.id)}
             onClick={(event) => { if (event.detail > 1) return; setFocusedId(node.id); if (folder) toggle(node); else if (node.key !== null) onOpen(node.key) }}
@@ -162,7 +162,7 @@ export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, c
             onKeyDown={(event) => keyDown(event, node, index)}>
             {folder ? <>{open ? <CaretDown className="redis-tree-chevron" /> : <CaretRight className="redis-tree-chevron" />}{open ? <FolderOpen className="redis-tree-folder" weight="fill" /> : <FolderSimple className="redis-tree-folder" weight="fill" />}</>
               : <><span className="redis-tree-chevron" /><Key className="redis-tree-key" /></>}
-            <span className="redis-tree-label"><Highlight text={view === "tree" ? node.label : node.path} keyword={keyword} /></span>
+            <span className="redis-tree-label"><Highlight text={node.label} keyword={keyword} /></span>
             {folder ? <span className="redis-tree-count" aria-hidden="true">{node.count}</span> : null}
           </button>
         })}

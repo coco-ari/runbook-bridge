@@ -4,9 +4,9 @@
 .redis-key-pane, .redis-content-pane, .redis-document { display: flex; height: 100%; min-height: 0; min-width: 0; flex-direction: column; overflow: hidden; }
 .redis-toolbar { display: flex; min-height: 37px; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 10px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .redis-key-list { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; }
-.redis-key-row { display: block; width: 100%; overflow: hidden; padding: 7px 12px; text-align: left; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 12px; border-left: 2px solid transparent; }
+.redis-key-row { display: block; width: 100%; overflow: hidden; padding: 7px 12px; text-align: left; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 12px; font-weight: 400; border-left: 2px solid transparent; }
 .redis-key-row:hover { background: var(--surface-inset); }
-.redis-key-row[aria-selected=true] { background: var(--surface-inset); border-left-color: var(--primary); color: var(--primary); }
+.redis-key-row[aria-selected=true] { background: var(--surface-selected); border-left-color: var(--primary); color: var(--primary); }
 .redis-key-row:focus-visible, .redis-cell:focus-visible, .redis-tab button:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
 .redis-browser-header { display: flex; flex-shrink: 0; flex-direction: column; gap: 6px; padding: 6px 8px 8px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .redis-browser-toolbar { display: flex; min-height: 28px; align-items: center; justify-content: space-between; gap: 4px; }
@@ -35,7 +35,8 @@
 .redis-tree-row { display: flex; align-items: center; gap: 5px; min-height: 29px; padding-top: 5px; padding-bottom: 5px; padding-right: 12px; line-height: 19px; }
 .redis-tree-row > svg { width: 15px; height: 15px; flex-shrink: 0; }
 .redis-tree-chevron { display: block; width: 12px !important; flex-shrink: 0; color: var(--muted-foreground); }
-.redis-tree-folder { color: var(--primary); opacity: .72; }
+.redis-tree-folder { color: var(--muted-foreground); }
+.redis-tree-row[data-redis-folder] .redis-tree-label { font-family: var(--font-sans); font-size: 13px; font-weight: 500; }
 .redis-tree-key { color: var(--muted-foreground); }
 .redis-tree-label { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .redis-tree-label mark { border-radius: 2px; background: color-mix(in srgb, var(--primary) 18%, transparent); color: inherit; }
@@ -53,7 +54,7 @@
 .redis-tab-panel[hidden] { display: none; }
 .redis-key-heading { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; padding: 10px 14px 6px; background: var(--surface); }
 .redis-key-title { display: flex; min-width: 0; min-height: 28px; align-items: center; gap: 8px; }
-.redis-key-title h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 13px; font-weight: 600; }
+.redis-key-title h2 { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font-family: var(--font-mono); font-size: 14px; font-weight: 500; scrollbar-width: thin; }
 .redis-type-badge { max-width: 110px; overflow: hidden; text-overflow: ellipsis; border-color: color-mix(in srgb, var(--primary) 20%, var(--border)); border-radius: 4px; padding: 1px 6px; background: color-mix(in srgb, var(--primary) 7%, var(--surface)); color: var(--primary); font-family: var(--font-mono); font-size: 10px; letter-spacing: .03em; text-transform: uppercase; }
 .redis-inline-action { width: 24px; height: 24px; color: var(--muted-foreground); border-radius: 4px; }
 .redis-inline-action:hover { color: var(--foreground); }
@@ -63,15 +64,41 @@
 .redis-meta-label { color: var(--muted-foreground); }
 .redis-sample-group { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
 .redis-value-viewer { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
-.redis-value-toolbar { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 14px 10px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.redis-value-toolbar { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .redis-view-modes { display: inline-flex; flex-shrink: 0; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-inset); }
 .redis-view-modes button { height: 25px; padding: 0 9px; border-radius: 4px; color: var(--muted-foreground); font-size: 11px; }
 .redis-view-modes button[aria-pressed=true] { background: var(--background); color: var(--foreground); box-shadow: 0 1px 3px color-mix(in srgb, var(--foreground) 10%, transparent); }
-.redis-value-actions { padding-left: 10px; border-left: 1px solid var(--border); }
+.redis-value-size { color: var(--muted-foreground); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.redis-value-tools { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.redis-value-tools button { color: var(--muted-foreground); font-size: 11px; }
+.redis-value-tools button[aria-pressed=true] { color: var(--primary); background: var(--surface-inset); }
 .redis-copy-content { height: 28px; gap: 6px; padding: 0 7px; color: var(--muted-foreground); font-size: 11px; }
 .redis-copy-content:hover { color: var(--foreground); }
 .redis-copy-content svg { width: 14px; height: 14px; }
-.redis-value { flex: 1; min-height: 0; overflow: auto; padding: 16px; font-family: var(--font-mono); font-size: 13px; line-height: 1.7; tab-size: 2; white-space: pre; }
+.redis-value-code { flex: 1; min-height: 0; min-width: 0; overflow: hidden; background: var(--background); }
+.redis-value-empty { flex: 1; padding: 16px; font-family: var(--font-mono); color: var(--muted-foreground); }
+.redis-value-code .cm-editor { height: 100%; background: transparent; color: var(--foreground); outline: none; }
+.redis-value-code .cm-editor.cm-focused { outline: 1px solid var(--ring); outline-offset: -1px; }
+.redis-value-code .cm-scroller { overflow: auto; font-family: var(--font-mono); font-size: 13px; line-height: 1.7; }
+.redis-value-code .cm-content { padding: 12px 0; caret-color: var(--foreground); }
+.redis-value-code .cm-line { padding: 0 14px 0 6px; }
+.redis-value-code .cm-gutters { border: 0; background: transparent; color: var(--muted-foreground); user-select: none; }
+.redis-value-code .cm-foldGutter .cm-gutterElement { padding: 0 4px 0 9px; cursor: pointer; }
+.redis-value-code .cm-foldPlaceholder { padding: 0 5px; border: 1px solid var(--border); border-radius: 3px; background: var(--surface-inset); color: var(--muted-foreground); }
+.redis-value-code .cm-panels { border-color: var(--border); background: var(--surface); color: var(--foreground); }
+.redis-value-code .cm-search { padding: 6px 32px 6px 10px; font-family: var(--font-sans); font-size: 11px; }
+.redis-value-code .cm-textfield { max-width: 100%; padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--background); color: var(--foreground); }
+.redis-value-code .cm-button { padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-inset); color: var(--foreground); font-size: 11px; }
+.redis-value-code .cm-searchMatch { background: color-mix(in srgb, var(--warning) 25%, transparent); }
+.redis-value-code .cm-searchMatch-selected { background: color-mix(in srgb, var(--warning) 45%, transparent); outline: 1px solid var(--warning); }
+.redis-value-code .cm-selectionMatch { background: var(--surface-selected); }
+.redis-value-code .cm-content ::selection { background: var(--surface-selected); }
+.redis-json-property { color: var(--foreground); }
+.redis-json-string { color: var(--success); }
+.redis-json-number { color: var(--warning); }
+.redis-json-bool { color: var(--info); }
+.redis-json-null, .redis-json-punctuation { color: var(--muted-foreground); }
+.redis-value-truncation { font-size: 11px; line-height: 1.6; }
 .redis-field-search { display: flex; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 .redis-field-search input { min-width: 0; height: 30px; font-size: 12px; }
 .redis-rows-scroll { flex: 1; min-height: 90px; overflow: auto; }
