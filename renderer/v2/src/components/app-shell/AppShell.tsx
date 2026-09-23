@@ -161,6 +161,10 @@ export function AppShell() {
   }), [api, removeServerWorkspaces])
   const [commandOpen, setCommandOpen] = useState(false)
   const [redisSession, setRedisSession] = useState<{ key: string; visible: boolean } | null>(null)
+  const [databaseEditing, setDatabaseEditing] = useState(false)
+  const databaseEditingRef = useRef(false)
+  const [databaseConnectionEpoch, setDatabaseConnectionEpoch] = useState(0)
+  const handleDatabaseEditing = useCallback((value: boolean) => { databaseEditingRef.current = value; setDatabaseEditing(value) }, [])
   const [databaseSession, setDatabaseSession] = useState<{ key: string; visible: boolean } | null>(null)
   const [detailTab, setDetailTab] = useState("overview")
   const [notice, setNotice] = useState("")
@@ -354,7 +358,7 @@ export function AppShell() {
     : null
   const databaseConnected = Boolean(databaseScope && !environmentStatus.error
     && scopedRuntime?.plugins.find((plugin) => plugin.pluginInstanceId === databaseScope.pluginInstanceId)?.status === "connected")
-  const databaseSessionKey = databaseScope && selectedPluginRecord && databaseConnected
+  const databaseSessionKey = databaseScope && selectedPluginRecord && (databaseConnected || databaseEditing)
     && mysqlDatabaseName(selectedPluginRecord) && mysqlWorkspaceMatchesScope(databaseScope, selectedPluginRecord)
     ? mysqlWorkspaceSessionKey(databaseScope, selectedPluginRecord) : null
   const databaseWorkspaceRetained = Boolean(databaseSession && databaseSession.key === databaseSessionKey)
@@ -413,9 +417,12 @@ export function AppShell() {
       const normalized = normalizeEnvironmentRuntime(event, databaseScope)
       if (!normalized || normalized.sequence <= latestSequence) return
       latestSequence = normalized.sequence
-      // 即使断连和重连在同一批渲染中到达，也必须清除旧查询会话。
+      // 快速断重连使旧快照失效；有编辑数据时保留窗口供用户核对草稿。
       const plugin = normalized.plugins.find((item) => item.pluginInstanceId === databaseScope.pluginInstanceId)
-      if (plugin ? plugin.status !== "connected" : !normalized.pluginsPartial) setDatabaseSession(null)
+      if (plugin ? plugin.status !== "connected" : !normalized.pluginsPartial) {
+        setDatabaseConnectionEpoch(value => value + 1)
+        if (!databaseEditingRef.current) setDatabaseSession(null)
+      }
     })
     // 会话键包含完整作用域；序号在订阅内持续更新，避免每次事件重订阅。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1315,6 +1322,8 @@ export function AppShell() {
           <MysqlDatabaseWorkspace
             api={api}
             connected={databaseConnected}
+            connectionEpoch={databaseConnectionEpoch}
+            onEditingChange={handleDatabaseEditing}
             environmentName={selectedEnvironment.name}
             key={databaseSessionKey}
             onBack={closeDatabaseWorkspace}

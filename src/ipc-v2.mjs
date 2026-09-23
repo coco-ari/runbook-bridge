@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { registerCloudConfigIpc } from './cloud-config-ipc.mjs';
 import { registerServerWorkspaceIpc } from './server-workspace-ipc.mjs';
+import { registerMysqlEditIpc } from './mysql-edit-ipc.mjs';
 import { registerRedisWorkspaceIpc } from './redis-workspace-ipc.mjs';
 import { AppError, toPublicError } from './errors.mjs';
 import { legacyCredentialConfigForPlugin } from './credential-store.mjs';
@@ -146,6 +147,7 @@ export function registerV2Ipc(ipcMain, services) {
   registerServerWorkspaceIpc(ipcMain, services);
   registerCloudConfigIpc(ipcMain, services);
   registerRedisWorkspaceIpc(ipcMain, services);
+  registerMysqlEditIpc(ipcMain, services);
   const { workspaceStore: store, connectionManager, credentialVault, legacyCredentialStore, configTransactionJournal, contextManager, confirmationManager, pluginManager, mysqlRuntime, pluginEditSessionManager, pluginProbeManager } = services;
   const credentialUseResolver = services.credentialUseResolver ?? new CredentialUseResolver(credentialVault);
   const handle = (name, fn) => ipcMain.handle(`v2:${name}`, resultHandler(fn));

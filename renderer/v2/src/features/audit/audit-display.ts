@@ -15,6 +15,8 @@ export interface AuditDisplayEntry {
   readonly errorCode: string
   readonly errorSummary: string
   readonly exitCode: number | null
+  readonly changedColumns: readonly string[]
+  readonly affectedRows: number | null
   readonly rowCount: number | null
   readonly truncated: boolean
   readonly durationMs: number | null
@@ -60,6 +62,8 @@ export function presentAudit(value: unknown, index = 0, nested = false): AuditDi
     result: auditResult(entry), errorCode: typeof entry.errorCode === "string" && /^[A-Z][A-Z0-9_]{1,127}$/u.test(entry.errorCode) ? entry.errorCode : "",
     errorSummary: safeDisplayText(entry.errorSummary),
     exitCode: typeof entry.exitCode === "number" && Number.isInteger(entry.exitCode) && entry.exitCode >= 0 && entry.exitCode <= 255 ? entry.exitCode : null,
+    changedColumns: Array.isArray(entry.changedColumns) ? entry.changedColumns.filter((value): value is string => typeof value === "string").map(safeDisplayText) : [],
+    affectedRows: Number.isSafeInteger(entry.affectedRows) && (entry.affectedRows as number) >= 0 ? entry.affectedRows as number : null,
     rowCount: Number.isSafeInteger(entry.rowCount) && (entry.rowCount as number) >= 0 ? entry.rowCount as number : null, truncated: entry.truncated === true,
     durationMs: typeof entry.durationMs === "number" && Number.isFinite(entry.durationMs) && entry.durationMs >= 0 ? entry.durationMs : null,
     phase: safeDisplayText(entry.phase), approval: safeDisplayText(entry.approval),

@@ -30,6 +30,8 @@ export function AuditOperationList({ entries }: { readonly entries: readonly Aud
                 <div className="col-span-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground @lg/audit:col-start-2">
                   <span>{categoryLabels[entry.category]}</span>
                   {entry.exitCode !== null ? <span>退出码 {entry.exitCode}</span> : null}
+                  {entry.changedColumns.length ? <span className="max-w-80 truncate" title={entry.changedColumns.join("、")}>字段 {entry.changedColumns.join("、")}</span> : null}
+                  {entry.affectedRows !== null ? <span>修改 {entry.affectedRows} 行</span> : null}
                   {entry.rowCount !== null ? <span>返回 {entry.rowCount} 行{entry.truncated ? "（已截断）" : ""}</span> : null}
                   {entry.durationMs !== null ? <span>耗时 {durationLabel(entry.durationMs)}</span> : null}
                   {entry.approval ? <span>{entry.approval === "approved" ? "用户已批准" : "用户已拒绝"}</span> : null}

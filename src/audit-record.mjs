@@ -16,7 +16,7 @@ const ACTIONS = {
   'journal.read':'查询系统日志', 'shell.execute':'执行 Shell 命令', 'container.inspect':'查看容器状态',
   'docker.list':'列出容器', 'docker.inspect':'查看容器详情', 'docker.logs':'读取容器日志', 'docker.stats':'查看容器资源',
   'mysql.describe':'查看数据库结构', 'mysql.tables':'列出数据表', 'mysql.table':'查看表结构',
-  'mysql.select':'执行只读查询', 'mysql.preview':'预览数据表', 'mysql.explain':'分析查询计划', 'mysql.search':'搜索数据库结构',
+  'mysql.update':'修改数据表', 'mysql.select':'执行只读查询', 'mysql.preview':'预览数据表', 'mysql.explain':'分析查询计划', 'mysql.search':'搜索数据库结构',
   'redis.scan':'扫描 Redis 键', 'redis.read':'读取 Redis 数据', 'redis.ttl':'查看 Redis 有效期', 'redis.type':'查看 Redis 类型',
   'terminal':'使用服务器终端', 'metrics':'查看服务器资源监控',
   'connect':'连接服务器', 'disconnect':'断开服务器', 'auto-reconnect':'自动重新连接',
@@ -74,6 +74,7 @@ export function auditAction(entry) {
 }
 
 export function auditCategory(action) {
+  if (action === 'mysql.update') return 'change';
   if (/^(fs\.(?:upload|write|move|delete|mkdir)|service\.(?:control|start|stop|restart|reload)|shell\.execute|execute)/u.test(action)) return 'change';
   if (/runbook|plugin-added|plugin-.*updated|plugin-deleted|config-imported|config-uploaded|credential|host-key/u.test(action)) return 'configuration';
   if (/connect|connection-plan/u.test(action)) return 'connection';
@@ -114,6 +115,7 @@ export function auditOutcome(entry) {
   if (['success','connected','disconnected','completed','complete','already-satisfied','ready'].includes(raw)) return 'success';
   if (['error','failed'].includes(raw)) return 'error';
   if (['blocked','denied'].includes(raw)) return 'blocked';
+  if (raw === 'unknown') return 'unknown';
   if (raw === 'pending-confirmation') return 'pending';
   if (['partial','warning','needs-action','unsupported'].includes(raw)) return 'warning';
   if (raw === 'connection-lost') return 'interrupted';
@@ -135,6 +137,8 @@ function legacyTarget(entry) {
 
 export function auditErrorSummary(code) {
   if (!code) return '';
+  if (code === 'MYSQL_EDIT_OUTCOME_UNKNOWN') return '保存结果不确定，请重新查询核实，勿重复提交。';
+  if (code === 'MYSQL_EDIT_CONFLICT') return '数据已被修改或删除，本批修改未保存。请重新加载并核对。';
   if (code === 'SERVICE_CONTROL_FAILED') return '服务执行失败，请检查服务状态和日志。';
   if (/CONFIRMATION/u.test(code)) return '确认请求已失效或与当前操作不匹配，请重新发起。';
   if (/TIMEOUT|TIMEDOUT/u.test(code)) return '操作等待超时，请检查连接后重试。';
@@ -169,6 +173,8 @@ export function presentAuditEvent(entry, offset = 0) {
     target:safeAuditText(entry.auditTarget ?? legacyTarget(entry)), result, phase,
     errorCode, errorSummary:auditErrorSummary(errorCode),
     ...(Number.isInteger(entry.exitCode) && entry.exitCode >= 0 && entry.exitCode <= 255 ? {exitCode:entry.exitCode} : {}),
+    ...(Array.isArray(entry.changedColumns) ? {changedColumns:entry.changedColumns.filter(value=>typeof value==='string').slice(0,100).map(value=>safeAuditText(value,128))} : {}),
+    ...(Number.isSafeInteger(entry.affectedRows) && entry.affectedRows >= 0 ? {affectedRows:entry.affectedRows} : {}),
     ...(Number.isSafeInteger(entry.rowCount) && entry.rowCount >= 0 ? {rowCount:entry.rowCount,truncated:entry.truncated === true} : {}),
     ...(Number.isFinite(entry.durationMs) && entry.durationMs >= 0 ? {durationMs:entry.durationMs} : {}),
     ...(Number.isFinite(entry.operation?.bytes) ? {bytes:entry.operation.bytes} : {}),

@@ -12,7 +12,9 @@ app.on('window-all-closed',() => {
 });
 
 const root = path.resolve(__dirname,'..');
-const pagePath = path.join(root,'renderer-build','v2','index.html');
+const packageRoot = process.argv.find(value=>value.startsWith('--package-root='))?.slice('--package-root='.length);
+const runtimeRoot = packageRoot ? path.resolve(packageRoot) : root;
+const pagePath = path.join(runtimeRoot,'renderer-build','v2','index.html');
 const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(),'runbook-bridge-database-smoke-'));
 const screenshotArgument = process.argv.find((value) => value.startsWith('--screenshot-dir='))?.slice('--screenshot-dir='.length);
 const screenshotValue = process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR || screenshotArgument || app.commandLine.getSwitchValue('screenshot-dir');
@@ -539,7 +541,7 @@ async function screenshot(win,name) {
     await waitFor(win,`document.documentElement.dataset.theme === '${theme}'`,'截图主题切换');
     await win.webContents.capturePage();
     await wait(name === 'workspace-entry' ? 1000 : 350);
-    for (const [width,height] of [[1600,1000],[1400,900]]) {
+    for (const [width,height] of [[1600,1000],[1400,900],...(process.argv.includes('--mysql-edit') ? [[960,640]] : [])]) {
       await setExactViewport(win,width,height);
       if (await isVisible(win,'mysql-full-window-workspace')) await assertFullWindow(win);
       const frame = (await captureFrame(win)).toPNG();
@@ -559,6 +561,7 @@ async function run() {
   assert.ok(fs.existsSync(pagePath),'请先执行 build:renderer。');
   await app.whenReady();
   registerMockApi();
+  const editingFixture = process.argv.includes("--mysql-edit") ? await (await import("./mysql-edit-ui-fixture.mjs")).installMysqlEditUiFixture({ipcMain,registeredChannels,plugin:plugins[0],moduleRoot:runtimeRoot}) : null;
   session.defaultSession.webRequest.onBeforeRequest((details,callback) => {
     const blocked = !details.url.startsWith('file:') && !details.url.startsWith('devtools:');
     if (blocked) externalRequests.push(details.url);
@@ -567,7 +570,7 @@ async function run() {
   session.defaultSession.setPermissionRequestHandler((_contents,_permission,callback) => callback(false));
   const win = new BrowserWindow({ enableLargerThanScreen:true,
     show:process.platform === 'darwin',useContentSize:true,width:1600,height:1000,
-    webPreferences:{preload:path.join(root,'src','preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false},
+    webPreferences:{preload:path.join(runtimeRoot,'src','preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false},
   });
   win.webContents.setWindowOpenHandler(() => ({action:'deny'}));
   win.webContents.on('did-finish-load',() => win.webContents.focus());
@@ -591,6 +594,13 @@ async function run() {
     })()`,true);
     await click(win,`[data-project-id="${PROJECT_ID}"]`);
     await click(win,testId(`environment-trigger-${ENVIRONMENT_ID}`));
+    if (editingFixture) {
+      await require('./database-edit-ui.cjs')({win,fixture:editingFixture,click,fill,waitFor,testId,screenshot,selectPlugin,PRIMARY_ID,plugins,state,runtime});
+      await assertNoPersistence(win);
+      assert.deepEqual(rendererErrors,[]);
+      assert.deepEqual(externalRequests,[]);
+      return;
+    }
     await selectPluginDetails(win,OFFLINE_ID);
     assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('plugin-workspace-open')}').disabled`,true),true,'未连接的工作区入口必须禁用。');
     assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('plugin-workspace-open')}').getAttribute('aria-description')`,true),'请先连接数据库','离线入口必须说明不可用原因。');
@@ -809,6 +819,7 @@ async function run() {
     await screenshot(win,'failure').catch(() => undefined);
     throw error;
   } finally {
+    await editingFixture?.close();
     for (const release of releases) release();
     if (!win.isDestroyed()) win.destroy();
     await wait(100);

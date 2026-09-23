@@ -238,3 +238,20 @@ test('终端同一会话内每条命令独立展示，保留退出码且不混�
   assert.deepEqual(commands.map(entry=>[entry.target,entry.exitCode,entry.result]),[['false',1,'error'],['pwd',0,'success']]);
   assert.ok(commands.every(entry=>entry.eventCount === 1));
 });
+
+test('数据库写入呈现修改字段与行数，未知提交状态不被误标失败', async t => {
+  const {write,list}=await fixture(t);
+  const base={actor:'user',pluginType:'mysql',auditAction:'mysql.update',auditTarget:'固定数据库 fixture · 表 items',changedColumns:['label','state']};
+  await write([
+    {...base,operationId:'save-ok',type:'plugin-operation-started',result:'started'},
+    {...base,operationId:'save-ok',type:'plugin-operation',result:'success',affectedRows:2,original:'不返回业务原值',value:'不返回业务新值'},
+    {...base,operationId:'save-unknown',type:'plugin-operation',result:'unknown',errorCode:'MYSQL_EDIT_OUTCOME_UNKNOWN'},
+  ]);
+  const page=await list();
+  const saved=page.entries.find(entry=>entry.result==='success');
+  assert.equal(saved.category,'change');assert.equal(saved.title,'修改数据表');assert.equal(saved.affectedRows,2);
+  assert.deepEqual(saved.changedColumns,['label','state']);
+  const uncertain=page.entries.find(entry=>entry.result==='unknown');
+  assert.match(uncertain.errorSummary,/勿重复提交/u);
+  assert.doesNotMatch(JSON.stringify(page),/不返回业务/u);
+});

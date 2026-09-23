@@ -220,6 +220,25 @@ export class MysqlPluginRuntime extends EventEmitter {
     });
   }
 
+  async desktopEditSession(plugin, expectedSession, operation) {
+    const session = this.require(plugin);
+    if (expectedSession && expectedSession !== session) throw new AppError('MYSQL_EDIT_STALE', '数据库连接已变化，请重新加载后编辑。');
+    // 整个编辑事务占用同一插件的串行名额，健康检查和普通查询不能插入事务。
+    return this.readScheduler.run(key(plugin), 1, async () => {
+      if (this.require(plugin) !== session) throw new AppError('MYSQL_EDIT_STALE', '数据库连接已变化，请重新加载后编辑。');
+      const query = (sql, values = [], options = {}) => {
+        // 事务控制使用固定无参数语句；业务值始终走服务端预处理，兼容 NO_BACKSLASH_ESCAPES。
+        const method = ["START TRANSACTION","COMMIT","ROLLBACK"].includes(sql) ? "query" : "execute";
+        return session.connection[method]({sql,values,timeout:Math.min(plugin.limits.timeoutMs,15000),...options});
+      };
+      try { return await operation(query, session); }
+      catch (error) {
+        if (invalidatesSession(error)) await this.invalidateSession(plugin,session,mysqlError(error));
+        throw error;
+      }
+    });
+  }
+
   async readMetadata(plugin, signature, load, { refresh = false } = {}) {
     if (typeof refresh !== 'boolean') throw new AppError('INVALID_ARGUMENT', 'refresh 必须是布尔值。');
     const session = this.sessions.get(key(plugin));

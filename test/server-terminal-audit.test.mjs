@@ -66,7 +66,7 @@ test('真实 Bash 记录每条完成命令并保留原提示钩子与退出码',
     assert.ok(predicate(),'Bash 未返回预期的执行记录');
   };
   child.stdin.write("PROMPT_COMMAND='printf existing-prompt'; " + audit.command + '\n');
-  await until(() => audit.available);
+  await until(() => audit.available && output.includes('existing-prompt'));
   assert.ok(output.includes('existing-prompt'));
   audit.noteInput(Buffer.from('pwd\nfalse\necho fixture-private\n'));
   child.stdin.write('pwd\nfalse\necho fixture-private\n');

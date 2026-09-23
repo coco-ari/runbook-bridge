@@ -760,3 +760,56 @@
 .mysql-table-filter-bar input:focus { outline:1px solid var(--primary) }
 
 .mysql-sidebar-search .mysql-sidebar-search-clear { position:absolute; right:4px; top:50%; transform:translateY(-50%); color:var(--muted-foreground) }
+
+/* 数据编辑沿用工作区主题，只挂载当前页和当前活动单元格的输入控件。 */
+.mysql-edit-container { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; overflow:hidden; }
+.mysql-edit-readonly { display:flex; flex:1; min-height:0; min-width:0; overflow:hidden; }
+.mysql-edit-entry,.mysql-edit-toolbar,.mysql-edit-selection,.mysql-edit-footer { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:8px 12px; border-bottom:1px solid var(--border); font-size:12px; }
+.mysql-edit-entry { justify-content:space-between; color:var(--muted-foreground); background:var(--surface-inset); }
+.mysql-edit-toolbar { min-height:42px; }
+.mysql-edit-toolbar strong { overflow:hidden; text-overflow:ellipsis; max-width:180px; }
+.mysql-edit-mode { display:inline-flex; align-items:center; gap:5px; color:var(--primary); font-weight:600; }
+.mysql-edit-mode svg { width:15px; height:15px; }
+.mysql-edit-selection { min-height:39px; background:var(--surface-inset); }
+.mysql-edit-selection>span:last-child { font-size:11px; }
+.mysql-edit-message { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:7px 12px; font-size:12px; line-height:1.6; color:var(--muted-foreground); border-bottom:1px solid var(--border); }
+.mysql-edit-message.is-error { color:var(--danger); background:color-mix(in srgb,var(--danger) 5%,transparent); }
+.mysql-edit-scroll { flex:1; min-height:0; min-width:0; overflow:auto; outline:none; }
+.mysql-edit-table { border-collapse:separate; border-spacing:0; table-layout:fixed; min-width:100%; width:max-content; font-size:12px; }
+.mysql-edit-table th { position:sticky; top:0; z-index:2; background:var(--surface-inset); text-align:left; border-bottom:1px solid var(--border); padding:6px 10px; min-width:180px; max-width:280px; }
+.mysql-edit-table th button { display:flex; width:100%; align-items:center; gap:6px; text-align:left; font-family:var(--font-mono); font-size:12px; }
+.mysql-edit-table th button svg { width:12px; height:12px; color:var(--muted-foreground); }
+.mysql-edit-table th small { display:block; margin-top:3px; font-size:10px; font-weight:400; color:var(--muted-foreground); }
+.mysql-edit-table td { padding:0; height:34px; border-bottom:1px solid color-mix(in srgb,var(--border) 60%,transparent); border-right:1px solid color-mix(in srgb,var(--border) 35%,transparent); }
+.mysql-edit-table tr:nth-child(even) td { background:color-mix(in srgb,var(--surface-inset) 40%,transparent); }
+.mysql-edit-table tr[data-selected] td { background:color-mix(in srgb,var(--primary) 7%,var(--background)); }
+.mysql-edit-table tr[data-conflict] td { box-shadow:inset 0 -1px var(--danger); }
+.mysql-edit-table td[data-dirty] { background:color-mix(in srgb,var(--primary) 12%,var(--background)) !important; }
+.mysql-edit-table .mysql-edit-row-selector { min-width:38px; width:38px; padding:0 11px; }
+.mysql-edit-table .mysql-edit-number { min-width:38px; width:38px; padding:0 8px; text-align:right; font-variant-numeric:tabular-nums; color:var(--muted-foreground); }
+.mysql-edit-cell { position:relative; display:flex; align-items:center; width:100%; min-width:180px; max-width:280px; height:33px; padding:0 10px; text-align:left; font-family:var(--font-mono); outline:none; cursor:text; }
+.mysql-edit-cell>span:first-child { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.mysql-edit-cell:focus-visible { box-shadow:inset 0 0 0 2px var(--primary); }
+.mysql-edit-cell:hover { background:color-mix(in srgb,var(--primary) 4%,transparent); }
+[data-readonly] .mysql-edit-cell { cursor:default; color:var(--muted-foreground); }
+.mysql-edit-null { color:var(--muted-foreground); font-style:italic; font-size:11px; }
+.mysql-edit-dirty-dot { position:absolute; top:4px; right:4px; width:4px; height:4px; border-radius:50%; background:var(--primary); }
+.mysql-cell-input { width:100%; min-width:180px; height:33px; border-radius:0; font-family:var(--font-mono); font-size:12px; padding:0 9px; border-color:var(--primary); }
+.mysql-edit-footer { flex-shrink:0; border-top:1px solid var(--border); border-bottom:0; min-height:43px; }
+.mysql-edit-footer strong { font-size:12px; font-weight:500; color:var(--primary); }
+.mysql-edit-textarea { width:100%; min-width:0; border:1px solid var(--border); border-radius:6px; padding:10px; background:var(--background); font-family:var(--font-mono); font-size:12px; resize:vertical; outline:none; }
+.mysql-edit-textarea:focus { border-color:var(--primary); box-shadow:0 0 0 1px var(--primary); }
+.mysql-edit-textarea:disabled { opacity:.5; }
+.mysql-edit-review { max-height:55vh; overflow:auto; border:1px solid var(--border); border-radius:6px; font-size:12px; }
+.mysql-edit-review section+section { border-top:1px solid var(--border); }
+.mysql-edit-review h4 { padding:7px 10px; font-family:var(--font-mono); background:var(--surface-inset); font-size:11px; }
+.mysql-edit-review section>div { display:grid; grid-template-columns:100px minmax(0,1fr) 16px minmax(0,1fr); gap:10px; align-items:start; padding:8px 10px; }
+.mysql-edit-review pre { max-height:120px; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:12px; }
+.mysql-edit-review pre:last-child { color:var(--primary); }
+.mysql-edit-empty { padding:40px; text-align:center; color:var(--muted-foreground); font-size:12px; }
+@media(max-width:900px) { .mysql-edit-selection>span:last-child { display:none; } .mysql-edit-footer { gap:6px; } .mysql-edit-review section>div { grid-template-columns:70px minmax(0,1fr) 12px minmax(0,1fr); gap:6px; } }
+
+.mysql-table-browser[hidden] { display: none; }
+
+.mysql-query-result-area:not([hidden]) { display: flex; flex-direction: column; }
+.mysql-edit-entry,.mysql-edit-toolbar,.mysql-edit-selection,.mysql-edit-message { flex-shrink: 0; }

@@ -7,6 +7,7 @@ import { assessEnvironmentSnapshot, publicPluginAssessment } from './plugin-read
 import { pluginWithRunbookSources, resourceHintsFromRunbook } from './runbook-sources.mjs';
 import { workspaceInternals } from './workspace-store.mjs';
 import { isolateNewPluginIdentity } from './plugin-creation-identity.mjs';
+import { DesktopMysqlEditor, prepareMysqlEditRequest } from './desktop-mysql-editor.mjs';
 import { prepareDesktopMysqlOperation } from './desktop-mysql-operation.mjs';
 import { RUNTIME_INFO } from './package-metadata.mjs';
 import { MYSQL_READ_CAPABILITIES } from './mysql-policy.mjs';
@@ -94,6 +95,7 @@ function agentPluginInput(params) {
 export class V2Service {
   constructor({ workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, operationGate = null, serverOperations, credentialVault, mutationCoordinator = null, workspaceChanged = null }) {
     Object.assign(this, { workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault, mutationCoordinator, workspaceChanged });
+    this.mysqlEditor = new DesktopMysqlEditor(pluginManager?.runtimes?.mysql, workspaceStore);
     this.redisWorkspaceManager = new RedisWorkspaceManager(pluginManager?.runtimes?.redis);
     this.operationGate = operationGate ?? new OperationGate(confirmationManager);
   }
@@ -354,6 +356,28 @@ export class V2Service {
     };
     return this.mutationCoordinator
       ? this.mutationCoordinator.runEnvironmentOperation(scope.projectId, scope.environmentId, execute)
+      : execute();
+  }
+
+  async invokeDesktopMysqlEdit(owner, payload, operation, assertOwner = () => {}) {
+    const scope = prepareMysqlEditRequest(payload,operation);
+    if (operation === 'release') return this.mysqlEditor.release(owner,scope,payload.editId);
+    const execute = async () => {
+      assertOwner();
+      this.connectionManager.assertConfigurationStable?.(scope.projectId,scope.environmentId);
+      const plugin = await this.workspaceStore.getPlugin(scope.projectId,scope.environmentId,scope.pluginInstanceId);
+      if (plugin.pluginType !== 'mysql') throw new AppError('PLUGIN_TYPE_MISMATCH','目标不是 MySQL 插件。');
+      if (['projectId','environmentId','pluginInstanceId'].some(field=>scope[field]!==plugin[field])) throw new AppError('SCOPE_MISMATCH','编辑目标不属于当前作用域。');
+      assertPluginConfigurationReady(plugin);
+      if (operation !== 'status') this.assertPluginConnected(scope,plugin);
+      assertOwner();
+      if (operation === 'open') return this.mysqlEditor.open(owner,plugin,payload,assertOwner);
+      if (operation === 'prepare') return this.mysqlEditor.prepare(owner,plugin,payload);
+      if (operation === 'commit') return this.mysqlEditor.commit(owner,plugin,payload,assertOwner);
+      return this.mysqlEditor.status(owner,plugin,payload);
+    };
+    return this.mutationCoordinator
+      ? this.mutationCoordinator.runEnvironmentOperation(scope.projectId,scope.environmentId,execute)
       : execute();
   }
 

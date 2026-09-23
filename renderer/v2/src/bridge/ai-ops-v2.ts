@@ -166,6 +166,45 @@ export interface MysqlTableDescription {
   readonly columns: readonly MysqlColumnDescription[]
 }
 
+
+export interface MysqlEditColumn {
+  readonly name: string
+  readonly source: string
+  readonly type: string
+  readonly dataType: string
+  readonly nullable: boolean
+  readonly primary: boolean
+  readonly editable: boolean
+  readonly reason: string | null
+}
+export interface MysqlEditRow { readonly rowId: string; readonly values: Readonly<Record<string, string | null>> }
+export interface MysqlEditData {
+  readonly auditWarning?: boolean
+  readonly editId: string
+  readonly table: string
+  readonly expiresAt: number
+  readonly limits: Readonly<{maxRows: number; maxCells: number}>
+  readonly columns: readonly MysqlEditColumn[]
+  readonly rows: readonly MysqlEditRow[]
+  readonly truncated: boolean
+}
+export interface MysqlEditChange { readonly rowId: string; readonly values: Readonly<Record<string, string | null>> }
+export interface MysqlEditPlan {
+  readonly planId: string
+  readonly editId: string
+  readonly table: string
+  readonly rowCount: number
+  readonly cellCount: number
+  readonly expiresAt: number
+  readonly changes: readonly Readonly<{rowId: string; keys: Readonly<Record<string,string | null>>; values: readonly Readonly<{name: string; original: string | null; value: string | null}>[]}>[]
+}
+export interface MysqlEditStatus {
+  readonly planId: string
+  readonly status: "prepared" | "running" | "success" | "failed" | "unknown"
+  readonly result?: Readonly<{rowCount: number; rows: readonly MysqlEditRow[]; auditWarning?: boolean}>
+  readonly error?: Readonly<{code: string; message: string; details?: Readonly<{rowIds?: readonly string[]}>}>
+}
+
 export interface MysqlQueryResult {
   readonly auditWarning?: boolean
   readonly rows: readonly Readonly<Record<string, unknown>>[]
@@ -787,6 +826,11 @@ export interface AiOpsV2Api {
   listPluginDatabases(payload: PluginDatabaseListPayload): Promise<IpcResult<PluginDatabaseListData>>
   mysqlListTables(payload: MysqlTableListPayload): Promise<IpcResult<MysqlTableListData>>
   mysqlDescribeTable(payload: MysqlTablePayload): Promise<IpcResult<MysqlTableDescription>>
+  mysqlEditOpen(payload: MysqlQueryPayload): Promise<IpcResult<MysqlEditData>>
+  mysqlEditPrepare(payload: PluginScope & {editId: string; changes: readonly MysqlEditChange[]}): Promise<IpcResult<MysqlEditPlan>>
+  mysqlEditCommit(payload: PluginScope & {editId: string; planId: string}): Promise<IpcResult<MysqlEditStatus>>
+  mysqlEditStatus(payload: PluginScope & {editId: string; planId: string}): Promise<IpcResult<MysqlEditStatus>>
+  mysqlEditRelease(payload: PluginScope & {editId: string}): Promise<IpcResult<{released: boolean}>>
   mysqlQueryReadonly(payload: MysqlQueryPayload): Promise<IpcResult<MysqlQueryResult>>
   mysqlPreviewTable(payload: MysqlPreviewPayload): Promise<IpcResult<MysqlQueryResult>>
   listAudit(payload: AuditListPayload): Promise<IpcResult<AuditPage>>
@@ -888,6 +932,11 @@ export const AI_OPS_V2_API_NAMES = [
   "listPluginDatabases",
   "mysqlListTables",
   "mysqlDescribeTable",
+  "mysqlEditOpen",
+  "mysqlEditPrepare",
+  "mysqlEditCommit",
+  "mysqlEditStatus",
+  "mysqlEditRelease",
   "mysqlQueryReadonly",
   "mysqlPreviewTable",
   "listAudit",

@@ -5,6 +5,7 @@ import type { AiOpsV2Api, MysqlQueryResult, PluginScope } from "@/bridge/ai-ops-
 export const MYSQL_MAX_QUERY_DOCUMENTS = 6
 
 interface MysqlDocumentRead {
+  readonly executedSql?: string
   readonly data: MysqlQueryResult | null
   readonly loading: boolean
   readonly error: string | null
@@ -73,7 +74,7 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
       const response = await api.mysqlQueryReadonly({ projectId, environmentId, pluginInstanceId, sql })
       if (!currentRequest()) return
       if (!response.ok) throw new Error(response.error.message)
-      setResult({ data: response.data, loading: false, error: null })
+      setResult({ data: response.data, executedSql: sql, loading: false, error: null })
     } catch (error) {
       if (currentRequest()) setResult({ data: null, loading: false, error: error instanceof Error ? error.message : "SQL 查询失败，请重试。" })
     } finally {

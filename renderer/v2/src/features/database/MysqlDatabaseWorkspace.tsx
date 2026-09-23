@@ -4,6 +4,8 @@ import { WorkspaceLayoutControls, WorkspacePanelToggle, WorkspaceTabBar } from "
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { ArrowClockwise, CaretDown, Code, Database, MagnifyingGlass, Plugs, ShieldCheck, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
 import { toast } from "sonner"
+import { MysqlEditableResults } from "./MysqlEditableResults"
+import { MysqlEditingProvider, useMysqlEditingGuard } from "./MysqlEditingContext"
 import { MysqlTableDocument } from "./MysqlTableDocument"
 import { useMysqlSchemaCache } from "./use-mysql-schema-cache"
 import { MYSQL_TABLE_DRAG_TYPE, mysqlSelectSnippet } from "./mysql-sql-assist"
@@ -32,6 +34,8 @@ export interface MysqlDatabaseWorkspaceProps {
   readonly api: AiOpsV2Api
   readonly scope: PluginScope
   readonly plugin: PluginConfigurationRecord
+  readonly connectionEpoch: number
+  readonly onEditingChange: (value: boolean) => void
   readonly connected: boolean
   readonly onClose: () => void
   readonly onBack: () => void
@@ -53,6 +57,7 @@ function ReadLoading({ label }: { readonly label: string }) {
 
 function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, environmentName, api, scope }: MysqlDatabaseWorkspaceProps) {
   const database = mysqlDatabaseName(plugin)
+  const editing = useMysqlEditingGuard()
   const [disconnecting, setDisconnecting] = useState(false)
   const [closing, setClosing] = useState(false)
   async function disconnect() {
@@ -67,16 +72,17 @@ function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, envi
   }
   return <>
     <header className="mysql-workspace-header">
-      <WorkspaceBackButton label="返回数据库详情" testId="mysql-workspace-back" onClick={onBack} />
+      <WorkspaceBackButton label="返回数据库详情" testId="mysql-workspace-back" onClick={() => editing.protect(onBack)} />
       <span className="mysql-workspace-header-divider" />
-      <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold" title={plugin.displayName}>{plugin.displayName}</h1><StatusIndicator appearance="badge" status={connected ? "connected" : "disconnected"} /><Badge variant="outline"><ShieldCheck className="size-3" />只读</Badge></div><p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName + " · " + database}>{projectName} / {environmentName} · {database}</p></div>
-      <WorkspaceHeaderActions connected={connected} busy={disconnecting} onDisconnect={() => void disconnect()} onClose={() => setClosing(true)} prefix="mysql-workspace" closeLabel="关闭数据库工作区" closeTitle="关闭工作区并清除查询" />
+      <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold" title={plugin.displayName}>{plugin.displayName}</h1><StatusIndicator appearance="badge" status={connected ? "connected" : "disconnected"} /><Badge variant="outline"><ShieldCheck className="size-3" />Agent 只读</Badge></div><p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName + " · " + database}>{projectName} / {environmentName} · {database}</p></div>
+      <WorkspaceHeaderActions connected={connected} busy={disconnecting} onDisconnect={() => editing.protect(() => void disconnect())} onClose={() => setClosing(true)} prefix="mysql-workspace" closeLabel="关闭数据库工作区" closeTitle="关闭工作区并清除查询" />
     </header>
-    <Dialog open={closing} onOpenChange={setClosing}><DialogContent><DialogHeader><DialogTitle>关闭数据库工作区</DialogTitle><DialogDescription>将清除当前工作区的 SQL、筛选条件和查询结果。数据库连接保持。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => { setClosing(false); onBack() }}>返回详情并保留</Button><Button data-testid="mysql-workspace-confirm-close" onClick={onClose}>关闭工作区</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={closing} onOpenChange={setClosing}><DialogContent><DialogHeader><DialogTitle>关闭数据库工作区</DialogTitle><DialogDescription>将清除当前工作区的 SQL、筛选条件和查询结果。数据库连接保持。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => { setClosing(false); editing.protect(onBack) }}>返回详情并保留</Button><Button data-testid="mysql-workspace-confirm-close" onClick={() => { setClosing(false); editing.protect(onClose) }}>关闭工作区</Button></DialogFooter></DialogContent></Dialog>
   </>
 }
 
 function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorkspaceProps, "api" | "scope" | "plugin">) {
+  const editing = useMysqlEditingGuard()
   const state = useMysqlWorkspace(api, scope)
   const queries = useMysqlQueryDocuments(api, scope)
   const getSchema = useMysqlSchemaCache(api, scope)
@@ -109,7 +115,8 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
     }
     selectDocument("table:" + name)
   }
-  function closeTable(name: string) {
+  function closeTable(name: string) { editing.protect(() => closeTableNow(name), ["table:" + name]) }
+  function closeTableNow(name: string) {
     const remaining = openTables.filter(table => table !== name)
     setOpenTables(remaining)
     if (selectedTable === name) selectDocument(remaining.length ? "table:" + remaining.at(-1) : activeQueryId)
@@ -133,7 +140,8 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
     try { const payload = JSON.parse(data); if (payload.scope === dragScope && typeof payload.table === "string") generateQuery(payload.table) } catch { /* 忽略其他窗口或非工作区的拖放内容。 */ }
   }
 
-  function closeQuery(id: string) {
+  function closeQuery(id: string) { editing.protect(() => closeQueryNow(id), [id]) }
+  function closeQueryNow(id: string) {
     if (queries.documents.length <= 1) return
     if (id === activeQueryId) {
       const next = queries.documents.find((document) => document.id !== id)!
@@ -202,7 +210,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
                   <ResizablePanel collapsedSize="42px" collapsible defaultSize="252px" groupResizeBehavior="preserve-pixel-size" id={`${uniqueId}-editor`} maxSize="70%" minSize="150px" onResize={(size) => setEditorCollapsed(size.inPixels < 80)} panelRef={editorRef}>
                     {queries.documents.map((document) => (
                       <div className="mysql-query-document-view" data-query-document={document.id} hidden={document.id !== activeQueryId} key={document.id}>
-                        <MysqlSqlEditor tables={state.tables} getSchema={getSchema} onTableDrop={dropTable} active={document.id === activeQueryId} collapsed={editorCollapsed} loading={document.result.loading} onChange={(sql) => queries.updateSql(document.id, sql)} onRun={() => void queries.runQuery(document.id, document.sql)} value={document.sql} />
+                        <MysqlSqlEditor tables={state.tables} getSchema={getSchema} onTableDrop={dropTable} active={document.id === activeQueryId} collapsed={editorCollapsed} loading={document.result.loading} onChange={(sql) => queries.updateSql(document.id, sql)} onRun={() => { if (editing.connected) editing.protect(() => void queries.runQuery(document.id, document.sql), [document.id]) }} value={document.sql} />
                       </div>
                     ))}
                   </ResizablePanel>
@@ -212,7 +220,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
                       <div className="mysql-query-result-area mysql-query-document-view" data-query-document={document.id} hidden={document.id !== activeQueryId} key={document.id}>
                         {document.result.loading ? <ReadLoading label="正在执行查询…" /> : null}
                         {document.result.error ? <ReadError message={document.result.error} testId={document.id === activeQueryId ? "mysql-query-error" : `mysql-${document.id}-error`} /> : null}
-                        {document.result.data ? <MysqlQueryResults kind="query" result={document.result.data} testIdPrefix={document.id === activeQueryId ? "mysql-query" : `mysql-${document.id}`} /> : null}
+                        {document.result.data ? <MysqlEditableResults api={api} scope={scope} documentKey={document.id} sql={document.result.executedSql ?? document.sql} visible={document.id === activeQueryId && !selectedTable} onReload={() => void queries.runQuery(document.id, document.result.executedSql ?? document.sql)}><MysqlQueryResults kind="query" result={document.result.data} testIdPrefix={document.id === activeQueryId ? "mysql-query" : `mysql-${document.id}`} /></MysqlEditableResults> : null}
                         {!document.result.data && !document.result.loading && !document.result.error ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><Code aria-hidden="true" /></EmptyMedia><EmptyTitle>编写你的第一条查询</EmptyTitle><EmptyDescription>执行只读 SQL，结果将在此显示。<br />查询受当前连接配置的数量和大小上限约束。</EmptyDescription></EmptyHeader></Empty> : null}
                       </div>
                     ))}
@@ -226,12 +234,13 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
-      <footer className="mysql-workspace-status"><span><ShieldCheck aria-hidden="true" />只读连接</span><span className="font-mono" title={database}>{database}</span><span className="mysql-workspace-status-note">SQL 与查询结果仅保留在当前会话</span></footer>
+      <footer className="mysql-workspace-status"><span><ShieldCheck aria-hidden="true" />人工编辑需确认保存</span><span className="font-mono" title={database}>{database}</span><span className="mysql-workspace-status-note">SQL 与查询结果仅保留在当前会话</span></footer>
     </>
   )
 }
 
-export function MysqlDatabaseWorkspace(props: MysqlDatabaseWorkspaceProps) {
+function MysqlWorkspaceContent(props: MysqlDatabaseWorkspaceProps) {
+  const editing = useMysqlEditingGuard()
   const { api, scope, plugin, connected } = props
   const database = mysqlDatabaseName(plugin)
   const matchesScope = mysqlWorkspaceMatchesScope(scope, plugin)
@@ -239,12 +248,18 @@ export function MysqlDatabaseWorkspace(props: MysqlDatabaseWorkspaceProps) {
   return (
     <section aria-label="数据库工作区" className="mysql-workspace h-full min-h-0" data-testid="mysql-database-workspace">
       <WorkspaceHeader {...props} connected={ready} />
-      {ready ? (
-        // 用完整作用域和配置版本隔离数据；断连时卸载会话并清除查询结果。
+      {!ready && editing.hasEditing && matchesScope ? <p className="mysql-edit-message is-error" role="alert">连接已中断，编辑草稿仍保留。重新连接后请刷新数据并核对修改。</p> : null}
+      {ready || (editing.hasEditing && matchesScope && plugin.pluginType === "mysql" && Boolean(database)) ? (
+        // 用完整作用域和配置版本隔离数据；编辑期间断连保留草稿，后端拒绝旧连接快照。
         <MysqlConnectedWorkspace api={api} key={mysqlWorkspaceSessionKey(scope, plugin)} plugin={plugin} scope={scope} />
       ) : (
         <Empty className="min-h-0 flex-1" data-testid="mysql-database-offline"><EmptyHeader><EmptyMedia variant="icon"><Plugs aria-hidden="true" /></EmptyMedia><EmptyTitle>{!matchesScope ? "正在切换数据库" : plugin.pluginType !== "mysql" ? "仅 MySQL 支持数据库查询" : !database ? "尚未配置数据库" : "连接后即可查询数据库"}</EmptyTitle><EmptyDescription>{!matchesScope ? "等待当前插件配置载入。" : !database ? "请在连接配置中选择一个数据库。" : "返回详情连接此 MySQL 插件，即可浏览数据表、查看结构和执行只读查询。"}</EmptyDescription></EmptyHeader></Empty>
       )}
     </section>
   )
+}
+
+export function MysqlDatabaseWorkspace(props: MysqlDatabaseWorkspaceProps) {
+  const ready = props.connected && props.plugin.pluginType === "mysql" && Boolean(mysqlDatabaseName(props.plugin)) && mysqlWorkspaceMatchesScope(props.scope, props.plugin)
+  return <MysqlEditingProvider key={mysqlWorkspaceSessionKey(props.scope, props.plugin)} connected={ready} connectionEpoch={props.connectionEpoch} onEditingChange={props.onEditingChange}><MysqlWorkspaceContent {...props} /></MysqlEditingProvider>
 }
