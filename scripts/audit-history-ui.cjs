@@ -67,6 +67,16 @@ async function exerciseAuditHistory({win,scope,root,dataRoot,ipcMain,registerRea
   }
   await click(win,'[aria-label="筛选参与方"]');
   await clickText(win,'全部参与方','[role="listbox"]');
+  await waitFor(win,'document.querySelectorAll("[data-audit-operation]").length === 50','恢复全部参与方');
+  fs.appendFileSync(file,JSON.stringify({...base,pluginType:'redis',capability:'scan',type:'plugin-operation',operationId:'desktop-redis-scan',actor:'user',result:'success',time:'2026-09-23T05:00:00Z'})+'\n');
+  await click(win,'[data-testid="audit-refresh-trigger"]');
+  await waitFor(win,'document.querySelector("[data-testid=audit-refresh-trigger]")?.disabled === false','扫描记录刷新完成');
+  assert.equal(await win.webContents.executeJavaScript('document.querySelector("[data-audit-layout]").textContent.includes("扫描 Redis 键")',true),false);
+  await click(win,'[aria-label="显示 Redis 扫描"]');
+  await waitFor(win,'document.querySelector("[data-audit-layout]")?.textContent.includes("扫描 Redis 键") === true','显示成功 Redis 扫描');
+  await click(win,'[aria-label="显示 Redis 扫描"]');
+  await waitFor(win,'document.querySelector("[data-audit-layout]")?.textContent.includes("扫描 Redis 键") === false','重新隐藏成功 Redis 扫描');
+
   process.stdout.write('操作记录界面通过：来源、审批详情、历史搜索、分页、新记录提示和键盘展开。\n');
 }
 

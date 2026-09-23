@@ -759,6 +759,12 @@ async function main() {
     assert.equal(inspection.overviewOk, true);
     assert.equal(inspection.projectCount, 0);
     assert.equal(inspection.apiCount, 98);
+    if (process.argv.includes('--plugin-lifecycle-only')) {
+      const pluginLifecycle = await exercisePackagedPluginLifecycle(running.cdp, dataRoot);
+      assert.deepEqual(running.httpRequests, []);
+      process.stdout.write('包内插件生命周期专项通过：' + JSON.stringify(pluginLifecycle) + '\n');
+      return;
+    }
     const fileActionContract = await running.cdp.evaluate("(async () => { const scope={projectId:'file-action-probe',environmentId:'probe',pluginInstanceId:'probe'}; return {info:await window.aiOps.v2.serverWorkspaceFileInfo({...scope,path:'/srv'}),prepare:await window.aiOps.v2.serverWorkspacePrepareFileAction({...scope,kind:'mkdir',path:'/srv',name:'fixture'}),invalid:await window.aiOps.v2.serverWorkspaceConfirmFileAction({...scope,operationId:'missing',destinationPath:'/other'}),confirm:await window.aiOps.v2.serverWorkspaceConfirmFileAction({...scope,operationId:'missing'}),cancel:await window.aiOps.v2.serverWorkspaceCancelFileAction({...scope,operationId:'missing'})}; })()");
     assert.equal(fileActionContract.info.ok, false);
     assert.equal(fileActionContract.prepare.ok, false);

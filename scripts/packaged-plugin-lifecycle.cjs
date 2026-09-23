@@ -286,6 +286,11 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
         assert.equal(content.value.text, 'fixture-value');
         const denied = await invoke('redisWorkspaceRead', {...redisScope,patternId,key:'cache:fixture',command:'SET'});
         assert.equal(denied.error.code, 'INVALID_ARGUMENT');
+        const normalAudit = await success('listAudit', {...redisScope,view:'operations',limit:100});
+        assert.equal(normalAudit.entries.some(entry => entry.action === 'redis.scan' && entry.result === 'success'),false);
+        assert.ok(normalAudit.entries.some(entry => entry.action === 'redis.read' && entry.result === 'success'));
+        const allAudit = await success('listAudit', {...redisScope,view:'operations',includeRedisScans:true,limit:100});
+        assert.ok(allAudit.entries.some(entry => entry.action === 'redis.scan' && entry.actor === 'user' && entry.result === 'success'));
         await success('redisWorkspaceRelease', redisScope);
         const waitUi = async (expression, label) => {
           const deadline = Date.now() + 10000;
@@ -332,6 +337,8 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
         await success('disconnectPlugin', redisScope);
         const disconnected = await invoke('redisWorkspaceScan', {...redisScope,patternId});
         assert.equal(disconnected.ok, false);
+        const failedAudit = await success('listAudit', {...redisScope,view:'operations',limit:100});
+        assert.ok(failedAudit.entries.some(entry => entry.action === 'redis.scan' && entry.result === 'blocked'));
         await success('connectPlugin', redisScope);
       }
       const session = await begin(plugin);

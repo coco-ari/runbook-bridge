@@ -4,6 +4,8 @@
 
 参与方包括用户、Agent、系统和来源未记录。筛选「用户」也会命中用户参与审批的 Agent 操作，主行仍显示原发起方。动作包括日志列举、读取与搜索，文件查找、上传、下载与修改，数据库结构、表预览与只读查询，以及连接、配置和终端或监控会话。
 
+环境、插件记录与项目近期操作默认隐藏桌面用户成功完成的 Redis 键扫描，避免自动分页刷屏。勾选「显示 Redis 扫描」可查看这些记录；失败、拦截、进行中、结果未记录、Agent 扫描及键值读取仍正常展示。历史记录同样适用，原始审计文件不删除、不减少写入。内部操作视图通过布尔参数 `includeRedisScans` 控制，分页游标同时绑定此设置。
+
 ## 历史查询与更新
 
 - 搜索动作、目标、插件名称、安全失败原因或错误代码；可按参与方、操作类型、结果及最近 24 小时、7 天、30 天筛选。
@@ -32,6 +34,7 @@ corepack pnpm run check
 corepack pnpm test
 corepack pnpm run test:ui
 corepack pnpm run test:ui:business
+node scripts/packaged-ui-smoke.cjs "dist/win-unpacked/Agent运维工作台.exe" --plugin-lifecycle-only
 ```
 
 `scripts/audit-history-ui.cjs` 由业务 UI 测试调用，以合成记录验证完整过程、人工数据库来源、跨 200 条历史搜索、分页、新记录提示及键盘展开。`scripts/packaged-plugin-lifecycle.cjs` 在回环数据库夹具中验证包内记录查询与摘要边界。

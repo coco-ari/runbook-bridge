@@ -428,6 +428,7 @@ export interface PluginDatabaseListData {
 
 export interface AuditListPayload extends ProjectScope {
   readonly view?: "operations"
+  readonly includeRedisScans?: boolean
   readonly actor?: string
   readonly category?: string
   readonly query?: string

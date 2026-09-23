@@ -188,3 +188,36 @@ test('等待人工确认不显示为错误，审批过期与来源缺失有明�
   assert.equal(page.entries[1].errorCode,'');
   assert.equal(page.entries[1].errorSummary,'');
 });
+
+test('桌面成功 Redis 扫描默认降噪，异常和其他来源保留且原始审计不变', async t => {
+  const {write,list,store,base,file} = await fixture(t);
+  const scan = {pluginType:'redis',capability:'scan',actor:'user',result:'success'};
+  await write([
+    ...Array.from({length:270},(_,i) => [
+      {...scan,type:'plugin-operation-started',operationId:'scan-'+i,result:'started'},
+      {...scan,type:'plugin-operation',operationId:'scan-'+i},
+    ]).flat(),
+    {...scan,type:'plugin-operation',operationId:'failed',result:'error',errorCode:'REDIS_TIMEOUT'},
+    {...scan,type:'plugin-operation-decision',operationId:'blocked',result:'blocked'},
+    {...scan,type:'plugin-operation',operationId:'agent',actor:'agent'},
+    {...scan,type:'plugin-operation',operationId:'unknown-actor',actor:undefined},
+    {...scan,type:'plugin-operation',operationId:'read',capability:'read'},
+    {...scan,type:'plugin-operation-started',operationId:'unfinished',result:'started'},
+  ]);
+  const before = await fs.readFile(file,'utf8');
+  const normal = await list({limit:50});
+  assert.equal(normal.entries.length,6);
+  assert.equal(normal.nextCursor,null);
+  assert.ok(normal.entries.some(entry => entry.result === 'error'));
+  assert.ok(normal.entries.some(entry => entry.actor === 'agent'));
+  const full = await list({limit:10,includeRedisScans:true});
+  assert.equal(full.entries.length,10);
+  assert.ok(full.nextCursor);
+  await assert.rejects(list({cursor:full.nextCursor,includeRedisScans:false}),{code:'AUDIT_CURSOR_STALE'});
+  const next = await list({limit:10,cursor:full.nextCursor,includeRedisScans:true});
+  assert.equal(new Set([...full.entries,...next.entries].map(entry => entry.auditId)).size,20);
+  await assert.rejects(list({includeRedisScans:'true'}),{code:'INVALID_ARGUMENT'});
+  const raw = await store.listAudit(base.projectId,{environmentId:base.environmentId});
+  assert.equal(raw.entries.length,100);
+  assert.equal(await fs.readFile(file,'utf8'),before);
+});

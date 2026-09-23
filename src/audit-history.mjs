@@ -23,7 +23,8 @@ function groupKey(entry, offset) {
 }
 
 function normalizeFilters(input) {
-  const result = {};
+  if (input.includeRedisScans !== undefined && typeof input.includeRedisScans !== 'boolean') throw new AppError('INVALID_ARGUMENT', '扫描记录筛选条件无效。');
+  const result = {includeRedisScans:input.includeRedisScans === true};
   for (const field of ['environmentId','pluginInstanceId','actor','category','result','query','from','to']) {
     if (input[field] !== undefined && (typeof input[field] !== 'string' || input[field].length > (field === 'query' ? 200 : 128))) {
       throw new AppError('INVALID_ARGUMENT', '操作记录筛选条件无效。');
@@ -36,6 +37,10 @@ function normalizeFilters(input) {
 }
 
 function matches(operation, filters) {
+  // 仅隐藏桌面用户的成功扫描，异常和其他来源仍保留在默认视图。
+  if (!filters.includeRedisScans && operation.action === 'redis.scan' && operation.actor === 'user'
+    && operation.result === 'success' && !operation.errorCode
+    && operation.timeline.every(event => ['success','unknown'].includes(event.result) && !event.errorCode)) return false;
   if (filters.actor && filters.actor !== 'all' && !operation.participants.includes(filters.actor)) return false;
   if (filters.category && filters.category !== 'all' && operation.category !== filters.category) return false;
   if (filters.result && filters.result !== 'all' && operation.result !== filters.result) return false;

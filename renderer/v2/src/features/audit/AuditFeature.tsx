@@ -6,6 +6,7 @@ import { getAiOpsV2, type IpcResult, type PublicError } from "@/bridge/ai-ops-v2
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogMedia, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { ButtonGroup } from "@/components/ui/button-group"
 import { FeatureToolbar } from "@/components/detail-workspace/FeatureToolbar"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
@@ -72,6 +73,7 @@ export function AuditFeature({ projectId, environmentId, pluginInstanceId, proje
   const [resultFilter, setResultFilter] = useState("all")
   const [actorFilter, setActorFilter] = useState("all")
   const [categoryFilter, setCategoryFilter] = useState("all")
+  const [includeRedisScans, setIncludeRedisScans] = useState(false)
   const [range, setRange] = useState("all")
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
@@ -85,7 +87,7 @@ export function AuditFeature({ projectId, environmentId, pluginInstanceId, proje
   const requestCoordinatorRef = useRef(new AuditRequestCoordinator<AuditPage>())
   const scopeKey = auditScopeKey(projectId, environmentId, pluginInstanceId)
   const from = useMemo(() => range === "all" ? "" : new Date(Date.now() - Number(range) * 86400000).toISOString(), [range])
-  const requestedKey = JSON.stringify([scopeKey, deferredQuery, resultFilter, actorFilter, categoryFilter, from])
+  const requestedKey = JSON.stringify([scopeKey, deferredQuery, resultFilter, actorFilter, categoryFilter, from, includeRedisScans])
 
   useEffect(() => {
     const timer = window.setTimeout(() => setSearch(query), 250)
@@ -93,14 +95,14 @@ export function AuditFeature({ projectId, environmentId, pluginInstanceId, proje
   }, [query])
 
   useEffect(() => {
-    setQuery(""); setSearch(""); setResultFilter("all"); setActorFilter("all"); setCategoryFilter("all"); setRange("all"); setClearDialog(false)
+    setQuery(""); setSearch(""); setResultFilter("all"); setActorFilter("all"); setCategoryFilter("all"); setRange("all"); setIncludeRedisScans(false); setClearDialog(false)
   }, [scopeKey])
 
   const loadAudit = useCallback((cursor: string | null = null, quiet = false): Promise<AuditPage> => {
     const coordinator = requestCoordinatorRef.current
     const { lease, started } = coordinator.start(requestedKey, async () => normalizeAuditPage(unwrap(await getAiOpsV2().listAudit({
       projectId, environmentId, ...(pluginInstanceId ? { pluginInstanceId } : {}),
-      view: "operations", limit: 50, query: deferredQuery, result: resultFilter, actor: actorFilter, category: categoryFilter,
+      view: "operations", includeRedisScans, limit: 50, query: deferredQuery, result: resultFilter, actor: actorFilter, category: categoryFilter,
       ...(from ? { from } : {}), ...(cursor ? { cursor } : {}),
     }) as IpcResult<unknown>)))
     if (!started) return lease.promise
@@ -122,7 +124,7 @@ export function AuditFeature({ projectId, environmentId, pluginInstanceId, proje
     }).finally(() => {
       if (coordinator.isCurrent(lease.ticket)) setLoading(false)
     })
-  }, [requestedKey, projectId, environmentId, pluginInstanceId, deferredQuery, resultFilter, actorFilter, categoryFilter, from])
+  }, [requestedKey, projectId, environmentId, pluginInstanceId, deferredQuery, resultFilter, actorFilter, categoryFilter, from, includeRedisScans])
 
   useEffect(() => {
     const coordinator = requestCoordinatorRef.current
@@ -207,6 +209,7 @@ export function AuditFeature({ projectId, environmentId, pluginInstanceId, proje
         <Select value={resultFilter} onValueChange={setResultFilter}><SelectTrigger aria-label="筛选操作结果" className="w-32"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部结果</SelectItem>{results.map(result => <SelectItem key={result} value={result}>{auditResultLabel(result)}</SelectItem>)}</SelectContent></Select>
         <Select value={range} onValueChange={setRange}><SelectTrigger aria-label="筛选记录时间" className="w-28"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部时间</SelectItem><SelectItem value="1">最近 24 小时</SelectItem><SelectItem value="7">最近 7 天</SelectItem><SelectItem value="30">最近 30 天</SelectItem></SelectContent></Select>
       </div>
+      <label className="mb-3 flex items-center gap-2 text-xs text-muted-foreground"><Checkbox checked={includeRedisScans} onCheckedChange={value => setIncludeRedisScans(value === true)} aria-label="显示 Redis 扫描" />显示 Redis 扫描<span>（默认隐藏用户的成功扫描）</span></label>
       {hasUpdates ? <div role="status" className="mb-2 flex items-center justify-between gap-2 rounded-md bg-surface-inset px-3 py-2 text-xs"><span>操作记录有更新</span><Button size="xs" variant="outline" disabled={loading || clearing} onClick={refreshAudit}>查看最新记录</Button></div> : null}
       {error ? <Alert className="mb-3 w-auto" variant="destructive"><WarningCircle aria-hidden="true" weight="fill" /><AlertTitle>操作记录读取失败</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
       <ScrollArea ref={scrollRef} className="min-h-0 flex-1">
