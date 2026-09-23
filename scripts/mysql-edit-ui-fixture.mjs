@@ -25,6 +25,7 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
     connection={query:async request=>{
       const sql=request.sql,params=request.values??[];
       if(sql.includes('SELECT TABLE_TYPE'))return [[{TABLE_TYPE:'BASE TABLE',ENGINE:'InnoDB'}]];
+      if(sql.includes('information_schema.KEY_COLUMN_USAGE'))return [[{COLUMN_NAME:'id'}]];
       if(sql.includes('information_schema.COLUMNS'))return [schema.columns.map(c=>({COLUMN_NAME:c.name,COLUMN_TYPE:c.type,DATA_TYPE:c.dataType,IS_NULLABLE:c.nullable?'YES':'NO',COLUMN_KEY:c.key,EXTRA:c.extra,CHARACTER_MAXIMUM_LENGTH:c.maxLength,NUMERIC_PRECISION:c.precision,NUMERIC_SCALE:c.scale,DATETIME_PRECISION:c.datetimePrecision}))];
       if(sql.includes('@@SESSION.sql_mode'))return [[{sqlMode:'STRICT_TRANS_TABLES'}]];
       if(sql==='START TRANSACTION'){backup=structuredClone(rows);return [{}];}

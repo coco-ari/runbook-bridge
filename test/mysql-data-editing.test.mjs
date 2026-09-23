@@ -10,7 +10,7 @@ const plugin={...scope,revision:1,pluginType:'mysql',displayName:'测试数据�
 const column=(name,type='varchar',overrides={})=>({name,type:type==='varchar'?'varchar(100)':type,dataType:type,key:'',extra:'',nullable:true,maxLength:100,precision:20,scale:4,datetimePrecision:6,...overrides});
 const schema={table:'items',columns:[column('id','bigint',{key:'PRI'}),column('label'),column('amount','decimal')]};
 
-function harness({failure,auditFailure,metadata=schema}={}){
+function harness({failure,auditFailure,metadata=schema,primaryNames}={}){
   let values=[['9007199254740993','first','1.0000'],['9007199254740994','second','2.0000']],backup=null;
   const statements=[],audits=[];
   let clock=1000,gate=null;
@@ -20,6 +20,7 @@ function harness({failure,auditFailure,metadata=schema}={}){
     if(gate)await gate(sql);
     if(failure)await failure(sql);
     if(sql.includes('SELECT TABLE_TYPE'))return [[{TABLE_TYPE:'BASE TABLE',ENGINE:'InnoDB'}]];
+    if(sql.includes('information_schema.KEY_COLUMN_USAGE'))return [(primaryNames??metadata.columns.filter(c=>c.key==='PRI').map(c=>c.name)).map(name=>({COLUMN_NAME:name}))];
     if(sql.includes('information_schema.COLUMNS'))return [metadata.columns.map(c=>({COLUMN_NAME:c.name,COLUMN_TYPE:c.type,DATA_TYPE:c.dataType,IS_NULLABLE:c.nullable?'YES':'NO',COLUMN_KEY:c.key,EXTRA:c.extra,CHARACTER_MAXIMUM_LENGTH:c.maxLength,NUMERIC_PRECISION:c.precision,NUMERIC_SCALE:c.scale,DATETIME_PRECISION:c.datetimePrecision}))];
     if(sql.includes('@@SESSION.sql_mode'))return [[{sqlMode:'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION'}]];
     if(sql==='START TRANSACTION'){backup=structuredClone(values);return [{affectedRows:0}];}
@@ -182,4 +183,10 @@ test('窗口在事务进行中关闭会回滚，快照不能被恢复后继续�
   assert.equal(result.status,'failed');
   assert.deepEqual(h.rows(),before);
   assert.ok(h.statements.some(s=>s.sql==='ROLLBACK'));
+});
+
+test('唯一索引被列元数据标成 PRI 时，仍拒绝无真实主键表',async()=>{
+  const h=harness({primaryNames:[]});
+  await assert.rejects(h.open(),{code:'MYSQL_EDIT_READONLY'});
+  assert.equal(h.statements.some(s=>s.sql.startsWith('UPDATE')),false);
 });

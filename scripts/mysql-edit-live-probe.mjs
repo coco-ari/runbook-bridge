@@ -24,6 +24,8 @@ try {
   const commit=(snapshot,plan)=>editor.commit('live-window',plugin,{editId:snapshot.editId,planId:plan.planId});
   const read=async()=>{const [rows]=await admin.query({sql:'SELECT tenant,id,label,amount,quantity FROM items ORDER BY tenant,id',bigNumberStrings:true});return rows.map(row=>({...row}));};
   let checks=0;
+  await admin.query("CREATE TABLE no_primary (id BIGINT NOT NULL UNIQUE, label VARCHAR(100)) ENGINE=InnoDB");
+  await assert.rejects(open("SELECT * FROM no_primary"),{code:"MYSQL_EDIT_READONLY"});checks++;
   let snapshot=await open();
   assert.equal(snapshot.rows[0].values.id,'9007199254740993');
   assert.equal(snapshot.rows[0].values.amount,'12345678901234567890.12345678');
@@ -99,7 +101,7 @@ try {
   assert.equal((await read())[0].label,'commit-ack-lost');
   assert.equal((await commit(snapshot,plan)).status,'unknown');checks++;
   assert.doesNotMatch(JSON.stringify(audits),/12345678901234567891|commit-ack-lost|中文 ' 修改|external-change|before-commit-disconnect/u);checks++;
-  console.log(JSON.stringify({ok:true,checks,engine:'MySQL 8.4',coverage:['复合主键定位','精度与中文','字段别名','多行赋值','唯一约束回滚','并发修改','并发删除','提交前断线回滚','提交响应丢失不重试','审计不保存业务值','特殊 SQL 模式参数绑定']}));
+  console.log(JSON.stringify({ok:true,checks,engine:'MySQL 8.4',coverage:['复合主键定位','精度与中文','字段别名','多行赋值','唯一约束回滚','并发修改','并发删除','提交前断线回滚','提交响应丢失不重试','审计不保存业务值','特殊 SQL 模式参数绑定','唯一索引不替代主键']}));
 } catch(error) {
   console.error(JSON.stringify({ok:false,code:error.code??error.name,message:error.name==='AssertionError'?error.message:'真实 MySQL 验证未通过，未输出原始连接错误。'}));
   process.exitCode=1;

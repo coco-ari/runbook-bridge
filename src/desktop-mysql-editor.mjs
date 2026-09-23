@@ -38,7 +38,11 @@ async function readSchema(query, plugin, table) {
   if (tables.length !== 1 || tables[0].TABLE_TYPE !== 'BASE TABLE' || String(tables[0].ENGINE).toLowerCase() !== 'innodb') throw mysqlEditError('仅支持可通过 InnoDB 事务保存的基础表。');
   const [rows] = await query('SELECT COLUMN_NAME, COLUMN_TYPE, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, EXTRA, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, DATETIME_PRECISION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION LIMIT 4097',[plugin.target.database,table]);
   if (!rows.length || rows.length>4096) throw mysqlEditError('表结构为空或超出编辑上限。');
-  const columns = rows.map(row=>({name:row.COLUMN_NAME,type:row.COLUMN_TYPE,dataType:row.DATA_TYPE.toLowerCase(),nullable:row.IS_NULLABLE === 'YES',key:row.COLUMN_KEY,extra:row.EXTRA??'',
+  // 列标记可能把无主键表的唯一索引显示成 PRI，必须从约束元数据确认真正主键。
+  const [primary] = await query("SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION LIMIT 17",[plugin.target.database,table]);
+  if (!primary.length || primary.length>16) throw mysqlEditError('仅支持具有明确主键的数据表；唯一索引不能代替主键。');
+  const primaryNames=new Set(primary.map(row=>row.COLUMN_NAME));
+  const columns = rows.map(row=>({name:row.COLUMN_NAME,type:row.COLUMN_TYPE,dataType:row.DATA_TYPE.toLowerCase(),nullable:row.IS_NULLABLE === 'YES',key:primaryNames.has(row.COLUMN_NAME)?'PRI':row.COLUMN_KEY==='PRI'?'':row.COLUMN_KEY,extra:row.EXTRA??'',
     maxLength:row.CHARACTER_MAXIMUM_LENGTH === null ? null : Number(row.CHARACTER_MAXIMUM_LENGTH),
     precision:Number(row.NUMERIC_PRECISION),scale:Number(row.NUMERIC_SCALE),datetimePrecision:Number(row.DATETIME_PRECISION)}));
   return {table,columns};
