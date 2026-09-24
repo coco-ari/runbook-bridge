@@ -220,7 +220,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
                       <div className="mysql-query-result-area mysql-query-document-view" data-query-document={document.id} hidden={document.id !== activeQueryId} key={document.id}>
                         {document.result.loading ? <ReadLoading label="正在执行查询…" /> : null}
                         {document.result.error ? <ReadError message={document.result.error} testId={document.id === activeQueryId ? "mysql-query-error" : `mysql-${document.id}-error`} /> : null}
-                        {document.result.data ? <MysqlEditableResults api={api} scope={scope} documentKey={document.id} sql={document.result.executedSql ?? document.sql} visible={document.id === activeQueryId && !selectedTable} onReload={() => void queries.runQuery(document.id, document.result.executedSql ?? document.sql)}><MysqlQueryResults kind="query" result={document.result.data} testIdPrefix={document.id === activeQueryId ? "mysql-query" : `mysql-${document.id}`} /></MysqlEditableResults> : null}
+                        {document.result.data ? <MysqlEditableResults api={api} scope={scope} documentKey={document.id} result={document.result.data} sql={document.result.executedSql ?? document.sql} visible={document.id === activeQueryId && !selectedTable} onReload={() => void queries.runQuery(document.id, document.result.executedSql ?? document.sql)}><MysqlQueryResults kind="query" result={document.result.data} testIdPrefix={document.id === activeQueryId ? "mysql-query" : `mysql-${document.id}`} /></MysqlEditableResults> : null}
                         {!document.result.data && !document.result.loading && !document.result.error ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><Code aria-hidden="true" /></EmptyMedia><EmptyTitle>编写你的第一条查询</EmptyTitle><EmptyDescription>执行只读 SQL，结果将在此显示。<br />查询受当前连接配置的数量和大小上限约束。</EmptyDescription></EmptyHeader></Empty> : null}
                       </div>
                     ))}
@@ -234,7 +234,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
-      <footer className="mysql-workspace-status"><span><ShieldCheck aria-hidden="true" />人工编辑需确认保存</span><span className="font-mono" title={database}>{database}</span><span className="mysql-workspace-status-note">SQL 与查询结果仅保留在当前会话</span></footer>
+      <footer className="mysql-workspace-status"><span><ShieldCheck aria-hidden="true" />修改后点击保存</span><span className="font-mono" title={database}>{database}</span><span className="mysql-workspace-status-note">SQL 与查询结果仅保留在当前会话</span></footer>
     </>
   )
 }

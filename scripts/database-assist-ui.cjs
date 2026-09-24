@@ -29,9 +29,9 @@ async function assertSqlAssistanceAndBrowse({win,fill,click,waitFor,textContains
   await fill(win,testId('mysql-sql-editor'),'SELECT sort_probe FROM orders');
   await click(win,testId('mysql-query-run'));
   await click(win,'[data-testid=mysql-query-sort][data-column=id]');
-  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-query-row] td:nth-child(2)').textContent.trim()"),'10','首次点击结果列头按数字降序排列');
+  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-query-row] [data-edit-column=id]').textContent.trim()"),'10','首次点击结果列头按数字降序排列');
   await click(win,'[data-testid=mysql-query-sort][data-column=id]');
-  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-query-row] td:nth-child(2)').textContent.trim()"),'1','第二次点击结果列头按数字升序排列');
+  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-query-row] [data-edit-column=id]').textContent.trim()"),'1','第二次点击结果列头按数字升序排列');
   state.browseFixture = true;
   await click(win,'[data-testid=mysql-table-item][data-table-name=orders]');
   await textContains(win,'mysql-preview-summary','返回 20 行');
@@ -61,11 +61,11 @@ async function assertSqlAssistanceAndBrowse({win,fill,click,waitFor,textContains
   await click(win,'[data-testid=mysql-preview-sort][data-column=id]');
   await textContains(win,'mysql-preview-summary','返回 15 行');
   assert.equal(databaseCalls.at(-1).payload.orderBy[0].direction,'desc','列排序必须发送到数据库');
-  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-preview-row] td:nth-child(2)').textContent.trim()"),'65');
+  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-preview-row] [data-edit-column=id]').textContent.trim()"),'65');
   await click(win,'[data-testid=mysql-preview-sort][data-column=id]');
   await textContains(win,'mysql-preview-summary','返回 15 行');
   assert.equal(databaseCalls.at(-1).payload.orderBy[0].direction,'asc','第二次点击升序');
-  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-preview-row] td:nth-child(2)').textContent.trim()"),'51');
+  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-preview-row] [data-edit-column=id]').textContent.trim()"),'51');
   await click(win,'[data-testid=mysql-preview-sort][data-column=id]');
   await textContains(win,'mysql-preview-summary','返回 15 行');
   assert.equal(await evaluate("document.querySelector('[data-testid=mysql-preview-sort][data-column=id]').closest('th').getAttribute('aria-sort')"),'none','第三次点击恢复默认');

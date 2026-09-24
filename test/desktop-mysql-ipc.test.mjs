@@ -262,3 +262,18 @@ test('desktop access does not bypass the MCP environment context or change its a
   assert.equal(h.queries.length,0);
   assert.equal(h.audits.at(-1).actor,'agent');
 });
+
+test('桌面查询与预览使用无损读取，Agent 保持原有返回类型策略', async () => {
+  const h = harness();
+  for (const [operation,payload] of [['query-readonly',{sql:'SELECT id FROM alpha'}],['preview-table',{table:'alpha'}]]) {
+    const result = await h.invoke(operation,payload);
+    assert.equal(result.ok,true);
+    const request = h.queries.at(-1);
+    for (const flag of ['supportBigNumbers','bigNumberStrings','dateStrings']) assert.equal(request[flag],true,flag);
+    assert.equal(request.typeCast({type:'JSON',string:encoding=>{assert.equal(encoding,'utf8');return '{"value":9007199254740993}';}},()=>{throw new Error('JSON 不应经过数值解析');}), '{"value":9007199254740993}');
+    assert.equal(request.typeCast({type:'LONG'},()=>7),7);
+  }
+  await h.pluginManager.invoke(h.plugin,'select',{sql:'SELECT id FROM alpha'});
+  assert.equal(h.queries.at(-1).dateStrings,undefined);
+  assert.equal(h.queries.at(-1).typeCast,undefined);
+});

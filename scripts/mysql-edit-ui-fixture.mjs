@@ -9,7 +9,7 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
   const {DesktopMysqlEditor}=await readModule("desktop-mysql-editor.mjs");
   const {editableMysqlQuery,mysqlEditProjection}=await readModule("mysql-edit-policy.mjs");
   const {registerMysqlEditIpc}=await readModule("mysql-edit-ipc.mjs");
-  let live, connection, rows=Array.from({length:12},(_,index)=>({id:String(9007199254740993n+BigInt(index)),label:'测试记录 '+String(index+1).padStart(2,'0'),optional:index===0?null:'',amount:(index+1)+'.0000',state:'open',quantity:'1',doubled:'2'})),backup;
+  let live, connection, rows=Array.from({length:32},(_,index)=>({id:String(9007199254740993n+BigInt(index)),label:'测试记录 '+String(index+1).padStart(2,'0'),optional:index===0?null:'',amount:(index+1)+'.0000',state:'open',quantity:'1',doubled:'2'})),backup;
   const audits=[],writes=[];
   const names=['id','label','optional','amount','state','quantity','doubled'];
   const types=['bigint unsigned','varchar(100)','text','decimal(20,4)',"enum('open','closed')",'int','int'];
@@ -45,7 +45,8 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
         const parsed=editableMysqlQuery(sql);projection=mysqlEditProjection(parsed,schema);
         selected=rows.slice();
         const limit=sql.match(/LIMIT\s+(\d+)/iu);
-        if(limit)selected=selected.slice(0,Number(limit[1]));
+        const offset=Number(sql.match(/OFFSET\s+(\d+)/iu)?.[1]??0);
+        if(limit)selected=selected.slice(offset,offset+Number(limit[1]));
       }
       const values=selected.map(row=>projection.map(p=>row[p.source]));
       return [values,projection.map(p=>({name:p.name,orgName:p.source,orgTable:'orders',schema:plugin.target.database}))];
@@ -75,7 +76,7 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
     return {rows:snapshot.rows.map(row=>row.values),columns:snapshot.columns.map(column=>({name:column.name,table:'orders',type:253})),rowCount:snapshot.rows.length,bytes:2000,truncated:false,durationMs:3,limitsApplied:plugin.limits};
   };
   handler('v2:mysql-query-readonly',payload=>read(payload.sql));
-  handler('v2:mysql-preview-table',()=>read('SELECT * FROM orders ORDER BY id LIMIT 20'));
+  handler('v2:mysql-preview-table',payload=>read('SELECT * FROM orders ORDER BY id LIMIT '+(payload.limit??20)+' OFFSET '+(payload.offset??0)));
   return {
     editor,audits,writes,live:Boolean(live),
     read:async()=>live?(await live.admin.query({sql:'SELECT id,label,optional,amount,state FROM orders ORDER BY id',bigNumberStrings:true}))[0].map(row=>({...row})):structuredClone(rows),

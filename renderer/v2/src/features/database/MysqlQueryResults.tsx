@@ -1,3 +1,6 @@
+import { toast } from "sonner"
+import { useMysqlInlineEditing } from "./MysqlInlineEditingContext"
+import { Checkbox } from "@/components/ui/checkbox"
 import { SelectControl, SelectItem } from "@/components/ui/select"
 import { copyMysqlText } from "./mysql-clipboard"
 import { CaretLeft, CaretRight, CheckCircle, Clock, MagnifyingGlass, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
@@ -41,6 +44,9 @@ interface CopyNotice {
 }
 
 export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, stream, columnDragScope, snapshot }: MysqlQueryResultsProps) {
+  const editing = useMysqlInlineEditing()
+  const selectionAnchor = useRef<number | null>(null)
+  const shiftSelection = useRef(false)
   const viewIdentity = stream?.key ?? result
   const [viewState, setViewState] = useState<ResultViewState>(snapshot?.current?.state.result === viewIdentity ? snapshot.current.state : { result: viewIdentity, sort: null, filter: "", page: 0, pageSize: MYSQL_RESULT_PAGE_SIZE, selectedRow: null })
   const [copyNotice, setCopyNotice] = useState<CopyNotice | null>(null)
@@ -53,13 +59,15 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
   const filter = state.filter.trim().toLocaleLowerCase()
   const duplicateColumns = new Set(result.columns.map((column) => column.name)).size !== result.columns.length
   const selectedSort = onSort ? sort : state.sort
+  // 输入和保存不重排当前视图；用户重新筛选、排序或加载结果时按最新显示值计算。
   const filteredRows = useMemo(() => {
     if (duplicateColumns) return []
-    const filtered = result.rows.map((row, index) => ({ row, index })).filter(({ row }) => !filter || result.columns.some((column) => mysqlCellText(row[column.name]).toLocaleLowerCase().includes(filter)))
+    const cellValue = (row: Record<string, unknown>, name: string) => editing ? editing.value(row, name, row[name]) : row[name]
+    const filtered = result.rows.map((row, index) => ({ row, index })).filter(({ row }) => !filter || result.columns.some((column) => mysqlCellText(cellValue(row, column.name)).toLocaleLowerCase().includes(filter)))
     if (selectedSort && !onSort) {
       const type = result.columns.find(column => column.name === selectedSort.column)?.type
       const numeric = type !== undefined && [0, 1, 2, 3, 4, 5, 8, 9, 13, 246].includes(type)
-      filtered.sort((a, b) => (compareMysqlCells(a.row[selectedSort.column], b.row[selectedSort.column], numeric) * (selectedSort.direction === "asc" ? 1 : -1)) || a.index - b.index)
+      filtered.sort((a, b) => (compareMysqlCells(cellValue(a.row, selectedSort.column), cellValue(b.row, selectedSort.column), numeric) * (selectedSort.direction === "asc" ? 1 : -1)) || a.index - b.index)
     }
     return filtered
   }, [duplicateColumns, filter, result, selectedSort, onSort])
@@ -69,6 +77,7 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
   const start = visiblePage * state.pageSize
   const rows = stream ? filteredRows : filteredRows.slice(start, start + state.pageSize)
   const selectedRow = !duplicateColumns && state.selectedRow !== null ? result.rows[state.selectedRow] : undefined
+  const detailRow = selectedRow && editing ? Object.fromEntries(result.columns.map(column => [column.name, editing.value(selectedRow, column.name, selectedRow[column.name])])) : selectedRow
   const notice = copyNotice?.result === result ? copyNotice : null
 
   const latestState = useRef(state)
@@ -96,12 +105,13 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
   }
 
   function sortColumn(column: string) {
+    editing?.finish()
     const next: MysqlSort | null = selectedSort?.column !== column ? { column, direction: "desc" } : selectedSort.direction === "desc" ? { column, direction: "asc" } : null
     if (onSort) onSort(next)
     else changeView({ sort: next, page: 0, selectedRow: null })
   }
   function loadAtBottom(element: HTMLDivElement) {
-    if (stream?.hasMore && !stream.loading && !filter && element.scrollHeight - element.scrollTop - element.clientHeight < 64) stream.onLoadMore()
+    if (!editing?.locked && stream?.hasMore && !stream.loading && !filter && element.scrollHeight - element.scrollTop - element.clientHeight < 64) stream.onLoadMore()
   }
   function closeDetail() {
     changeView({ selectedRow: null })
@@ -112,9 +122,11 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
   async function copyText(text: string, description: string) {
     try {
       await copyMysqlText(text)
-      setCopyNotice({ result, message: description, failed: false })
+      if (editing) toast.success(description)
+      else setCopyNotice({ result, message: description, failed: false })
     } catch {
-      setCopyNotice({ result, message: "复制失败，请选中详情内容后手动复制。", failed: true })
+      if (editing) toast.error("复制失败，请选中详情内容后手动复制。")
+      else setCopyNotice({ result, message: "复制失败，请选中详情内容后手动复制。", failed: true })
     }
   }
 
@@ -174,10 +186,11 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
         <>
           <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
             <div aria-label="查询结果表格，可横向和纵向滚动" className="min-h-0 min-w-0 flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" data-testid={`${prefix}-table-scroll`} onScroll={(event) => { if (event.currentTarget.scrollTop > lastScrollTop.current) loadAtBottom(event.currentTarget); lastScrollTop.current = event.currentTarget.scrollTop }} onWheel={(event) => { if (event.deltaY > 0) loadAtBottom(event.currentTarget) }} ref={scrollRef} role="region" tabIndex={0}>
-              <table className="w-full table-fixed border-separate border-spacing-0 text-xs" style={{ minWidth: 48 + columnWidths.reduce((sum, width) => sum + width, 0) }}>
-                <colgroup><col style={{ width: 48 }} />{result.columns.map((column, index) => <col key={column.name} style={{ width: columnWidths[index] }} />)}</colgroup>
+              <table className="w-full table-fixed border-separate border-spacing-0 text-xs" style={{ minWidth: (editing ? 80 : 48) + columnWidths.reduce((sum, width) => sum + width, 0) }}>
+                <colgroup>{editing ? <col style={{ width: 32 }} /> : null}<col style={{ width: 48 }} />{result.columns.map((column, index) => <col key={column.name} style={{ width: columnWidths[index] }} />)}</colgroup>
                 <thead>
                   <tr>
+                    {editing ? <th className="mysql-inline-selector sticky top-0 z-10 border-b bg-surface-inset"><Checkbox aria-label="选择当前页全部行" disabled={editing.locked || !rows.length} checked={rows.length > 0 && rows.every(({row}) => editing.selection.has(row)) ? true : rows.some(({row}) => editing.selection.has(row)) ? "indeterminate" : false} onCheckedChange={checked => editing.select(rows.map(item => item.row), checked === true)} /></th> : null}
                     <th className="sticky top-0 z-10 h-8 border-b border-r bg-surface-inset px-3 text-right font-normal text-text-faint" scope="col"><span className="sr-only">行号</span>#</th>
                     {result.columns.map((column) => (
                       <th aria-sort={selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "ascending" : "descending" : "none"} className="sticky top-0 z-10 h-8 border-b bg-surface-inset px-3 text-left font-mono text-xs font-normal text-muted-foreground" key={column.name} scope="col" title={column.table ? `${column.table}.${column.name}` : column.name}>
@@ -192,6 +205,9 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
                       aria-controls={detailId}
                       aria-expanded={state.selectedRow === index}
                       className={`h-8 cursor-pointer outline-none hover:bg-surface-hover focus-visible:bg-surface-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${state.selectedRow === index ? "bg-surface-selected" : "even:bg-surface-inset/25"}`}
+                      data-edit-row={editing?.rowId(row)}
+                      data-selected={editing?.selection.has(row) || undefined}
+                      data-conflict={editing?.conflict(row) || undefined}
                       data-row-index={index}
                       data-testid={`${prefix}-row`}
                       key={index}
@@ -204,30 +220,50 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
                       }}
                       tabIndex={0}
                     >
-                      <td className="h-8 border-b border-r border-border/50 px-3 py-0 text-right font-mono text-xs tabular-nums text-text-faint"><span className="block h-[31px] leading-[31px]">{index + 1}</span></td>
-                      {result.columns.map((column) => (
-                        <td className="h-8 border-b border-border/50 px-3 py-0 font-mono text-xs" key={column.name} onDoubleClick={() => { void copyText(mysqlCopyCellText(row[column.name]), "单元格已复制") }} title="单击查看行详情，双击复制完整单元格">
-                          <span className={`block h-[31px] truncate leading-[31px] ${typeof row[column.name] === "number" ? "text-right tabular-nums" : ""} ${row[column.name] === null || row[column.name] === undefined ? "text-muted-foreground italic" : ""}`}>
-                            {mysqlCellText(row[column.name])}
-                          </span>
+                      {editing ? <td className="mysql-inline-selector mysql-edit-row-selector" onClick={event => event.stopPropagation()} onPointerDown={event => { shiftSelection.current = event.shiftKey }}><Checkbox aria-label={"选择第 " + (index + 1) + " 行"} checked={editing.selection.has(row)} disabled={editing.locked} onCheckedChange={checked => {
+                        const anchor = rows.findIndex(item => item.index === selectionAnchor.current), position = rows.findIndex(item => item.index === index)
+                        const targets = shiftSelection.current && anchor >= 0 ? rows.slice(Math.min(anchor, position), Math.max(anchor, position) + 1).map(item => item.row) : [row]
+                        editing.select(targets, checked === true); selectionAnchor.current = index; shiftSelection.current = false
+                      }} /></td> : null}
+                      <td className="mysql-edit-number h-8 border-b border-r border-border/50 px-3 py-0 text-right font-mono text-xs tabular-nums text-text-faint"><button type="button" className="block h-[31px] w-full leading-[31px]" title="查看行详情" aria-label={"查看第 " + (index + 1) + " 行详情"}>{index + 1}</button></td>
+                      {result.columns.map((column) => {
+                        const value = editing ? editing.value(row, column.name, row[column.name]) : row[column.name]
+                        const content = <span className={`block h-[31px] truncate leading-[31px] ${typeof row[column.name] === "number" ? "text-right tabular-nums" : ""} ${value === null || value === undefined ? "text-muted-foreground italic" : ""}`}>{mysqlCellText(value)}</span>
+                        return <td className="mysql-inline-cell relative h-8 border-b border-border/50 px-3 py-0 font-mono text-xs" key={column.name} data-edit-column={column.name} data-numeric={typeof row[column.name] === "number" || undefined} data-dirty={editing?.dirty(row, column.name) || undefined} tabIndex={editing ? 0 : undefined}
+                          onClick={event => { if (editing) { event.stopPropagation(); if (event.target === event.currentTarget || !(event.target instanceof HTMLInputElement)) event.currentTarget.focus({ preventScroll: true }) } }}
+                          onDoubleClick={event => { event.stopPropagation(); if (event.target instanceof HTMLInputElement) return; if (editing) editing.begin(row, column.name); else void copyText(mysqlCopyCellText(value), "单元格已复制") }}
+                          onContextMenu={event => { if (editing && !(event.target instanceof HTMLInputElement)) { event.preventDefault(); editing.begin(row, column.name, true) } }}
+                          onKeyDown={event => {
+                            if (!editing || event.target !== event.currentTarget) return
+                            if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") { event.preventDefault(); void copyText(mysqlCopyCellText(value), "单元格已复制") }
+                            if (event.key === "Enter" || event.key === "F2") { event.preventDefault(); event.stopPropagation(); editing.begin(row, column.name, event.shiftKey) }
+                            if (event.key.startsWith("Arrow")) {
+                              event.preventDefault(); event.stopPropagation()
+                              const cell = event.currentTarget
+                              const target = event.key === "ArrowLeft" ? cell.previousElementSibling : event.key === "ArrowRight" ? cell.nextElementSibling : (event.key === "ArrowUp" ? cell.parentElement?.previousElementSibling : cell.parentElement?.nextElementSibling)?.querySelector('[data-edit-column="' + CSS.escape(column.name) + '"]')
+                              if (target?.hasAttribute("data-edit-column")) (target as HTMLElement).focus({ preventScroll: true })
+                            }
+                          }} title={editing ? "双击编辑 · Ctrl+C 复制 · 右键打开完整字段" : "单击查看行详情，双击复制完整单元格"}>
+                          {editing ? editing.cell(row, column.name, content) : content}
                         </td>
-                      ))}
+                      })}
                     </tr>
                   )) : (
-                    <tr><td className="h-28 px-4 text-center text-xs text-muted-foreground" colSpan={Math.max(1, result.columns.length + 1)}>{filter ? "当前返回结果中没有匹配的数据。" : "查询成功，没有符合条件的数据。"}</td></tr>
+                    <tr><td className="h-28 px-4 text-center text-xs text-muted-foreground" colSpan={Math.max(1, result.columns.length + (editing ? 2 : 1))}>{filter ? "当前返回结果中没有匹配的数据。" : "查询成功，没有符合条件的数据。"}</td></tr>
                   )}
                 </tbody>
               </table>
             </div>
-            {selectedRow && state.selectedRow !== null ? <MysqlResultRowDetail columns={result.columns} id={detailId} key={`${state.selectedRow}`} onClose={closeDetail} onCopy={(text, description) => { void copyText(text, description) }} prefix={prefix} row={selectedRow} rowNumber={state.selectedRow + 1} /> : null}
+            {selectedRow && state.selectedRow !== null ? <MysqlResultRowDetail columns={result.columns} id={detailId} key={`${state.selectedRow}`} onClose={closeDetail} onCopy={(text, description) => { void copyText(text, description) }} prefix={prefix} row={detailRow!} rowNumber={state.selectedRow + 1} /> : null}
           </div>
-          <footer className="flex min-h-9 shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-1 text-xs tabular-nums text-muted-foreground">
+          <footer className="mysql-results-footer flex h-9 shrink-0 items-center gap-x-3 border-t px-3 py-1 text-xs tabular-nums text-muted-foreground">
             <span>{filteredRows.length ? `${start + 1} 至 ${start + rows.length}` : "0"} / {filteredRows.length} 行{filter ? ` · 共返回 ${result.rows.length} 行` : " · 当前返回结果"}</span>
-            <span aria-live="polite" className={`min-w-0 flex-1 truncate ${notice?.failed ? "text-danger" : "text-text-faint"}`} role="status">{notice?.message || "单击行查看详情 · 双击单元格复制"}</span>
-            {stream ? <><span className="ml-auto" data-testid={`${prefix}-load-status`}>{stream.message}</span><Button data-testid={`${prefix}-load-more`} disabled={!stream.hasMore || stream.loading || Boolean(filter)} onClick={stream.onLoadMore} size="sm" variant="ghost">{stream.loading ? "加载中…" : "继续加载"}</Button></> : <><label className="ml-auto flex items-center gap-1.5"><span className="sr-only">每页结果行数</span><SelectControl aria-label="每页结果行数" size="sm" onValueChange={(value) => changeView({ pageSize: Number(value), page: 0, selectedRow: null })} value={String(state.pageSize)}>{[25, 50, MYSQL_RESULT_PAGE_SIZE].map((size) => <SelectItem key={size} value={String(size)}>{size} 行 / 页</SelectItem>)}</SelectControl></label>
+            <span aria-live="polite" className={`min-w-0 flex-1 truncate ${notice?.failed ? "text-danger" : "text-text-faint"}`} role="status">{editing?.status || notice?.message || "单击行查看详情 · 双击单元格复制"}</span>
+            {stream ? <><span className="ml-auto" data-testid={`${prefix}-load-status`}>{stream.message}</span><Button data-testid={`${prefix}-load-more`} disabled={!stream.hasMore || stream.loading || Boolean(filter) || Boolean(editing?.locked)} onClick={stream.onLoadMore} size="sm" variant="ghost">{stream.loading ? "加载中…" : "继续加载"}</Button></> : <><label className="ml-auto flex items-center gap-1.5"><span className="sr-only">每页结果行数</span><SelectControl aria-label="每页结果行数" size="sm" onValueChange={(value) => changeView({ pageSize: Number(value), page: 0, selectedRow: null })} value={String(state.pageSize)}>{[25, 50, MYSQL_RESULT_PAGE_SIZE].map((size) => <SelectItem key={size} value={String(size)}>{size} 行 / 页</SelectItem>)}</SelectControl></label>
             <Button aria-label="上一页结果" disabled={visiblePage === 0} onClick={() => changeView({ page: visiblePage - 1, selectedRow: null })} size="icon-xs" type="button" variant="ghost"><CaretLeft aria-hidden="true" className="size-3.5" /></Button>
             <span className="min-w-10 text-center">{visiblePage + 1} / {lastPage + 1}</span>
             <Button aria-label="下一页结果" data-testid={`${prefix}-next-page`} disabled={visiblePage === lastPage} onClick={() => changeView({ page: visiblePage + 1, selectedRow: null })} size="icon-xs" type="button" variant="ghost"><CaretRight aria-hidden="true" className="size-3.5" /></Button></>}
+            {editing?.footer}
           </footer>
         </>
       ) : <div className="min-h-0 flex-1" />}

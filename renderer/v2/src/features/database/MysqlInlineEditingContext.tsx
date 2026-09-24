@@ -1,0 +1,19 @@
+import { createContext, useContext, type ReactNode } from "react"
+import type { MysqlDisplayedRow } from "./mysql-inline-edit-model"
+
+export interface MysqlInlineEditing {
+  locked: boolean
+  selection: ReadonlySet<MysqlDisplayedRow>
+  select: (rows: readonly MysqlDisplayedRow[], checked: boolean) => void
+  value: (row: MysqlDisplayedRow, name: string, fallback: unknown) => unknown
+  rowId: (row: MysqlDisplayedRow) => string | undefined
+  conflict: (row: MysqlDisplayedRow) => boolean
+  dirty: (row: MysqlDisplayedRow, name: string) => boolean
+  cell: (row: MysqlDisplayedRow, name: string, content: ReactNode) => ReactNode
+  begin: (row: MysqlDisplayedRow, name: string, modal?: boolean) => void
+  finish: () => void
+  footer: ReactNode
+  status: ReactNode
+}
+export const MysqlInlineEditingContext = createContext<MysqlInlineEditing | null>(null)
+export const useMysqlInlineEditing = () => useContext(MysqlInlineEditingContext)

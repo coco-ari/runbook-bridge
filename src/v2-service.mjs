@@ -489,7 +489,7 @@ export class V2Service {
       }, () => {
         if (desktopExecute) return desktopExecute(plugin);
         if (plugin.pluginType === 'server') return this.invokeServer(plugin, capability, operationArgs, {...scopeOf(params), auditOperationId:operationId});
-        return this.pluginManager.invoke(plugin, capability, { ...operationArgs, policyApproved: true });
+        return this.pluginManager.invoke(plugin, capability, { ...operationArgs, policyApproved: true }, {losslessMysql:actor === 'user' && ['queryReadonly', 'previewTable'].includes(desktopOperation)});
       });
       const durationMs = Date.now() - started;
       const auditFailed = await this.workspaceStore.appendAudit(plugin.projectId, { ...(plugin.pluginType === 'mysql' && Number.isSafeInteger(result?.rowCount) ? {rowCount:result.rowCount,truncated:result.truncated === true} : {}), type: 'plugin-operation', requestId, operationId, ...auditMetadata, environmentId: plugin.environmentId, pluginInstanceId: plugin.pluginInstanceId, pluginType: plugin.pluginType, pluginNameSnapshot: plugin.displayName, actor, capability, operationSummary: auditSummary(plugin, capability, operationArgs), result: 'success', durationMs, confirmationId }).then(() => false, () => true);

@@ -463,14 +463,17 @@ export class MysqlPluginRuntime extends EventEmitter {
     return this.readMetadata(plugin, ['describe', table, { ...options, refresh:undefined }], () => this.schemaReader.describeTable(plugin, table, options), options);
   }
 
-  async queryReadonly(plugin, sql, params) {
+  async queryReadonly(plugin, sql, params, { lossless = false } = {}) {
     const validated = validateMysqlSelect(sql);
     const checkedSession = await this.assertBaseTables(plugin, validated.tables);
     const statement = applyMysqlRowLimit(validated, plugin.limits.maxRows);
     const started = Date.now();
     const [rows, fields] = await this.querySession(
       plugin,
-      { sql: statement, timeout: plugin.limits.timeoutMs, values: normalizeParams(params) },
+      { sql: statement, timeout: plugin.limits.timeoutMs, values: normalizeParams(params),
+        // 桌面结果必须保留主键、日期小数位与 JSON 数值文本，供原位编辑精确核对。
+        ...(lossless ? {supportBigNumbers:true,bigNumberStrings:true,dateStrings:true,typeCast:(field,next)=>field.type === 'JSON' ? field.string('utf8') : next()} : {}),
+      },
       { fallbackMessage:'MySQL 只读查询执行失败。', expectedSession:checkedSession },
     );
     const capped = capRows(rows, plugin.limits.maxRows, plugin.limits.maxBytes);

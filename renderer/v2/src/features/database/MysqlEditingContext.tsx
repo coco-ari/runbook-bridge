@@ -30,7 +30,7 @@ export function MysqlEditingProvider({ connected, connectionEpoch, onEditingChan
     },
     protect(action: () => void, keys?: readonly string[]) {
       const entries = [...guards.current].filter(([key]) => !keys || keys.includes(key)).map(([, inspect]) => inspect())
-      if (entries.some(entry => entry.busy)) { toast.info("正在保存数据库修改，请等待结果。"); return }
+      if (entries.some(entry => entry.busy)) { toast.info("正在读取或保存数据，请等待结果。"); return }
       const count = entries.filter(entry => entry.dirty).length
       if (count) setPending({ action, count, discard: () => entries.forEach(entry => entry.discard?.()) })
       else action()
