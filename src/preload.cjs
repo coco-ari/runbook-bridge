@@ -118,6 +118,7 @@ contextBridge.exposeInMainWorld('aiOps', {
     mysqlListTables: (payload) => ipcRenderer.invoke('v2:mysql-list-tables', payload),
     mysqlDescribeTable: (payload) => ipcRenderer.invoke('v2:mysql-describe-table', payload),
     mysqlPreviewTable: (payload) => ipcRenderer.invoke('v2:mysql-preview-table', payload),
+    mysqlExportSave: payload => ipcRenderer.invoke('v2:mysql-export-save', payload),
     mysqlEditOpen: (payload) => ipcRenderer.invoke('v2:mysql-edit-open', payload),
     mysqlEditPrepare: (payload) => ipcRenderer.invoke('v2:mysql-edit-prepare', payload),
     mysqlEditCommit: (payload) => ipcRenderer.invoke('v2:mysql-edit-commit', payload),

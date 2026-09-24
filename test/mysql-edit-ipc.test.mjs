@@ -51,3 +51,20 @@ test('Agent 数据库写入能力继续被操作策略拒绝',()=>{
   const gate=new OperationGate();
   assert.throws(()=>gate.authorize({plugin:{...scope,pluginType:'mysql',agent:{}},capability:'update',args:{sql:'UPDATE items SET label=1'},origin:'agent'}));
 });
+
+test('SQL 文件导出拒绝子框架、陌生窗口及保存对话框期间的导航',async()=>{
+  const handlers=new Map();let trusted=true,release,started;
+  const waiting=new Promise(resolve=>{started=resolve;});
+  registerMysqlEditIpc({handle:(name,fn)=>handlers.set(name,fn)},{
+    isWorkspaceRenderer:()=>trusted,
+    pickMysqlExportPath:async()=>{started();return new Promise(resolve=>{release=resolve;});},
+  });
+  const sender=new EventEmitter();Object.assign(sender,{id:99,mainFrame:{},isDestroyed:()=>false});
+  const event={sender,senderFrame:sender.mainFrame},payload={fileName:'selected.sql',sql:'SELECT 1;'};
+  const save=handlers.get('v2:mysql-export-save');
+  assert.equal((await save({...event,senderFrame:{}},payload)).error.code,'WORKSPACE_ACCESS_DENIED');
+  trusted=false;assert.equal((await save(event,payload)).error.code,'WORKSPACE_ACCESS_DENIED');trusted=true;
+  const pending=save(event,payload);await waiting;
+  sender.emit('did-start-navigation',{},'file://fixture',false,true);release('must-not-write.sql');
+  assert.equal((await pending).error.code,'WORKSPACE_ACCESS_DENIED');
+});

@@ -33,10 +33,11 @@ export function editableMysqlQuery(sql) {
 
 const TEXT_TYPES = new Set(['char','varchar','tinytext','text','mediumtext','longtext']);
 const INTEGER_BITS = {tinyint:8,smallint:16,mediumint:24,int:32,integer:32,bigint:64};
+export const isMysqlGeneratedColumn = column => /(?:VIRTUAL|STORED) GENERATED/iu.test(column.extra ?? '');
 export function mysqlEditableColumn(column) {
   const type = column.dataType.toLowerCase();
   if (column.key === 'PRI') return {editable:false,reason:'主键仅用于定位记录，不允许修改。'};
-  if (/generated/i.test(column.extra)) return {editable:false,reason:'生成列由数据库计算。'};
+  if (isMysqlGeneratedColumn(column)) return {editable:false,reason:'生成列由数据库计算。'};
   if (TEXT_TYPES.has(type) || Object.hasOwn(INTEGER_BITS,type) || ['decimal','numeric','float','double','real','date','datetime','timestamp','time','year','enum','set','json'].includes(type)) return {editable:true};
   return {editable:false,reason:'此字段类型暂不支持编辑。'};
 }

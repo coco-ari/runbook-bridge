@@ -12,6 +12,9 @@ import { MysqlInlineEditingContext, type MysqlInlineEditing } from "./MysqlInlin
 import { bindMysqlEditRows, mysqlEditValueMatches, type MysqlDisplayedRow } from "./mysql-inline-edit-model"
 import { copyMysqlText } from "./mysql-clipboard"
 
+import { MysqlSqlExportDialog, type MysqlSqlExportSelection } from "./MysqlSqlExportDialog"
+import type { MysqlSqlKind } from "./mysql-sql-export"
+
 type Drafts = Record<string, Record<string, string | null>>
 interface ActiveCell { rowId: string; name: string; value: string; isNull: boolean; modal: boolean }
 
@@ -36,6 +39,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   const [plan, setPlan] = useState<MysqlEditPlan | null>(null)
   const [uncertain, setUncertain] = useState(false)
   const [stale, setStale] = useState(false)
+  const [exportSelection, setExportSelection] = useState<MysqlSqlExportSelection | null>(null)
   const [batch, setBatch] = useState(false)
   const [batchColumn, setBatchColumn] = useState("")
   const [batchValue, setBatchValue] = useState("")
@@ -222,6 +226,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
     finishCell()
     const data = await ensureSnapshot([...selection])
     if (!data || !alive.current) return
+    if (!data.columns.some(column => column.editable)) { toast.info("当前结果没有可批量修改的字段。"); return }
     setBatchColumn(data.columns.find(column => column.editable)?.name ?? ""); setBatchValue(""); setBatchNull(false); setBatch(true)
   }
   function applyBatch() {
@@ -233,8 +238,34 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
       updateDrafts(next); setBatch(false); setError("")
     } catch (failure) { const message = failure instanceof Error ? failure.message : "无法批量赋值"; setError(message); toast.error(message) }
   }
+  async function openExport(kind: MysqlSqlKind, field?: string) {
+    if (locked || busyRef.current || !selection.size) return
+    finishCell()
+    const sources = [...selection]
+    const data = await ensureSnapshot(sources)
+    if (!data || !alive.current) return
+    try {
+      const mapped = bindMysqlEditRows(result.rows, data)
+      const targets = sources.map(source => {
+        const target = mapped.get(source)
+        if (!target) throw new Error("无法按完整主键定位已选行，请刷新后重试。")
+        if (Object.keys(draftsRef.current[target.rowId] ?? {}).length) throw new Error("已选行包含未保存修改，请先保存或撤销后生成 SQL。")
+        for (const column of data.columns) {
+          if (column.generated || (!column.editable && !column.primary)) continue
+          if (!mysqlEditValueMatches(valueOf(source, column.name, source[column.name]), target.values[column.name] ?? null)) throw new Error("已选行的数据已变化，请刷新后再生成 SQL。")
+        }
+        return target
+      })
+      setExportSelection({data, rows:targets, kind, field})
+    } catch (failure) { toast.error(failure instanceof Error ? failure.message : "无法生成 SQL") }
+  }
   const controller: MysqlInlineEditing = {
     locked, selection,
+    replaceSelection: rows => { if (rows.size <= 100) setSelection(new Set(rows)) },
+    clearSelection: () => setSelection(new Set()),
+    batch: () => { void openBatch() },
+    canEdit: name => edit ? Boolean(edit.columns.find(column => column.name === name)?.editable) : true,
+    exportSql: (kind, field) => { void openExport(kind, field) },
     select: (rows, checked) => {
       const next = new Set(selection)
       for (const row of rows) { if (checked) next.add(row); else next.delete(row) }
@@ -268,7 +299,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
           if (event.key === "Escape") { event.preventDefault(); finishCell(true); focusCell(row.rowId, name) }
         }} />
     },
-    status: <span title={error || notice || "双击编辑 · Ctrl+C 复制 · 点击行号查看详情"} className={error ? "text-danger" : ""} role="status">
+    status: <span title={error || notice || "双击编辑 · Ctrl+C 复制 · 右键查看行详情"} className={error ? "text-danger" : ""} role="status">
       <span data-testid="mysql-edit-dirty-count">{pendingRows.length ? pendingRows.length + " 行 · " + cellCount + " 处待保存" : busy === "open" ? "正在核对可编辑字段…" : error || notice || "双击编辑 · Ctrl+C 复制"}</span>
       {error && pendingRows.length ? " · " + error : ""}
       {selection.size ? " · 已选 " + selection.size + " 行" : ""}
@@ -286,9 +317,10 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   if (!visible && documentKey.startsWith("table:")) return null
   return <MysqlInlineEditingContext.Provider value={controller}>
     <div className="mysql-edit-container" data-testid={visible ? "mysql-data-editor" : undefined} ref={rootRef} onKeyDown={event => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); if (!batch && !activeRef.current?.modal) void save() }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); if (!exportSelection && !batch && !activeRef.current?.modal) void save() }
     }}>
       {children}
+      {exportSelection ? <MysqlSqlExportDialog api={api} selection={exportSelection} onClose={() => setExportSelection(null)} /> : null}
     {edit ? <><Dialog open={batch} onOpenChange={setBatch}>
       <DialogContent className="sm:max-w-lg" data-testid="mysql-edit-batch-dialog">
         <DialogHeader><DialogTitle>向选中的 {selection.size} 行统一赋值</DialogTitle><DialogDescription>所有选中行的指定字段将暂存为同一个值，点击保存后才写入数据库。</DialogDescription></DialogHeader>

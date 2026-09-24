@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import test from 'node:test';
 import { DesktopMysqlEditor, prepareMysqlEditRequest } from '../src/desktop-mysql-editor.mjs';
-import { editableMysqlQuery, mysqlEditProjection, normalizeMysqlEditValue, quoteMysqlName } from '../src/mysql-edit-policy.mjs';
+import { isMysqlGeneratedColumn, mysqlEditableColumn, editableMysqlQuery, mysqlEditProjection, normalizeMysqlEditValue, quoteMysqlName } from '../src/mysql-edit-policy.mjs';
 import { MysqlPluginRuntime } from '../src/mysql-plugin-runtime.mjs';
 
 const scope={projectId:'fixture-project',environmentId:'fixture-environment',pluginInstanceId:'fixture-mysql'};
@@ -21,7 +21,7 @@ function harness({failure,auditFailure,metadata=schema,primaryNames}={}){
     if(failure)await failure(sql);
     if(sql.includes('SELECT TABLE_TYPE'))return [[{TABLE_TYPE:'BASE TABLE',ENGINE:'InnoDB'}]];
     if(sql.includes('information_schema.KEY_COLUMN_USAGE'))return [(primaryNames??metadata.columns.filter(c=>c.key==='PRI').map(c=>c.name)).map(name=>({COLUMN_NAME:name}))];
-    if(sql.includes('information_schema.COLUMNS'))return [metadata.columns.map(c=>({COLUMN_NAME:c.name,COLUMN_TYPE:c.type,DATA_TYPE:c.dataType,IS_NULLABLE:c.nullable?'YES':'NO',COLUMN_KEY:c.key,EXTRA:c.extra,CHARACTER_MAXIMUM_LENGTH:c.maxLength,NUMERIC_PRECISION:c.precision,NUMERIC_SCALE:c.scale,DATETIME_PRECISION:c.datetimePrecision}))];
+    if(sql.includes('information_schema.COLUMNS'))return [metadata.columns.map(c=>({COLUMN_NAME:c.name,COLUMN_TYPE:c.type,DATA_TYPE:c.dataType,IS_NULLABLE:c.nullable?'YES':'NO',COLUMN_KEY:c.key,COLUMN_DEFAULT:c.default??null,EXTRA:c.extra,CHARACTER_MAXIMUM_LENGTH:c.maxLength,NUMERIC_PRECISION:c.precision,NUMERIC_SCALE:c.scale,DATETIME_PRECISION:c.datetimePrecision}))];
     if(sql.includes('@@SESSION.sql_mode'))return [[{sqlMode:'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION'}]];
     if(sql==='START TRANSACTION'){backup=structuredClone(values);return [{affectedRows:0}];}
     if(sql==='ROLLBACK'){values=backup;return [{affectedRows:0}];}
@@ -189,4 +189,44 @@ test('唯一索引被列元数据标成 PRI 时，仍拒绝无真实主键表',a
   const h=harness({primaryNames:[]});
   await assert.rejects(h.open(),{code:'MYSQL_EDIT_READONLY'});
   assert.equal(h.statements.some(s=>s.sql.startsWith('UPDATE')),false);
+});
+
+test('默认值表达式不属于计算生成列，真正生成列保持只读',()=>{
+  const ordinary=column('created_at','timestamp',{extra:'DEFAULT_GENERATED',nullable:false,default:'CURRENT_TIMESTAMP'});
+  assert.equal(isMysqlGeneratedColumn(ordinary),false);
+  assert.equal(mysqlEditableColumn(ordinary).editable,true);
+  for(const extra of ['VIRTUAL GENERATED','STORED GENERATED']){
+    const generated=column('computed','int',{extra});
+    assert.equal(isMysqlGeneratedColumn(generated),true);
+    assert.equal(mysqlEditableColumn(generated).editable,false);
+  }
+});
+test('导出元数据包含库名与生成列标记，不暴露连接凭据',async()=>{
+  const h=harness(),opened=await h.open();
+  assert.equal(opened.database,'fixture');
+  assert.deepEqual(opened.insertMissingColumns,[]);
+  assert.equal(opened.columns[0].generated,false);
+  assert.equal(opened.columns[0].primary,true);
+  assert.doesNotMatch(JSON.stringify(opened),/password|credential/iu);
+});
+
+test('仅主键的单表可取得导出快照，但仍不能修改主键',async()=>{
+  const h=harness({metadata:{table:'items',columns:[column('id','bigint',{key:'PRI',nullable:false})]}});
+  h.mutate(rows=>rows.map(row=>[row[0]]));
+  const opened=await h.open();
+  assert.equal(opened.rows.length,2);
+  assert.equal(opened.columns[0].editable,false);
+  assert.throws(()=>h.editor.prepare('window-a',plugin,{editId:opened.editId,changes:[{rowId:opened.rows[0].rowId,values:{id:'2'}}]}));
+});
+test('INSERT 缺失字段只包含无默认值的必填普通列',async()=>{
+  const h=harness(),opened=await h.open();
+  const internal=h.editor.edits.get(opened.editId);
+  internal.schema.columns.push(
+    column('required','varchar',{nullable:false,default:null}),
+    column('with_default','varchar',{nullable:false,default:'fixture'}),
+    column('optional','varchar',{nullable:true,default:null}),
+    column('computed','int',{nullable:false,default:null,extra:'STORED GENERATED'}),
+    column('auto_id','bigint',{nullable:false,default:null,extra:'auto_increment'}),
+  );
+  assert.deepEqual(h.editor.publicEdit(internal).insertMissingColumns,['required']);
 });

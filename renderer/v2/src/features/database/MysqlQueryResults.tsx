@@ -1,3 +1,5 @@
+import { useMysqlRowSelection } from "./use-mysql-row-selection"
+import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuLabel, ContextMenuSeparator, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from "@/components/ui/context-menu"
 import { toast } from "sonner"
 import { useMysqlInlineEditing } from "./MysqlInlineEditingContext"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -45,14 +47,15 @@ interface CopyNotice {
 
 export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, stream, columnDragScope, snapshot }: MysqlQueryResultsProps) {
   const editing = useMysqlInlineEditing()
-  const selectionAnchor = useRef<number | null>(null)
-  const shiftSelection = useRef(false)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const [menu, setMenu] = useState<{ row: Record<string, unknown>; index: number; column: string | null; element: HTMLElement } | null>(null)
+  const menuAction = useRef<(() => void) | null>(null)
   const viewIdentity = stream?.key ?? result
   const [viewState, setViewState] = useState<ResultViewState>(snapshot?.current?.state.result === viewIdentity ? snapshot.current.state : { result: viewIdentity, sort: null, filter: "", page: 0, pageSize: MYSQL_RESULT_PAGE_SIZE, selectedRow: null })
   const [copyNotice, setCopyNotice] = useState<CopyNotice | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastScrollTop = useRef(0)
-  const selectedRowRef = useRef<HTMLTableRowElement | null>(null)
+  const selectedRowRef = useRef<HTMLElement | null>(null)
   const detailId = useId()
   const prefix = testIdPrefix ?? `mysql-${kind}`
   const state: ResultViewState = viewState.result === viewIdentity ? viewState : { result: viewIdentity, sort: null, filter: "", page: 0, pageSize: MYSQL_RESULT_PAGE_SIZE, selectedRow: null }
@@ -76,6 +79,7 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
   const visiblePage = Math.min(state.page, lastPage)
   const start = visiblePage * state.pageSize
   const rows = stream ? filteredRows : filteredRows.slice(start, start + state.pageSize)
+  const rowSelection = useMysqlRowSelection(rows, editing, scrollRef)
   const selectedRow = !duplicateColumns && state.selectedRow !== null ? result.rows[state.selectedRow] : undefined
   const detailRow = selectedRow && editing ? Object.fromEntries(result.columns.map(column => [column.name, editing.value(selectedRow, column.name, selectedRow[column.name])])) : selectedRow
   const notice = copyNotice?.result === result ? copyNotice : null
@@ -100,6 +104,7 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
   }, [viewIdentity, filter, visiblePage, state.pageSize])
 
   function changeView(update: Partial<Omit<ResultViewState, "result">>) {
+    if (update.filter !== undefined && update.filter !== state.filter) editing?.clearSelection()
     setViewState({ ...state, ...update, result: viewIdentity })
     setCopyNotice(null)
   }
@@ -111,11 +116,11 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
     else changeView({ sort: next, page: 0, selectedRow: null })
   }
   function loadAtBottom(element: HTMLDivElement) {
-    if (!editing?.locked && stream?.hasMore && !stream.loading && !filter && element.scrollHeight - element.scrollTop - element.clientHeight < 64) stream.onLoadMore()
+    if (!rowSelection.dragging.current && !editing?.locked && stream?.hasMore && !stream.loading && !filter && element.scrollHeight - element.scrollTop - element.clientHeight < 64) stream.onLoadMore()
   }
   function closeDetail() {
     changeView({ selectedRow: null })
-    if (selectedRowRef.current?.isConnected) selectedRowRef.current.focus()
+    if (selectedRowRef.current?.isConnected) selectedRowRef.current.focus({ preventScroll: true })
     else scrollRef.current?.focus()
   }
 
@@ -150,10 +155,11 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
               data-testid={`${prefix}-filter`}
               onChange={(event) => changeView({ filter: event.target.value, page: 0, selectedRow: null })}
               placeholder="筛选当前结果…"
-              type="search"
+              ref={searchRef}
+              type="text"
               value={state.filter}
             />
-            {state.filter ? <Button aria-label="清除结果筛选" className="absolute right-0 top-0" onClick={() => changeView({ filter: "", page: 0, selectedRow: null })} size="icon-xs" type="button" variant="ghost"><X aria-hidden="true" className="size-3" /></Button> : null}
+            {state.filter ? <Button aria-label="清除结果筛选" className="absolute right-0 top-0" onMouseDown={event => event.preventDefault()} onClick={() => { changeView({ filter: "", page: 0, selectedRow: null }); searchRef.current?.focus() }} size="icon-xs" type="button" variant="ghost"><X aria-hidden="true" className="size-3" /></Button> : null}
           </div>
         ) : null}
       </header>
@@ -185,7 +191,16 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
       {!duplicateColumns ? (
         <>
           <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
-            <div aria-label="查询结果表格，可横向和纵向滚动" className="min-h-0 min-w-0 flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" data-testid={`${prefix}-table-scroll`} onScroll={(event) => { if (event.currentTarget.scrollTop > lastScrollTop.current) loadAtBottom(event.currentTarget); lastScrollTop.current = event.currentTarget.scrollTop }} onWheel={(event) => { if (event.deltaY > 0) loadAtBottom(event.currentTarget) }} ref={scrollRef} role="region" tabIndex={0}>
+            <ContextMenu><ContextMenuTrigger asChild>
+            <div onPointerDownCapture={rowSelection.pointerStart} onContextMenuCapture={event => {
+              const target = event.target as HTMLElement
+              if (target.closest("input,textarea") || !target.closest("td")) { event.stopPropagation(); return }
+              const cell = target.closest<HTMLTableCellElement>("td"), row = cell?.closest<HTMLTableRowElement>("tr[data-row-index]")
+              const index = Number(row?.dataset.rowIndex ?? -1)
+              const source = result.rows[index]
+              if (!source || !cell) { event.stopPropagation(); return }
+              setMenu({row:source,index,column:cell.dataset.editColumn ?? null,element:cell.querySelector<HTMLElement>("button") ?? cell})
+            }} onPointerMove={rowSelection.move} onPointerUp={() => rowSelection.finish()} onPointerCancel={() => rowSelection.finish(true)} onLostPointerCapture={() => rowSelection.finish(true)} onClickCapture={rowSelection.click} aria-label="查询结果表格，可横向和纵向滚动" className="min-h-0 min-w-0 flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" data-testid={`${prefix}-table-scroll`} onScroll={(event) => { if (event.currentTarget.scrollTop > lastScrollTop.current) loadAtBottom(event.currentTarget); lastScrollTop.current = event.currentTarget.scrollTop }} onWheel={(event) => { if (event.deltaY > 0) loadAtBottom(event.currentTarget) }} ref={scrollRef} role="region" tabIndex={0}>
               <table className="w-full table-fixed border-separate border-spacing-0 text-xs" style={{ minWidth: (editing ? 80 : 48) + columnWidths.reduce((sum, width) => sum + width, 0) }}>
                 <colgroup>{editing ? <col style={{ width: 32 }} /> : null}<col style={{ width: 48 }} />{result.columns.map((column, index) => <col key={column.name} style={{ width: columnWidths[index] }} />)}</colgroup>
                 <thead>
@@ -211,28 +226,15 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
                       data-row-index={index}
                       data-testid={`${prefix}-row`}
                       key={index}
-                      onClick={(event) => { selectedRowRef.current = event.currentTarget; changeView({ selectedRow: index }) }}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter" && event.key !== " ") return
-                        event.preventDefault()
-                        selectedRowRef.current = event.currentTarget
-                        changeView({ selectedRow: index })
-                      }}
-                      tabIndex={0}
                     >
-                      {editing ? <td className="mysql-inline-selector mysql-edit-row-selector" onClick={event => event.stopPropagation()} onPointerDown={event => { shiftSelection.current = event.shiftKey }}><Checkbox aria-label={"选择第 " + (index + 1) + " 行"} checked={editing.selection.has(row)} disabled={editing.locked} onCheckedChange={checked => {
-                        const anchor = rows.findIndex(item => item.index === selectionAnchor.current), position = rows.findIndex(item => item.index === index)
-                        const targets = shiftSelection.current && anchor >= 0 ? rows.slice(Math.min(anchor, position), Math.max(anchor, position) + 1).map(item => item.row) : [row]
-                        editing.select(targets, checked === true); selectionAnchor.current = index; shiftSelection.current = false
-                      }} /></td> : null}
-                      <td className="mysql-edit-number h-8 border-b border-r border-border/50 px-3 py-0 text-right font-mono text-xs tabular-nums text-text-faint"><button type="button" className="block h-[31px] w-full leading-[31px]" title="查看行详情" aria-label={"查看第 " + (index + 1) + " 行详情"}>{index + 1}</button></td>
+                      {editing ? <td className="mysql-inline-selector mysql-edit-row-selector" onPointerDown={event => rowSelection.down(event,index)}><Checkbox aria-label={"选择第 " + (index + 1) + " 行"} checked={editing.selection.has(row)} disabled={editing.locked} onCheckedChange={checked => editing.select([row],checked === true)} /></td> : null}
+                      <td onPointerDown={event => rowSelection.down(event,index)} className="mysql-edit-number h-8 border-b border-r border-border/50 px-3 py-0 text-right font-mono text-xs tabular-nums text-text-faint"><button type="button" className="block h-[31px] w-full leading-[31px]" title="点击或拖动选择行 · 右键更多操作" aria-label={"选择第 " + (index + 1) + " 行号"} onClick={() => { if (!editing?.locked) editing?.select([row],!editing.selection.has(row)) }}>{index + 1}</button></td>
                       {result.columns.map((column) => {
                         const value = editing ? editing.value(row, column.name, row[column.name]) : row[column.name]
                         const content = <span className={`block h-[31px] truncate leading-[31px] ${typeof row[column.name] === "number" ? "text-right tabular-nums" : ""} ${value === null || value === undefined ? "text-muted-foreground italic" : ""}`}>{mysqlCellText(value)}</span>
-                        return <td className="mysql-inline-cell relative h-8 border-b border-border/50 px-3 py-0 font-mono text-xs" key={column.name} data-edit-column={column.name} data-numeric={typeof row[column.name] === "number" || undefined} data-dirty={editing?.dirty(row, column.name) || undefined} tabIndex={editing ? 0 : undefined}
+                        return <td className="mysql-inline-cell relative h-8 border-b border-border/50 px-3 py-0 font-mono text-xs" key={column.name} data-edit-column={column.name} data-numeric={typeof row[column.name] === "number" || undefined} data-dirty={editing?.dirty(row, column.name) || undefined} tabIndex={0}
                           onClick={event => { if (editing) { event.stopPropagation(); if (event.target === event.currentTarget || !(event.target instanceof HTMLInputElement)) event.currentTarget.focus({ preventScroll: true }) } }}
                           onDoubleClick={event => { event.stopPropagation(); if (event.target instanceof HTMLInputElement) return; if (editing) editing.begin(row, column.name); else void copyText(mysqlCopyCellText(value), "单元格已复制") }}
-                          onContextMenu={event => { if (editing && !(event.target instanceof HTMLInputElement)) { event.preventDefault(); editing.begin(row, column.name, true) } }}
                           onKeyDown={event => {
                             if (!editing || event.target !== event.currentTarget) return
                             if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") { event.preventDefault(); void copyText(mysqlCopyCellText(value), "单元格已复制") }
@@ -243,7 +245,7 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
                               const target = event.key === "ArrowLeft" ? cell.previousElementSibling : event.key === "ArrowRight" ? cell.nextElementSibling : (event.key === "ArrowUp" ? cell.parentElement?.previousElementSibling : cell.parentElement?.nextElementSibling)?.querySelector('[data-edit-column="' + CSS.escape(column.name) + '"]')
                               if (target?.hasAttribute("data-edit-column")) (target as HTMLElement).focus({ preventScroll: true })
                             }
-                          }} title={editing ? "双击编辑 · Ctrl+C 复制 · 右键打开完整字段" : "单击查看行详情，双击复制完整单元格"}>
+                          }} title={editing ? "双击编辑 · Ctrl+C 复制 · 右键更多操作" : "右键查看行详情，双击复制完整单元格"}>
                           {editing ? editing.cell(row, column.name, content) : content}
                         </td>
                       })}
@@ -254,11 +256,35 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
                 </tbody>
               </table>
             </div>
+            </ContextMenuTrigger>
+            <ContextMenuContent data-testid="mysql-result-menu" onCloseAutoFocus={event => {
+              event.preventDefault()
+              const action = menuAction.current
+              menuAction.current = null
+              window.setTimeout(() => { if (action) action(); else menu?.element.focus({preventScroll:true}) }, 0)
+            }}>
+              {menu ? <>
+                <ContextMenuLabel>{menu.column ?? "行操作"} · 第 {menu.index + 1} 行</ContextMenuLabel>
+                {menu.column ? <>
+                  {editing ? <><ContextMenuItem disabled={editing.locked || !editing.canEdit(menu.column)} onSelect={() => { menuAction.current = () => editing.begin(menu.row,menu.column!) }}>编辑单元格</ContextMenuItem><ContextMenuItem disabled={editing.locked || !editing.canEdit(menu.column)} onSelect={() => { menuAction.current = () => editing.begin(menu.row,menu.column!,true) }}>完整字段编辑…</ContextMenuItem></> : null}
+                  <ContextMenuItem onSelect={() => { menuAction.current = () => { void copyText(mysqlCopyCellText(editing ? editing.value(menu.row,menu.column!,menu.row[menu.column!]) : menu.row[menu.column!]),"单元格已复制") } }}>复制单元格</ContextMenuItem>
+                </> : null}
+                <ContextMenuItem onSelect={() => { menuAction.current = () => { selectedRowRef.current = menu.element; changeView({selectedRow:menu.index}) } }}>查看行详情</ContextMenuItem>
+                {editing ? <>
+                  <ContextMenuSeparator />
+                  <ContextMenuLabel>已勾选 {editing.selection.size} 行{!editing.selection.has(menu.row) ? " · 当前行未勾选" : ""}</ContextMenuLabel>
+                  <ContextMenuItem disabled={editing.locked || !editing.selection.has(menu.row)} onSelect={() => { menuAction.current = editing.batch }}>批量修改已选 {editing.selection.size} 行…</ContextMenuItem>
+                  <ContextMenuSub><ContextMenuSubTrigger disabled={editing.locked || !editing.selection.has(menu.row)}>生成已选行 SQL</ContextMenuSubTrigger><ContextMenuSubContent>
+                    {(["SELECT","INSERT","UPDATE","DELETE"] as const).map(kind => <ContextMenuItem key={kind} onSelect={() => { menuAction.current = () => editing.exportSql(kind,menu.column ?? undefined) }}>{kind}</ContextMenuItem>)}
+                  </ContextMenuSubContent></ContextMenuSub>
+                </> : null}
+              </> : null}
+            </ContextMenuContent></ContextMenu>
             {selectedRow && state.selectedRow !== null ? <MysqlResultRowDetail columns={result.columns} id={detailId} key={`${state.selectedRow}`} onClose={closeDetail} onCopy={(text, description) => { void copyText(text, description) }} prefix={prefix} row={detailRow!} rowNumber={state.selectedRow + 1} /> : null}
           </div>
           <footer className="mysql-results-footer flex h-9 shrink-0 items-center gap-x-3 border-t px-3 py-1 text-xs tabular-nums text-muted-foreground">
             <span>{filteredRows.length ? `${start + 1} 至 ${start + rows.length}` : "0"} / {filteredRows.length} 行{filter ? ` · 共返回 ${result.rows.length} 行` : " · 当前返回结果"}</span>
-            <span aria-live="polite" className={`min-w-0 flex-1 truncate ${notice?.failed ? "text-danger" : "text-text-faint"}`} role="status">{editing?.status || notice?.message || "单击行查看详情 · 双击单元格复制"}</span>
+            <span aria-live="polite" className={`min-w-0 flex-1 truncate ${notice?.failed ? "text-danger" : "text-text-faint"}`} role="status">{editing?.status || notice?.message || "右键查看行详情 · 双击单元格复制"}</span>
             {stream ? <><span className="ml-auto" data-testid={`${prefix}-load-status`}>{stream.message}</span><Button data-testid={`${prefix}-load-more`} disabled={!stream.hasMore || stream.loading || Boolean(filter) || Boolean(editing?.locked)} onClick={stream.onLoadMore} size="sm" variant="ghost">{stream.loading ? "加载中…" : "继续加载"}</Button></> : <><label className="ml-auto flex items-center gap-1.5"><span className="sr-only">每页结果行数</span><SelectControl aria-label="每页结果行数" size="sm" onValueChange={(value) => changeView({ pageSize: Number(value), page: 0, selectedRow: null })} value={String(state.pageSize)}>{[25, 50, MYSQL_RESULT_PAGE_SIZE].map((size) => <SelectItem key={size} value={String(size)}>{size} 行 / 页</SelectItem>)}</SelectControl></label>
             <Button aria-label="上一页结果" disabled={visiblePage === 0} onClick={() => changeView({ page: visiblePage - 1, selectedRow: null })} size="icon-xs" type="button" variant="ghost"><CaretLeft aria-hidden="true" className="size-3.5" /></Button>
             <span className="min-w-10 text-center">{visiblePage + 1} / {lastPage + 1}</span>

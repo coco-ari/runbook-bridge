@@ -174,11 +174,14 @@ export interface MysqlEditColumn {
   readonly dataType: string
   readonly nullable: boolean
   readonly primary: boolean
+  readonly generated?: boolean
   readonly editable: boolean
   readonly reason: string | null
 }
 export interface MysqlEditRow { readonly rowId: string; readonly values: Readonly<Record<string, string | null>> }
 export interface MysqlEditData {
+  readonly database?: string
+  readonly insertMissingColumns?: readonly string[]
   readonly auditWarning?: boolean
   readonly editId: string
   readonly table: string
@@ -826,6 +829,7 @@ export interface AiOpsV2Api {
   listPluginDatabases(payload: PluginDatabaseListPayload): Promise<IpcResult<PluginDatabaseListData>>
   mysqlListTables(payload: MysqlTableListPayload): Promise<IpcResult<MysqlTableListData>>
   mysqlDescribeTable(payload: MysqlTablePayload): Promise<IpcResult<MysqlTableDescription>>
+  mysqlExportSave(payload: {fileName: string; sql: string}): Promise<IpcResult<{saved: boolean}>>
   mysqlEditOpen(payload: MysqlQueryPayload): Promise<IpcResult<MysqlEditData>>
   mysqlEditPrepare(payload: PluginScope & {editId: string; changes: readonly MysqlEditChange[]}): Promise<IpcResult<MysqlEditPlan>>
   mysqlEditCommit(payload: PluginScope & {editId: string; planId: string}): Promise<IpcResult<MysqlEditStatus>>
@@ -932,6 +936,7 @@ export const AI_OPS_V2_API_NAMES = [
   "listPluginDatabases",
   "mysqlListTables",
   "mysqlDescribeTable",
+  "mysqlExportSave",
   "mysqlEditOpen",
   "mysqlEditPrepare",
   "mysqlEditCommit",

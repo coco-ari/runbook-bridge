@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { AppError } from './errors.mjs';
 import { applyMysqlRowLimit } from './mysql-policy.mjs';
 import { mysqlRuntimeInternals } from './mysql-plugin-runtime.mjs';
-import { editableMysqlQuery, mysqlEditProjection, mysqlEditHash, mysqlEditError, normalizeMysqlEditValue, quoteMysqlName, MYSQL_EDIT_LIMITS as LIMIT } from './mysql-edit-policy.mjs';
+import { editableMysqlQuery, isMysqlGeneratedColumn, mysqlEditProjection, mysqlEditHash, mysqlEditError, normalizeMysqlEditValue, quoteMysqlName, MYSQL_EDIT_LIMITS as LIMIT } from './mysql-edit-policy.mjs';
 
 const SCOPE = ['projectId','environmentId','pluginInstanceId'];
 const FIELDS = {open:['sql','params'],prepare:['editId','changes'],commit:['editId','planId'],status:['editId','planId'],release:['editId']};
@@ -36,13 +36,13 @@ export function prepareMysqlEditRequest(payload, operation) {
 async function readSchema(query, plugin, table) {
   const [tables] = await query('SELECT TABLE_TYPE, ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?', [plugin.target.database,table]);
   if (tables.length !== 1 || tables[0].TABLE_TYPE !== 'BASE TABLE' || String(tables[0].ENGINE).toLowerCase() !== 'innodb') throw mysqlEditError('仅支持可通过 InnoDB 事务保存的基础表。');
-  const [rows] = await query('SELECT COLUMN_NAME, COLUMN_TYPE, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, EXTRA, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, DATETIME_PRECISION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION LIMIT 4097',[plugin.target.database,table]);
+  const [rows] = await query('SELECT COLUMN_NAME, COLUMN_TYPE, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_DEFAULT, EXTRA, CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, DATETIME_PRECISION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION LIMIT 4097',[plugin.target.database,table]);
   if (!rows.length || rows.length>4096) throw mysqlEditError('表结构为空或超出编辑上限。');
   // 列标记可能把无主键表的唯一索引显示成 PRI，必须从约束元数据确认真正主键。
   const [primary] = await query("SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION LIMIT 17",[plugin.target.database,table]);
   if (!primary.length || primary.length>16) throw mysqlEditError('仅支持具有明确主键的数据表；唯一索引不能代替主键。');
   const primaryNames=new Set(primary.map(row=>row.COLUMN_NAME));
-  const columns = rows.map(row=>({name:row.COLUMN_NAME,type:row.COLUMN_TYPE,dataType:row.DATA_TYPE.toLowerCase(),nullable:row.IS_NULLABLE === 'YES',key:primaryNames.has(row.COLUMN_NAME)?'PRI':row.COLUMN_KEY==='PRI'?'':row.COLUMN_KEY,extra:row.EXTRA??'',
+  const columns = rows.map(row=>({name:row.COLUMN_NAME,type:row.COLUMN_TYPE,dataType:row.DATA_TYPE.toLowerCase(),nullable:row.IS_NULLABLE === 'YES',key:primaryNames.has(row.COLUMN_NAME)?'PRI':row.COLUMN_KEY==='PRI'?'':row.COLUMN_KEY,extra:row.EXTRA??'',default:row.COLUMN_DEFAULT??null,
     maxLength:row.CHARACTER_MAXIMUM_LENGTH === null ? null : Number(row.CHARACTER_MAXIMUM_LENGTH),
     precision:Number(row.NUMERIC_PRECISION),scale:Number(row.NUMERIC_SCALE),datetimePrecision:Number(row.DATETIME_PRECISION)}));
   return {table,columns};
@@ -66,8 +66,8 @@ export class DesktopMysqlEditor {
     return {released:true};
   }
   publicEdit(edit) {
-    return {editId:edit.id,table:edit.table,expiresAt:edit.expiresAt,limits:{maxRows:LIMIT.rows,maxCells:LIMIT.cells},
-      columns:edit.projection.map(item=>({name:item.name,source:item.source,type:item.column.type,dataType:item.column.dataType,nullable:item.column.nullable,primary:item.column.key === 'PRI',editable:item.editable,reason:item.reason??null})),
+    return {editId:edit.id,table:edit.table,database:edit.plugin.target.database,insertMissingColumns:edit.schema.columns.filter(column=>!edit.projection.some(item=>item.source===column.name)&&!column.nullable&&column.default===null&&!/auto_increment/iu.test(column.extra)&&!isMysqlGeneratedColumn(column)).map(column=>column.name),expiresAt:edit.expiresAt,limits:{maxRows:LIMIT.rows,maxCells:LIMIT.cells},
+      columns:edit.projection.map(item=>({name:item.name,source:item.source,type:item.column.type,dataType:item.column.dataType,nullable:item.column.nullable,primary:item.column.key === 'PRI',generated:isMysqlGeneratedColumn(item.column),editable:item.editable,reason:item.reason??null})),
       rows:[...edit.rows.values()].map(row=>({rowId:row.id,values:Object.fromEntries(edit.projection.map((column,index)=>[column.name,visible(row.values[index])]))})),
       truncated:edit.truncated};
   }
@@ -79,7 +79,6 @@ export class DesktopMysqlEditor {
     const result=await this.runtime.desktopEditSession(plugin,null,async(query,session)=>{
       const schema=await readSchema(query,plugin,selected.table);
       const projection=mysqlEditProjection(selected,schema);
-      if(!projection.some(column=>column.editable)) throw mysqlEditError('查询结果没有可修改的字段。');
       const maximum=Math.min(1000,plugin.limits.maxRows);
       const [rows,fields]=await query(applyMysqlRowLimit(selected,maximum),params,rawOptions(projection));
       if(fields.length!==projection.length || fields.some((field,index)=>field.name!==projection[index].name || field.orgName!==projection[index].source || field.orgTable!==selected.table || (field.schema??field.db)!==plugin.target.database)) throw mysqlEditError('结果字段来源无法可靠确认，请使用简单单表查询。');

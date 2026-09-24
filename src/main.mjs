@@ -239,6 +239,12 @@ if (process.argv.includes('--mcp')) {
           terminalClipboard:clipboard,
           readServerClipboardFiles:readWindowsClipboardFiles,
           isWorkspaceRenderer: (sender) => sender.getURL() === pathToFileURL(path.join(__dirname, '..', 'renderer-build', 'v2', 'index.html')).href,
+          pickMysqlExportPath: async (sender, name) => {
+            const window = BrowserWindow.fromWebContents(sender);
+            if (!window || window.isDestroyed()) return null;
+            const result = await dialog.showSaveDialog(window, {title:'导出 SQL', defaultPath:path.join(app.getPath('downloads'), name), filters:[{name:'SQL 文件',extensions:['sql']}], properties:['showOverwriteConfirmation']});
+            return result.canceled ? null : result.filePath;
+          },
           pickServerDownloadPath: async (sender, name) => {
             const window = BrowserWindow.fromWebContents(sender);
             if (!window || window.isDestroyed()) return null;

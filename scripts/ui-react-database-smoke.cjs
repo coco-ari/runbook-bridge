@@ -371,6 +371,9 @@ async function assertBackgroundShortcutsDisabled(win) {
 async function assertBackgroundShortcutsRestored(win) {
   await pressBodyShortcut(win,'K');
   await waitFor(win,`document.querySelector('${testId('global-command')}')?.getClientRects().length > 0`,'返回详情后恢复全局快捷键');
+  await win.webContents.capturePage();
+  win.webContents.focus();
+  await waitFor(win,`document.querySelector('${testId('global-command')}')?.contains(document.activeElement)`,'全局命令已取得输入焦点');
   win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});
   win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});
   await waitFor(win,`!document.querySelector('${testId('global-command')}') || document.querySelector('${testId('global-command')}').getClientRects().length === 0`,'关闭全局命令');
@@ -429,10 +432,15 @@ async function assertNoPersistence(win) {
   assert.deepEqual(values.databases,[],'数据库工作区不应创建本地查询历史数据库。');
 }
 
+async function openRowDetail(win,selector) {
+  await win.webContents.executeJavaScript('document.querySelector('+JSON.stringify(selector+' td:last-child')+').dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true,clientX:400,clientY:400}))',true);
+  await waitFor(win,'document.querySelector("[data-testid=mysql-result-menu]")','右键菜单');
+  await win.webContents.executeJavaScript('[...document.querySelectorAll("[role=menuitem]")].find(e=>e.textContent==="查看行详情").click()',true);
+}
 async function assertQueryDocuments(win,originalSql) {
   await fill(win,testId('mysql-query-filter'),'模拟订单');
   await click(win,testId('mysql-query-next-page'));
-  await click(win,`${testId('mysql-query-row')}[data-row-index="104"]`);
+  await openRowDetail(win,`${testId('mysql-query-row')}[data-row-index="104"]`);
   await textContains(win,'mysql-query-row-detail','模拟订单 105');
   const editorView = await win.webContents.executeJavaScript(`(() => {
     const editor=document.querySelector('${testId('mysql-sql-editor')}');
@@ -497,7 +505,7 @@ async function assertQueryDocuments(win,originalSql) {
 
 async function assertResultDetails(win) {
   const callCount = databaseCalls.length;
-  await click(win,`${testId('mysql-query-row')}[data-row-index="0"]`);
+  await openRowDetail(win,`${testId('mysql-query-row')}[data-row-index="0"]`);
   await textContains(win,'mysql-query-row-detail',MARKUP);
   await assertTextOnly(win,'mysql-query-row-detail');
   await click(win,`${testId('mysql-query-copy-cell')}[data-column-name="label"]`);
@@ -809,7 +817,7 @@ async function run() {
     await textContains(win,'mysql-query-result','演示客户 24');
     await screenshot(win,'workspace');
     await assertSqlAssistanceAndBrowse({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID});
-    await require('./database-tabs-ui.cjs')({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID,clipboard});
+    await require('./database-tabs-ui.cjs')({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID,clipboard,openRowDetail});
     await assertNoPersistence(win);
     assert.deepEqual(forbiddenCalls,[],'只读数据库工作区不得调用配置变更通道。');
     assert.deepEqual(externalRequests,[],'数据库 UI 测试不得发起外部网络请求。');

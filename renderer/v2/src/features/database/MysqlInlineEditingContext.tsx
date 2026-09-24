@@ -1,7 +1,13 @@
+import type { MysqlSqlKind } from "./mysql-sql-export"
 import { createContext, useContext, type ReactNode } from "react"
 import type { MysqlDisplayedRow } from "./mysql-inline-edit-model"
 
 export interface MysqlInlineEditing {
+  replaceSelection: (rows: ReadonlySet<MysqlDisplayedRow>) => void
+  clearSelection: () => void
+  batch: () => void
+  canEdit: (name: string) => boolean
+  exportSql: (kind: MysqlSqlKind, field?: string) => void
   locked: boolean
   selection: ReadonlySet<MysqlDisplayedRow>
   select: (rows: readonly MysqlDisplayedRow[], checked: boolean) => void

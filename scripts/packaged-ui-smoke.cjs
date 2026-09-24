@@ -758,7 +758,11 @@ async function main() {
     assert.equal(inspection.noPageOverflow, true);
     assert.equal(inspection.overviewOk, true);
     assert.equal(inspection.projectCount, 0);
-    assert.equal(inspection.apiCount, 103);
+    assert.equal(inspection.apiCount, 104);
+    const sqlExportContract = await running.cdp.evaluate("(async () => window.aiOps.v2.mysqlExportSave({fileName:'../blocked.sql',sql:'SELECT 1;'}))()");
+    assert.equal(sqlExportContract.ok, false);
+    assert.equal(sqlExportContract.error.code, 'INVALID_ARGUMENT');
+
     if (process.argv.includes('--plugin-lifecycle-only')) {
       const pluginLifecycle = await exercisePackagedPluginLifecycle(running.cdp, dataRoot);
       assert.deepEqual(running.httpRequests, []);
@@ -891,7 +895,7 @@ async function main() {
       return {ok: overview?.ok === true, projectCount: Array.isArray(overview?.data) ? overview.data.length : -1,
         apiCount: Object.keys(window.aiOps.v2).length};
     })()`);
-    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 103});
+    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 104});
     assert.deepEqual(running.httpRequests, []);
     await selectThemePreference(running.cdp, 'system');
     await emulateSystemTheme(running.cdp, 'dark');
@@ -911,7 +915,7 @@ async function main() {
         availableWidth: compactSearch.availableWidth, nativeTextBox: compactSearch.nativeBox?.source ?? 'conservative-cancel-budget'},
     })}\n`);
     process.stdout.write(
-      `Packaged React UI smoke passed (103 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
+      `Packaged React UI smoke passed (104 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
     );
   } catch (error) {
     if (running) {

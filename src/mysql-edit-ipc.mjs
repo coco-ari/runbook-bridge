@@ -1,3 +1,4 @@
+import { saveMysqlSqlFile } from './mysql-sql-file.mjs';
 import { AppError, toPublicError } from './errors.mjs';
 import { prepareMysqlEditRequest } from './desktop-mysql-editor.mjs';
 
@@ -25,6 +26,13 @@ export function registerMysqlEditIpc(ipcMain, services) {
     if(!owners.has(owner))owners.set(owner,{active:true});
     return owner;
   };
+  ipcMain.handle('v2:mysql-export-save',async(event,payload)=>{
+    try {
+      const owner=ownerFor(event),state=owners.get(owner);
+      const assertOwner=()=>{if(!state.active||owners.get(owner)!==state||event.sender.isDestroyed?.())throw new AppError('WORKSPACE_ACCESS_DENIED','导出窗口已关闭或重新加载。');};
+      return {ok:true,data:await saveMysqlSqlFile(payload,typeof services.pickMysqlExportPath==='function'?name=>services.pickMysqlExportPath(event.sender,name):undefined,assertOwner)};
+    } catch(error) { return {ok:false,error:toPublicError(error)}; }
+  });
   for(const operation of ['open','prepare','commit','status','release']){
     ipcMain.handle('v2:mysql-edit-'+operation,async(event,payload)=>{
       try{

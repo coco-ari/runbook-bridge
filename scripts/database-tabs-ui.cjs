@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-module.exports = async function ({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID,clipboard}) {
+module.exports = async function ({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID,clipboard,openRowDetail}) {
   const evaluate = source => win.webContents.executeJavaScript(source,true);
   state.browseFixture = true;
   await click(win,'[data-testid=mysql-table-document-tab][data-table-name=orders]');
@@ -30,10 +30,10 @@ module.exports = async function ({win,fill,click,waitFor,textContains,testId,scr
   await evaluate("(() => { const transfer=new DataTransfer(); transfer.setData('application/x-runbook-mysql-column',JSON.stringify({workspace:'other',table:'orders',column:'id'})); document.querySelector('[data-testid=mysql-table-where]').dispatchEvent(new DragEvent('drop',{dataTransfer:transfer,bubbles:true,cancelable:true})); })()");
   assert.equal(await evaluate("document.querySelector('[data-testid=mysql-table-where]').value"),'`label` ');
   assert.equal(await evaluate("document.querySelector('[data-testid=mysql-workspace-density]')"),null,'数据库工作区固定紧凑布局，不提供密度切换');
-  await click(win,'[data-testid=mysql-preview-row][data-row-index="0"]');
+  await openRowDetail(win,'[data-testid=mysql-preview-row][data-row-index="0"]');
   await evaluate("window.__previousClipboard = navigator.clipboard; Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{throw new DOMException('Permission denied','NotAllowedError')}}})");
   await click(win,testId('mysql-preview-copy-row'));
-  await waitFor(win,"document.querySelector('[data-testid=mysql-preview-result]').textContent.includes('整行 JSON 已复制')",'权限受限时仍能复制整行');
+  await waitFor(win,"document.body.textContent.includes('整行 JSON 已复制')",'权限受限时仍能复制整行');
   assert.deepEqual(JSON.parse(clipboard.readText()),{id:65,label:'浏览记录 65',optional:null});
   await click(win,'[data-testid=mysql-preview-copy-cell][data-column-name=label]');
   assert.equal(clipboard.readText(),'浏览记录 65');
