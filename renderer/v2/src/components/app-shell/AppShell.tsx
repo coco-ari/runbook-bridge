@@ -1,8 +1,10 @@
+import { PluginWorkspaceHost } from "@/features/plugins/PluginWorkspaceHost"
+import { usePluginWorkspaceSessions, useSelectedPluginWorkspace } from "@/features/plugins/use-plugin-workspaces"
+import { useAppShellLayout } from "@/components/app-shell/use-app-shell-layout"
 import { shortcutLabel } from "@/lib/platform"
 import { SettingsPage } from "@/features/settings/SettingsPage"
 import { SettingsNavigationContext } from "@/features/settings/SettingsButton"
-import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
-import { useGroupRef, usePanelRef, type Layout, type LayoutChangedMeta, type PanelSize } from "react-resizable-panels"
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import { toast } from "sonner"
 import { focusWorkspaceElement } from "@/lib/workspace-focus"
 
@@ -10,13 +12,6 @@ import {
   getAiOpsV2,
   type PluginRecord,
 } from "@/bridge/ai-ops-v2"
-import type { ServerWorkspaceEntry } from "@/features/server-workspace/ServerWorkspace"
-import { serverWorkspaceKey } from "@/features/server-workspace/workspace-model"
-import { RedisWorkspace } from "@/features/redis/RedisWorkspace"
-import { redisWorkspaceSessionKey } from "@/features/redis/redis-workspace-model"
-import { MysqlDatabaseWorkspace } from "@/features/database/MysqlDatabaseWorkspace"
-import { mysqlDatabaseName, mysqlWorkspaceMatchesScope, mysqlWorkspaceSessionKey } from "@/features/database/mysql-workspace-model"
-import { normalizeEnvironmentRuntime } from "@/features/workspace/workspace-read-model"
 import { GlobalCommand } from "@/components/app-shell/GlobalCommand"
 import { WorkspaceDetail, type WorkspaceDetailAction } from "@/components/detail-workspace/WorkspaceDetail"
 import {
@@ -54,11 +49,11 @@ import {
   type EnvironmentMutationEvent,
 } from "@/features/environments/use-environment-mutations"
 import { PluginDeleteDialog } from "@/features/plugins/PluginDeleteDialog"
-import { PluginEditorWorkspace } from "@/features/plugins/PluginEditorWorkspace"
+import { PluginEditorHost } from "@/features/plugins/PluginEditorHost"
+import { pluginUi } from "@/features/plugins/plugin-ui-contributions"
 import { PluginMetadataDialog } from "@/features/plugins/PluginMetadataDialog"
 import type { PluginSaveOutcome } from "@/features/plugins/plugin-editor-model"
 import {
-  isPluginKind,
   type PluginConfigurationRecord,
 } from "@/features/plugins/plugin-types"
 import {
@@ -87,13 +82,8 @@ import {
   APP_SHELL_PANEL_IDS,
   PROJECT_RAIL_COLLAPSED_SIZE,
   PROJECT_RAIL_COLLAPSE_THRESHOLD,
-  persistAppShellLayoutState,
-  projectCollapseIntentAfterResize,
-  readAppShellLayoutState,
-  type AppShellLayoutState,
 } from "@/state/layout-state"
 
-const ServerWorkspace = lazy(() => import("@/features/server-workspace/ServerWorkspace").then((module) => ({ default: module.ServerWorkspace })))
 
 interface PendingSelection {
   readonly environmentId?: string
@@ -109,7 +99,7 @@ type PluginSurface =
   | null
 
 function supportedPlugin(record: PluginRecord | null): PluginConfigurationRecord | null {
-  return record && isPluginKind(record.pluginType)
+  return record && pluginUi.get(record.pluginType)
     ? (record as PluginConfigurationRecord)
     : null
 }
@@ -140,32 +130,9 @@ export function AppShell() {
     projectId: selection.projectId,
     environmentId: selection.environmentId,
   })
-  const [layoutState, setLayoutState] = useState<AppShellLayoutState>(
-    readAppShellLayoutState,
-  )
-  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
-  const [projectPanelPixels, setProjectPanelPixels] = useState<number | null>(null)
-  const [serverWorkspaces, setServerWorkspaces] = useState<readonly ServerWorkspaceEntry[]>([])
-  const [activeServerWorkspace, setActiveServerWorkspace] = useState<string | null>(null)
-  const removeServerWorkspaces = useCallback((scope: { projectId: string; environmentId?: string; pluginInstanceId?: string }) => {
-    const matches = (entry: ServerWorkspaceEntry) => entry.plugin.projectId === scope.projectId && (!scope.environmentId || entry.plugin.environmentId === scope.environmentId) && (!scope.pluginInstanceId || entry.plugin.pluginInstanceId === scope.pluginInstanceId)
-    setServerWorkspaces((current) => current.filter((entry) => !matches(entry)))
-    setActiveServerWorkspace((current) => {
-      if (!current) return null
-      const [projectId, environmentId, pluginInstanceId] = JSON.parse(current) as string[]
-      return projectId === scope.projectId && (!scope.environmentId || environmentId === scope.environmentId) && (!scope.pluginInstanceId || pluginInstanceId === scope.pluginInstanceId) ? null : current
-    })
-  }, [])
-  useEffect(() => api.onWorkspaceChanged((change) => {
-    if (["project-deleted", "environment-deleted", "plugin-deleted"].includes(change.type) && change.projectId) removeServerWorkspaces({ projectId: change.projectId, ...(change.environmentId ? { environmentId: change.environmentId } : {}), ...(change.pluginInstanceId ? { pluginInstanceId: change.pluginInstanceId } : {}) })
-  }), [api, removeServerWorkspaces])
   const [commandOpen, setCommandOpen] = useState(false)
-  const [redisSession, setRedisSession] = useState<{ key: string; visible: boolean } | null>(null)
-  const [databaseEditing, setDatabaseEditing] = useState(false)
-  const databaseEditingRef = useRef(false)
-  const [databaseConnectionEpoch, setDatabaseConnectionEpoch] = useState(0)
-  const handleDatabaseEditing = useCallback((value: boolean) => { databaseEditingRef.current = value; setDatabaseEditing(value) }, [])
-  const [databaseSession, setDatabaseSession] = useState<{ key: string; visible: boolean } | null>(null)
+  const workspaceSessions = usePluginWorkspaceSessions(api)
+  const removePluginWorkspaces = workspaceSessions.removeScope
   const [detailTab, setDetailTab] = useState("overview")
   const [notice, setNotice] = useState("")
   const [runbookDirty, setRunbookDirty] = useState(false)
@@ -190,21 +157,14 @@ export function AppShell() {
     pluginInstanceId: string
     message: string
   }> | null>(null)
-  const [editorExpanded, setEditorExpanded] = useState(false)
+  const {
+    layoutState, viewportWidth, projectPanelPixels, editorExpanded,
+    panelGroupRef, panelGroupElementRef, projectPanelRef, detailPanelRef,
+    setProjectCollapsed, setDetailCollapsed, syncProjectSize, syncDetailSize,
+    handleLayoutChanged, restoreEditorLayout, toggleEditorExpanded,
+  } = useAppShellLayout(Boolean(pluginWorkMode))
   const editorLeaveRef = useRef<WorkspaceLeaveRequest | null>(null)
   const editorReturnFocusRef = useRef<(() => HTMLElement | null) | null>(null)
-  const editorLayoutRef = useRef<Readonly<{ layout: Layout; projectCollapsed: boolean }> | null>(null)
-  const panelGroupRef = useGroupRef()
-  const panelGroupElementRef = useRef<HTMLDivElement>(null)
-  const projectPanelRef = usePanelRef()
-  const detailPanelRef = usePanelRef()
-  const projectResizeFrameRef = useRef(0)
-  const detailResizeFrameRef = useRef(0)
-  const stableLayoutRef = useRef(layoutState.layout)
-  const latestLayoutStateRef = useRef(layoutState)
-  latestLayoutStateRef.current = layoutState
-  const lastProjectLayoutPercentageRef = useRef<number | null>(null)
-  const suppressLayoutPersistenceRef = useRef(true)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
   const pendingNavigationRef = useRef<(() => void) | null>(null)
   const navigationRequestPendingRef = useRef(false)
@@ -240,7 +200,7 @@ export function AppShell() {
       })
       toast.success("环境已创建")
     } else if (event.kind === "deleted") {
-      removeServerWorkspaces({ projectId: event.projectId, environmentId: event.environmentId })
+      removePluginWorkspaces({ projectId: event.projectId, environmentId: event.environmentId })
       if (
         selection.projectId === event.projectId
         && selection.environmentId === event.environmentId
@@ -255,7 +215,7 @@ export function AppShell() {
     } else if (event.kind === "renamed") {
       toast.success("环境名称已更新")
     }
-  }, [removeServerWorkspaces, selection.environmentId, selection.projectId, workspace])
+  }, [removePluginWorkspaces, selection.environmentId, selection.projectId, workspace])
 
   const environmentMutations = useEnvironmentMutations({
     api,
@@ -353,101 +313,17 @@ export function AppShell() {
       (plugin) => plugin.pluginInstanceId === selection.pluginInstanceId,
     ) ?? null,
   )
-  const databaseScope = selectedProject && selectedEnvironment && selectedPluginRecord?.pluginType === "mysql"
-    ? { projectId: selectedProject.projectId, environmentId: selectedEnvironment.environmentId, pluginInstanceId: selectedPluginRecord.pluginInstanceId }
+  const selectedWorkspaceScope = selectedProject && selectedEnvironment && selectedPluginRecord
+    ? { projectId:selectedProject.projectId, environmentId:selectedEnvironment.environmentId, pluginInstanceId:selectedPluginRecord.pluginInstanceId }
     : null
-  const databaseConnected = Boolean(databaseScope && !environmentStatus.error
-    && scopedRuntime?.plugins.find((plugin) => plugin.pluginInstanceId === databaseScope.pluginInstanceId)?.status === "connected")
-  const databaseSessionKey = databaseScope && selectedPluginRecord && (databaseConnected || databaseEditing)
-    && mysqlDatabaseName(selectedPluginRecord) && mysqlWorkspaceMatchesScope(databaseScope, selectedPluginRecord)
-    ? mysqlWorkspaceSessionKey(databaseScope, selectedPluginRecord) : null
-  const databaseWorkspaceRetained = Boolean(databaseSession && databaseSession.key === databaseSessionKey)
-  const databaseWorkspaceVisible = databaseWorkspaceRetained && Boolean(databaseSession?.visible) && !activeServerWorkspace
-  const redisScope = selectedProject && selectedEnvironment && selectedPluginRecord?.pluginType === "redis"
-    ? { projectId: selectedProject.projectId, environmentId: selectedEnvironment.environmentId, pluginInstanceId: selectedPluginRecord.pluginInstanceId }
-    : null
-  const redisConnected = Boolean(redisScope && !environmentStatus.error
-    && scopedRuntime?.plugins.find((plugin) => plugin.pluginInstanceId === redisScope.pluginInstanceId)?.status === "connected")
-  const redisSessionKey = redisScope && selectedPluginRecord && redisConnected
-    && mysqlWorkspaceMatchesScope(redisScope, selectedPluginRecord) ? redisWorkspaceSessionKey(redisScope, selectedPluginRecord) : null
-  const redisWorkspaceRetained = Boolean(redisSession && redisSession.key === redisSessionKey)
-  const redisWorkspaceVisible = redisWorkspaceRetained && Boolean(redisSession?.visible) && !activeServerWorkspace
-  useEffect(() => {
-    if (redisSession && redisSession.key !== redisSessionKey) setRedisSession(null)
-  }, [redisSession, redisSessionKey])
-  useEffect(() => {
-    if (!redisSessionKey || !redisScope) return
-    let latestSequence = rawRuntime?.sequence ?? -1
-    return api.onEnvironmentStatus((event) => {
-      const normalized = normalizeEnvironmentRuntime(event, redisScope)
-      if (!normalized || normalized.sequence <= latestSequence) return
-      latestSequence = normalized.sequence
-      const plugin = normalized.plugins.find((item) => item.pluginInstanceId === redisScope.pluginInstanceId)
-      // 断连与重连事件即使在同一批渲染到达，也不能复用旧内容和游标。
-      if (plugin ? plugin.status !== "connected" : !normalized.pluginsPartial) setRedisSession(null)
-    })
-    // 完整会话键约束订阅作用域，序号只在订阅内递增。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, redisSessionKey])
-  const previousRedisVisible = useRef(false)
-  useEffect(() => {
-    const restore = redisWorkspaceVisible || previousRedisVisible.current
-    previousRedisVisible.current = redisWorkspaceVisible
-    if (!restore) return
-    if (redisWorkspaceVisible) setCommandOpen(false)
-    const timer = window.setTimeout(() => focusWorkspaceElement(document.querySelector<HTMLButtonElement>(
-      redisWorkspaceVisible ? '[data-testid="redis-workspace-back"]' : '[data-testid="plugin-workspace-open"]')), 0)
-    return () => window.clearTimeout(timer)
-  }, [redisWorkspaceVisible])
-  const openRedisWorkspace = () => {
-    if (!redisSessionKey) return
-    setActiveServerWorkspace(null)
-    setDatabaseSession((current) => current ? { ...current, visible: false } : null)
-    setRedisSession({ key: redisSessionKey, visible: true })
-  }
-  const closeRedisWorkspace = () => setRedisSession((current) => current ? { ...current, visible: false } : null)
-  const workspaceVisible = Boolean(activeServerWorkspace) || databaseWorkspaceVisible || redisWorkspaceVisible
-  useEffect(() => {
-    if (databaseSession && databaseSession.key !== databaseSessionKey) setDatabaseSession(null)
-  }, [databaseSession, databaseSessionKey])
-  useEffect(() => {
-    if (!databaseSessionKey || !databaseScope) return
-    let latestSequence = rawRuntime?.sequence ?? -1
-    return api.onEnvironmentStatus((event) => {
-      const normalized = normalizeEnvironmentRuntime(event, databaseScope)
-      if (!normalized || normalized.sequence <= latestSequence) return
-      latestSequence = normalized.sequence
-      // 快速断重连使旧快照失效；有编辑数据时保留窗口供用户核对草稿。
-      const plugin = normalized.plugins.find((item) => item.pluginInstanceId === databaseScope.pluginInstanceId)
-      if (plugin ? plugin.status !== "connected" : !normalized.pluginsPartial) {
-        setDatabaseConnectionEpoch(value => value + 1)
-        if (!databaseEditingRef.current) setDatabaseSession(null)
-      }
-    })
-    // 会话键包含完整作用域；序号在订阅内持续更新，避免每次事件重订阅。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, databaseSessionKey])
-  const previousDatabaseVisible = useRef(false)
-  useEffect(() => {
-    const restoreFocus = databaseWorkspaceVisible || previousDatabaseVisible.current
-    previousDatabaseVisible.current = databaseWorkspaceVisible
-    if (!restoreFocus) return
-    if (databaseWorkspaceVisible) setCommandOpen(false)
-    // 等待分栏子组件完成可见性提交后恢复焦点；新切换或弹窗会取消旧请求。
-    const timer = window.setTimeout(() => {
-      const testId = databaseWorkspaceVisible ? "mysql-workspace-back" : "plugin-workspace-open"
-      focusWorkspaceElement(document.querySelector<HTMLButtonElement>(`[data-testid="${testId}"]`))
-    }, 0)
-    return () => window.clearTimeout(timer)
-  }, [databaseWorkspaceVisible])
-  const openDatabaseWorkspace = () => {
-    if (!databaseSessionKey) return
-    setActiveServerWorkspace(null)
-    setDatabaseSession({ key: databaseSessionKey, visible: true })
-  }
-  const closeDatabaseWorkspace = () => {
-    setDatabaseSession((current) => current ? { ...current, visible: false } : null)
-  }
+  const pluginWorkspace = useSelectedPluginWorkspace(workspaceSessions, {
+    plugin:selectedPluginRecord, scope:selectedWorkspaceScope,
+    connected:Boolean(selectedWorkspaceScope && !environmentStatus.error
+      && scopedRuntime?.plugins.find((plugin) => plugin.pluginInstanceId === selectedWorkspaceScope.pluginInstanceId)?.status === "connected"),
+    projectName:selectedProject?.name ?? "", environmentName:selectedEnvironment?.name ?? "", runtime:rawRuntime,
+  })
+  useEffect(() => { if (pluginWorkspace.visible) setCommandOpen(false) }, [pluginWorkspace.visible])
+  const workspaceVisible = pluginWorkspace.visible
   const pluginsByEnvironment = useMemo(() => {
     const result = new Map<string, readonly WorkspacePluginReadModel[]>()
     if (selectedEnvironment && scopedPlugins) {
@@ -640,192 +516,10 @@ export function AppShell() {
     })
   }, [scheduleWorkspaceFocus])
 
-  const commitLayoutState = useCallback(
-    (update: (current: AppShellLayoutState) => AppShellLayoutState) => {
-      setLayoutState((current) => {
-        const next = update(current)
-        persistAppShellLayoutState(next)
-        return next
-      })
-    },
-    [],
-  )
-
-  useEffect(() => {
-    if (layoutState.projectCollapsed) projectPanelRef.current?.collapse()
-    else if (window.innerWidth >= 720) {
-      projectPanelRef.current?.expand()
-      if (projectPanelRef.current?.isCollapsed()) projectPanelRef.current?.resize("176px")
-    }
-    if (layoutState.detailCollapsed) detailPanelRef.current?.collapse()
-    const releaseFrame = requestAnimationFrame(() => requestAnimationFrame(() => {
-      suppressLayoutPersistenceRef.current = editorLayoutRef.current !== null
-    }))
-    return () => cancelAnimationFrame(releaseFrame)
-    // Persisted collapse state is restored once on mount without replacing the
-    // separately persisted expanded layout with collapsed panel percentages.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  useEffect(() => {
-    let wasConstraintLimited = window.innerWidth < 960
-    let releaseFrame = 0
-
-    const syncViewport = () => {
-      const width = window.innerWidth
-      const constraintLimited = width < 960
-      setViewportWidth(width)
-
-      if (wasConstraintLimited && !constraintLimited) {
-        suppressLayoutPersistenceRef.current = true
-        cancelAnimationFrame(releaseFrame)
-        // Apply the saved layout after React has installed the wider panel
-        // constraints, not against the previous viewport's fixed compact rail.
-        releaseFrame = requestAnimationFrame(() => {
-          if (window.innerWidth >= 960 && !editorLayoutRef.current) {
-            panelGroupRef.current?.setLayout(stableLayoutRef.current)
-            if (latestLayoutStateRef.current.projectCollapsed) projectPanelRef.current?.collapse()
-            else {
-              projectPanelRef.current?.expand()
-              if (projectPanelRef.current?.isCollapsed()) projectPanelRef.current?.resize("176px")
-            }
-            if (latestLayoutStateRef.current.detailCollapsed) detailPanelRef.current?.collapse()
-          }
-          releaseFrame = requestAnimationFrame(() => {
-            suppressLayoutPersistenceRef.current = editorLayoutRef.current !== null
-          })
-        })
-      }
-      wasConstraintLimited = constraintLimited
-    }
-
-    window.addEventListener("resize", syncViewport)
-    window.visualViewport?.addEventListener("resize", syncViewport)
-    return () => {
-      window.removeEventListener("resize", syncViewport)
-      window.visualViewport?.removeEventListener("resize", syncViewport)
-      cancelAnimationFrame(releaseFrame)
-    }
-  }, [detailPanelRef, panelGroupRef, projectPanelRef])
-
-  const setProjectCollapsed = useCallback((collapsed: boolean, resetWidth = false) => {
-    if (!collapsed && window.innerWidth < 720) return
-    if (collapsed) projectPanelRef.current?.collapse()
-    else {
-      projectPanelRef.current?.expand()
-      // A remembered width from a smaller viewport can still resolve to the
-      // collapsed constraint. Read the library state before the DOM commits.
-      if (projectPanelRef.current?.isCollapsed()) projectPanelRef.current?.resize("176px")
-      if (resetWidth) projectPanelRef.current?.resize("224px")
-    }
-    if (editorLayoutRef.current) return
-    const layout = window.innerWidth >= 960 ? panelGroupRef.current?.getLayout() : null
-    if (layout) stableLayoutRef.current = layout
-    commitLayoutState((current) => ({ ...current, projectCollapsed: collapsed, ...(layout ? { layout } : {}) }))
-  }, [commitLayoutState, panelGroupRef, projectPanelRef])
-
-  const setDetailCollapsed = useCallback((collapsed: boolean) => {
-    if (collapsed) detailPanelRef.current?.collapse()
-    else detailPanelRef.current?.expand()
-    commitLayoutState((current) => ({ ...current, detailCollapsed: collapsed }))
-  }, [commitLayoutState, detailPanelRef])
-
-  const syncProjectSize = useCallback((size: PanelSize) => {
-    cancelAnimationFrame(projectResizeFrameRef.current)
-    // shadcn's Resizable adapter reports size from ResizeObserver. Commit
-    // responsive content changes outside that observer's delivery cycle.
-    projectResizeFrameRef.current = requestAnimationFrame(() => {
-      setProjectPanelPixels(size.inPixels)
-    })
-  }, [])
-
-  const syncDetailSize = useCallback((size: PanelSize) => {
-    cancelAnimationFrame(detailResizeFrameRef.current)
-    detailResizeFrameRef.current = requestAnimationFrame(() => {
-      if (window.innerWidth < 960) return
-      const collapsed = size.inPixels <= 50
-      setLayoutState((current) => current.detailCollapsed === collapsed
-        ? current
-        : { ...current, detailCollapsed: collapsed })
-    })
-  }, [])
-
-  useEffect(() => () => {
-    cancelAnimationFrame(projectResizeFrameRef.current)
-    cancelAnimationFrame(detailResizeFrameRef.current)
-  }, [])
-
-  const handleLayoutChanged = useCallback((layout: Layout, { isUserInteraction }: LayoutChangedMeta) => {
-    // The library emits layout changes before React commits their DOM widths.
-    // Its percentage denominator is the sum of panel widths (no separators),
-    // so derive the new size from the supplied layout rather than stale getSize.
-    const panelSpace = [...(panelGroupElementRef.current?.children ?? [])]
-      .reduce((total, element) => total + (element instanceof HTMLElement && element.hasAttribute("data-panel")
-        ? element.offsetWidth : 0), 0)
-    const percentage = layout[APP_SHELL_PANEL_IDS.project]
-    const inPixels = percentage === undefined || panelSpace <= 0 ? null : percentage / 100 * panelSpace
-    const previousPercentage = lastProjectLayoutPercentageRef.current
-    const previousPixels = previousPercentage === null ? null : previousPercentage / 100 * panelSpace
-    lastProjectLayoutPercentageRef.current = percentage ?? null
-    if (suppressLayoutPersistenceRef.current) return
-    if (inPixels !== null && isUserInteraction) {
-      commitLayoutState((current) => ({
-        ...current,
-        projectCollapsed: projectCollapseIntentAfterResize(current.projectCollapsed, {
-          inPixels, previousPixels, viewportWidth: window.innerWidth, isUserInteraction,
-        }),
-      }))
-    }
-    if (suppressLayoutPersistenceRef.current || window.innerWidth < 960) return
-    stableLayoutRef.current = layout
-    setLayoutState((current) => {
-      const next = { ...current, layout }
-      persistAppShellLayoutState(next)
-      return next
-    })
-  }, [commitLayoutState])
-
   const focusDetail = useCallback(() => {
     if (layoutState.detailCollapsed) setDetailCollapsed(false)
     scheduleWorkspaceFocus()
   }, [layoutState.detailCollapsed, scheduleWorkspaceFocus, setDetailCollapsed])
-
-  const restoreEditorLayout = useCallback(() => {
-    const previous = editorLayoutRef.current
-    if (!previous) return
-    editorLayoutRef.current = null
-    suppressLayoutPersistenceRef.current = true
-    panelGroupRef.current?.setLayout(previous.layout)
-    if (previous.projectCollapsed || window.innerWidth < 720) projectPanelRef.current?.collapse()
-    else {
-      projectPanelRef.current?.expand()
-      if (projectPanelRef.current?.isCollapsed()) projectPanelRef.current?.resize("176px")
-    }
-    setLayoutState((current) => ({ ...current, projectCollapsed: previous.projectCollapsed, layout: previous.layout }))
-    setEditorExpanded(false)
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      suppressLayoutPersistenceRef.current = editorLayoutRef.current !== null
-    }))
-  }, [panelGroupRef, projectPanelRef])
-
-  useEffect(() => {
-    if (!pluginWorkMode) restoreEditorLayout()
-  }, [pluginWorkMode, restoreEditorLayout])
-
-  const toggleEditorExpanded = useCallback(() => {
-    if (editorLayoutRef.current) {
-      restoreEditorLayout()
-      return
-    }
-    editorLayoutRef.current = {
-      layout: panelGroupRef.current?.getLayout() ?? layoutState.layout,
-      projectCollapsed: layoutState.projectCollapsed,
-    }
-    suppressLayoutPersistenceRef.current = true
-    projectPanelRef.current?.collapse()
-    detailPanelRef.current?.resize("70%")
-    setEditorExpanded(true)
-  }, [detailPanelRef, layoutState.layout, layoutState.projectCollapsed, panelGroupRef, projectPanelRef, restoreEditorLayout])
 
   const enterPluginEditor = useCallback((environment: WorkspaceEnvironmentReadModel, plugin: PluginConfigurationRecord | null, resolveReturnFocus?: () => HTMLElement | null) => {
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -1050,16 +744,7 @@ export function AppShell() {
 
   const openDetailAction = useCallback((action: WorkspaceDetailAction) => {
     rememberFocus()
-    if (action.type === "open-server-workspace") {
-      const key = serverWorkspaceKey(action.plugin)
-      const retained = serverWorkspaces.some((entry) => serverWorkspaceKey(entry.plugin) === key)
-      if (!retained && serverWorkspaces.length >= 8) { toast.error("最多保留 8 个服务器工作区，请先关闭一个工作区。"); return }
-      const nextEntry = { plugin: action.plugin, projectName: selectedProject?.name ?? "", environmentName: selectedEnvironment?.name ?? "", runtime: rawRuntime }
-      setServerWorkspaces((current) => retained ? current.map((entry) => serverWorkspaceKey(entry.plugin) === key ? nextEntry : entry) : [...current, nextEntry])
-      setDatabaseSession((current) => current ? { ...current, visible: false } : null)
-      setActiveServerWorkspace(key)
-      setCommandOpen(false)
-    } else if (action.type === "create-project") requestNavigation(() => setProjectSurface({ kind: "create" }))
+    if (action.type === "create-project") requestNavigation(() => setProjectSurface({ kind: "create" }))
     else if (action.type === "edit-project") setProjectSurface({ kind: "settings", project: action.project })
     else if (action.type === "edit-environment") {
       setEnvironmentSurface({ kind: "settings", project: action.project, environment: action.environment })
@@ -1073,7 +758,7 @@ export function AppShell() {
     } else {
       requestNavigation(() => setPluginSurface({ kind: "delete", plugin: action.plugin }))
     }
-  }, [enterPluginEditor, rememberFocus, requestNavigation, selectedEnvironment, selectedProject, rawRuntime, serverWorkspaces])
+  }, [enterPluginEditor, rememberFocus, requestNavigation, selectedEnvironment])
 
   const handleProjectCommitted = useCallback((event: ProjectMutationEvent) => {
     workspace.reload()
@@ -1245,7 +930,7 @@ export function AppShell() {
 
         <ResizablePanel collapsedSize="48px" collapsible defaultSize="48%" id={APP_SHELL_PANEL_IDS.detail} minSize={constraintLimited ? "320px" : "360px"} onResize={syncDetailSize} panelRef={detailPanelRef}>
           {pluginWorkMode ? (
-            <PluginEditorWorkspace
+            <PluginEditorHost
               api={api}
               availableServers={pluginList.scopeKey === `${pluginWorkMode.scope.projectId}/${pluginWorkMode.scope.environmentId}`
                 ? scopedPluginRecords.filter((record) => record.pluginType === "server")
@@ -1264,10 +949,8 @@ export function AppShell() {
               scope={pluginWorkMode.scope}
             />
           ) : <WorkspaceDetail
-            onOpenDatabaseWorkspace={openDatabaseWorkspace}
-            onOpenRedisWorkspace={openRedisWorkspace}
-            redisWorkspaceRetained={redisWorkspaceRetained}
-            databaseWorkspaceRetained={databaseWorkspaceRetained}
+            onOpenWorkspace={pluginWorkspace.openSelected}
+            workspaceRetained={pluginWorkspace.retained}
             activeTab={detailTab}
             api={api}
             collapsed={layoutState.detailCollapsed}
@@ -1277,7 +960,6 @@ export function AppShell() {
             environmentLoading={environmentStatus.loading || pluginList.loading}
             key={`${[selection.projectId,selection.environmentId,selection.pluginInstanceId].filter(Boolean).join("/") || "workspace"}/${detailDraftEpoch}`}
             onAction={openDetailAction}
-            serverWorkspaceRetained={selectedPluginRecord ? serverWorkspaces.some((entry) => serverWorkspaceKey(entry.plugin) === serverWorkspaceKey(selectedPluginRecord)) : false}
             onAgentAccessDirtyChange={setAgentAccessDirty}
             onAgentAccessSavingChange={setAgentAccessSaving}
             onLocateScope={locateConfirmationScope}
@@ -1306,42 +988,8 @@ export function AppShell() {
           />}
         </ResizablePanel>
       </ResizablePanelGroup>
-      {serverWorkspaces.map((entry) => {
-        const key = serverWorkspaceKey(entry.plugin)
-        const back = () => { setActiveServerWorkspace(null); scheduleWorkspaceFocus(() => document.querySelector<HTMLElement>('[data-testid="plugin-open-workspace"]')) }
-        return <Suspense key={key} fallback={key === activeServerWorkspace && !settingsOpen ? <div className="absolute inset-0 z-30 grid place-items-center bg-background text-sm text-muted-foreground">正在打开服务器工作区…</div> : null}><ServerWorkspace api={api} entry={entry} visible={key === activeServerWorkspace && !settingsOpen} onBack={back} onClose={() => { setServerWorkspaces((current) => current.filter((item) => serverWorkspaceKey(item.plugin) !== key)); back() }} /></Suspense>
-      })}
-
-      {databaseWorkspaceRetained && databaseScope && selectedPluginRecord && selectedProject && selectedEnvironment ? (
-        <div
-          className="absolute inset-0 z-40 min-h-0 min-w-0 bg-background"
-          data-testid="mysql-full-window-workspace"
-          hidden={!databaseWorkspaceVisible || settingsOpen}
-          inert={!databaseWorkspaceVisible || settingsOpen}
-        >
-          <MysqlDatabaseWorkspace
-            api={api}
-            connected={databaseConnected}
-            connectionEpoch={databaseConnectionEpoch}
-            onEditingChange={handleDatabaseEditing}
-            environmentName={selectedEnvironment.name}
-            key={databaseSessionKey}
-            onBack={closeDatabaseWorkspace}
-            onClose={() => { setDatabaseSession(null); closeDatabaseWorkspace() }}
-            plugin={selectedPluginRecord}
-            projectName={selectedProject.name}
-            scope={databaseScope}
-          />
-        </div>
-      ) : null}
-
-      {redisWorkspaceRetained && redisScope && selectedPluginRecord && selectedProject && selectedEnvironment ? (
-        <div className="absolute inset-0 z-40 min-h-0 min-w-0 bg-background" data-testid="redis-full-window-workspace" hidden={!redisWorkspaceVisible || settingsOpen} inert={!redisWorkspaceVisible || settingsOpen}>
-          <RedisWorkspace api={api} scope={redisScope} plugin={selectedPluginRecord} key={redisSessionKey}
-            projectName={selectedProject.name} environmentName={selectedEnvironment.name} visible={redisWorkspaceVisible && !settingsOpen}
-            onBack={closeRedisWorkspace} onClose={() => { setRedisSession(null); closeRedisWorkspace() }} />
-        </div>
-      ) : null}
+      <PluginWorkspaceHost api={api} state={pluginWorkspace.state} hidden={settingsOpen}
+        onBack={workspaceSessions.back} onClose={workspaceSessions.close} onDirtyChange={workspaceSessions.setDirty} />
 
       <GlobalCommand
         disabled={workspaceVisible || settingsOpen}
@@ -1406,7 +1054,7 @@ export function AppShell() {
           api={api}
           dependents={dependentPlugins(pluginSurface.plugin, scopedPluginRecords)}
           onDeleted={(outcome) => {
-            removeServerWorkspaces(pluginSurface.plugin)
+            removePluginWorkspaces(pluginSurface.plugin)
             setPluginSurface(null)
             if (workspace.data && selectedProject && selectedEnvironment) {
               dispatchSelection({

@@ -413,9 +413,19 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
     const terminal = terminalRef.current
     if (!terminal) return
     terminal.options.theme = TERMINAL_THEMES[theme]
-    const frame = requestAnimationFrame(() => { resize(); if (visible) terminal.focus() })
+    const frame = requestAnimationFrame(resize)
     return () => cancelAnimationFrame(frame)
   }, [resize, theme, visible])
+
+  useEffect(() => {
+    if (!visible) return
+    const focusAtStart = document.activeElement
+    // 显示终端后可恢复输入焦点，但不能覆盖用户随后打开的菜单、搜索框或弹窗。
+    const frame = requestAnimationFrame(() => {
+      if (document.activeElement === focusAtStart || document.activeElement === document.body) terminalRef.current?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [visible])
 
   const acceptsPathDrop = visible && connected && status === "open" && !paste && !colorHelp
   useEffect(() => { if (!acceptsPathDrop) setPathDragOver(false) }, [acceptsPathDrop])

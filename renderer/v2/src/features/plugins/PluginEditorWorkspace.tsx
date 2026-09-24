@@ -90,7 +90,7 @@ import {
 import { usePluginEditor } from "@/features/plugins/use-plugin-editor"
 import { useBusyDialogFocus } from "@/hooks/use-busy-dialog-focus"
 
-interface PluginEditorWorkspaceProps {
+export interface PluginEditorWorkspaceProps {
   readonly api: AiOpsV2Api
   readonly collapsed: boolean
   readonly expanded: boolean
@@ -99,6 +99,8 @@ interface PluginEditorWorkspaceProps {
   readonly environmentName: string
   readonly plugin: PluginConfigurationRecord | null
   readonly initialKind?: PluginKind
+  readonly pluginTypeOptions?: readonly { readonly type: string; readonly label: string }[]
+  readonly onChoosePluginType?: (type: string) => boolean
   readonly availableServers: readonly PluginRecord[]
   readonly onClosed: () => void
   readonly onRegisterLeaveGuard: (request: WorkspaceLeaveRequest | null) => void
@@ -160,6 +162,8 @@ export function PluginEditorWorkspace({
   environmentName,
   plugin,
   initialKind = "server",
+  pluginTypeOptions = Object.entries(PLUGIN_KIND_LABELS).map(([type, label]) => ({ type, label })),
+  onChoosePluginType,
   availableServers,
   onClosed,
   onRegisterLeaveGuard,
@@ -409,16 +413,16 @@ export function PluginEditorWorkspace({
                         <FieldLabel>插件类型</FieldLabel>
                         <Select
                           disabled={busy}
-                          onValueChange={(value) => editor.setPluginKind(value as PluginKind)}
+                          onValueChange={(value) => { if (!onChoosePluginType?.(value)) editor.setPluginKind(value as PluginKind) }}
                           value={draft.pluginType}
                         >
                           <SelectTrigger className="w-full" aria-label="插件类型">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            {(Object.keys(PLUGIN_KIND_LABELS) as PluginKind[]).map((kind) => (
+                            {pluginTypeOptions.map(({ type:kind, label }) => (
                               <SelectItem key={kind} value={kind}>
-                                {PLUGIN_KIND_LABELS[kind]}
+                                {label}
                               </SelectItem>
                             ))}
                           </SelectContent>

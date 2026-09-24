@@ -1,12 +1,15 @@
+import { builtinPluginRegistry } from './plugins/builtins.mjs';
 import { AppError } from './errors.mjs';
 
 export class PluginManager {
-  constructor({ serverRuntime, mysqlRuntime, redisRuntime }) {
-    this.runtimes = { server: serverRuntime, mysql: mysqlRuntime, redis: redisRuntime };
+  constructor({ serverRuntime, mysqlRuntime, redisRuntime, runtimes = null, registry = builtinPluginRegistry }) {
+    this.registry = registry;
+    this.runtimes = runtimes ?? { server: serverRuntime, mysql: mysqlRuntime, redis: redisRuntime };
   }
 
   runtime(plugin) {
-    const runtime = this.runtimes[plugin.pluginType];
+    this.registry.get(plugin.pluginType);
+    const runtime = Object.hasOwn(this.runtimes, plugin.pluginType) ? this.runtimes[plugin.pluginType] : null;
     if (!runtime) throw new AppError('PLUGIN_TYPE_UNSUPPORTED', '插件类型暂不支持。');
     return runtime;
   }
@@ -35,20 +38,12 @@ export class PluginManager {
     return typeof runtime.health === 'function' ? runtime.health(plugin) : Promise.resolve(runtime.status(plugin));
   }
 
-  async invoke(plugin, capability, args = {}, { losslessMysql = false } = {}) {
+  async invoke(plugin, capability, args = {}, options = {}) {
     const runtime = this.runtime(plugin);
-    if (plugin.pluginType === 'mysql') {
-      if (capability === 'describe' && args.operation === 'search') return runtime.searchSchema(plugin, args);
-      if (capability === 'describe') return args.table ? runtime.describeTable(plugin, args.table, args) : runtime.listTables(plugin, args);
-      if (capability === 'select') return runtime.queryReadonly(plugin, args.sql, args.params, {lossless:losslessMysql});
-      if (capability === 'explain') return runtime.explain(plugin, args.sql, args.params);
+    if (this.registry.capabilityRule(plugin.pluginType, capability).decision === 'deny') {
+      throw new AppError('CAPABILITY_NOT_IMPLEMENTED', '该插件操作尚未实现。');
     }
-    if (plugin.pluginType === 'redis') {
-      if (capability === 'scan') return runtime.scan(plugin, args);
-      if (capability === 'read') return runtime.read(plugin, args);
-      if (capability === 'ttl') return runtime.ttl(plugin, args);
-    }
-    throw new AppError('CAPABILITY_NOT_IMPLEMENTED', '该插件操作尚未实现。');
+    return this.registry.get(plugin.pluginType).invoke({plugin, capability, args, runtime, options});
   }
 
   async closeAll() {

@@ -1,3 +1,4 @@
+import { builtinPluginRegistry } from './plugins/builtins.mjs';
 import crypto from 'node:crypto';
 import { auditExecutionContext, operationAuditMetadata } from './audit-record.mjs';
 import { AppError, toPublicError } from './errors.mjs';
@@ -5,7 +6,7 @@ import { OperationGate, capabilityRule } from './operation-gate.mjs';
 import { assertPluginConfigurationReady } from './plugin-connection-adapters.mjs';
 import { assessEnvironmentSnapshot, publicPluginAssessment } from './plugin-readiness-service.mjs';
 import { pluginWithRunbookSources, resourceHintsFromRunbook } from './runbook-sources.mjs';
-import { workspaceInternals } from './workspace-store.mjs';
+import { normalizePlugin } from './plugin-config-model.mjs';
 import { isolateNewPluginIdentity } from './plugin-creation-identity.mjs';
 import { DesktopMysqlEditor, prepareMysqlEditRequest } from './desktop-mysql-editor.mjs';
 import { prepareDesktopMysqlOperation } from './desktop-mysql-operation.mjs';
@@ -178,7 +179,7 @@ export class V2Service {
   async addPluginUnlocked(params) {
     const verified = await this.contextManager.verifyEnvironment(params.projectId, params.environmentId, params.contextToken, params.clientInstanceId);
     const input = agentPluginInput(params);
-    let candidate = workspaceInternals.normalizePlugin(input,{
+    let candidate = normalizePlugin(input,{
       projectId:params.projectId,
       environmentId:params.environmentId,
     });
@@ -507,25 +508,8 @@ export class V2Service {
   }
 
   invokeServer(plugin, capability, args, scope = {}) {
-    if (capability === 'status' || capability === 'diagnostics') return this.serverOperations.runAction(plugin, args.actionId, args.parameters ?? {});
-    if (capability === 'service.inspect') return this.serverOperations.inspectService(plugin, args);
-    if (capability === 'journal.read') return this.serverOperations.queryJournal(plugin, args);
-    if (['docker.list','docker.inspect','docker.logs','docker.stats'].includes(capability)) return this.serverOperations.docker.read('mcp:' + scope.clientInstanceId, { projectId:plugin.projectId, environmentId:plugin.environmentId, pluginInstanceId:plugin.pluginInstanceId, kind:capability.slice(7), ...args }, scope.auditOperationId);
-    if (capability === 'container.inspect') return this.serverOperations.inspectContainer(plugin, args);
-    if (capability === 'logs') {
-      if (args.operation === 'list') return this.serverOperations.listFiles(plugin, args);
-      if (args.operation === 'search') return this.serverOperations.searchLogs(plugin, { ...args, _clientInstanceId:scope.clientInstanceId });
-      return this.serverOperations.readLog(plugin, args);
-    }
-    if (capability === 'config') return this.serverOperations.readConfig(plugin, args);
-    if (capability === 'download') return this.serverOperations.download(plugin, args);
-    if (capability === 'fs.stat') return this.serverOperations.statPath(plugin, args);
-    if (capability === 'fs.list') return this.serverOperations.listDirectory(plugin, args);
-    if (capability === 'fs.find') return this.serverOperations.findFiles(plugin, args);
-    if (capability === 'fs.read') return this.serverOperations.readFile(plugin, args);
-    if (capability === 'fs.search') return this.serverOperations.searchFiles(plugin, args);
-    if (capability === 'fs.download') return this.serverOperations.downloadPath(plugin, args);
-    if (capabilityRule('server', capability).decision === 'confirm') return this.serverOperations.mutate(plugin, capability, args);
-    throw new AppError('CAPABILITY_NOT_IMPLEMENTED', 'Server 操作尚未实现。');
+    return builtinPluginRegistry.get('server').invoke({
+      plugin, capability, args, scope, serverOperations:this.serverOperations,
+    });
   }
 }

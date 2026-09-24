@@ -1,9 +1,10 @@
+import { builtinPluginRegistry } from './plugins/builtins.mjs';
+import { classifyChangedPath } from './plugin-change-policy.mjs';
+export { classifyChangedPath } from './plugin-change-policy.mjs';
 import crypto from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 
 const CREDENTIAL_MUTATIONS = new Set(['none','replace','rebind-existing','clear-explicit']);
-const METADATA_PATHS = new Set(['displayName','description','tags','displayOrder']);
-const AGENT_ROOTS = new Set(['policy','sources','actions','patterns','limits']);
 const RECORD_PATHS = new Set(['schemaVersion','revision','updatedAt','configState']);
 
 function cloneDefined(value) {
@@ -31,25 +32,12 @@ function digest(value) {
   return crypto.createHash('sha256').update(JSON.stringify(canonicalize(value))).digest('hex');
 }
 
-function connectionProjection(plugin) {
-  const common = {
-    projectId:plugin?.projectId,
-    environmentId:plugin?.environmentId,
-    pluginInstanceId:plugin?.pluginInstanceId,
-    pluginType:plugin?.pluginType,
-    target:plugin?.target,
-    auth:plugin?.auth,
-  };
-  if (plugin?.pluginType === 'server') {
-    return cloneDefined({...common,uplink:plugin.uplink,tunnelProvider:plugin.tunnelProvider});
-  }
-  return cloneDefined({
-    ...common,
-    transport:plugin?.transport,
-    tls:plugin?.tls,
-    mode:plugin?.mode,
-    cluster:plugin?.cluster,
-  });
+function connectionProjection(plugin, registry) {
+  const fields = registry.get(plugin?.pluginType).connectionFields;
+  return cloneDefined(Object.fromEntries(
+    ['projectId','environmentId','pluginInstanceId','pluginType',...fields]
+      .map(field => [field,plugin?.[field]]),
+  ));
 }
 
 function agentProjection(plugin) {
@@ -73,8 +61,8 @@ export function pluginSemanticProjection(plugin) {
   ));
 }
 
-export function pluginConnectionFingerprint(plugin) {
-  return digest(connectionProjection(plugin));
+export function pluginConnectionFingerprint(plugin, registry = builtinPluginRegistry) {
+  return digest(connectionProjection(plugin, registry));
 }
 
 export function pluginAgentFingerprint(plugin) {
@@ -98,35 +86,6 @@ function collectChangedPaths(before, after, prefix = '', output = []) {
     collectChangedPaths(before[key],after[key],prefix ? `${prefix}.${key}` : key,output);
   }
   return output;
-}
-
-function rootPath(path) {
-  return String(path ?? '').split('.')[0];
-}
-
-export function classifyChangedPath(pluginType, path, {
-  before = null,
-  after = null,
-  hasDependents = false,
-} = {}) {
-  if (METADATA_PATHS.has(path)) return 'metadata';
-  if (AGENT_ROOTS.has(rootPath(path))) return 'agent-policy-scope';
-  if (['projectId','environmentId','pluginInstanceId','pluginType'].includes(rootPath(path))) {
-    return 'dependency-affecting';
-  }
-  if (path === 'tunnelProvider' || path.startsWith('tunnelProvider.')) return 'dependency-affecting';
-  if (path === 'transport.serverPluginInstanceId' || path.startsWith('transport.serverPluginInstanceId.')) {
-    return 'dependency-affecting';
-  }
-  if (rootPath(path) === 'transport') {
-    const beforeKind = before?.transport?.kind;
-    const afterKind = after?.transport?.kind;
-    if (beforeKind === 'serverTunnel' || afterKind === 'serverTunnel') return 'dependency-affecting';
-  }
-  if (pluginType === 'server' && hasDependents && ['target','auth','uplink'].includes(rootPath(path))) {
-    return 'dependency-affecting';
-  }
-  return 'session-affecting';
 }
 
 const KIND_PRIORITY = new Map([

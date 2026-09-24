@@ -428,6 +428,35 @@ export interface PluginEditSavePayload {
   readonly forceCredentialReplacement?: boolean
 }
 
+export interface PluginPublicSummary extends OpaqueData {
+  readonly pluginInstanceId: string
+  readonly pluginType: string
+  readonly displayName: string
+  readonly configState: "ready" | "draft"
+  readonly revision: number
+  readonly resource: Readonly<Record<string, unknown>>
+  readonly transport: string
+  readonly accessModel: string
+  readonly limits: Readonly<Record<string, unknown>>
+}
+
+export interface PluginEditConnectionPlan extends OpaqueData {
+  readonly outcome: string
+  readonly planId?: string | null
+  readonly actions?: readonly OpaqueData[]
+  readonly snapshot?: EnvironmentRuntime
+}
+
+export interface PluginEditSaveResult extends OpaqueData {
+  readonly committed: true
+  readonly changed: boolean
+  readonly changeKind: "none" | "metadata" | "agent-policy-scope" | "session-affecting" | "dependency-affecting"
+  readonly plugin: PluginPublicSummary
+  readonly persistenceWarning: PublicError | null
+  readonly connectionPlan: PluginEditConnectionPlan | null
+  readonly runtimeWarning: PublicError | null
+}
+
 export interface PluginEditCancelPayload {
   readonly prepareToken?: string
   readonly editSessionId?: string
@@ -818,7 +847,7 @@ export interface AiOpsV2Api {
   cancelPluginValidation(payload: PluginValidationCancelPayload): Promise<IpcResult<OpaqueData>>
   probePluginDraft(payload: PluginProbePayload): Promise<IpcResult<OpaqueData>>
   cancelPluginProbe(payload: PluginProbeCancelPayload): Promise<IpcResult<OpaqueData>>
-  savePluginConnectionEdit(payload: PluginEditSavePayload): Promise<IpcResult<OpaqueData>>
+  savePluginConnectionEdit(payload: PluginEditSavePayload): Promise<IpcResult<PluginEditSaveResult>>
   cancelPluginConnectionEdit(payload: PluginEditCancelPayload): Promise<IpcResult<OpaqueData>>
   onPluginValidationProgress(callback: (progress: ProgressRecord) => void): Unsubscribe
   onPluginProbeProgress(callback: (progress: ProgressRecord) => void): Unsubscribe

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { AppError } from './errors.mjs';
 import { pluginCredentialInternals } from './plugin-credential-vault.mjs';
-import { workspaceInternals } from './workspace-store.mjs';
+import { sanitizePluginSnapshot } from './plugin-config-model.mjs';
 
 function transactionName(plugin) {
   return `${crypto.createHash('sha256').update(`${plugin.projectId}/${plugin.environmentId}/${plugin.pluginInstanceId}`).digest('hex')}.json`;
@@ -79,8 +79,8 @@ export class PluginConfigTransactionJournal {
       if (error?.code !== 'ENOENT') throw error;
     }
     this.assertPluginAvailable(before.projectId,before.environmentId,before.pluginInstanceId);
-    const safeBefore = workspaceInternals.sanitizePluginSnapshot(before);
-    const safeAfter = workspaceInternals.sanitizePluginSnapshot(after);
+    const safeBefore = sanitizePluginSnapshot(before);
+    const safeAfter = sanitizePluginSnapshot(after);
     if (safeAfter.projectId !== safeBefore.projectId
       || safeAfter.environmentId !== safeBefore.environmentId
       || safeAfter.pluginInstanceId !== safeBefore.pluginInstanceId
@@ -127,8 +127,8 @@ export class PluginConfigTransactionJournal {
 
   validate(record) {
     try {
-      const safeBefore = workspaceInternals.sanitizePluginSnapshot(record.before);
-      const safeAfter = workspaceInternals.sanitizePluginSnapshot(record.after);
+      const safeBefore = sanitizePluginSnapshot(record.before);
+      const safeAfter = sanitizePluginSnapshot(record.after);
       return record?.schemaVersion === 1
         && /^[0-9a-f-]{36}$/iu.test(String(record.transactionId ?? ''))
         && record.before?.projectId === record.projectId

@@ -76,7 +76,7 @@ test('production UI is the React shadcn/Radix renderer and preserves the V2 secu
   assert.match(appShell,/GlobalCommand/u);
   assert.match(appShell,/ProjectMutationSurfaces/u);
   assert.match(appShell,/EnvironmentMutationSurfaces/u);
-  assert.match(appShell,/PluginEditorWorkspace/u);
+  assert.match(appShell,/PluginEditorHost/u);
   assert.match(appShell,/PluginDeleteDialog/u);
   assert.match(appShell,/useWorkspaceRuntimeCache/u);
   assert.match(appShell,/data-shell-ready="true"/u);
@@ -89,8 +89,8 @@ test('production UI is the React shadcn/Radix renderer and preserves the V2 secu
     'EnvironmentOverview',
     'PluginOverview',
     'EnvironmentConnectionPanel',
-    'PluginConnectionPanel',
-    'PluginAgentAccess',
+    'ConnectionPanel',
+    'AgentAccess',
     'RunbookFeature',
     'QuickQuestionsFeature',
     'AuditFeature',
@@ -127,7 +127,7 @@ test('production UI is the React shadcn/Radix renderer and preserves the V2 secu
   assert.doesNotMatch(preload,/v2:plugin-test|v2:plugin-draft-(?:list|save|resume|edit-cancel|delete|promote)/u);
   assert.doesNotMatch(preload,/project:(?:delete|execute|upload|download)/u);
   assert.match(ipc,/handle\('connection-intent'/u);
-  assert.match(ipc,/handleWithEvent\('plugin-connection-edit-save'/u);
+  assert.match(ipc,/handlePluginWithEvent\('savePluginConnectionEdit'/u);
   assert.doesNotMatch(ipc,/v2:plugin-test|plugin-test-progress/u);
   assert.doesNotMatch(ipc,/handle(?:WithEvent)?\('plugin-draft-(?:list|save|resume|edit-cancel|delete|promote)'/u);
 

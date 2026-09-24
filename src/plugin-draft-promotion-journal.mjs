@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { AppError } from './errors.mjs';
-import { workspaceInternals } from './workspace-store.mjs';
+import { sanitizePluginSnapshot } from './plugin-config-model.mjs';
 
 function transactionName(scope) {
   return `${crypto.createHash('sha256').update(`${scope.projectId}/${scope.environmentId}/${scope.draftId}`).digest('hex')}.json`;
@@ -27,8 +27,8 @@ async function syncDirectoryBestEffort(directory) {
 
 function samePlugin(left,right) {
   return Boolean(left && right && isDeepStrictEqual(
-    workspaceInternals.sanitizePluginSnapshot(left),
-    workspaceInternals.sanitizePluginSnapshot(right),
+    sanitizePluginSnapshot(left),
+    sanitizePluginSnapshot(right),
   ));
 }
 
@@ -87,8 +87,8 @@ export class PluginDraftPromotionJournal {
     if (!['preserve','copy-draft','rebind-active'].includes(credentialMode)) {
       throw new AppError('INVALID_ARGUMENT','草稿提升凭据模式无效。');
     }
-    const safeBefore = before ? workspaceInternals.sanitizePluginSnapshot(before) : null;
-    const safeAfter = workspaceInternals.sanitizePluginSnapshot(after);
+    const safeBefore = before ? sanitizePluginSnapshot(before) : null;
+    const safeAfter = sanitizePluginSnapshot(after);
     const record = {
       schemaVersion:1,
       transactionId:crypto.randomUUID(),
@@ -110,8 +110,8 @@ export class PluginDraftPromotionJournal {
 
   validate(record) {
     try {
-      const safeAfter = workspaceInternals.sanitizePluginSnapshot(record.after);
-      const safeBefore = record.before ? workspaceInternals.sanitizePluginSnapshot(record.before) : null;
+      const safeAfter = sanitizePluginSnapshot(record.after);
+      const safeBefore = record.before ? sanitizePluginSnapshot(record.before) : null;
       return record?.schemaVersion === 1
         && !containsForbiddenCredentialKey(record)
         && /^[0-9a-f-]{36}$/iu.test(String(record.transactionId ?? ''))

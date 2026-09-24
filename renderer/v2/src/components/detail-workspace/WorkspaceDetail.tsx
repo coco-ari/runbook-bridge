@@ -1,3 +1,4 @@
+import { pluginUi } from "@/features/plugins/plugin-ui-contributions"
 import {
   BookOpenText,
   CaretLeft,
@@ -47,10 +48,8 @@ import {
 } from "@/components/detail-workspace/detail-navigation"
 import { AuditFeature } from "@/features/audit/AuditFeature"
 import { ConfirmationsFeature, type ConfirmationScope } from "@/features/confirmations/ConfirmationsFeature"
-import { PluginConnectionPanel } from "@/features/connections/PluginConnectionPanel"
 import { EnvironmentConnectionPanel } from "@/features/connections/EnvironmentConnectionPanel"
 import { EnvironmentOverview } from "@/features/environments/EnvironmentOverview"
-import { PluginAgentAccess } from "@/features/plugins/PluginAgentAccess"
 import { PluginOverview } from "@/features/plugins/PluginOverview"
 import type { PluginConfigurationRecord } from "@/features/plugins/plugin-types"
 import { ProjectOverview } from "@/features/projects/ProjectOverview"
@@ -65,7 +64,6 @@ import type {
 } from "@/features/workspace/workspace-read-model"
 
 export type WorkspaceDetailAction =
-  | Readonly<{ type: "open-server-workspace"; plugin: PluginConfigurationRecord }>
   | Readonly<{ type: "create-project" }>
   | Readonly<{ type: "edit-project"; project: WorkspaceProjectReadModel }>
   | Readonly<{
@@ -78,11 +76,8 @@ export type WorkspaceDetailAction =
   | Readonly<{ type: "delete-plugin"; plugin: PluginConfigurationRecord }>
 
 export interface WorkspaceDetailProps {
-  readonly serverWorkspaceRetained?: boolean
-  readonly onOpenRedisWorkspace?: () => void
-  readonly redisWorkspaceRetained?: boolean
-  readonly onOpenDatabaseWorkspace: () => void
-  readonly databaseWorkspaceRetained: boolean
+  readonly onOpenWorkspace: () => void
+  readonly workspaceRetained: boolean
   readonly activeTab: string
   readonly api: AiOpsV2Api
   readonly collapsed: boolean
@@ -224,11 +219,8 @@ function SelectionActions({
 }
 
 export function WorkspaceDetail({
-  serverWorkspaceRetained = false,
-  onOpenRedisWorkspace,
-  redisWorkspaceRetained = false,
-  onOpenDatabaseWorkspace,
-  databaseWorkspaceRetained,
+  onOpenWorkspace,
+  workspaceRetained,
   api,
   activeTab,
   collapsed,
@@ -417,9 +409,12 @@ export function WorkspaceDetail({
   const selectionKind = detailSelectionKind(hasEnvironment, plugin?.pluginType ?? null)
   const visibleTabs = detailTabsForSelection(selectionKind)
   const supportedPlugin = pluginRecord
-    && ["server", "mysql", "redis"].includes(pluginRecord.pluginType)
+    && pluginUi.get(pluginRecord.pluginType)
     ? pluginRecord
     : null
+  const contribution = supportedPlugin ? pluginUi.get(supportedPlugin.pluginType) : undefined
+  const ConnectionPanel = contribution?.ConnectionPanel
+  const AgentAccess = contribution?.AgentAccess
 
   return (
     <Tabs
@@ -541,13 +536,11 @@ export function WorkspaceDetail({
                   loading={environmentLoading}
                   onReload={onReloadEnvironment}
                   plugin={plugin}
-                  connectionPanel={supportedPlugin ? (
-                    <PluginConnectionPanel
+                  connectionPanel={supportedPlugin && ConnectionPanel ? (
+                    <ConnectionPanel
                       api={api}
-                      onOpenWorkspace={supportedPlugin.pluginType === "server"
-                        ? () => onAction({ type: "open-server-workspace", plugin: supportedPlugin })
-                        : supportedPlugin.pluginType === "mysql" ? onOpenDatabaseWorkspace : supportedPlugin.pluginType === "redis" ? onOpenRedisWorkspace : undefined}
-                      workspaceRetained={supportedPlugin.pluginType === "server" ? serverWorkspaceRetained : supportedPlugin.pluginType === "redis" ? redisWorkspaceRetained : databaseWorkspaceRetained}
+                      onOpenWorkspace={onOpenWorkspace}
+                      workspaceRetained={workspaceRetained}
                       onEdit={() => onAction({ type: "edit-plugin", plugin: supportedPlugin, returnFocus: "plugin-action-edit" })}
                       onRuntime={onReloadEnvironment}
                       plugin={supportedPlugin}
@@ -579,8 +572,8 @@ export function WorkspaceDetail({
 
             {selectionKind === "plugin" || selectionKind === "mysql-plugin" ? (
               <PersistentTabsContent activeValue={activeTab} value="agent">
-                {supportedPlugin ? (
-                  <PluginAgentAccess api={api} onDirtyChange={onAgentAccessDirtyChange} onSavingChange={onAgentAccessSavingChange} onUpdated={onPluginUpdated} plugin={supportedPlugin} />
+                {supportedPlugin && AgentAccess ? (
+                  <AgentAccess api={api} onDirtyChange={onAgentAccessDirtyChange} onSavingChange={onAgentAccessSavingChange} onUpdated={onPluginUpdated} plugin={supportedPlugin} />
                 ) : (
                   <Alert><Plugs /><AlertTitle>Agent 权限不可用</AlertTitle><AlertDescription>未知插件类型默认拒绝 Agent 能力。</AlertDescription></Alert>
                 )}

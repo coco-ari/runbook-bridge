@@ -312,8 +312,8 @@ test('busy focus remains in the current visible open dialog and cannot revive an
 });
 
 test('resizable group preserves the guarded layout persistence contract',async () => {
-  const shell = await source('renderer/v2/src/components/app-shell/AppShell.tsx');
-  const layout = shell.slice(shell.indexOf('const handleLayoutChanged'),shell.indexOf('const focusDetail'));
+  const shell = await source('renderer/v2/src/components/app-shell/use-app-shell-layout.ts');
+  const layout = shell.slice(shell.indexOf('const handleLayoutChanged'),shell.indexOf('const restoreEditorLayout'));
   assert.match(layout,/stableLayoutRef\.current = layout/u);
   assert.ok(layout.includes('if (suppressLayoutPersistenceRef.current || window.innerWidth < 960) return'));
   assert.ok(layout.includes('const next = { ...current, layout }'));

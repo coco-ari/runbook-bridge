@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { AppError, toPublicError } from './errors.mjs';
 import { getPluginConnectionAdapter } from './plugin-connection-adapters.mjs';
-import { workspaceInternals } from './workspace-store.mjs';
+import { normalizePlugin } from './plugin-config-model.mjs';
 
 const PROBE_PURPOSES = new Set([
   'resource-discovery',
@@ -160,7 +160,7 @@ export class PluginProbeManager {
     if (!PLUGIN_TYPES.has(pluginType)) throw new AppError('INVALID_ARGUMENT','插件类型无效。');
     const operationId = crypto.randomUUID();
     const displayName = String(payload.draft.displayName ?? '').trim() || pluginType;
-    const candidate = workspaceInternals.normalizePlugin({
+    const candidate = normalizePlugin({
       ...payload.draft,
       projectId,
       environmentId,

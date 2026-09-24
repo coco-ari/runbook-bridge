@@ -233,10 +233,11 @@ test('navigation read failures take precedence over empty states and expose scop
 });
 
 test('project rail shortcuts and responsive expansion target the desktop panel without stealing edit or modal focus', async () => {
-  const [rail,sidebar,shell] = await Promise.all([
+  const [rail,sidebar,shell,layout] = await Promise.all([
     read('renderer/v2/src/components/project-rail/ProjectRail.tsx'),
     read('renderer/v2/src/components/ui/sidebar.tsx'),
     read('renderer/v2/src/components/app-shell/AppShell.tsx'),
+    read('renderer/v2/src/components/app-shell/use-app-shell-layout.ts'),
   ]);
   assert.match(rail,/keyboardShortcutEnabled=\{false\}/u);
   assert.match(sidebar,/if \(!keyboardShortcutEnabled\) return/u);
@@ -255,8 +256,8 @@ test('project rail shortcuts and responsive expansion target the desktop panel w
   assert.match(shell,/collapsed=\{compactProjectRail\}/u);
   assert.match(shell,/setProjectCollapsed\(!compactProjectRail\)/u);
   assert.match(shell,/projectPanelPixels <= PROJECT_RAIL_COLLAPSE_THRESHOLD/u);
-  assert.match(shell,/if \(!collapsed && window.innerWidth < 720\) return/u);
-  assert.match(shell,/if \(projectPanelRef.current\?\.isCollapsed\(\)\) projectPanelRef.current\?\.resize\("176px"\)/u);
+  assert.match(layout,/if \(!collapsed && window.innerWidth < 720\) return/u);
+  assert.match(layout,/if \(projectPanelRef.current\?\.isCollapsed\(\)\) projectPanelRef.current\?\.resize\("176px"\)/u);
   assert.match(shell,/maxSize=\{viewportWidth < 720 \? PROJECT_RAIL_COLLAPSED_SIZE : "300px"\}/u);
   assert.match(shell,/onDoubleClick=\{\(\) => setProjectCollapsed\(false, true\)\}/u);
 });

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
-import { workspaceInternals } from './workspace-store.mjs';
+import { normalizePlugin } from './plugin-config-model.mjs';
 import { cloudError, cloudId } from './cloud-config-crypto.mjs';
 import { snapshotDigest } from './cloud-config-snapshot.mjs';
 
@@ -96,7 +96,7 @@ export class CloudConfigWorkspace {
       write(`${prefix}/quick-questions.json`,JSON.stringify(questions));
       for (const item of environment.plugins) {
         const file = `${prefix}/plugins/${item.config.pluginInstanceId}.yaml`;
-        const plugin = workspaceInternals.normalizePlugin(item.config,{projectId,environmentId});
+        const plugin = normalizePlugin(item.config,{projectId,environmentId});
         plugin.revision = (old(file)?.revision ?? 0)+1;
         plugin.updatedAt = timestamp;
         yaml(file,plugin);

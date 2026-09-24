@@ -102,7 +102,7 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm start
 ```
 
-开发与维护：[贡献指南](CONTRIBUTING.md) · [当前架构](docs/architecture.md) · [验证指南](docs/full-function-verification.md) · [版本记录](CHANGELOG.md)
+开发与维护：[贡献指南](CONTRIBUTING.md) · [当前架构](docs/architecture.md) · [插件开发](docs/plugin-development.md) · [验证指南](docs/full-function-verification.md) · [版本记录](CHANGELOG.md)
 
 ### macOS 源码构建与 MCP
 

@@ -438,6 +438,10 @@ async function evaluate(source) { try { return await win.webContents.executeJava
 async function until(source, label) {
   const deadline = Date.now() + (liveDirectoryProbe || liveTerminalUiProbe ? 45000 : 10000);
   while (Date.now() < deadline) { if (await evaluate(source)) return; await wait(40); }
+  if (label === '收藏面板可见后检查窄窗口布局') {
+    const diagnostic = await evaluate("({width:innerWidth,theme:document.documentElement.className,workspaces:[...document.querySelectorAll('[data-testid=server-workspace]')].map(item=>({hidden:item.hidden,visible:Boolean(item.getClientRects().length)})),panels:[...document.querySelectorAll('.server-directory-bookmarks')].map(item=>({state:item.getAttribute('data-state'),visible:Boolean(item.getClientRects().length)})),triggers:[...document.querySelectorAll('button[aria-label=常用目录]')].map(item=>({state:item.getAttribute('data-state'),expanded:item.getAttribute('aria-expanded')})),focus:document.activeElement?.className})");
+    process.stderr.write('收藏布局诊断：' + JSON.stringify(diagnostic) + '\n');
+  }
   throw Error('等待超时：' + label);
 }
 async function click(selector) { assert.ok(await evaluate(`(() => { const element = [...document.querySelectorAll(${JSON.stringify(selector)})].find(item => item.getClientRects().length); if (!element || element.disabled) return false; element.click(); return true })()`), selector); await wait(70); }

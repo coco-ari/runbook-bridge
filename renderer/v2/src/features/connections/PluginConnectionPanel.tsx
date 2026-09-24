@@ -41,7 +41,7 @@ import {
   type PluginConfigurationRecord,
 } from "@/features/plugins/plugin-types"
 
-interface PluginConnectionPanelProps {
+export interface PluginConnectionPanelProps {
   readonly api: AiOpsV2Api
   readonly plugin: PluginConfigurationRecord
   readonly runtime?: EnvironmentRuntime | null

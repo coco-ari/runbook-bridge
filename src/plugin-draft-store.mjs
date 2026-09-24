@@ -4,7 +4,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { AppError } from './errors.mjs';
 import { getPluginConnectionAdapter } from './plugin-connection-adapters.mjs';
-import { workspaceInternals } from './workspace-store.mjs';
+import { normalizePluginCandidate, normalizePlugin } from './plugin-config-model.mjs';
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{1,62}$/u;
 const FORBIDDEN_KEY_RE = /(password|passphrase|secret|ciphertext|privatekeypem|clientkeypem|capem|clientcertpem)/iu;
@@ -159,8 +159,8 @@ export class PluginDraftStore {
     let sanitizedDraft;
     try {
       sanitizedDraft = basePlugin
-        ? workspaceInternals.normalizePluginCandidate(raw,{projectId,environmentId},basePlugin)
-        : workspaceInternals.normalizePlugin(raw,{projectId,environmentId});
+        ? normalizePluginCandidate(raw,{projectId,environmentId},basePlugin)
+        : normalizePlugin(raw,{projectId,environmentId});
       if (!basePlugin && existingRecord?.sanitizedDraft) {
         sanitizedDraft = {
           ...sanitizedDraft,

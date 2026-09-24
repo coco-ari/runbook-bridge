@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import ssh2 from 'ssh2';
-import { workspaceInternals } from './workspace-store.mjs';
+import { sanitizePluginSnapshot, normalizePlugin, normalizeName } from './plugin-config-model.mjs';
 import { getPluginConnectionAdapter } from './plugin-connection-adapters.mjs';
 import { normalizeQuickQuestionText, containsQuickQuestionCredential, QUICK_QUESTION_LIMIT } from './quick-questions.mjs';
 import { CLOUD_MAX_BYTES, cloudError } from './cloud-config-crypto.mjs';
@@ -17,7 +17,7 @@ export function snapshotDigest(value) {
   return crypto.createHash('sha256').update(JSON.stringify(canonicalCloud(value))).digest('hex');
 }
 export function configProjection(plugin) {
-  return Object.fromEntries(Object.entries(workspaceInternals.sanitizePluginSnapshot(plugin)).filter(([key]) => CONFIG_KEYS.has(key)));
+  return Object.fromEntries(Object.entries(sanitizePluginSnapshot(plugin)).filter(([key]) => CONFIG_KEYS.has(key)));
 }
 function object(value, keys) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !keys.includes(key))) throw cloudError('FORMAT_INVALID','云配置结构包含不支持的字段。');
@@ -52,7 +52,7 @@ function normalizeProject(input, vault) {
       if (!['server','mysql','redis'].includes(item.config.pluginType)) throw cloudError('FORMAT_UNSUPPORTED','云配置包含不支持的插件。');
       id(item.config.pluginInstanceId);
       if (item.config.auth?.privateKeyPath || item.config.auth?.agentSocket) throw cloudError('FORMAT_INVALID','云配置不能指定本机私钥路径或 Agent 套接字。');
-      const config = workspaceInternals.normalizePlugin(item.config,{projectId,environmentId});
+      const config = normalizePlugin(item.config,{projectId,environmentId});
       if (snapshotDigest(item.config) !== snapshotDigest(configProjection(config))) throw cloudError('FORMAT_INVALID','云插件配置不是受支持的规范格式，已停止导入。');
       if (config.auth.type === 'privateKey' && config.auth.privateKeySource !== 'vault') throw cloudError('FORMAT_INVALID','云端私钥必须使用凭据库。');
       if (!item.secrets || typeof item.secrets !== 'object' || Array.isArray(item.secrets) || Object.values(item.secrets).some(v => typeof v !== 'string')) throw cloudError('FORMAT_INVALID','云配置凭据结构无效。');
@@ -68,11 +68,11 @@ function normalizeProject(input, vault) {
       const providerId = config.transport?.kind === 'serverTunnel' ? config.transport.serverPluginInstanceId : null;
       if (providerId && !plugins.some(p => p.config.pluginInstanceId === providerId && p.config.pluginType === 'server' && p.config.tunnelProvider !== false)) throw cloudError('DEPENDENCY_INVALID','云配置的隧道依赖缺失或无效。');
     }
-    return {environmentId,name:workspaceInternals.normalizeName(raw.name),runbook:raw.runbook,questions,plugins};
+    return {environmentId,name:normalizeName(raw.name),runbook:raw.runbook,questions,plugins};
   });
   unique(environments.map(e => e.environmentId));
   unique(environments.map(e => e.name.normalize('NFKC').toLowerCase()));
-  return {projectId,name:workspaceInternals.normalizeName(input.name),environments};
+  return {projectId,name:normalizeName(input.name),environments};
 }
 export function normalizeCloudSnapshot(value, vault) {
   if (Buffer.byteLength(JSON.stringify(value)) > CLOUD_MAX_BYTES) throw cloudError('TOO_LARGE','云配置内容过大。');

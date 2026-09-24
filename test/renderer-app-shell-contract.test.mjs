@@ -93,7 +93,7 @@ test('production React shell composes shadcn/Radix with the typed desktop bridge
   assert.match(appShell,/useEnvironmentStatus/u);
   assert.match(appShell,/ProjectMutationSurfaces/u);
   assert.match(appShell,/EnvironmentMutationSurfaces/u);
-  assert.match(appShell,/PluginEditorWorkspace/u);
+  assert.match(appShell,/PluginEditorHost/u);
   assert.match(appShell,/createPluginWorkMode/u);
   assert.match(appShell,/editorLeave && !await editorLeave\(\)/u);
   assert.match(appShell,/PluginMetadataDialog/u);
@@ -103,7 +103,9 @@ test('production React shell composes shadcn/Radix with the typed desktop bridge
   assert.doesNotMatch(appShell,/APP_SHELL_FIXTURES|MockActionSurfaces/u);
   assert.match(appShell,/defaultLayout=/u);
   assert.match(appShell,/onLayoutChanged=/u);
-  assert.match(appShell,/usePanelRef/u);
+  assert.match(appShell,/useAppShellLayout/u);
+  const shellLayout = await fs.readFile('renderer/v2/src/components/app-shell/use-app-shell-layout.ts','utf8');
+  assert.match(shellLayout,/usePanelRef/u);
   assert.match(appShell,/collapsedSize=\{PROJECT_RAIL_COLLAPSED_SIZE\}/u);
   assert.match(appShell,/collapsedSize="48px"/u);
   assert.equal((appShell.match(/<ResizableHandle/gu) ?? []).length,2);
@@ -176,8 +178,9 @@ test('production React shell composes shadcn/Radix with the typed desktop bridge
   assert.match(workspaceDetail,/ProjectOverview/u);
   assert.match(workspaceDetail,/EnvironmentOverview/u);
   assert.match(workspaceDetail,/PluginOverview/u);
-  assert.match(workspaceDetail,/PluginConnectionPanel/u);
-  assert.match(workspaceDetail,/PluginAgentAccess/u);
+  assert.match(workspaceDetail,/pluginUi.get/u);
+  assert.match(workspaceDetail,/<ConnectionPanel/u);
+  assert.match(workspaceDetail,/<AgentAccess/u);
   assert.match(workspaceDetail,/RunbookFeature/u);
   assert.match(workspaceDetail,/QuickQuestionsFeature/u);
   assert.match(workspaceDetail,/AuditFeature/u);

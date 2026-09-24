@@ -179,7 +179,7 @@ if (process.argv.includes('--mcp')) {
         const routeManager = new RouteManager({ resolver, vpnGuard, serverRuntime });
         const mysqlRuntime = new MysqlPluginRuntime(routeManager, pluginCredentialVault);
         const redisRuntime = new RedisPluginRuntime(routeManager, pluginCredentialVault);
-        const pluginManager = new PluginManager({ serverRuntime, mysqlRuntime, redisRuntime });
+        const pluginManager = new PluginManager({ runtimes:{server:serverRuntime, mysql:mysqlRuntime, redis:redisRuntime} });
         const mutationCoordinator = new WorkspaceMutationCoordinator();
         const environmentConnectionManager = new EnvironmentConnectionManager(workspaceStore, pluginManager, {
           configurationJournal:configTransactionJournal,

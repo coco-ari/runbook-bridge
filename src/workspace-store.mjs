@@ -1,14 +1,16 @@
+import { builtinPluginRegistry } from './plugins/builtins.mjs';
+import { normalizePlugin, normalizePluginCandidate, materializePluginCandidate, sanitizePluginSnapshot, normalizeId, normalizeName } from './plugin-config-model.mjs';
+import { ID_RE, assertId, assertPluginPatchScope, assertPluginNestedPatchScope, preserveNormalizationOnlyRoots, PLUGIN_METADATA_FIELDS, PLUGIN_AGENT_FIELDS } from './plugin-config-utils.mjs';
 import crypto from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
-import { isDeepStrictEqual } from 'node:util';
 import YAML from 'yaml';
 import { AppError } from './errors.mjs';
 import { AuditHistory } from './audit-history.mjs';
 import { auditActor, auditExecutionContext, safeAuditText } from './audit-record.mjs';
-import { normalizeDockerSocket } from './server-docker-reader.mjs';
 import { classifyPluginChange } from './plugin-change-classifier.mjs';
 import { assertPluginConfigurationReady } from './plugin-connection-adapters.mjs';
 import {
@@ -22,44 +24,6 @@ import {
   prepareQuickQuestionForSave,
 } from './quick-questions.mjs';
 
-const ID_RE = /^[a-z0-9][a-z0-9-]{1,62}$/;
-const CONTROL_RE = /[\u0000-\u001f\u007f]/;
-const PLUGIN_TYPES = new Set(['server', 'mysql', 'redis']);
-const ADDRESS_FAMILIES = new Set(['ipv4Preferred', 'ipv4Only', 'ipv6Preferred', 'ipv6Only']);
-const TRANSPORTS = new Set(['direct', 'windowsVpn', 'serverTunnel']);
-const POLICY_MODES = new Set(['auto', 'confirm', 'deny']);
-const PLUGIN_METADATA_FIELDS = new Set(['displayName', 'description', 'tags', 'displayOrder']);
-const PLUGIN_AGENT_FIELDS = new Set(['policy', 'sources', 'actions', 'patterns', 'limits']);
-const PLUGIN_CONNECTION_FIELDS = Object.freeze({
-  server:new Set(['target', 'auth', 'uplink', 'tunnelProvider']),
-  mysql:new Set(['target', 'auth', 'transport', 'tls']),
-  redis:new Set(['target', 'auth', 'transport', 'tls', 'mode', 'cluster']),
-});
-const PLUGIN_CONNECTION_NESTED_FIELDS = Object.freeze({
-  server:Object.freeze({
-    target:new Set(['host', 'port', 'addressFamily', 'hostKeyFingerprint', 'dockerSocket']),
-    auth:new Set(['type', 'username', 'privateKeyPath', 'privateKeySource', 'agentSocket']),
-    uplink:new Set(['type', 'host', 'port', 'username', 'remoteDns', 'interfaceAlias']),
-  }),
-  mysql:Object.freeze({
-    target:new Set(['host', 'port', 'database', 'addressFamily']),
-    auth:new Set(['username']),
-    transport:new Set(['kind', 'serverPluginInstanceId', 'interfaceAlias']),
-    tls:new Set(['mode']),
-  }),
-  redis:Object.freeze({
-    target:new Set(['host', 'port', 'db', 'addressFamily']),
-    auth:new Set(['username']),
-    transport:new Set(['kind', 'serverPluginInstanceId', 'interfaceAlias']),
-    tls:new Set(['mode']),
-  }),
-});
-const NORMALIZATION_ROOT_GROUPS = Object.freeze([
-  ['displayName'],['description'],['tags'],['displayOrder'],
-  ['target'],['auth'],['transport'],['uplink'],['tls'],
-  ['policy'],['sources'],['actions'],['patterns'],['limits'],
-  ['tunnelProvider'],['mode','cluster'],['legacyProjectId'],['configState'],
-]);
 const FILE_READ_CONCURRENCY = 8;
 const AUDIT_READ_CHUNK_BYTES = 64 * 1024;
 const MAX_AUDIT_LINE_BYTES = 1024 * 1024;
@@ -115,452 +79,6 @@ function assertExpectedQuickQuestionOpeningRevision(value) {
   if (!Number.isInteger(value) || value < 0) {
     throw new AppError('INVALID_ARGUMENT', '更新快捷提问开场白必须提供有效的 expectedRevision。');
   }
-}
-
-function normalizeName(value, label = '名称') {
-  const name = String(value ?? '').normalize('NFKC').trim();
-  if (!name || name.length > 120 || CONTROL_RE.test(name)) {
-    throw new AppError('INVALID_ARGUMENT', `${label}不能为空、不能超过 120 字符或包含控制字符。`);
-  }
-  return name;
-}
-
-function normalizeDescription(value) {
-  const description = String(value ?? '').normalize('NFKC').trim();
-  if (description.length > 4096 || CONTROL_RE.test(description)) {
-    throw new AppError('INVALID_ARGUMENT', '插件说明不能超过 4096 字符或包含控制字符。');
-  }
-  return description;
-}
-
-function normalizeTags(value) {
-  if (!Array.isArray(value) || value.length > 32) {
-    throw new AppError('INVALID_ARGUMENT', '插件标签必须是最多 32 项的数组。');
-  }
-  const tags = value.map((item) => String(item ?? '').normalize('NFKC').trim());
-  if (tags.some((item) => !item || item.length > 64 || CONTROL_RE.test(item))) {
-    throw new AppError('INVALID_ARGUMENT', '插件标签不能为空、不能超过 64 字符或包含控制字符。');
-  }
-  return [...new Set(tags)];
-}
-
-function normalizeDisplayOrder(value) {
-  const order = Number(value);
-  if (!Number.isInteger(order) || order < 0 || order > 1_000_000) {
-    throw new AppError('INVALID_ARGUMENT', '插件展示顺序必须是 0 到 1000000 的整数。');
-  }
-  return order;
-}
-
-function assertPluginPatchScope(patch, allowed, label) {
-  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
-    throw new AppError('INVALID_ARGUMENT', `${label}更新内容无效。`);
-  }
-  const unexpected = Object.keys(patch).filter((key) => !allowed.has(key));
-  if (unexpected.length) {
-    throw new AppError('INVALID_ARGUMENT', `${label}更新包含不允许的字段：${unexpected.join(', ')}。`, {
-      fields:unexpected,
-    });
-  }
-}
-
-function assertPluginNestedPatchScope(patch, schema, label) {
-  for (const [root,allowed] of Object.entries(schema ?? {})) {
-    if (!Object.hasOwn(patch,root)) continue;
-    const value = patch[root];
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw new AppError('INVALID_ARGUMENT', `${label}字段 ${root} 必须是对象。`);
-    }
-    const unexpected = Object.keys(value).filter((key) => !allowed.has(key));
-    if (unexpected.length) {
-      throw new AppError(
-        'INVALID_ARGUMENT',
-        `${label}字段 ${root} 包含不允许的子字段：${unexpected.join(', ')}。`,
-        {fields:unexpected.map((key) => `${root}.${key}`)},
-      );
-    }
-  }
-}
-
-function rootGroupProjection(value, roots) {
-  return Object.fromEntries(
-    roots.flatMap((root) => (Object.hasOwn(value ?? {},root) ? [[root,value[root]]] : [])),
-  );
-}
-
-function preserveNormalizationOnlyRoots(before, normalizedBaseline, normalizedCandidate) {
-  const candidate = {...normalizedCandidate};
-  for (const roots of NORMALIZATION_ROOT_GROUPS) {
-    const baselineProjection = rootGroupProjection(normalizedBaseline,roots);
-    const candidateProjection = rootGroupProjection(normalizedCandidate,roots);
-    if (!isDeepStrictEqual(baselineProjection,candidateProjection)) continue;
-    const beforeProjection = rootGroupProjection(before,roots);
-    if (isDeepStrictEqual(beforeProjection,baselineProjection)) continue;
-    for (const root of roots) delete candidate[root];
-    for (const [root,value] of Object.entries(beforeProjection)) candidate[root] = clone(value);
-  }
-  return candidate;
-}
-
-function normalizeId(value, prefix) {
-  const raw = String(value ?? '').normalize('NFKC').trim().toLowerCase();
-  const normalized = raw
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 63);
-  if (ID_RE.test(normalized)) return normalized;
-  return `${prefix}-${crypto.randomBytes(5).toString('hex')}`;
-}
-
-function assertId(value, label) {
-  if (!ID_RE.test(String(value ?? ''))) throw new AppError('INVALID_ARGUMENT', `${label}无效。`);
-  return String(value);
-}
-
-function normalizePort(value, fallback) {
-  const port = Number(value ?? fallback);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new AppError('INVALID_ARGUMENT', '端口必须在 1 到 65535 之间。');
-  }
-  return port;
-}
-
-function normalizeHost(value, { required = true } = {}) {
-  const host = String(value ?? '').trim();
-  if ((!host && required) || host.length > 255 || CONTROL_RE.test(host)) {
-    throw new AppError('INVALID_ARGUMENT', '连接目标地址无效。');
-  }
-  return host;
-}
-
-function normalizeAddressFamily(value) {
-  return ADDRESS_FAMILIES.has(value) ? value : 'ipv4Preferred';
-}
-
-function normalizePolicy(input, defaults) {
-  const output = {};
-  for (const [capability, fallback] of Object.entries(defaults)) {
-    const mode = input?.[capability] ?? fallback;
-    if (!POLICY_MODES.has(mode)) throw new AppError('INVALID_ARGUMENT', `操作规则 ${capability} 无效。`);
-    output[capability] = mode;
-  }
-  const unknown = Object.keys(input ?? {}).filter((key) => !(key in defaults));
-  if (unknown.length) throw new AppError('INVALID_ARGUMENT', `不支持的操作规则：${unknown.join(', ')}。`);
-  return output;
-}
-
-function normalizeTransport(input = {}) {
-  const kind = TRANSPORTS.has(input.kind) ? input.kind : 'direct';
-  const transport = { kind };
-  if (kind === 'serverTunnel') {
-    const providerId = String(input.serverPluginInstanceId ?? '').trim();
-    if (providerId) transport.serverPluginInstanceId = assertId(providerId, '隧道 Server 插件标识');
-  }
-  if (kind === 'windowsVpn') {
-    const interfaceAlias = String(input.interfaceAlias ?? '').trim();
-    if (interfaceAlias.length > 128 || CONTROL_RE.test(interfaceAlias)) {
-      throw new AppError('INVALID_ARGUMENT', '系统 VPN 网卡名称无效。');
-    }
-    if (interfaceAlias) transport.interfaceAlias = interfaceAlias;
-  }
-  return transport;
-}
-
-function transportReady(transport) {
-  if (transport?.kind === 'serverTunnel') return Boolean(transport.serverPluginInstanceId);
-  if (transport?.kind === 'windowsVpn') return Boolean(transport.interfaceAlias);
-  return true;
-}
-
-function normalizeServerSources(input) {
-  if (!Array.isArray(input)) return [];
-  if (input.length > 50) throw new AppError('INVALID_ARGUMENT', 'Server 数据源最多 50 个。');
-  const ids = new Set();
-  return input.map((item, index) => {
-    const sourceId = normalizeId(item?.sourceId ?? `source-${index + 1}`, 'source');
-    if (ids.has(sourceId)) throw new AppError('INVALID_ARGUMENT', 'Server sourceId 不能重复。');
-    ids.add(sourceId);
-    const kind = ['log', 'config', 'download'].includes(item?.kind) ? item.kind : 'log';
-    const root = String(item?.root ?? '').trim().replace(/\\/g, '/');
-    if (!root.startsWith('/') || root.includes('\0') || root.split('/').includes('..') || root.length > 4096) throw new AppError('INVALID_ARGUMENT', 'Server 数据源根目录必须是安全的绝对路径。');
-    const patterns = (Array.isArray(item?.patterns) && item.patterns.length ? item.patterns : ['*']).map((value) => {
-      const pattern = String(value ?? '').trim();
-      if (!pattern || pattern.length > 256 || pattern.includes('/') || CONTROL_RE.test(pattern)) throw new AppError('INVALID_ARGUMENT', 'Server 文件匹配模式无效。');
-      return pattern;
-    });
-    return {
-      sourceId,
-      displayName: normalizeName(item?.displayName ?? sourceId, '数据源名称'),
-      kind,
-      root: path.posix.normalize(root),
-      patterns,
-      maxFileBytes: Math.min(Math.max(Number(item?.maxFileBytes ?? 100 * 1024 * 1024), 1024), 1024 * 1024 * 1024),
-      redactSecrets: kind === 'config' ? item?.redactSecrets !== false : false,
-    };
-  });
-}
-
-function normalizeServerActions(input) {
-  if (!Array.isArray(input)) return [];
-  if (input.length > 100) throw new AppError('INVALID_ARGUMENT', 'Server action 配置过多。');
-  return input.map((item) => {
-    const actionId = String(item?.actionId ?? '');
-    if (!['system.summary', 'process.summary', 'network.listen', 'filesystem.usage', 'service.status'].includes(actionId)) throw new AppError('INVALID_ARGUMENT', `不支持的 Server action：${actionId}。`);
-    if (actionId === 'service.status') {
-      const serviceId = normalizeId(item.serviceId, 'service');
-      const unit = String(item.unit ?? '').trim();
-      if (!/^[A-Za-z0-9_.@-]{1,128}$/.test(unit)) throw new AppError('INVALID_ARGUMENT', 'Systemd unit 名称无效。');
-      return { actionId, serviceId, displayName: normalizeName(item.displayName ?? serviceId, '服务名称'), unit };
-    }
-    if (actionId === 'filesystem.usage') {
-      const mountId = normalizeId(item.mountId, 'mount');
-      const mountPath = String(item.mountPath ?? '').trim();
-      if (!/^\/[A-Za-z0-9_./-]{0,1023}$/.test(mountPath) || mountPath.split('/').includes('..')) throw new AppError('INVALID_ARGUMENT', '挂载点路径无效。');
-      return { actionId, mountId, displayName: normalizeName(item.displayName ?? mountId, '挂载点名称'), mountPath: path.posix.normalize(mountPath) };
-    }
-    return { actionId };
-  });
-}
-
-function normalizePlugin(input, scope, existing = null) {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    throw new AppError('INVALID_ARGUMENT', '插件配置无效。');
-  }
-  const pluginType = input.pluginType ?? existing?.pluginType;
-  if (!PLUGIN_TYPES.has(pluginType)) throw new AppError('INVALID_ARGUMENT', '插件类型无效。');
-  if (existing && existing.pluginType !== pluginType) throw new AppError('INVALID_ARGUMENT', '不能修改插件类型。');
-  const pluginInstanceId = existing?.pluginInstanceId ?? normalizeId(input.pluginInstanceId ?? input.displayName, pluginType);
-  const metadata = {...(existing ?? {}),...input};
-  const base = {
-    schemaVersion: 1,
-    projectId: scope.projectId,
-    environmentId: scope.environmentId,
-    pluginInstanceId,
-    pluginType,
-    displayName: normalizeName(input.displayName ?? existing?.displayName ?? pluginType, '插件名称'),
-    ...((Object.hasOwn(existing ?? {}, 'description') || Object.hasOwn(input, 'description'))
-      ? {description:normalizeDescription(metadata.description)}
-      : {}),
-    ...((Object.hasOwn(existing ?? {}, 'tags') || Object.hasOwn(input, 'tags'))
-      ? {tags:normalizeTags(metadata.tags ?? [])}
-      : {}),
-    ...((Object.hasOwn(existing ?? {}, 'displayOrder') || Object.hasOwn(input, 'displayOrder'))
-      ? {displayOrder:normalizeDisplayOrder(metadata.displayOrder ?? 0)}
-      : {}),
-    revision: (existing?.revision ?? 0) + 1,
-    updatedAt: now(),
-  };
-
-  if (pluginType === 'server') {
-    const source = {
-      ...(existing ?? {}),
-      ...input,
-      policy: { ...(existing?.policy ?? {}), ...(input.policy ?? {}) },
-      limits: { ...(existing?.limits ?? {}), ...(input.limits ?? {}) },
-    };
-    const target = { ...(existing?.target ?? {}), ...(input.target ?? {}) };
-    const auth = { ...(existing?.auth ?? {}), ...(input.auth ?? {}) };
-    const uplink = { ...(existing?.uplink ?? {}), ...(input.uplink ?? {}) };
-    if (auth.privateKeySource !== undefined && !['file','vault'].includes(auth.privateKeySource)) throw new AppError('INVALID_ARGUMENT','SSH 私钥来源无效。');
-    const host = normalizeHost(target.host, { required: false });
-    const username = String(auth.username ?? '').trim();
-    if (username.length > 128 || CONTROL_RE.test(username)) throw new AppError('INVALID_ARGUMENT', 'SSH 用户名无效。');
-    const authType = ['password', 'privateKey', 'agent'].includes(auth.type) ? auth.type : 'password';
-    const uplinkType = ['direct', 'socks5', 'http', 'windowsVpn'].includes(uplink.type) ? uplink.type : 'direct';
-    const proxyHost = uplinkType === 'socks5' || uplinkType === 'http' ? normalizeHost(uplink.host, { required:false }) : '';
-    const vpnAlias = uplinkType === 'windowsVpn' ? String(uplink.interfaceAlias ?? '').trim() : '';
-    if (vpnAlias.length > 128 || CONTROL_RE.test(vpnAlias)) throw new AppError('INVALID_ARGUMENT', '系统 VPN 网卡名称无效。');
-    const authReady = Boolean(username) && (authType !== 'privateKey' || auth.privateKeySource === 'vault' || Boolean(auth.privateKeyPath));
-    const uplinkReady = uplinkType === 'direct' || (['socks5','http'].includes(uplinkType) ? Boolean(proxyHost) : Boolean(vpnAlias));
-    const port = normalizePort(target.port, 22);
-    const addressUnchanged = !existing
-      || (existing.target?.host === host && Number(existing.target?.port) === port);
-    const plugin = {
-      ...base,
-      configState: host && authReady && uplinkReady ? 'ready' : 'draft',
-      target: {
-        host,
-        port,
-        addressFamily: normalizeAddressFamily(target.addressFamily),
-        ...(target.dockerSocket !== undefined && target.dockerSocket !== '' ? { dockerSocket:normalizeDockerSocket(target.dockerSocket) } : {}),
-        ...(addressUnchanged && target.hostKeyFingerprint
-          ? { hostKeyFingerprint: String(target.hostKeyFingerprint) }
-          : {}),
-      },
-      auth: {
-        type: authType,
-        username,
-        ...(authType === 'privateKey' && auth.privateKeySource === 'vault' ? {privateKeySource:'vault'} : {}),
-        ...(authType === 'privateKey' && auth.privateKeySource !== 'vault' && auth.privateKeyPath ? { privateKeyPath: String(auth.privateKeyPath) } : {}),
-        ...(authType === 'agent' && auth.agentSocket ? { agentSocket: String(auth.agentSocket) } : {}),
-      },
-      uplink: {
-        type: uplinkType,
-        ...(uplinkType === 'socks5' || uplinkType === 'http'
-          ? {
-              host: proxyHost,
-              port: normalizePort(uplink.port, uplinkType === 'socks5' ? 1080 : 8080),
-              username: String(uplink.username ?? '').trim(),
-              remoteDns: false,
-            }
-          : {}),
-        ...(uplinkType === 'windowsVpn'
-          ? { ...(vpnAlias ? { interfaceAlias:vpnAlias } : {}) }
-          : {}),
-      },
-      sources: normalizeServerSources(source.sources),
-      actions: normalizeServerActions(source.actions),
-      tunnelProvider: source.tunnelProvider !== false,
-      policy: normalizePolicy(source.policy, {
-        status: 'auto',
-        logs: 'auto',
-        config: 'auto',
-        download: 'confirm',
-        diagnostics: 'auto',
-      }),
-      limits: {
-        timeoutMs: Math.min(Math.max(Number(source.limits?.timeoutMs ?? 10_000), 1_000), 60_000),
-        maxBytes: Math.min(Math.max(Number(source.limits?.maxBytes ?? 262_144), 1024), 1_048_576),
-      },
-      ...(source.legacyProjectId ? { legacyProjectId: String(source.legacyProjectId) } : {}),
-    };
-    return plugin;
-  }
-
-  if (pluginType === 'mysql') {
-    const source = {
-      ...(existing ?? {}),
-      ...input,
-      policy: { ...(existing?.policy ?? {}), ...(input.policy ?? {}) },
-      limits: { ...(existing?.limits ?? {}), ...(input.limits ?? {}) },
-      tls: { ...(existing?.tls ?? {}), ...(input.tls ?? {}) },
-    };
-    const target = { ...(existing?.target ?? {}), ...(input.target ?? {}) };
-    const auth = { ...(existing?.auth ?? {}), ...(input.auth ?? {}) };
-    const host = normalizeHost(target.host, { required: false });
-    const database = String(target.database ?? '').trim();
-    const username = String(auth.username ?? '').trim();
-    if (database.length > 128 || CONTROL_RE.test(database) || username.length > 128 || CONTROL_RE.test(username)) {
-      throw new AppError('INVALID_ARGUMENT', 'MySQL 数据库或用户名无效。');
-    }
-    const transport = normalizeTransport({ ...(existing?.transport ?? {}), ...(input.transport ?? {}) });
-    return {
-      ...base,
-      configState: host && database && username && transportReady(transport) ? 'ready' : 'draft',
-      target: {
-        host,
-        port: normalizePort(target.port, 3306),
-        database,
-        addressFamily: normalizeAddressFamily(target.addressFamily),
-      },
-      auth: { username },
-      transport,
-      tls: { mode: ['disabled', 'preferred', 'required', 'verifyIdentity'].includes(source.tls?.mode) ? source.tls.mode : 'preferred' },
-      policy: normalizePolicy(source.policy, { describe: 'auto', select: 'auto', explain: 'auto' }),
-      limits: {
-        maxRows: Math.min(Math.max(Number(source.limits?.maxRows ?? 100), 1), 1000),
-        maxBytes: Math.min(Math.max(Number(source.limits?.maxBytes ?? 1_048_576), 1024), 4_194_304),
-        timeoutMs: Math.min(Math.max(Number(source.limits?.timeoutMs ?? 10_000), 500), 60_000),
-        maxConcurrency: 1,
-      },
-    };
-  }
-
-  const source = {
-    ...(existing ?? {}),
-    ...input,
-    policy: { ...(existing?.policy ?? {}), ...(input.policy ?? {}) },
-    limits: { ...(existing?.limits ?? {}), ...(input.limits ?? {}) },
-    tls: { ...(existing?.tls ?? {}), ...(input.tls ?? {}) },
-  };
-  const target = { ...(existing?.target ?? {}), ...(input.target ?? {}) };
-  const auth = { ...(existing?.auth ?? {}), ...(input.auth ?? {}) };
-  const host = normalizeHost(target.host, { required: false });
-  const username = String(auth.username ?? '').trim();
-  const db = Number(target.db ?? 0);
-  if (!Number.isInteger(db) || db < 0 || db > 15) throw new AppError('INVALID_ARGUMENT', 'Redis logical DB 必须在 0 到 15 之间。');
-  if (username.length > 128 || CONTROL_RE.test(username)) throw new AppError('INVALID_ARGUMENT', 'Redis 用户名无效。');
-  const patterns = Array.isArray(source.patterns) && source.patterns.length
-    ? source.patterns.map((item, index) => ({
-        patternId: normalizeId(item.patternId ?? `pattern-${index + 1}`, 'pattern'),
-        pattern: String(item.pattern ?? '').trim(),
-        displayName: normalizeName(item.displayName ?? item.pattern ?? `范围 ${index + 1}`, 'Key 范围名称'),
-      }))
-    : [{ patternId: 'default-pattern', pattern: '*', displayName: '全部允许 Key' }];
-  for (const pattern of patterns) {
-    if (!pattern.pattern || pattern.pattern.length > 256 || CONTROL_RE.test(pattern.pattern)) {
-      throw new AppError('INVALID_ARGUMENT', 'Redis Key pattern 无效。');
-    }
-  }
-  const transport = normalizeTransport({ ...(existing?.transport ?? {}), ...(input.transport ?? {}) });
-  let redisMode = null;
-  if (Object.hasOwn(input,'mode')) {
-    if (!['standalone','cluster'].includes(input.mode)) throw new AppError('INVALID_ARGUMENT', 'Redis 运行模式无效。');
-    redisMode = input.mode;
-  } else if (Object.hasOwn(input,'cluster')) {
-    if (typeof input.cluster !== 'boolean') throw new AppError('INVALID_ARGUMENT', 'Redis Cluster 标志无效。');
-    redisMode = input.cluster ? 'cluster' : 'standalone';
-  } else if (['standalone','cluster'].includes(existing?.mode)) {
-    redisMode = existing.mode;
-  } else if (typeof existing?.cluster === 'boolean') {
-    redisMode = existing.cluster ? 'cluster' : 'standalone';
-  }
-  return {
-    ...base,
-    configState: host && transportReady(transport) ? 'ready' : 'draft',
-    target: {
-      host,
-      port: normalizePort(target.port, 6379),
-      db,
-      addressFamily: normalizeAddressFamily(target.addressFamily),
-    },
-    auth: { username },
-    transport,
-    tls: { mode: ['disabled', 'preferred', 'required', 'verifyIdentity'].includes(source.tls?.mode) ? source.tls.mode : 'disabled' },
-    ...(redisMode ? {mode:redisMode} : {}),
-    patterns,
-    policy: normalizePolicy(source.policy, { scan: 'auto', read: 'auto', ttl: 'auto' }),
-    limits: {
-      maxKeys: Math.min(Math.max(Number(source.limits?.maxKeys ?? 100), 1), 1000),
-      maxValueBytes: Math.min(Math.max(Number(source.limits?.maxValueBytes ?? 65_536), 256), 262_144),
-      timeoutMs: Math.min(Math.max(Number(source.limits?.timeoutMs ?? 5_000), 500), 30_000),
-      maxConcurrency: 1,
-    },
-  };
-}
-
-function normalizePluginCandidate(input, scope, existing) {
-  if (!existing) throw new AppError('PLUGIN_NOT_FOUND', '缺少候选配置的现有插件。');
-  const normalized = normalizePlugin(input,scope,existing);
-  return {
-    ...normalized,
-    revision:existing.revision,
-    updatedAt:existing.updatedAt,
-  };
-}
-
-function materializePluginCandidate(candidate, existing) {
-  return {
-    ...candidate,
-    revision:existing.revision + 1,
-    updatedAt:now(),
-  };
-}
-
-function sanitizePluginSnapshot(plugin) {
-  // Re-normalizing through the plugin schema is an allow-list operation. It
-  // deliberately drops unknown YAML keys (including accidentally embedded
-  // password/ciphertext fields) before configuration recovery metadata is
-  // persisted outside the encrypted vault.
-  const normalized = normalizePlugin(plugin, {
-    projectId:plugin.projectId,
-    environmentId:plugin.environmentId,
-  });
-  return {
-    ...normalized,
-    revision:plugin.revision,
-    updatedAt:plugin.updatedAt,
-  };
 }
 
 async function pathExists(target) {
@@ -692,7 +210,8 @@ async function rewriteJsonLines(file, shouldDelete) {
 }
 
 export class WorkspaceStore {
-  constructor(dataRoot, { legacyStore = null } = {}) {
+  constructor(dataRoot, { legacyStore = null, registry = builtinPluginRegistry } = {}) {
+    this.registry = registry;
     this.dataRoot = dataRoot;
     this.projectsRoot = path.join(dataRoot, 'projects');
     this.legacyStore = legacyStore;
@@ -835,7 +354,7 @@ export class WorkspaceStore {
         legacyProjectId: legacy.id,
         policy: { status: 'auto', logs: 'auto', config: 'auto', download: 'confirm', diagnostics: 'auto' },
         limits: { timeoutMs: Number(legacy.limits?.commandTimeoutSeconds ?? 180) * 1000 },
-      }, { projectId: legacy.id, environmentId });
+      }, { projectId: legacy.id, environmentId }, null, this.registry);
       const legacyReadme = path.join(projectDir, 'docs', 'README.md');
       const runbook = (await pathExists(legacyReadme)) ? await fs.readFile(legacyReadme, 'utf8') : DEFAULT_RUNBOOK(environment.name);
       // workspace.yaml is the migration commit marker. Writing it last makes a
@@ -1400,7 +919,7 @@ export class WorkspaceStore {
     if (value?.projectId !== projectId || value.environmentId !== environmentId || value.pluginInstanceId !== pluginInstanceId) {
       throw new AppError('SCOPE_MISMATCH', '插件不属于当前环境。');
     }
-    if (value?.schemaVersion !== 1 || !PLUGIN_TYPES.has(value.pluginType) || typeof value.displayName !== 'string' || !value.displayName.trim()
+    if (value?.schemaVersion !== 1 || !this.registry.has(value.pluginType) || typeof value.displayName !== 'string' || !value.displayName.trim()
       || !Number.isInteger(value.revision) || value.revision < 1 || !['ready','draft'].includes(value.configState)) {
       throw new AppError('PLUGIN_CONFIG_INVALID', '插件配置损坏。');
     }
@@ -1412,9 +931,9 @@ export class WorkspaceStore {
       const environment = await this.getEnvironment(projectId, environmentId);
       if (expectedEnvironmentRevision !== null && environment.revision !== expectedEnvironmentRevision) throw new AppError('CONFIG_REVISION_CONFLICT', '环境配置已经变化，请重新打开环境后重试。');
       if (environment.pluginOrder.length >= 100) throw new AppError('RESULT_LIMIT_EXCEEDED', '每个环境最多 100 个插件。');
-      const plugin = normalizePlugin(input, { projectId, environmentId });
+      const plugin = normalizePlugin(input, { projectId, environmentId }, null, this.registry);
       if (environment.pluginOrder.includes(plugin.pluginInstanceId)) throw new AppError('PLUGIN_ALREADY_EXISTS', '插件标识已经存在。');
-      assertPluginConfigurationReady(plugin);
+      assertPluginConfigurationReady(plugin, this.registry);
       await this.assertPluginReferences(plugin);
       const file = this.pluginPath(projectId, environmentId, plugin.pluginInstanceId);
       // An unindexed file may belong to an interrupted older transaction;
@@ -1446,7 +965,7 @@ export class WorkspaceStore {
         throw new AppError('CONFIG_REVISION_CONFLICT','环境配置已经变化，请重新打开环境后重试。');
       }
       if (environment.pluginOrder.length >= 100) throw new AppError('RESULT_LIMIT_EXCEEDED','每个环境最多 100 个插件。');
-      const snapshot = sanitizePluginSnapshot(plugin);
+      const snapshot = sanitizePluginSnapshot(plugin, this.registry);
       if (snapshot.revision !== 1) throw new AppError('INVALID_ARGUMENT','新插件快照 revision 无效。');
       if (environment.pluginOrder.includes(snapshot.pluginInstanceId)) throw new AppError('PLUGIN_ALREADY_EXISTS','插件标识已经存在。');
       await this.assertPluginReferences(snapshot);
@@ -1466,7 +985,7 @@ export class WorkspaceStore {
     return this.enqueue(`environment:${plugin.projectId}:${plugin.environmentId}`,async () => {
       const environment = await this.getEnvironment(plugin.projectId,plugin.environmentId);
       const current = await this.getPlugin(plugin.projectId,plugin.environmentId,plugin.pluginInstanceId);
-      if (!isDeepStrictEqual(sanitizePluginSnapshot(current),sanitizePluginSnapshot(plugin))) {
+      if (!isDeepStrictEqual(sanitizePluginSnapshot(current, this.registry),sanitizePluginSnapshot(plugin, this.registry))) {
         throw new AppError('CONFIG_REVISION_CONFLICT','插件文件与待恢复的草稿提升快照不一致。');
       }
       if (environment.pluginOrder.includes(plugin.pluginInstanceId)) return current;
@@ -1503,10 +1022,10 @@ export class WorkspaceStore {
     if (patchScope === 'metadata') assertPluginPatchScope(patch,PLUGIN_METADATA_FIELDS,'插件基本信息');
     if (patchScope === 'agent-policy-scope') assertPluginPatchScope(patch,PLUGIN_AGENT_FIELDS,'Agent 配置');
     if (patchScope === 'connection') {
-      assertPluginPatchScope(patch,PLUGIN_CONNECTION_FIELDS[before.pluginType] ?? new Set(),'连接配置');
+      assertPluginPatchScope(patch,new Set(this.registry.get(before.pluginType).connectionFields),'连接配置');
       assertPluginNestedPatchScope(
         patch,
-        PLUGIN_CONNECTION_NESTED_FIELDS[before.pluginType],
+        Object.fromEntries(Object.entries(this.registry.get(before.pluginType).connectionNestedFields).map(([key, fields]) => [key, new Set(fields)])),
         '连接配置',
       );
     }
@@ -1514,11 +1033,13 @@ export class WorkspaceStore {
       {pluginInstanceId,pluginType:before.pluginType},
       {projectId,environmentId},
       before,
+      this.registry,
     );
     const normalizedCandidate = normalizePluginCandidate(
       {...patch,pluginInstanceId,pluginType:before.pluginType},
       {projectId,environmentId},
       before,
+      this.registry,
     );
     const candidate = preserveNormalizationOnlyRoots(
       before,normalizedBaseline,normalizedCandidate,
@@ -1536,7 +1057,7 @@ export class WorkspaceStore {
       credentialMutation,
       dependentPluginInstanceIds,
     });
-    if (requireReady) assertPluginConfigurationReady(candidate);
+    if (requireReady) assertPluginConfigurationReady(candidate, this.registry);
     const after = change.kind === 'none' ? before : materializePluginCandidate(candidate,before);
     return {before,candidate,after,change};
   }
@@ -1629,18 +1150,13 @@ export class WorkspaceStore {
   }
 
   publicPlugin(plugin) {
-    const target = plugin.target ?? {};
     return {
       pluginInstanceId: plugin.pluginInstanceId,
       pluginType: plugin.pluginType,
       displayName: plugin.displayName,
       configState: plugin.configState,
       revision: plugin.revision,
-      resource: plugin.pluginType === 'mysql'
-        ? { database: target.database }
-        : plugin.pluginType === 'redis'
-          ? { db: target.db }
-          : { host: target.host, port: target.port },
+      resource: this.registry.get(plugin.pluginType).publicResource(plugin),
       transport: plugin.transport?.kind ?? plugin.uplink?.type ?? 'direct',
       accessModel: 'builtin-risk-v1',
       limits: clone(plugin.limits ?? {}),

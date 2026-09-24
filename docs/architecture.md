@@ -15,6 +15,12 @@
 
 Electron 只加载构建后的 `renderer-build/v2/index.html`。生成目录不手工修改、不提交；安装包排除 Renderer 源码和已退役的 `src/mcp.mjs`。源码中的 `v2` 是仍在使用的接口和数据模型标识，不是待删的历史副本。
 
+## 插件贡献与应用服务
+
+`src/plugins/<type>/definition.mjs` 与 `connection.mjs` 贡献各插件的配置、连接评估、资源摘要和操作分发，`src/plugins/builtins.mjs` 显式组装可信注册表。`src/plugin-config-model.mjs` 处理公共模型，存储层保留文件、索引与版本控制。`src/plugin-configuration-service.mjs` 拥有创建和连接编辑保存事务，IPC 保留身份校验和转发。
+
+前端通过插件 UI 与工作区贡献选择定制组件，AppShell 的布局和工作区会话分别由独立 hook 管理。插件注册不授予 Agent 权限，凭据与新协议的安全边界仍需显式设计。新增步骤及保留的专门接入点见 [插件开发指南](plugin-development.md)，本轮方案见 [优化方案](plugin-architecture-plan.md)。
+
 ## 数据、连接与凭据
 
 持久化模型为 `Project → Environment → Plugin`，由 `src/workspace-store.mjs` 管理。每个环境拥有独立运维说明；Server、MySQL、Redis 是同级插件。MySQL 固定一个数据库，Redis 固定一个 Logical DB；数据库插件的 SSH 隧道只能复用同环境 Server。

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { AppError, toPublicError } from './errors.mjs';
 import { pluginConnectionFingerprint } from './plugin-change-classifier.mjs';
 import { getPluginConnectionAdapter } from './plugin-connection-adapters.mjs';
-import { workspaceInternals } from './workspace-store.mjs';
+import { normalizePluginCandidate } from './plugin-config-model.mjs';
 
 const VALIDATION_PURPOSES = new Set([
   'tls-probe','server-auth','resource-discovery','resource-access','health-check',
@@ -322,7 +322,7 @@ export class PluginEditSessionManager {
       pluginInstanceId:session.scope.pluginInstanceId,
       pluginType:session.basePlugin.pluginType,
     };
-    return workspaceInternals.normalizePluginCandidate(input,{
+    return normalizePluginCandidate(input,{
       projectId:session.scope.projectId,
       environmentId:session.scope.environmentId,
     },session.basePlugin);

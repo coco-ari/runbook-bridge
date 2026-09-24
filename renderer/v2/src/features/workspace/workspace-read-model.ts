@@ -1,3 +1,4 @@
+import { PLUGIN_CATALOG, isRegisteredPluginType, type RegisteredPluginType } from "../plugins/plugin-catalog.ts"
 import type { EnvironmentRuntime, PublicError } from "@/bridge/ai-ops-v2"
 
 export type WorkspaceReadStatus =
@@ -8,7 +9,7 @@ export type WorkspaceReadStatus =
   | "blocked"
   | "error"
 
-export type WorkspacePluginType = "server" | "mysql" | "redis" | "unknown"
+export type WorkspacePluginType = RegisteredPluginType | "unknown"
 export type WorkspacePluginConfigState = "ready" | "draft" | "unknown"
 export type WorkspaceRuntimePhase =
   | "blocked"
@@ -141,7 +142,7 @@ function booleanValue(value: unknown, fallback = false): boolean {
 }
 
 function pluginType(value: unknown): WorkspacePluginType {
-  return value === "server" || value === "mysql" || value === "redis" ? value : "unknown"
+  return isRegisteredPluginType(value) ? value : "unknown"
 }
 
 function configState(value: unknown): WorkspacePluginConfigState {
@@ -728,11 +729,5 @@ export function workspaceStatusLabel(status: WorkspaceReadStatus): string {
 }
 
 export function pluginTypeLabel(type: WorkspacePluginType): string {
-  const labels: Record<WorkspacePluginType, string> = {
-    mysql: "MySQL",
-    redis: "Redis",
-    server: "Server",
-    unknown: "未知类型",
-  }
-  return labels[type]
+  return type === "unknown" ? "未知类型" : PLUGIN_CATALOG[type].label
 }

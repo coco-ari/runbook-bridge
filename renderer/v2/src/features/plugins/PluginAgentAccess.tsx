@@ -34,7 +34,7 @@ import {
 } from "@/components/ui/table"
 import type { PluginConfigurationRecord, PluginKind } from "@/features/plugins/plugin-types"
 
-interface PluginAgentAccessProps {
+export interface PluginAgentAccessProps {
   readonly api: AiOpsV2Api
   readonly onDirtyChange?: ((dirty: boolean) => void) | undefined
   readonly onSavingChange?: ((saving: boolean) => void) | undefined
