@@ -172,3 +172,59 @@ test('实际 SQL 超时保留执行计划建议，不误报成表检查超时', 
     error.code === 'DATABASE_QUERY_TIMEOUT' && error.details.operation === 'query'
     && /mysql_explain/.test(error.details.guidance) && !/查询尚未执行/.test(error.details.guidance));
 });
+
+
+test('查询耗时区分表检查、排队和业务执行且不包含 SQL 或数据', async () => {
+  const runtime = fixture(async request => {
+    await delay(20);
+    if (request.sql.includes('TABLE_TYPE FROM')) return [[{TABLE_NAME:'orders',TABLE_TYPE:'BASE TABLE'}]];
+    return [[{id:1}],[]];
+  });
+  const result = await runtime.queryReadonly(plugin,'SELECT id FROM orders');
+  assert.ok(result.timings.tableCheckMs>=15);
+  assert.ok(result.timings.queryMs>=15);
+  assert.ok(result.timings.totalMs>=result.timings.tableCheckMs+result.timings.queryMs-2);
+  assert.ok(Object.values(result.timings).every(value=>Number.isInteger(value)&&value>=0));
+  const first = runtime.querySession(plugin,{sql:'SELECT 1'});
+  const timing = {};
+  await runtime.querySession(plugin,{sql:'SELECT 2'},{timing});
+  await first;
+  assert.ok(timing.queueMs>=15);
+  assert.ok(timing.executionMs>=15);
+  assert.equal(timing.executionStarted,true);
+});
+
+test('表检查和实际执行超时分别标识是否已开始业务查询', async () => {
+  for (const metadata of [true,false]) {
+    const runtime = fixture(async request => {
+      if (!metadata && request.sql.includes('TABLE_TYPE FROM')) return [[{TABLE_NAME:'orders',TABLE_TYPE:'BASE TABLE'}]];
+      await delay(15);
+      throw Object.assign(new Error('private-driver-text'),{code:'ETIMEDOUT'});
+    });
+    await assert.rejects(runtime.queryReadonly(plugin,'SELECT id FROM orders'),error=>{
+      assert.equal(error.code,'DATABASE_QUERY_TIMEOUT');
+      assert.equal(error.details.queryStarted,!metadata);
+      assert.equal(error.details.operation,metadata?'table_check':'query');
+      assert.ok(error.details.timing.executionMs>=10);
+      assert.ok(error.details.timings.totalMs>=10);
+      assert.equal(error.details.timings.queryMs===0,metadata);
+      assert.doesNotMatch(JSON.stringify(error.details),/private-driver-text|SELECT id|orders/);
+      return true;
+    });
+  }
+});
+
+test('查询排队失败记录等待时间，且不误报已执行或断开连接', async () => {
+  const runtime = fixture(async () => {await delay(50);return [[]];},{queueTimeoutMs:10});
+  const first = runtime.querySession(plugin,{sql:'SELECT 1'});
+  await assert.rejects(runtime.queryReadonly(plugin,'SELECT 2'),error=>{
+    assert.equal(error.code,'READ_BUSY');
+    assert.equal(error.details.queryStarted,false);
+    assert.equal(error.details.phase,'queue');
+    assert.ok(error.details.timings.queryQueueMs>=5);
+    assert.equal(error.details.timings.queryMs,0);
+    return true;
+  });
+  await first;
+  assert.equal(runtime.sessions.size,1);
+});

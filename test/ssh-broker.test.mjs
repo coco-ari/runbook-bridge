@@ -130,6 +130,13 @@ async function startSshServer(t, {
             let readRequests = 0;
             let firstReadObserved = false;
             const sftp = acceptSftp();
+            sftp.once('close', () => {
+              if (sftpTracker) sftpTracker.closedChannels = (sftpTracker.closedChannels ?? 0) + 1;
+              for (const entry of handles.values()) if (entry.fd !== undefined) {
+                try { fsSync.closeSync(entry.fd); } catch { /* 夹具清理已被异步关闭的句柄。 */ }
+              }
+              handles.clear();
+            });
             const resolveRemote = (filename) => {
               const rootPath = path.resolve(sftpRoot);
               const resolved = path.resolve(rootPath, String(filename).replace(/^[/\\]+/, ''));
@@ -1187,4 +1194,43 @@ test('SFTP total timeout reports numeric transfer progress and closes the read s
     assert.doesNotMatch(JSON.stringify(error.details),/slow.log|AAAA/);
     return true;
   });
+});
+
+
+test('日志单页预算中止真实 SFTP 读取并保留当前文件续查', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'ai-ops-log-page-deadline-'));
+  const remoteRoot = path.join(root,'remote');
+  await fs.mkdir(path.join(remoteRoot,'logs'),{recursive:true});
+  await fs.writeFile(path.join(remoteRoot,'logs','slow.log'),Buffer.alloc(65536,0x41));
+  t.after(async () => {
+    const checked = await fs.realpath(root);
+    assert.equal(path.dirname(checked),await fs.realpath(os.tmpdir()));
+    assert.ok(path.basename(checked).startsWith('ai-ops-log-page-deadline-'));
+    await fs.rm(checked,{recursive:true,force:true});
+  });
+  let slow = true;
+  const tracker = {};
+  const port = await startSshServer(t,{sftpRoot:remoteRoot,sftpTracker:tracker,
+    sftpReadDelayMs:offset=>slow && offset>0 ? 2000 : 0});
+  const h = await managedServer(t,root,port);
+  await h.connect();
+  const operations = new ServerOperations(h.runtime,h.store,{logPageTimeMs:800});
+  const args = {path:'/logs/slow.log',queries:['missing']};
+  const started = Date.now();
+  const first = await operations.searchLogs(h.plugin,args);
+  assert.ok(Date.now()-started<4000,'应按单页预算停止，而非等待默认两分钟');
+  assert.equal(first.interruption.code,'LOG_SEARCH_TIMEOUT');
+  assert.equal(first.status,'partial');
+  assert.equal(first.conclusion,'inconclusive');
+  assert.equal(first.coverage.length,0);
+  assert.ok(first.nextCursor);
+  for (let n=0;n<50 && !tracker.closedChannels;n+=1) await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(tracker.closedChannels,1);
+  slow = false;
+  operations.logSearch.pageTimeMs = 5000;
+  const next = await operations.searchLogs(h.plugin,{...args,cursor:first.nextCursor});
+  assert.equal(next.status,'complete');
+  assert.equal(next.conclusion,'no_match');
+  assert.equal(next.nextCursor,null);
+  assert.equal(tracker.closeRequests,1);
 });

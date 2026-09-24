@@ -6,7 +6,7 @@ export const LOG_SEARCH_LIMITS = Object.freeze({
   maxDepth:{minimum:0,maximum:12,default:3,label:'最大目录深度'},
   beforeLines:{minimum:0,maximum:50,default:2,label:'前置上下文行数'},
   afterLines:{minimum:0,maximum:50,default:2,label:'后置上下文行数'},
-  maxScanBytes:{minimum:65536,maximum:64 * 1024 * 1024,default:16 * 1024 * 1024,label:'日志扫描字节数'},
+  maxScanBytes:{minimum:65536,maximum:64 * 1024 * 1024,default:4 * 1024 * 1024,label:'日志扫描字节数'},
   maxExpandedBytes:{minimum:65536,maximum:128 * 1024 * 1024,default:64 * 1024 * 1024,label:'日志展开字节数'},
   maxResultBytes:{minimum:16 * 1024,maximum:2 * 1024 * 1024,default:32 * 1024,label:'日志结果正文字节数'},
   maxArchiveEntries:{minimum:1,maximum:128,default:128,label:'归档条目数'},

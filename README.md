@@ -135,7 +135,7 @@ macOS 数据保存在 `~/.ai-ops-tool`，密码由系统钥匙串加密。两个
 ## Codex 查询与排障效率
 
 - 日志支持 ZIP/GZIP、多关键词和有界续查。返回 `nextCursor` 时保持其他参数一致继续，结合 `status`、`conclusion`、`coverage` 判断范围；`inconclusive` 不能解释成没有异常。目录短期复用，`refresh:true` 发起最新搜索。见 [日志读取与排障](docs/mcp-log-reading.md)。
-- 日志正文默认按 32 KiB 分页（`maxResultBytes`），状态、遗漏原因与游标先于正文返回；归档只因本页剩余预算不足时自动保留到下一页，单文件超限时返回调整建议。
+- 日志输入默认 4 MiB、单页远程会话预算 20 秒；读取超时保留已完成结果及续查位置，文件发现阶段超时明确报错。日志正文默认按 32 KiB 分页（`maxResultBytes`），状态、遗漏原因与游标先于正文返回；归档只因本页剩余预算不足时自动保留到下一页，单文件超限时返回调整建议。
 - MySQL Schema 默认先匹配表，未命中再查字段；可指定 `searchIn`、准确 `table`、`includeIndexes:true`。元数据缓存 60 秒，业务查询仍逐次执行和校验，`refresh:true` 可更新元数据。相同连接、配置和表集合的同时检查只合并在途请求，完成后不缓存；重连后必须重新检查。超时 `details.operation` 区分表检查、结构搜索与 SQL 执行。
 - 变更待确认时，使用 `get_confirmation_status`（`waitMs` 最长 10 秒）查询当前会话状态。只有 `approved` 时原参数重试一次；`running/succeeded` 不要重发。
 - `server_control_service` 只有在 systemctl 退出码为零时成功；非零或未取得退出码时返回 `SERVICE_CONTROL_FAILED`，确认状态与操作记录标记失败。先查询服务状态和日志，再决定是否重新确认重试；错误只返回操作、单元名和退出码，不附带远端正文。
@@ -144,3 +144,12 @@ macOS 数据保存在 `~/.ai-ops-tool`，密码由系统钥匙串加密。两个
 - 查询按插件限制并发，并设全局排队与内存预算；压缩处理在本地工作线程执行。`READ_BUSY` 表示排队繁忙，先等待再重试。
 
 职责拆分、资源预算与缓存边界见 [架构说明](docs/architecture.md)。
+
+
+### MySQL 查询耗时诊断
+
+mysql_query_readonly 的成功结果增加 timings：tableCheckMs 为基础表检查总耗时（包含等待），queryQueueMs 为业务查询排队耗时，queryMs 为业务执行耗时，totalMs 为本次总耗时。原 durationMs 字段保留兼容语义。
+
+错误 details 包含本次失败操作的 timing（queueMs、executionMs、totalMs、executionStarted），以及业务查询的 timings、queryStarted。operation:table_check 且 queryStarted:false 表示业务 SQL 尚未执行，应先排查元数据访问、网络和连接恢复；业务执行超时才考虑执行计划和查询条件。READ_BUSY 表示排队超限，不代表连接断开。耗时仅使用数值，不包含 SQL、参数或数据库内容。
+
+基础表检查仍逐次执行，只合并同一连接内尚未完成的同类检查；不会长期缓存检查结果或放宽 View、固定数据库、只读限制。

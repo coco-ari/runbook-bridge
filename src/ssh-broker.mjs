@@ -149,6 +149,7 @@ function withSftp(client, action, { timeoutMs = 0, inactivityMs = 0, timeoutCode
     let inactivityTimer = null;
     let forceCloseTimer = null;
     let progress = { phase:'sftp', timeoutMs };
+    const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Infinity;
 
     const safeEnd = () => {
       if (!sftp || closing) return;
@@ -248,7 +249,7 @@ function withSftp(client, action, { timeoutMs = 0, inactivityMs = 0, timeoutCode
           return;
         }
         Promise.resolve()
-          .then(() => action(sftp, { signal: controller.signal, abort, reportProgress }))
+          .then(() => action(sftp, { signal: controller.signal, abort, reportProgress, deadline }))
           .then(
             (value) => finish(controller.signal.reason ?? null, value),
             (error) => finish(controller.signal.reason ?? error),
@@ -1339,7 +1340,7 @@ export class SshBroker {
     });
   }
 
-  async withInternalSftp(projectId, operation, { timeoutMs = SFTP_READ_INACTIVITY_MS, inactivityMs = 0, signal = null, timeoutMessage, reuseWorkspace = false } = {}) {
+  async withInternalSftp(projectId, operation, { timeoutMs = SFTP_READ_INACTIVITY_MS, inactivityMs = 0, signal = null, timeoutMessage, timeoutCode = 'SFTP_OPERATION_TIMEOUT', reuseWorkspace = false } = {}) {
     const session = this.requireSession(projectId);
     const pool = reuseWorkspace ? session.workspaceReads ??= new SftpReadPool(session.client) : null;
     return withSftp(
@@ -1348,7 +1349,7 @@ export class SshBroker {
       {
         timeoutMs,
         signal,
-        timeoutCode: 'SFTP_OPERATION_TIMEOUT',
+        timeoutCode,
         inactivityMs,
         releaseSftp: pool ? channel => pool.release(channel) : null,
         discardSftp: pool ? channel => pool.discard(channel) : null,
@@ -1361,32 +1362,46 @@ export class SshBroker {
     return this.withRemoteReadSession(projectId, operation, { signal, reuseWorkspace: true });
   }
 
-  async withRemoteReadSession(projectId, operation, { signal = null, reuseWorkspace = false, pipelineMetadata = false, pipelineReadValidation = false } = {}) {
+  async withRemoteReadSession(projectId, operation, { signal = null, reuseWorkspace = false, pipelineMetadata = false, pipelineReadValidation = false, timeoutMs = SFTP_READ_SESSION_TIMEOUT_MS, timeoutCode = 'SFTP_OPERATION_TIMEOUT' } = {}) {
     if (typeof operation !== 'function') throw new AppError('INVALID_ARGUMENT', '服务器只读会话操作无效。');
-    return this.withInternalSftp(projectId, async (sftp, session, lifecycle) => operation({
-      generation: session.generation,
-      statPath: (remotePath) => statRemotePathOnSftp(sftp, remotePath, { pipeline: reuseWorkspace || pipelineMetadata }),
-      inspectDeletePath: (remotePath) => inspectWorkspaceDeletePath(sftp, remotePath),
-      listDirectory: (remotePath) => listRemoteDirectoryOnSftp(sftp, remotePath),
-      // 人工目录树直接使用 READDIR 属性，链接目标由后续批次查询。
-      listDirectoryEntries: async (remotePath, { afterRead } = {}) => {
-        const entries = await sftpReadWorkspaceDirectory(sftp, normalizeAbsoluteRemotePath(remotePath), 10_003, lifecycle, afterRead);
-        const valid = entries.filter((entry) => entry.filename !== '.' && entry.filename !== '..');
-        return {
-          truncated: valid.length > 10_000,
-          entries: valid.slice(0, 10_000).map((entry) => ({
-            name: entry.filename,
-            size: Number(entry.attrs?.size ?? 0),
-            mtime: Number(entry.attrs?.mtime ?? 0),
-            mode: Number(entry.attrs?.mode ?? 0),
-            type: entry.attrs?.isSymbolicLink?.() ? 'symlink' : entry.attrs?.isDirectory?.() ? 'directory' : entry.attrs?.isFile?.() ? 'file' : 'special',
-          })),
-        };
-      },
-      readRange: (remotePath, start, maxBytes, options) => readRemoteRangeOnSftp(sftp, remotePath, start, maxBytes, lifecycle, options, { pipelineReadValidation }),
-      readBuffer: (remotePath, start, maxBytes, options) => readRemoteBufferOnSftp(sftp, remotePath, start, maxBytes, lifecycle, options, { pipelineReadValidation }),
-    }), {
-      timeoutMs: SFTP_READ_SESSION_TIMEOUT_MS,
+    return this.withInternalSftp(projectId, async (sftp, session, lifecycle) => {
+      const guard = action => async (...args) => {
+        throwIfAborted(lifecycle.signal);
+        const result = await action(...args);
+        throwIfAborted(lifecycle.signal);
+        return result;
+      };
+      const reader = {
+        signal:lifecycle.signal,
+        deadline:lifecycle.deadline,
+        generation: session.generation,
+        statPath: (remotePath) => statRemotePathOnSftp(sftp, remotePath, { pipeline: reuseWorkspace || pipelineMetadata }),
+        inspectDeletePath: (remotePath) => inspectWorkspaceDeletePath(sftp, remotePath),
+        listDirectory: (remotePath) => listRemoteDirectoryOnSftp(sftp, remotePath),
+        // 人工目录树直接使用 READDIR 属性，链接目标由后续批次查询。
+        listDirectoryEntries: async (remotePath, { afterRead } = {}) => {
+          const entries = await sftpReadWorkspaceDirectory(sftp, normalizeAbsoluteRemotePath(remotePath), 10_003, lifecycle, afterRead);
+          const valid = entries.filter((entry) => entry.filename !== '.' && entry.filename !== '..');
+          return {
+            truncated: valid.length > 10_000,
+            entries: valid.slice(0, 10_000).map((entry) => ({
+              name: entry.filename,
+              size: Number(entry.attrs?.size ?? 0),
+              mtime: Number(entry.attrs?.mtime ?? 0),
+              mode: Number(entry.attrs?.mode ?? 0),
+              type: entry.attrs?.isSymbolicLink?.() ? 'symlink' : entry.attrs?.isDirectory?.() ? 'directory' : entry.attrs?.isFile?.() ? 'file' : 'special',
+            })),
+          };
+        },
+        readRange: (remotePath, start, maxBytes, options) => readRemoteRangeOnSftp(sftp, remotePath, start, maxBytes, lifecycle, options, { pipelineReadValidation }),
+        readBuffer: (remotePath, start, maxBytes, options) => readRemoteBufferOnSftp(sftp, remotePath, start, maxBytes, lifecycle, options, { pipelineReadValidation }),
+      };
+      // 超时后的迟到回调不能继续发现目录、处理结果或发起下一次读取。
+      for (const field of Object.keys(reader)) if (typeof reader[field] === 'function') reader[field] = guard(reader[field]);
+      return operation(reader);
+    }, {
+      timeoutMs: Math.min(SFTP_READ_SESSION_TIMEOUT_MS, Math.max(1, timeoutMs)),
+      timeoutCode,
       signal,
       reuseWorkspace,
     });

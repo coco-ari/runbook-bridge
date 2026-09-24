@@ -46,7 +46,7 @@ server_read_file、server_read_log 和 server_read_config 返回完整 UTF-8 字
 
 | 参数 | 含义与上限 |
 | --- | --- |
-| `maxScanBytes` | 远端输入字节；默认 16 MiB，兼容 `fileIds+contains` 默认为 4 MiB，最大 64 MiB。ZIP/GZIP 必须完整容纳压缩文件。 |
+| `maxScanBytes` | 远端输入字节；默认 4 MiB，最大 64 MiB。ZIP/GZIP 必须完整容纳压缩文件。 |
 | `maxExpandedBytes` | 本次解压后总预算，也约束单个条目；默认是扫描预算的 4 倍，最大 128 MiB。单个条目不再额外限制为 32 MiB。 |
 | `maxArchiveEntries` | 所有归档合计条目预算，默认及最大 128。 |
 | `maxResultBytes` | `matches` 与 `contexts` 的 UTF-8 JSON 正文预算，默认 32 KiB，最小 16 KiB，最大 2 MiB；覆盖范围等元数据另计。 |
@@ -64,7 +64,7 @@ server_read_file、server_read_log 和 server_read_config 返回完整 UTF-8 字
 - `SFTP_OPERATION_TIMEOUT`：达到 SFTP 会话总时限；`LOG_SCAN_TIMEOUT`：单个读取请求 30 秒没有响应。错误 `details` 提供阶段、时限以及已读取和请求字节数（进入读取阶段后），不含文件内容。
 - 超时后若目录和 `server_stat` 正常，不必反复重连。先使用单个文件、缩小普通日志的尾部范围，并把多个关键词合并进一次 `queries`。归档需要完整输入，不能靠截断压缩包来查询。
 
-SFTP 读取使用最多 16 个 30 KiB 请求构成的持续流水线，在途窗口从 512 KiB 降为 480 KiB；分块避开 SSH2 兼容端点的单次 READ 上限，减少库内拆包的串行往返。短读补齐、EOF、断连和关闭句柄均有本机 SSH 协议回归；120 秒会话总时限与 30 秒单请求无响应时限继续生效。慢块测试用于验证请求调度，不代表真实服务器的固定速度承诺。
+SFTP 读取使用最多 16 个 30 KiB 请求构成的持续流水线，在途窗口从 512 KiB 降为 480 KiB；分块避开 SSH2 兼容端点的单次 READ 上限，减少库内拆包的串行往返。短读补齐、EOF、断连和关闭句柄均有本机 SSH 协议回归；普通读取保留 120 秒会话总时限与 30 秒单请求无响应时限；日志搜索额外使用下述更短的单页预算。慢块测试用于验证请求调度，不代表真实服务器的固定速度承诺。
 
 ## 续查和证据完整性
 
@@ -84,7 +84,7 @@ SFTP 读取使用最多 16 个 30 KiB 请求构成的持续流水线，在途窗
 | `scannedBytes` | 本页计费输入范围，包括缓存输入、探测和失败读取的预留范围。 |
 | `remoteBytesRead` | 已成功返回的远端输入字节；失败请求可能已传输部分内容，故不是线速流量计。 |
 
-多文件搜索遇到单个文件消失或改写可保留其他文件结果；真实路径越界或安全检查失败仍拒绝。未发现的目录最多返回 32 个导航建议，不会自动扩大搜索范围。每页设 60 秒软预算，目录发现最多 20 秒；在远端请求之间检查预算，正在读取的请求仍受 SFTP 的超时约束。
+多文件搜索遇到单个文件消失或改写可保留其他文件结果；真实路径越界或安全检查失败仍拒绝。未发现的目录最多返回 32 个导航建议，不会自动扩大搜索范围。每页远程会话预算为 20 秒，覆盖 SFTP 建连、目录发现和读取，超时中止当前通道并等待有界清理，排队时间另外受队列上限约束。已确定文件清单时保留已完成的匹配、coverage 和 nextCursor；当前未完成文件在下一页重新验证读取，不把部分传输字节算作完整覆盖。返回 interruption.code（LOG_SEARCH_TIMEOUT、LOG_SCAN_TIMEOUT 或 SFTP_OPERATION_TIMEOUT）及 truncationReasons:timeBudget。未完成文件发现时仍返回带 phase:discovery 的错误，不生成虚假游标。若同一文件再次超时，应缩小范围后发起新搜索，避免无限续查。
 
 目录最多缓存 15 秒，按作用域、插件版本、连接代次和目录身份隔离。每次仍核对目录类型/真实路径，新搜索复核缓存文件元数据。SFTP 修改时间精度有限，无法凭元数据证明目录或文件从未变化；要读取最新内容，移除游标并使用 `refresh:true`，重新发现目录和读取文件。
 
@@ -103,3 +103,25 @@ SFTP 读取使用最多 16 个 30 KiB 请求构成的持续流水线，在途窗
 单插件日志搜索串行，全局最多 2 个；一般 Server 读取全局最多 4 个、单插件最多 2 个。`READ_BUSY` / `LOG_SEARCH_BUSY` 返回排队阶段与建议重试间隔，排队最多 10 秒，不在队列中额外访问服务器。
 
 下载仍保存到工作台管理的本地目录。单服务器最多 1 个下载，全局最多 2 个，使用 16 × 30 KiB 传输窗口；有进度时允许继续，总时限 10 分钟，无进度时限 30 秒。完成后复核源身份和本地大小，再提升临时文件。超时返回纯数值进度并清理临时文件，不代表支持断点续传。
+
+
+## 推荐调用示例
+
+首次搜索优先省略预算参数，按准确路径或日期范围合并关键词。下面仅列操作参数；实际调用必须带当前作用域和 contextToken：
+
+```json
+{
+  "path": "/var/log/example",
+  "pattern": "app-2026-01-01*.log*",
+  "queries": ["request-example", "ERROR"],
+  "matchMode": "all",
+  "maxDepth": 1
+}
+```
+
+- 有 nextCursor：保持上述参数完全一致，仅增加 cursor；部分页零匹配不是没有证据。
+- INVALID_ARGUMENT：按照 details.field、minimum、maximum、suggestedValue 调整；调整参数时移除旧 cursor。
+- maxScanBytes：默认 4194304，允许 65536–67108864。只有确需扩大覆盖范围或容纳归档输入时才增加。
+- maxResultBytes：默认 32768，允许 16384–2097152。不要为了减少输出而传 10000；可减少 maxMatches 和上下文行数。
+- 归档超限：检查 skipped.requiredExpandedBytes 和 suggestedArguments。已知大小超过硬上限时 retryable:false；流式解压仅知道已观察到的字节下限，建议值不保证能容纳整个归档。
+- 只看最新片段：使用 server_read_file 的 tail:true 和 maxBytes:65536，避免启动大范围搜索。

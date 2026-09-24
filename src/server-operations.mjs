@@ -278,9 +278,9 @@ export class ServerOperations {
     };
   }
 
-  withRemoteReadSession(plugin, operation) {
+  withRemoteReadSession(plugin, operation, options = {}) {
     if (typeof this.serverRuntime.withRemoteReadSession === 'function') {
-      return this.serverRuntime.withRemoteReadSession(plugin, operation);
+      return this.serverRuntime.withRemoteReadSession(plugin, operation, options);
     }
     return operation({
       statPath: (remotePath) => this.serverRuntime.statRemotePath(plugin, remotePath),

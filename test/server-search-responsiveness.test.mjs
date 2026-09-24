@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import test from 'node:test';
+import { gzipSync } from 'node:zlib';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { ServerOperations } from '../src/server-operations.mjs';
 
@@ -238,4 +239,84 @@ test('显式刷新自身失败后释放队列并允许下一次重新读取', as
   const result = await operations.findFiles(plugin, { ...args, refresh: true });
   assert.deepEqual(result.files.map(file => file.name).sort(), ['new.log', 'old.log']);
   assert.equal(fixture.calls.lists.length, 3);
+});
+
+
+test('日志超时保留先前匹配和当前文件游标，续查不跳行也不重复已完成文件', async t => {
+  const fixture = memoryRuntime({'a.log':'needle first\n','b.log':'needle second\n'});
+  const session = fixture.runtime.withRemoteReadSession;
+  let fail = true;
+  fixture.runtime.withRemoteReadSession = (scope, action, options) => {
+    assert.equal(options.timeoutMs,20000);
+    assert.equal(options.timeoutCode,'LOG_SEARCH_TIMEOUT');
+    return session(scope, reader => action({...reader, readBuffer:async (...args) => {
+      if (fail && args[0].endsWith('/b.log')) throw Object.assign(new Error('合成超时'),{code:'LOG_SEARCH_TIMEOUT'});
+      return reader.readBuffer(...args);
+    }}));
+  };
+  const operations = operationsFor(t,fixture);
+  const args = {path:root,queries:['needle']};
+  const first = await operations.searchLogs(plugin,args);
+  assert.equal(first.status,'partial');
+  assert.equal(first.conclusion,'matches');
+  assert.equal(first.progress.filesRemaining,1);
+  assert.deepEqual(first.matches.map(m=>m.text),['needle first']);
+  assert.equal(first.coverage.length,1);
+  assert.equal(first.interruption.code,'LOG_SEARCH_TIMEOUT');
+  assert.ok(first.nextCursor);
+  assert.equal(first.limitsApplied.maxScanBytes,4*1024*1024);
+  fail = false;
+  const next = await operations.searchLogs(plugin,{...args,cursor:first.nextCursor});
+  assert.equal(next.status,'complete');
+  assert.deepEqual(next.matches.map(m=>m.text),['needle second']);
+  assert.equal(next.progress.matchedSoFar,2);
+  assert.equal(fixture.calls.reads.filter(r=>r.path.endsWith('/a.log')).length,1);
+});
+
+test('第一个日志读取超时返回证据不完整，发现阶段超时仍明确报错', async t => {
+  const fixture = memoryRuntime({'a.log':'needle\n'});
+  const session = fixture.runtime.withRemoteReadSession;
+  let discovery = false;
+  fixture.runtime.withRemoteReadSession = (scope, action) => session(scope, reader => action({
+    ...reader,
+    statPath:async (...args) => {
+      if (discovery) throw Object.assign(new Error('合成超时'),{code:'LOG_SEARCH_TIMEOUT'});
+      return reader.statPath(...args);
+    },
+    readBuffer:async () => { throw Object.assign(new Error('合成超时'),{code:'LOG_SCAN_TIMEOUT'}); },
+  }));
+  const operations = operationsFor(t,fixture);
+  const first = await operations.searchLogs(plugin,{path:root+'/a.log',queries:['needle']});
+  assert.equal(first.conclusion,'inconclusive');
+  assert.equal(first.coverage.length,0);
+  assert.ok(first.nextCursor);
+  discovery = true;
+  await assert.rejects(operations.searchLogs(plugin,{path:root+'/a.log',queries:['needle']}),error=>
+    error.code==='LOG_SEARCH_TIMEOUT' && error.details.phase==='discovery');
+});
+
+test('已知归档展开大小超过硬上限时不建议反复扩大预算', async t => {
+  const fixture = memoryRuntime({'a.gz':gzipSync('合成归档')});
+  const operations = operationsFor(t,fixture);
+  operations.logSearch.processor = {run:async () => {
+    throw Object.assign(new Error('合成超限'),{code:'LOG_ARCHIVE_ENTRY_TOO_LARGE',details:{bytes:200*1024*1024}});
+  }};
+  const result = await operations.searchLogs(plugin,{path:root+'/a.gz',queries:['needle']});
+  assert.equal(result.skipped[0].retryable,false);
+  assert.equal(result.skipped[0].requiredExpandedBytes,200*1024*1024);
+  assert.equal(result.skipped[0].suggestedArguments,undefined);
+  assert.equal(result.conclusion,'inconclusive');
+});
+
+
+test('SFTP 建连耗时计入处理预算，过期后不再读取或启动工作线程', async t => {
+  const fixture = memoryRuntime({'a.log':'needle\n'});
+  const session = fixture.runtime.withRemoteReadSession;
+  fixture.runtime.withRemoteReadSession = (scope, action) => session(scope, reader=>action({...reader,deadline:Date.now()-1}));
+  const operations = operationsFor(t,fixture);
+  operations.logSearch.processor = {run:async()=>assert.fail('预算耗尽后不能启动工作线程')};
+  const result = await operations.searchLogs(plugin,{path:root+'/a.log',queries:['needle']});
+  assert.equal(fixture.calls.reads.length,0);
+  assert.equal(result.conclusion,'inconclusive');
+  assert.ok(result.nextCursor);
 });

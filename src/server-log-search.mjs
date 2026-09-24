@@ -66,7 +66,7 @@ function logSearchGuidance(reasons) {
   if (reasons.has('maxScanBytes')) guidance.push('扫描预算不足；指定单个文件后按文件大小设置 maxScanBytes，最大 67108864。ZIP/GZIP 必须完整读取压缩输入。');
   if (reasons.has('maxExpandedBytes') || reasons.has('archiveRejected')) guidance.push('检查 skipped 中的具体原因；解压大小超限时可增大 maxExpandedBytes，最大 134217728；损坏、加密、压缩比或不支持的格式无法通过增加扫描预算解决。');
   if (reasons.has('maxFilesOrListing')) guidance.push('文件发现范围不完整；用日期 pattern、单个文件 path 或更窄的子目录继续搜索。');
-  if (reasons.has('timeBudget')) guidance.push('搜索时间预算已用尽；指定单个文件并合并 queries，缩小读取范围后重试。');
+  if (reasons.has('timeBudget')) guidance.push('本页读取已停止；有 nextCursor 时保持参数完全一致续查。若同一文件再次超时，请指定该文件并缩小 maxScanBytes、合并 queries 发起新搜索；目录和 stat 正常时无需重新连接。');
   return guidance;
 }
 
@@ -178,7 +178,7 @@ export class ServerLogSearch {
     this.withRemoteReadSession = operations.withRemoteReadSession.bind(operations);
     this.findFilesWithReader = operations.findFilesWithReader.bind(operations);
     this.processor = options.logProcessor ?? logProcessor;
-    this.pageTimeMs = options.logPageTimeMs ?? 60_000;
+    this.pageTimeMs = options.logPageTimeMs ?? 20_000;
     this.cursors = new LogSearchCursors({ now:options.now ?? Date.now });
     this.logSnapshotCache = new LogSnapshotCache({
       now:options.now ?? Date.now,
@@ -199,7 +199,6 @@ export class ServerLogSearch {
     if (selectors.length !== 1) throw new AppError('INVALID_ARGUMENT', '日志搜索必须且只能提供 fileIds、sourceId 或 path 之一。');
     const selector = selectors[0];
     const queries = normalizeLogQueries(args);
-    const legacy = selector === 'fileIds' && args.contains !== undefined && args.queries === undefined;
     const modeValue = String(args.matchMode ?? 'any').toLowerCase();
     if (!['any','all'].includes(modeValue)) throw new AppError('INVALID_ARGUMENT', 'matchMode 必须是 any 或 all。');
     if (args.maxLines !== undefined && args.maxMatches !== undefined) {
@@ -210,7 +209,7 @@ export class ServerLogSearch {
     const maxDepth = logInteger(args.maxDepth, 'maxDepth');
     const beforeLines = logInteger(args.beforeLines, 'beforeLines');
     const afterLines = logInteger(args.afterLines, 'afterLines');
-    const scanBudget = logInteger(args.maxScanBytes, 'maxScanBytes', legacy ? 4 * 1024 * 1024 : 16 * 1024 * 1024);
+    const scanBudget = logInteger(args.maxScanBytes, 'maxScanBytes');
     const expandedBudget = logInteger(args.maxExpandedBytes, 'maxExpandedBytes',
       Math.min(LOG_SEARCH_MAX_EXPANDED_BYTES, Math.max(scanBudget, scanBudget * 4)));
     const maxArchiveEntries = logInteger(args.maxArchiveEntries, 'maxArchiveEntries');
@@ -224,8 +223,10 @@ export class ServerLogSearch {
     const gateKey = [plugin.projectId,plugin.environmentId,plugin.pluginInstanceId].join('\u0000');
     const reservationBytes = (scanBudget * 2) + (expandedBudget * 3);
 
-    return this.logSearchGate.run(gateKey, reservationBytes, () => this.withRemoteReadSession(plugin, async (reader) => {
-      const deadline = Date.now() + this.pageTimeMs;
+    let finishInterruptedPage;
+    const searchPage = async (reader) => {
+      // 建连已消耗的时间同样计入预算，工作线程不能在通道超时后继续占用一整页时间。
+      const deadline = Math.min(Date.now() + this.pageTimeMs, reader.deadline ?? Infinity);
       const binding = logSearchBinding(plugin,args,reader.generation);
       const resumed = args.cursor === undefined ? null : this.cursors.get(args.cursor,binding);
       const directStat = !resumed && selector === 'path'
@@ -361,6 +362,71 @@ export class ServerLogSearch {
       let cacheMisses = 0;
       let cacheSavedRemoteBytes = 0;
 
+      let activeFileIndex = null;
+      let pageResult;
+      const finishPage = () => {
+        if (pageResult) return pageResult;
+        if (scannedBytes >= scanBudget && scannedFiles < files.length) truncationReasons.add('maxScanBytes');
+        if (expandedBytes >= expandedBudget && scannedFiles < files.length) truncationReasons.add('maxExpandedBytes');
+        const cache = this.logSnapshotCache.stats();
+        const unresolved = Boolean(resumed?.unresolved) || skipped.some(item => item.code !== 'ARCHIVES_EXCLUDED') || truncationReasons.has('sourceGrew') || truncationReasons.has('lineBoundary');
+        const matchedSoFar = (resumed?.matchedSoFar ?? 0) + matches.length;
+        const filesFinished = (resumed?.filesFinished ?? 0) + files.length - pending.length;
+        const nextCursor = pending.length ? this.cursors.put(binding,{files:pending,selection,selectionTruncated,unresolved,matchedSoFar,filesFinished,remainingDirectories}) : null;
+        const complete = !nextCursor && !selectionTruncated && !unresolved;
+        if (nextCursor) truncationReasons.add('moreResults');
+        const guidance = logSearchGuidance(truncationReasons);
+        if (nextCursor) guidance.unshift('使用完全相同的搜索参数并传入 nextCursor 作为 cursor 继续；无需重新发现目录。');
+        if (unresolved) guidance.push('部分文件或行未能完整读取；请检查本页及前页的 skipped，不能据此排除日志证据。');
+        return pageResult = {
+          selection:{ ...selection, includeArchives },
+          query:{ count:queries.length, mode:modeValue, caseSensitive, literal:true },
+          matchCount:matches.length,
+          totalMatches,
+          filesConsidered:Math.min(files.length,maxFiles),
+          nextCursor,
+          remainingDirectories,
+          status:complete ? 'complete' : 'partial',
+          conclusion:matchedSoFar > 0 ? 'matches' : complete ? 'no_match' : 'inconclusive',
+          progress:{filesFinished,filesRemaining:pending.length,matchedSoFar,selectionComplete:!selectionTruncated},
+          scannedFiles,
+          scannedBytes,
+          remoteBytesRead,
+          expandedBytes,
+          archivesScanned,
+          archiveEntriesScanned,
+          coverage,
+          guidance,
+          skipped,
+          cache:{ hits:cacheHits, misses:cacheMisses, savedRemoteBytes:cacheSavedRemoteBytes, entries:cache.entries, bytes:cache.bytes, ttlMs:cache.ttlMs },
+          truncated:selectionTruncated || truncationReasons.size > 0,
+          truncationReasons:[...truncationReasons],
+          limitsApplied:{
+            maxLines:maxMatches,
+            maxMatches,
+            maxFiles,
+            maxDepth,
+            maxScanBytes:scanBudget,
+            maxExpandedBytes:expandedBudget,
+            maxArchiveEntries,
+            maxResultBytes,
+            beforeLines,
+            afterLines,
+          },
+          resultBytes:Buffer.byteLength(JSON.stringify({matches,contexts}),'utf8'),
+          matches,
+          contexts,
+        };
+      };
+      finishInterruptedPage = (error) => {
+        // 失败的当前文件尚未形成覆盖证据，续查时重新验证并读取，不能跳过。
+        if (activeFileIndex !== null) pending = files.slice(activeFileIndex);
+        truncationReasons.add('timeBudget');
+        const result = finishPage();
+        result.interruption = {code:error.code, retryable:true};
+        return result;
+      };
+
       for (const [fileIndex,file] of files.entries()) {
         pending = files.slice(fileIndex);
         if (attemptedFiles >= maxFiles) break;
@@ -382,6 +448,7 @@ export class ServerLogSearch {
           truncationReasons.add('maxExpandedBytes');
           break;
         }
+        activeFileIndex = fileIndex;
         attemptedFiles += 1;
         pending = files.slice(fileIndex + 1);
         let resumedGrowth = false;
@@ -548,6 +615,7 @@ export class ServerLogSearch {
                 maxContextBytes:Math.max(0, LOG_SEARCH_MAX_CONTEXT_BYTES - contextBytes),
               },
             }, {timeoutMs:Math.max(1,deadline - Date.now())});
+            reader.signal?.throwIfAborted();
           } catch (error) {
             if (error?.code === 'LOG_PROCESSING_TIMEOUT') {
               pending = files.slice(fileIndex);
@@ -567,9 +635,10 @@ export class ServerLogSearch {
             expandedBytes += Math.min(Math.max(0, remainingExpanded), Math.max(0, Math.floor(Number(error?.details?.expandedBytes) || 0)));
             if (error.code === 'LOG_ARCHIVE_DISABLED') skipped.push({ path:file.path, code:'ARCHIVES_EXCLUDED' });
             else {
-              const suggestedExpanded = Math.min(LOG_SEARCH_MAX_EXPANDED_BYTES, Math.max(expandedBudget * 2, Number(error.details?.expandedBytes) || 0));
-              const retryable = expandedLimit && expandedBudget < suggestedExpanded && (Number(error.details?.expandedBytes) || 0) <= LOG_SEARCH_MAX_EXPANDED_BYTES;
-              skipped.push({ path:file.path, code:error.code, details:error.details ?? null, ...(expandedLimit ? {retryable,
+              const requiredExpandedBytes = Math.max(Number(error.details?.expandedBytes) || 0, Number(error.details?.bytes) || 0);
+              const suggestedExpanded = Math.min(LOG_SEARCH_MAX_EXPANDED_BYTES, Math.max(expandedBudget * 2, requiredExpandedBytes));
+              const retryable = expandedLimit && expandedBudget < suggestedExpanded && requiredExpandedBytes <= LOG_SEARCH_MAX_EXPANDED_BYTES;
+              skipped.push({ path:file.path, code:error.code, details:error.details ?? null, ...(expandedLimit ? {retryable,requiredExpandedBytes,
                 ...(retryable ? {suggestedArguments:{path:file.path,maxExpandedBytes:suggestedExpanded}} : {})} : {}) });
               truncationReasons.add('archiveRejected');
             }
@@ -674,58 +743,20 @@ export class ServerLogSearch {
         }
       }
 
-      if (scannedBytes >= scanBudget && scannedFiles < files.length) truncationReasons.add('maxScanBytes');
-      if (expandedBytes >= expandedBudget && scannedFiles < files.length) truncationReasons.add('maxExpandedBytes');
-      const cache = this.logSnapshotCache.stats();
-      const unresolved = Boolean(resumed?.unresolved) || skipped.some(item => item.code !== 'ARCHIVES_EXCLUDED') || truncationReasons.has('sourceGrew') || truncationReasons.has('lineBoundary');
-      const matchedSoFar = (resumed?.matchedSoFar ?? 0) + matches.length;
-      const filesFinished = (resumed?.filesFinished ?? 0) + files.length - pending.length;
-      const nextCursor = pending.length ? this.cursors.put(binding,{files:pending,selection,selectionTruncated,unresolved,matchedSoFar,filesFinished,remainingDirectories}) : null;
-      const complete = !nextCursor && !selectionTruncated && !unresolved;
-      if (nextCursor) truncationReasons.add('moreResults');
-      const guidance = logSearchGuidance(truncationReasons);
-      if (nextCursor) guidance.unshift('使用完全相同的搜索参数并传入 nextCursor 作为 cursor 继续；无需重新发现目录。');
-      if (unresolved) guidance.push('部分文件或行未能完整读取；请检查本页及前页的 skipped，不能据此排除日志证据。');
-      return {
-        selection:{ ...selection, includeArchives },
-        query:{ count:queries.length, mode:modeValue, caseSensitive, literal:true },
-        matchCount:matches.length,
-        totalMatches,
-        filesConsidered:Math.min(files.length,maxFiles),
-        nextCursor,
-        remainingDirectories,
-        status:complete ? 'complete' : 'partial',
-        conclusion:matchedSoFar > 0 ? 'matches' : complete ? 'no_match' : 'inconclusive',
-        progress:{filesFinished,filesRemaining:pending.length,matchedSoFar,selectionComplete:!selectionTruncated},
-        scannedFiles,
-        scannedBytes,
-        remoteBytesRead,
-        expandedBytes,
-        archivesScanned,
-        archiveEntriesScanned,
-        coverage,
-        guidance,
-        skipped,
-        cache:{ hits:cacheHits, misses:cacheMisses, savedRemoteBytes:cacheSavedRemoteBytes, entries:cache.entries, bytes:cache.bytes, ttlMs:cache.ttlMs },
-        truncated:selectionTruncated || truncationReasons.size > 0,
-        truncationReasons:[...truncationReasons],
-        limitsApplied:{
-          maxLines:maxMatches,
-          maxMatches,
-          maxFiles,
-          maxDepth,
-          maxScanBytes:scanBudget,
-          maxExpandedBytes:expandedBudget,
-          maxArchiveEntries,
-          maxResultBytes,
-          beforeLines,
-          afterLines,
-        },
-        resultBytes:Buffer.byteLength(JSON.stringify({matches,contexts}),'utf8'),
-        matches,
-        contexts,
-      };
-    }));
+      return finishPage();
+    };
+    return this.logSearchGate.run(gateKey, reservationBytes, async () => {
+      try {
+        return await this.withRemoteReadSession(plugin, searchPage, {timeoutMs:this.pageTimeMs, timeoutCode:'LOG_SEARCH_TIMEOUT'});
+      } catch (error) {
+        if (!['LOG_SEARCH_TIMEOUT','LOG_SCAN_TIMEOUT','SFTP_OPERATION_TIMEOUT'].includes(error?.code)) throw error;
+        if (finishInterruptedPage) return finishInterruptedPage(error);
+        throw new AppError(error.code, '日志文件发现或连接阶段超时，尚未形成可续查结果。', {
+          phase:'discovery', retryable:true, timeoutMs:this.pageTimeMs,
+          guidance:'先指定准确文件 path，或收窄目录和日期 pattern 后重试；目录和 stat 正常时无需重新连接。',
+        });
+      }
+    });
   }
 
 }

@@ -30,6 +30,9 @@ try {
   }
   const logSearch = result.tools.find((tool) => tool.name === 'server_search_logs');
   assert.equal(logSearch.inputSchema.properties.queries.maxItems, 10);
+  assert.match(logSearch.inputSchema.properties.maxScanBytes.description,/默认 4 MiB/);
+  assert.match(client.getInstructions(),/queryStarted:false/);
+  assert.match(client.getInstructions(),/20 秒/);
   assert.equal(logSearch.inputSchema.properties.maxLines, undefined);
   assert.equal(logSearch.inputSchema.properties.cursor.pattern, '^[a-f0-9]{64}$');
   assert.equal(logSearch.inputSchema.properties.refresh.type, 'boolean');
@@ -86,9 +89,18 @@ const archiveSmoke = [
   "assert.equal(searched.matchCount, 1); assert.equal(searched.coverage[0].sourceGrew, false); assert.ok(Array.isArray(searched.guidance));",
   "assert.ok(searched.nextCursor); assert.equal(searched.status,'partial');",
   "assert.equal(searched.limitsApplied.maxResultBytes,32768); assert.ok(searched.resultBytes <= 32768);",
+  "assert.equal(searched.limitsApplied.maxScanBytes,4194304); assert.equal(operations.logSearch.pageTimeMs,20000);",
   "assert.ok(Object.keys(searched).indexOf('nextCursor') < Object.keys(searched).indexOf('matches'));",
   "const next = await operations.searchLogs({projectId:'package',environmentId:'test',pluginInstanceId:'server'}, {path:'/logs/packaged.zip',queries:['PACKAGED_ZIP_OK'],maxMatches:1,cursor:searched.nextCursor});",
   "assert.equal(next.matchCount,1); assert.equal(next.status,'complete'); assert.equal(next.cache.hits,1);",
+  "const { MysqlPluginRuntime } = await import(new URL('./mysql-plugin-runtime.mjs',pathToFileURL(process.env.AI_OPS_OPERATIONS_MODULE).href));",
+  "const mysql = new MysqlPluginRuntime({closeRelay:async()=>{}},{});",
+  "const databasePlugin = {projectId:'package',environmentId:'test',pluginInstanceId:'mysql',target:{database:'fixture'},limits:{timeoutMs:1000,maxBytes:65536,maxRows:10}};",
+  "mysql.sessions.set('package/test/mysql',{closing:false,connection:{query:async request=>request.sql.includes('TABLE_TYPE') ? [[{TABLE_NAME:'orders',TABLE_TYPE:'BASE TABLE'}]] : [[{id:1}],[]]}});",
+  "const selected = await mysql.queryReadonly(databasePlugin,'SELECT id FROM orders');",
+  "assert.ok(selected.timings.totalMs>=0); assert.ok(selected.timings.tableCheckMs>=0); assert.ok(selected.timings.queryQueueMs>=0); assert.ok(selected.timings.queryMs>=0);",
+  "mysql.sessions.get('package/test/mysql').connection = {destroy(){},query:async()=>{throw Object.assign(new Error('fixture'),{code:'ETIMEDOUT'});}};",
+  "await assert.rejects(mysql.queryReadonly(databasePlugin,'SELECT id FROM orders'),error=>error.code==='DATABASE_QUERY_TIMEOUT' && error.details.queryStarted===false && error.details.operation==='table_check' && error.details.timings.queryMs===0);",
   "const { ConfirmationManager } = await import(pathToFileURL(process.env.AI_OPS_CONFIRMATION_MODULE).href);",
   "const manager = new ConfirmationManager(); const scope = {projectId:'package',environmentId:'test',pluginInstanceId:'server',clientInstanceId:'fixture'};",
   "const entry = manager.request(scope,'service.control',{unit:'fixture.service',action:'restart'});",

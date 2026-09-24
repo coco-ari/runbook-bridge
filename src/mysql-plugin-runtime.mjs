@@ -197,27 +197,59 @@ export class MysqlPluginRuntime extends EventEmitter {
     await this.routeManager.closeRelay(plugin, session.routeGeneration).catch(() => undefined);
   }
 
-  async querySession(plugin, request, { invalidateOnAnyError = false, fallbackMessage, phase = 'query', operation = phase, expectedSession } = {}) {
-    const session = this.require(plugin);
-    if (expectedSession && session !== expectedSession) throw new AppError('PLUGIN_RECONNECTING', '表访问检查后数据库连接已更新，请重新查询。', { phase:'metadata', operation:'table_check' });
-    return this.readScheduler.run(key(plugin), 1, async () => {
-      if (this.require(plugin) !== session) throw new AppError('PLUGIN_RECONNECTING', '排队期间数据库连接已更新，请重新发起查询。', { phase:'queue' });
-      try {
-        return await session.connection.query(request);
-      } catch (error) {
-        const mapped = mysqlError(error, fallbackMessage);
-        if (mapped.code === 'DATABASE_QUERY_TIMEOUT') {
-          const guidance = operation === 'table_check'
-            ? '查询尚未执行，超时发生在基础表访问检查；等待连接恢复后重试，持续出现时检查数据库元数据访问和网络延迟。'
-            : phase === 'metadata' ? '指定准确表名，或先仅搜索表名；避免反复扫描全库字段。' : '先调用 mysql_explain 检查执行计划，缩小时间范围或筛选条件后再查询。';
-          mapped.details = { phase, operation, timeoutMs:request.timeout, retryable:false, guidance };
+  async querySession(plugin, request, { invalidateOnAnyError = false, fallbackMessage, phase = 'query', operation = phase, expectedSession, timing } = {}) {
+    const started = performance.now();
+    let executionStarted;
+    let executionFinished;
+    const updateTiming = () => {
+      const now = performance.now();
+      const value = {
+        queueMs:Math.max(0,Math.round((executionStarted ?? now) - started)),
+        executionMs:executionStarted === undefined ? 0 : Math.max(0,Math.round((executionFinished ?? now) - executionStarted)),
+        totalMs:Math.max(0,Math.round(now - started)),
+        executionStarted:executionStarted !== undefined,
+      };
+      if (timing) Object.assign(timing,value);
+      return value;
+    };
+    try {
+      const session = this.require(plugin);
+      if (expectedSession && session !== expectedSession) throw new AppError('PLUGIN_RECONNECTING', '表访问检查后数据库连接已更新，请重新查询。', { phase:'metadata', operation:'table_check' });
+      return await this.readScheduler.run(key(plugin), 1, async () => {
+        if (this.require(plugin) !== session) throw new AppError('PLUGIN_RECONNECTING', '排队期间数据库连接已更新，请重新发起查询。', { phase:'queue' });
+        executionStarted = performance.now();
+        try {
+          const result = await session.connection.query(request);
+          executionFinished = performance.now();
+          return result;
+        } catch (error) {
+          executionFinished = performance.now();
+          const mapped = mysqlError(error, fallbackMessage);
+          if (mapped.code === 'DATABASE_QUERY_TIMEOUT') {
+            const guidance = operation === 'table_check'
+              ? '查询尚未执行，超时发生在基础表访问检查；等待连接恢复后重试，持续出现时检查数据库元数据访问和网络延迟。不要仅调整业务 SQL 或反复原样重试。'
+              : phase === 'metadata' ? '指定准确表名，或先仅搜索表名；避免反复扫描全库字段。' : '先调用 mysql_explain 检查执行计划，缩小时间范围或筛选条件后再查询。';
+            mapped.details = { phase, operation, timeoutMs:request.timeout, retryable:false, guidance };
+          }
+          // 先记录数据库等待时间，连接清理耗时单独计入总耗时。
+          mapped.details = {...mapped.details, timing:updateTiming()};
+          if (invalidateOnAnyError || invalidatesSession(error) || invalidatesSession(mapped)) {
+            await this.invalidateSession(plugin, session, mapped);
+          }
+          throw mapped;
+        } finally {
+          updateTiming();
         }
-        if (invalidateOnAnyError || invalidatesSession(error) || invalidatesSession(mapped)) {
-          await this.invalidateSession(plugin, session, mapped);
-        }
-        throw mapped;
-      }
-    });
+      });
+    } catch (error) {
+      if (error instanceof AppError) error.details = {
+        phase, operation, ...error.details,
+        timing:error.details?.timing ?? updateTiming(),
+      };
+      throw error;
+    } finally {
+      updateTiming();
+    }
   }
 
   async desktopEditSession(plugin, expectedSession, operation) {
@@ -464,26 +496,44 @@ export class MysqlPluginRuntime extends EventEmitter {
   }
 
   async queryReadonly(plugin, sql, params, { lossless = false } = {}) {
+    const totalStarted = performance.now();
     const validated = validateMysqlSelect(sql);
-    const checkedSession = await this.assertBaseTables(plugin, validated.tables);
-    const statement = applyMysqlRowLimit(validated, plugin.limits.maxRows);
-    const started = Date.now();
-    const [rows, fields] = await this.querySession(
-      plugin,
-      { sql: statement, timeout: plugin.limits.timeoutMs, values: normalizeParams(params),
-        // 桌面结果必须保留主键、日期小数位与 JSON 数值文本，供原位编辑精确核对。
-        ...(lossless ? {supportBigNumbers:true,bigNumberStrings:true,dateStrings:true,typeCast:(field,next)=>field.type === 'JSON' ? field.string('utf8') : next()} : {}),
-      },
-      { fallbackMessage:'MySQL 只读查询执行失败。', expectedSession:checkedSession },
-    );
-    const capped = capRows(rows, plugin.limits.maxRows, plugin.limits.maxBytes);
-    return {
-      ...capped,
-      columns: (fields ?? []).map((field) => ({ name: field.name, table: field.table || null, type: field.type })),
-      durationMs: Date.now() - started,
-      fingerprint: validated.fingerprint,
-      limitsApplied: { maxRows: plugin.limits.maxRows, maxBytes: plugin.limits.maxBytes, timeoutMs: plugin.limits.timeoutMs },
-    };
+    let tableCheckMs = 0;
+    const queryTiming = {};
+    let checkedSession;
+    const timingSummary = () => ({
+      tableCheckMs, queryQueueMs:queryTiming.queueMs ?? 0, queryMs:queryTiming.executionMs ?? 0,
+      totalMs:Math.max(0,Math.round(performance.now() - totalStarted)),
+    });
+    try {
+      const checkStarted = performance.now();
+      try { checkedSession = await this.assertBaseTables(plugin, validated.tables); }
+      finally { tableCheckMs = Math.max(0,Math.round(performance.now() - checkStarted)); }
+      const statement = applyMysqlRowLimit(validated, plugin.limits.maxRows);
+      const started = Date.now();
+      const [rows, fields] = await this.querySession(
+        plugin,
+        { sql: statement, timeout: plugin.limits.timeoutMs, values: normalizeParams(params),
+          // 桌面结果必须保留主键、日期小数位与 JSON 数值文本，供原位编辑精确核对。
+          ...(lossless ? {supportBigNumbers:true,bigNumberStrings:true,dateStrings:true,typeCast:(field,next)=>field.type === 'JSON' ? field.string('utf8') : next()} : {}),
+        },
+        { fallbackMessage:'MySQL 只读查询执行失败。', expectedSession:checkedSession, timing:queryTiming },
+      );
+      const capped = capRows(rows, plugin.limits.maxRows, plugin.limits.maxBytes);
+      return {
+        ...capped,
+        columns: (fields ?? []).map((field) => ({ name: field.name, table: field.table || null, type: field.type })),
+        durationMs: Date.now() - started,
+        timings:timingSummary(),
+        fingerprint: validated.fingerprint,
+        limitsApplied: { maxRows: plugin.limits.maxRows, maxBytes: plugin.limits.maxBytes, timeoutMs: plugin.limits.timeoutMs },
+      };
+    } catch (error) {
+      if (error instanceof AppError) error.details = {
+        ...error.details, queryStarted:queryTiming.executionStarted === true, timings:timingSummary(),
+      };
+      throw error;
+    }
   }
 
   async explain(plugin, sql, params) {
