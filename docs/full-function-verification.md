@@ -59,7 +59,7 @@ corepack pnpm run test:ui:all
 | `corepack pnpm run test:ui:database` | MySQL 多表标签、默认 20 行预览、字段拖入筛选、受限权限下系统剪贴板、关闭清理、语法提示、拖表生成 SQL、别名字段补全、筛选排序与滚动分页、结果边界和迟到响应隔离 |
 | `corepack pnpm run test:ui:plugin-matrix` | 插件表单与真实探针、编辑会话、凭据解析器的组合，取消、重试和删除重建 |
 
-`test:ui:all` 串行执行上表六组；这些入口均先构建 Renderer。不要修改生产策略来迁就 smoke，也不要用无条件成功的 mock 或源码正则替代实际行为检查。
+`test:ui:all` 串行执行上表各组以及 MySQL 编辑、Docker、Redis、云配置测试；这些入口均先构建 Renderer。不要修改生产策略来迁就 smoke，也不要用无条件成功的 mock 或源码正则替代实际行为检查。
 
 ## 构建与包验证
 
@@ -123,7 +123,7 @@ xcrun stapler validate "dist/mac-arm64/Agent运维工作台.app"
 spctl --assess --type execute --verbose "dist/mac-arm64/Agent运维工作台.app"
 ```
 
-CI 原生运行 Windows x64、Mac arm64、Mac x64，三端均运行六组 UI、包检查和隔离安装/覆盖升级回归。任一 UI 组失败仍使 CI 失败，同时收集其他组结果。Release 在三平台检查全部通过后由单个任务发布附件和 SHA-256。实际 Mac VPN 出口切换、Finder 启动的 SSH Agent、钥匙串拒绝授权与签名升级、中文输入法、下载后的首次启动仍须系统验收；不得以 mock 或 workflow 文件存在代替通过证据。
+CI 原生运行 Windows x64、Mac arm64、Mac x64，三端均运行完整 UI 测试、包检查和隔离安装/覆盖升级回归。任一 UI 组失败仍使 CI 失败，同时收集其他组结果。当前预发布 Tag 只构建和分发 Windows，仍须完成全套 Windows 测试、包验证及隔离安装回归；稳定 Tag 要求三平台检查及 Mac 签名公证全部通过，才由单个任务发布附件和 SHA-256。普通 CI 继续覆盖三个平台。实际 Mac VPN 出口切换、Finder 启动的 SSH Agent、钥匙串拒绝授权与签名升级、中文输入法、下载后的首次启动仍须系统验收；不得以 mock 或 workflow 文件存在代替通过证据。
 
 ## MCP 查询优化回归
 

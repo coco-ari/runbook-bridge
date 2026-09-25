@@ -8,7 +8,8 @@ import { SshBroker } from '../../src/ssh-broker.mjs';
 const call = (sftp, method, ...args) => new Promise((resolve, reject) => sftp[method](...args, (error, value) => error ? reject(error) : resolve(value)));
 
 export async function createUploadFixture(t, { writeDelayMs = 0, capacity = 0, allowRenameOverwrite = false, posixRename = false } = {}) {
-  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'runbook-resume-probe-'));
+  // 统一 Windows 短路径和 macOS 临时目录别名，故障注入与生产规范路径保持一致。
+  const root = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'runbook-resume-probe-')));
   const key = crypto.generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs1', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } }).privateKey;
   const publicKey = ssh2.utils.parseKey(key).getPublicSSH();
   const fingerprint = 'SHA256:' + crypto.createHash('sha256').update(publicKey).digest('base64').replace(/=+$/, '');

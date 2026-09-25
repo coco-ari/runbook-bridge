@@ -173,7 +173,10 @@ test('持续收到服务器写入确认时保持上传，进度不能提前报�
   assert.deepEqual(sftp.files.get('/uploads/example.bin'), content);
 });
 
-test('本地数据进入发送队列但服务器不确认时触发无进展超时', async t => {
+test('本地数据进入发送队列但服务器不确认时触发无进展超时', { timeout: 5000 }, async t => {
+  // 模拟连接没有真实 Socket，用有引用的定时器维持与真实连接相同的事件循环生命周期。
+  const keepAlive = setInterval(() => {}, 1000);
+  t.after(() => clearInterval(keepAlive));
   const { broker, source, sftp, precondition } = await fixture(t, { onWrite: () => new Promise(() => {}) });
   const original = broker.withInternalSftp.bind(broker);
   let policy;

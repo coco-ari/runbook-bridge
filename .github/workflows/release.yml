@@ -6,25 +6,26 @@ on:
 permissions:
   contents: read
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.platforms.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - id: platforms
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: echo "matrix=$(node scripts/release-platforms.mjs "$RELEASE_TAG")" >> "$GITHUB_OUTPUT"
   build:
+    needs: plan
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            platform: win32
-            arch: x64
-            app: dist/win-unpacked/Agent运维工作台.exe
-          - os: macos-15
-            platform: darwin
-            arch: arm64
-            app: dist/mac-arm64/Agent运维工作台.app
-          - os: macos-15-intel
-            platform: darwin
-            arch: x64
-            app: dist/mac/Agent运维工作台.app
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     defaults:
       run:
         shell: bash
@@ -113,6 +114,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - name: Download all verified platforms
         uses: actions/download-artifact@v4
         with:
@@ -131,7 +133,13 @@ jobs:
             echo "Release already exists; preserving published assets."
             exit 0
           fi
-          args=(release create "$RELEASE_TAG" release/* --verify-tag --generate-notes --title "$RELEASE_TAG")
+          args=(release create "$RELEASE_TAG" release/* --verify-tag --title "$RELEASE_TAG")
+          notes="docs/releases/$RELEASE_TAG.md"
+          if [[ -f "$notes" ]]; then
+            args+=(--notes-file "$notes")
+          else
+            args+=(--generate-notes)
+          fi
           if [[ "$RELEASE_TAG" == *-* ]]; then
             args+=(--prerelease --latest=false)
           else

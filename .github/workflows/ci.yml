@@ -52,7 +52,7 @@ jobs:
       - name: Production React UI workflow smoke test
         run: |-
           failed=0
-          for suite in test:ui test:ui:business test:ui:plugins test:ui:plugin-matrix test:ui:server-workspace test:ui:database; do
+          for suite in test:ui test:ui:business test:ui:plugins test:ui:plugin-matrix test:ui:server-workspace test:ui:database test:ui:mysql-edit test:ui:docker test:ui:redis test:ui:cloud; do
             corepack pnpm run "$suite" || failed=1
           done
           exit "$failed"

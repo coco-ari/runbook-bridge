@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import YAML from 'yaml';
+import { releasePlatforms } from '../scripts/release-platforms.mjs';
 
 const script = fileURLToPath(new URL('../scripts/verify-release-version.mjs', import.meta.url));
 const manifest = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
@@ -46,11 +47,13 @@ test('release workflow passes github.ref_name through an environment variable be
 });
 
 
-test('预发布工作流等待三平台验证完成后发布，保留 Latest 和校验值保护', async () => {
+test('发布工作流等待目标平台验证完成，保留签名、Latest 和校验值保护', async () => {
   const workflow = YAML.parse(await fs.readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8'));
-  assert.deepEqual(workflow.jobs.build.strategy.matrix.include.map(item => [item.platform,item.arch]),[
-    ['win32','x64'],['darwin','arm64'],['darwin','x64'],
-  ]);
+  assert.equal(workflow.jobs.build.needs, 'plan');
+  assert.equal(workflow.jobs.build.strategy.matrix, '$' + '{{ fromJSON(needs.plan.outputs.matrix) }}');
+  const plan = workflow.jobs.plan.steps.at(-1);
+  assert.equal(plan.env.RELEASE_TAG, '$' + '{{ github.ref_name }}');
+  assert.ok(plan.run.includes('node scripts/release-platforms.mjs "$RELEASE_TAG"'));
   assert.equal(workflow.jobs.publish.needs,'build');
   const buildSteps = workflow.jobs.build.steps;
   assert.ok(buildSteps.some(step => step.run?.includes('scripts/prepare-release-assets.mjs')));
@@ -65,4 +68,12 @@ test('预发布工作流等待三平台验证完成后发布，保留 Latest 和
   const assets = await fs.readFile(new URL('../scripts/prepare-release-assets.mjs',import.meta.url),'utf8');
   assert.ok(assets.includes("createHash('sha256')"));
   assert.ok(assets.includes("name + '.sha256'"));
+});
+
+test('公开测试版只分发 Windows，稳定版仍验证三平台并拒绝无效标签', () => {
+  assert.deepEqual(releasePlatforms('v2.0.0-beta.2').include.map(item => [item.platform, item.arch]), [['win32', 'x64']]);
+  assert.deepEqual(releasePlatforms('v2.0.0').include.map(item => [item.platform, item.arch]), [
+    ['win32', 'x64'], ['darwin', 'arm64'], ['darwin', 'x64'],
+  ]);
+  for (const tag of [undefined, '', 'main', 'v2.0', 'v2.0.0/other']) assert.throws(() => releasePlatforms(tag));
 });

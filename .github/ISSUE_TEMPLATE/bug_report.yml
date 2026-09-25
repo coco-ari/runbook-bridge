@@ -1,5 +1,5 @@
 name: Bug 报告
-description: 报告可以稳定复现的产品问题
+description: 报告使用问题、异常结果或可复现的缺陷
 title: "[Bug] "
 labels: [bug]
 body:
@@ -10,16 +10,17 @@ body:
     id: version
     attributes:
       label: 版本
-      placeholder: 例如 0.1.7
+      placeholder: 例如 2.0.0-beta.2；请附构建标识（如有）
     validations:
       required: true
   - type: dropdown
-    id: windows
+    id: platform
     attributes:
-      label: Windows 版本
+      label: 操作系统
       options:
         - Windows 11
         - Windows 10
+        - macOS（源码构建）
         - 其他
     validations:
       required: true
@@ -42,3 +43,18 @@ body:
       label: 实际行为
     validations:
       required: true
+  - type: textarea
+    id: connection
+    attributes:
+      label: 连接方式与错误信息
+      description: 可填写直连、SSH 隧道、是否使用代理，以及界面的错误代码；请脱敏。
+  - type: dropdown
+    id: write_status
+    attributes:
+      label: 若涉及保存或删除，界面显示什么状态？
+      options:
+        - 不涉及写入
+        - 等待中
+        - 成功
+        - 失败
+        - 结果不确定／待核实

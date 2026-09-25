@@ -13,7 +13,7 @@ import { EnvironmentContextManager } from '../src/context-manager.mjs';
 
 // 使用真实 stdio MCP、Broker 和日志服务，只替换远端文件读取，防止中间层悄悄丢弃预算。
 test('MCP 日志正文预算经 Broker 生效，分页完整且游标绑定预算', async t => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'runbook-mcp-budget-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'runbook-mcp-budget-')));
   let client, broker, contexts;
   t.after(async () => {
     await client?.close(); await broker?.stop(); contexts?.clear();
