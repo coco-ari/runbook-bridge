@@ -148,6 +148,10 @@ async function run() {
   window = new BrowserWindow({show:false,width:1264,height:846,webPreferences:{preload:path.join(root,'src/preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false}});
   window.webContents.on('console-message',(_event,details) => { if (details.level === 'error') errors.push(details.message); });
   await window.loadFile(path.join(root,'renderer-build/v2/index.html'));
+  // 与其他 UI 回归一致，先建立真实窗口焦点，再验证 Tab 和 Enter 导航。
+  if (process.platform === 'darwin') { window.show(); window.focus(); }
+  window.webContents.focus();
+  await wait('document.hasFocus() === true');
   await wait('Boolean(document.querySelector("[data-testid=settings-open]"))');
   await window.webContents.executeJavaScript('document.querySelector("[data-testid=settings-open]").click()');
   await wait('Boolean(document.querySelector("[data-testid=settings-page]"))');
@@ -179,7 +183,10 @@ async function run() {
   await window.webContents.insertText('cLoUd uX');
   await wait('document.getElementById("cloud-project-search").value === "cLoUd uX"');
   assert.deepEqual(await visibleProjects(),[{id:'cloud-long',checked:false}],'项目搜索忽略大小写');
+  // 等待浏览器实际接收可信按键后再松开，避免隐藏窗口中连续投递事件的时序差异。
+  await window.webContents.executeJavaScript('document.addEventListener("keydown",event=>{window.__cloudTab={key:event.key,trusted:event.isTrusted}},{once:true})');
   window.webContents.sendInputEvent({type:'keyDown',keyCode:'Tab'});
+  await wait('window.__cloudTab?.key === "Tab" && window.__cloudTab.trusted');
   window.webContents.sendInputEvent({type:'keyUp',keyCode:'Tab'});
   await wait('document.activeElement?.getAttribute("aria-label") === "清除搜索"');
   window.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});

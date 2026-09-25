@@ -2,6 +2,8 @@
 
 macOS 支持已合并到 `main`，与 Windows 共用业务和界面代码。历史适配批次在 Apple Silicon 和 Intel Runner 上有验证记录，但不能据此视为当前版本已在 Mac 验收通过。当前公开下载仅提供 Windows 安装包；Mac 签名、公证及首次下载启动验收尚未完成。构建和已知边界见 [macOS 适配方案](macos-adaptation.md)。
 
+当前 Mac CI 的终端命令审计回归仍未通过，需要继续定位；本次 Windows Beta 不作为 Mac 验收结果。
+
 普通 CI 继续检查三平台，成功运行的测试安装包位于对应 Actions 的 installers 归档中；开发测试包不作为 Mac 正式分发包。
 
 在 Mac 安装 Node.js 22+、Corepack 和 Xcode Command Line Tools 后，使用仓库锁定依赖构建：
