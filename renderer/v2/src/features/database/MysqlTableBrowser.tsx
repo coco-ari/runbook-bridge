@@ -31,6 +31,9 @@ export function MysqlTableBrowser({ api, scope, table, description, maxRows, vis
   const [error, setError] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(false)
   const [message, setMessage] = useState("")
+  const [writeSummary, setWriteSummary] = useState("")
+  const writeSummaryRef = useRef("")
+  const [refreshRequired, setRefreshRequired] = useState(false)
   const [generation, setGeneration] = useState(0)
   const current = useRef<MysqlQueryResult | null>(null)
   const active = useRef(false)
@@ -41,15 +44,14 @@ export function MysqlTableBrowser({ api, scope, table, description, maxRows, vis
   const pageSizes = [...new Set([20, 50, 100].map(size => Math.max(1, Math.min(size, maxRows))))]
   useEffect(() => { active.current = true; return () => { active.current = false; owner.current++ } }, [])
 
-  async function readPage(reset: boolean, configuration = applied.current) {
+  async function readPage(reset: boolean, configuration = applied.current, summary?: string) {
     if (!editing.connected || !active.current || (!reset && (busy.current || !hasMore))) return
+    if (summary !== undefined) { writeSummaryRef.current = summary; setWriteSummary(summary) }
     const ticket = ++owner.current
     const previous = reset ? null : current.current
     if (reset) {
       applied.current = configuration
-      current.current = null
-      setResult(null)
-      setGeneration(value => value + 1)
+      setRefreshRequired(true)
       setHasMore(false)
       setMessage("")
     }
@@ -71,6 +73,7 @@ export function MysqlTableBrowser({ api, scope, table, description, maxRows, vis
       }
       const rows = [...(previous?.rows ?? []), ...data.rows].slice(0, MYSQL_BROWSE_MAX_ROWS)
       const next: MysqlQueryResult = { ...data, rows, rowCount: rows.length, bytes: (previous?.bytes ?? 0) + data.bytes, durationMs: (previous?.durationMs ?? 0) + data.durationMs, truncated: Boolean(previous?.truncated || data.truncated), auditWarning: Boolean(previous?.auditWarning || data.auditWarning) }
+      if (reset) { setGeneration(value => value + 1); setRefreshRequired(false) }
       current.current = next
       setResult(next)
       const capped = rows.length >= MYSQL_BROWSE_MAX_ROWS
@@ -78,7 +81,7 @@ export function MysqlTableBrowser({ api, scope, table, description, maxRows, vis
       setHasMore(more)
       setMessage(capped ? `已加载 ${MYSQL_BROWSE_MAX_ROWS} 行，请缩小筛选范围后重新查询。` : data.truncated && !data.rowCount ? "单行数据超过读取上限，请在 SQL 页选择需要的字段。" : more ? "向下滚动继续加载" : "已加载完本次查询的数据")
     } catch (failure) {
-      if (active.current && owner.current === ticket) setError(failure instanceof Error ? failure.message : "数据查询失败，请重试。")
+      if (active.current && owner.current === ticket) setError((writeSummaryRef.current ? writeSummaryRef.current + " 刷新失败，可点击刷新重新读取。" : "") + (failure instanceof Error ? failure.message : "数据查询失败，请重试。"))
     } finally {
       if (active.current && owner.current === ticket) { busy.current = false; setLoading(false) }
     }
@@ -107,7 +110,7 @@ export function MysqlTableBrowser({ api, scope, table, description, maxRows, vis
   }
   const order = [...(applied.current.sort ? [applied.current.sort] : []), ...(description?.columns.filter(column => column.key === "PRI" && column.name !== applied.current.sort?.column).map(column => ({ column: column.name, direction: "asc" as const })) ?? [])].slice(0, 8)
   const editSql = "SELECT * FROM " + quoteMysqlIdentifier(table) + (applied.current.where ? " WHERE " + applied.current.where : "") + (order.length ? " ORDER BY " + order.map(item => quoteMysqlIdentifier(item.column) + " " + item.direction.toUpperCase()).join(",") : "") + " LIMIT " + Math.max(result?.rowCount ?? pageSize, pageSize)
-  const apply = () => protect(() => { void readPage(true, { where: where.trim(), sort, limit: requestedPageSize }) })
+  const apply = () => protect(() => { void readPage(true, { where: where.trim(), sort, limit: requestedPageSize }, "") })
   return <div className="mysql-table-browser" hidden={!visible}>
     {visible ? <><form className="mysql-table-filter-bar" onSubmit={event => { event.preventDefault(); apply() }}>
       <span className="text-primary">WHERE</span>
@@ -121,8 +124,7 @@ export function MysqlTableBrowser({ api, scope, table, description, maxRows, vis
       </PopoverContent></Popover>
       <Button data-testid="mysql-preview-run" size="sm" type="submit"><Play />{loading ? "重新查询" : "执行"}</Button>
     </form>
-    {error ? <p className="mysql-browser-error" data-testid="mysql-preview-error" role="alert">{error}{result ? <Button data-testid="mysql-preview-retry" onClick={() => void readPage(false)} size="sm" variant="ghost">重试加载</Button> : null}</p> : null}
     </> : null}
-    {result ? <MysqlEditableResults api={api} scope={scope} documentKey={documentKey} result={result} sql={editSql} visible={visible} onReload={() => void readPage(true)}><MysqlQueryResults columnWidthCache={columnWidthCache.current} columnWidthScope={JSON.stringify([dragScope, table])} persistColumnWidths filterHost={filterHost} snapshot={snapshot} columnDragScope={{ workspace: dragScope, table }} kind="preview" result={result} sort={sort} onSort={next => protect(() => { setSort(next); void readPage(true, { where: where.trim(), sort: next, limit: requestedPageSize }) })} stream={{ key: `${table}/${generation}`, loading, hasMore: hasMore && !error, onLoadMore: () => void readPage(false), message }} /></MysqlEditableResults> : <div className="mysql-browser-empty" role="status">{loading ? "正在读取数据…" : message || `输入筛选条件或直接执行，每次读取 ${pageSize} 行。`}</div>}
+    {result ? <MysqlEditableResults key={generation} feedback={{busy: loading, error: error ?? "", message: writeSummary}} api={api} scope={scope} documentKey={documentKey} result={result} sql={editSql} visible={visible} onReload={summary => void readPage(true, applied.current, summary)}><MysqlQueryResults columnWidthCache={columnWidthCache.current} columnWidthScope={JSON.stringify([dragScope, table])} persistColumnWidths filterHost={filterHost} snapshot={snapshot} columnDragScope={{ workspace: dragScope, table }} kind="preview" result={result} sort={sort} onSort={next => protect(() => { setSort(next); void readPage(true, { where: where.trim(), sort: next, limit: requestedPageSize }) })} stream={{ key: `${table}/${generation}`, loading, hasMore: hasMore && !error && !refreshRequired, retry: Boolean(error) && !refreshRequired && editing.connected, onLoadMore: () => void readPage(false), message }} /></MysqlEditableResults> : <div className="mysql-browser-empty" data-testid={error ? "mysql-preview-error" : undefined} role={error ? "alert" : "status"}>{loading ? "正在读取数据…" : error || message || `输入筛选条件或直接执行，每次读取 ${pageSize} 行。`}</div>}
   </div>
 }

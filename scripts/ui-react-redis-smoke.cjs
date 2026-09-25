@@ -47,7 +47,7 @@ const value = (text, truncated = false) => ({ text, hex: Buffer.from(text ?? [0,
 const typeOf = (key) => ({ 'cache:hash': 'hash', 'cache:list': 'list', 'cache:set': 'set', 'cache:zset': 'zset', 'cache:stream': 'stream' }[key] ?? 'string');
 const ok = (data) => ({ ok: true, data });
 const fail = (code, message) => ({ ok: false, error: { code, message } });
-const state = { loseWriteReply:false, failWriteStatus:false, writeCommits:0, hold: null, auditWarning: false, failScan: false, scanPages: [], releaseScan: null };
+const state = { writeDelays:{}, failReload:false, deletedKeys:new Set(), loseWriteReply:false, failWriteStatus:false, writeCommits:0, hold: null, auditWarning: false, failScan: false, scanPages: [], releaseScan: null };
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const testId = (id) => '[data-testid="' + id + '"]';
 const active = (id) => '.redis-tab-panel:not([hidden]) ' + testId(id);
@@ -87,6 +87,8 @@ function mocks(redisKeySearch) {
       return ok({ keys: selected.filter(redisKeySearch(payload.keyword)), nextCursor: null, complete: true, unsupportedKeys: 0, readAt: stamp(), auditWarning: state.auditWarning });
     }
     if (!payload.key.startsWith(payload.patternId + ':')) return fail('POLICY_DENIED', 'Redis Key 不在允许范围内。');
+    if (operation==='inspect'&&state.failReload){state.failReload=false;return fail('READ_FAILED','模拟保存后刷新失败');}
+    if(state.deletedKeys.has(payload.key))return ok({key:payload.key,type:'none',exists:false,ttlSeconds:-2,length:null,cardinality:null,readAt:stamp()});
     if (writeValues.has(payload.key)) {
       const current=writeValues.get(payload.key);
       if(operation==='inspect')return ok({key:payload.key,type:'string',exists:true,ttlSeconds:current.ttl,length:Buffer.byteLength(current.value),cardinality:null,readAt:stamp()});
@@ -106,6 +108,7 @@ function mocks(redisKeySearch) {
   });
   for(const operation of ['open','prepare','commit','status','release']) register('v2:redis-edit-'+operation,async(_event,payload)=>{
     assert.deepEqual({projectId:payload.projectId,environmentId:payload.environmentId,pluginInstanceId:payload.pluginInstanceId},scope);
+    if(state.writeDelays[operation])await wait(state.writeDelays[operation]);
     if(operation==='open'){
       if(!payload.key.startsWith(payload.patternId+':'))return fail('POLICY_DENIED','Key 不在允许范围。');
       if(payload.mode==='create'&&keys.includes(payload.key))return fail('REDIS_KEY_EXISTS','Key 已存在。');
@@ -124,7 +127,7 @@ function mocks(redisKeySearch) {
     if(operation==='status'&&state.failWriteStatus){state.failWriteStatus=false;return fail('READ_FAILED','模拟状态查询失败');}
     if(operation==='commit'&&plan.status==='prepared'){
       state.writeCommits++;
-      if(session.mode==='delete'){writeValues.delete(session.key);const index=keys.indexOf(session.key);if(index>=0)keys.splice(index,1);}
+      if(session.mode==='delete'){state.deletedKeys.add(session.key);writeValues.delete(session.key);const index=keys.indexOf(session.key);if(index>=0)keys.splice(index,1);}
       else {writeValues.set(session.key,{value:plan.value,ttl:plan.expiry.mode==='relative'?plan.expiry.milliseconds/1000:plan.expiry.mode==='keep'?(writeValues.get(session.key)?.ttl??-1):-1});if(!keys.includes(session.key))keys.push(session.key);}
       plan.status='success';
       if(state.loseWriteReply){state.loseWriteReply=false;return fail('REPLY_LOST','模拟保存回复丢失');}
@@ -629,8 +632,11 @@ async function run() {
     assert.equal(writeValues.get('cache:ui-created').value,'{"id":9007199254740993}');
     await click(win,active('redis-edit-value'));
     await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]")','原位编辑值');
+    const editorGeometry=()=>win.webContents.executeJavaScript('(()=>{const root=document.querySelector(".redis-tab-panel:not([hidden])"),elements=[root.querySelector(".redis-edit-textarea"),root.querySelector(".redis-edit-footer"),root.querySelector("[data-testid=redis-save-value]")];return elements.map(e=>{const r=e.getBoundingClientRect();return [r.x,r.y,r.width,r.height]})})()',true);
+    const stableEditor=await editorGeometry();
     await fill(win,'[aria-label="Redis Value"]','{');
     assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-save-value]").disabled',true),true,'无效 JSON 禁止保存');
+    assert.deepEqual(await editorGeometry(),stableEditor,'JSON 错误不能挤动编辑器和保存按钮');
     await fill(win,'[aria-label="Redis Value"]','{"edited":true}');
     await click(win,'.redis-tab[data-active=true] .redis-tab-close');
     await waitFor(win,'document.querySelector("[data-testid=redis-discard-confirm]")','关闭标签保护草稿');
@@ -646,21 +652,58 @@ async function run() {
     win.webContents.setZoomFactor(1);
 
     const beforeCommitCount=state.writeCommits;
-    state.loseWriteReply=true;state.failWriteStatus=true;
+    state.loseWriteReply=true;state.failWriteStatus=true;state.writeDelays.commit=6200;
     await click(win,active('redis-save-value'));
+    await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-save-value] [data-operation-spinner]")','提交原位转圈');
+    assert.deepEqual(await editorGeometry(),stableEditor,'保存等待不得移动组件');
+    await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) .redis-edit-error")?.textContent.includes("响应较慢")','弱网等待有时间反馈');
+    assert.deepEqual(await editorGeometry(),stableEditor,'长等待提示不改变布局');
+    await shot(win,'redis-slow-save');
+    state.writeDelays.commit=0;
     await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-check-save]")','保存回复丢失后检查状态');
+    for(const zoom of [1,1.25,1.5]){
+      win.webContents.setZoomFactor(zoom);await wait(120);
+      assert.equal(await win.webContents.executeJavaScript('(()=>{const root=document.querySelector(".redis-tab-panel:not([hidden]) .redis-edit-actions"),r=root.getBoundingClientRect(),buttons=[...root.querySelectorAll("button")];return buttons.every((e,i)=>{const b=e.getBoundingClientRect(),next=buttons[i+1]?.getBoundingClientRect();return b.left>=r.left-1&&b.right<=r.right+1&&(!next||b.right<=next.left+1)})})()',true),true,'待核实按钮在缩放下可见且不重叠');
+    }
+    win.webContents.setZoomFactor(1);
+    await shot(win,'redis-save-uncertain');
     await click(win,active('redis-check-save'));
     await text(win,'.redis-tab-panel:not([hidden]) .redis-edit-error','模拟状态查询失败');
     assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-save-value]").disabled',true),true,'状态查询失败不能解锁重复提交');
+    state.failReload=true;
     await click(win,active('redis-check-save'));
     await waitFor(win,'!document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]")','编辑保存完成');
     assert.equal(state.writeCommits,beforeCommitCount+1,'检查状态不重复提交写入');
     assert.equal(writeValues.get('cache:ui-created').value,'{"edited":true}');
+    await text(win,active('redis-key-error'),'已修改 Key');
+    await text(win,active('redis-key-error'),'刷新失败');
+    await click(win,active('redis-refresh-key'));
+    await waitFor(win,'!document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-delete-key]")?.disabled','重新读取只刷新显示');
+    state.writeDelays.open=700;
     await click(win,active('redis-delete-key'));
+    await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-delete-key] [data-operation-spinner]")','读取删除目标也有转圈反馈');
+    state.writeDelays.open=0;
     await waitFor(win,'document.querySelector("[data-testid=redis-confirm-delete]")','删除确认');
     assert.equal(writeValues.has('cache:ui-created'),true,'确认前数据保留');
+    const dialogGeometry=()=>win.webContents.executeJavaScript('(()=>{const r=document.querySelector(".redis-delete-dialog").getBoundingClientRect();return [r.x,r.y,r.width,r.height]})()',true);
+    const beforeDelete=await dialogGeometry();
+    state.loseWriteReply=true;state.writeDelays.commit=900;
     await click(win,testId('redis-confirm-delete'));
-    await waitFor(win,'!document.querySelector("[data-testid=redis-confirm-delete]")','删除完成');
+    await waitFor(win,'document.querySelector("[data-testid=redis-confirm-delete] [data-operation-spinner]")','删除中原位转圈');
+    assert.deepEqual(await dialogGeometry(),beforeDelete,'删除等待不能改变弹窗尺寸');
+    await waitFor(win,'document.querySelector("[data-testid=redis-check-delete]")','删除回复丢失保留结果');
+    assert.deepEqual(await dialogGeometry(),beforeDelete,'删除错误不能撑高弹窗');
+    await shot(win,'redis-delete-uncertain');
+    state.writeDelays.commit=0;
+    await win.webContents.executeJavaScript('[...document.querySelectorAll("[role=dialog] button")].find(e=>e.textContent==="暂不处理").click()',true);
+    await waitFor(win,'!document.querySelector("[role=dialog]")','暂时关闭提示');
+    assert.ok(writeSessions.size>0,'暂不处理不能释放结果记录');
+    await click(win,testId('redis-resume-delete'));
+    await waitFor(win,'document.querySelector("[data-testid=redis-check-delete]")','底栏恢复结果跟踪');
+    await click(win,testId('redis-verify-delete'));
+    await waitFor(win,'document.querySelector("[data-testid=redis-finish-verification]")','只读核实结果');
+    await click(win,testId('redis-finish-verification'));
+    await waitFor(win,'!document.querySelector("[role=dialog]")','确认核实后结束操作');
     assert.equal(writeValues.has('cache:ui-created'),false);
     await openKey(win,'cache:platform:',true);
     for (const theme of ['dark', 'light']) {
@@ -690,7 +733,7 @@ async function run() {
     const hold = { operation: 'inspect', data: { key: 'cache:late', type: 'string', exists: true, ttlSeconds: -1, length: 1, cardinality: null, readAt: stamp() } };
     state.hold = hold;
     await click(win, active('redis-refresh-key'));
-    await waitFor(win, 'document.querySelector(".redis-tab-panel:not([hidden])").textContent.includes("正在读取")', '挂起读取');
+    await waitFor(win, 'document.querySelector(".redis-tab-panel:not([hidden])").textContent.includes("正在刷新内容")', '挂起读取');
     await click(win, testId('redis-workspace-close'));
     await click(win, testId('redis-workspace-confirm-close'));
     const deadline = Date.now() + 5000;

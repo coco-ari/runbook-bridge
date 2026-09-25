@@ -20,14 +20,14 @@ export function WorkspaceBackButton({ onClick, testId, label }: { readonly onCli
   return <Button size="sm" variant="ghost" type="button" data-testid={testId} aria-label={label} title="返回详情并保留工作区" onClick={onClick}><ArrowLeft aria-hidden="true" />返回详情</Button>
 }
 
-export function WorkspaceHeaderActions({ connected, busy, onDisconnect, onClose, prefix, closeLabel, closeTitle }: {
-  readonly connected: boolean; readonly busy: boolean
+export function WorkspaceHeaderActions({ connected, busy, disabled = false, onDisconnect, onClose, prefix, closeLabel, closeTitle }: {
+  readonly connected: boolean; readonly busy: boolean; readonly disabled?: boolean
   readonly onDisconnect: () => void; readonly onClose: () => void
   readonly prefix: string; readonly closeLabel: string; readonly closeTitle: string
 }) {
   return <>
     <SettingsButton />
-    <Button data-testid={prefix + "-disconnect"} size="sm" variant="outline" type="button" title="断开连接" disabled={!connected || busy} onClick={onDisconnect}><LinkBreak aria-hidden="true" />{busy ? "断开中…" : "断开连接"}</Button>
+    <Button data-testid={prefix + "-disconnect"} size="sm" variant="outline" type="button" title="断开连接" disabled={!connected || busy || disabled} onClick={onDisconnect}><LinkBreak aria-hidden="true" />{busy ? "断开中…" : "断开连接"}</Button>
     <WorkspaceIconButton action="close" data-testid={prefix + "-close"} label={closeLabel} title={closeTitle} onClick={onClose} />
   </>
 }

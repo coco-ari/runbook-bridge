@@ -706,7 +706,7 @@ async function run() {
     await screenshot(win,'preview');
     state.failPreview = true;
     await click(win,testId('mysql-preview-run'));
-    await textContains(win,'mysql-preview-error','模拟数据预览失败');
+    await textContains(win,'mysql-edit-message','模拟数据预览失败');
     state.failPreview = false;
     await click(win,testId('mysql-preview-run'));
     await textContains(win,'mysql-preview-result','已完成订单');

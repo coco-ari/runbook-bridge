@@ -78,7 +78,7 @@ async function assertSqlAssistanceAndBrowse({win,fill,click,waitFor,textContains
   await textContains(win,'mysql-preview-summary','20 行');
   state.failPreview = true;
   await click(win,testId('mysql-preview-load-more'));
-  await textContains(win,'mysql-preview-error','模拟数据预览失败');
+  await waitFor(win,'document.querySelector("[data-testid=mysql-data-editor] [data-testid=mysql-edit-message]")?.textContent.includes("模拟数据预览失败")','分页错误在固定底栏显示');
   await textContains(win,'mysql-preview-summary','20 行');
   state.failPreview = false;
   await click(win,testId('mysql-preview-retry'));

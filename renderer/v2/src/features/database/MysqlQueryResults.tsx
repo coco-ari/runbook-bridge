@@ -10,7 +10,7 @@ import { useMysqlInlineEditing } from "./MysqlInlineEditingContext"
 import { Checkbox } from "@/components/ui/checkbox"
 import { SelectControl, SelectItem } from "@/components/ui/select"
 import { copyMysqlText } from "./mysql-clipboard"
-import { CaretDown, CaretLeft, CaretRight, MagnifyingGlass, WarningCircle, X } from "@phosphor-icons/react"
+import { ArrowClockwise, CaretDown, CaretLeft, CaretRight, MagnifyingGlass, WarningCircle, X } from "@phosphor-icons/react"
 import { useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react"
 
 import type { MysqlQueryResult } from "@/bridge/ai-ops-v2"
@@ -34,7 +34,7 @@ interface MysqlQueryResultsProps {
   readonly snapshot?: RefObject<MysqlResultViewSnapshot | null>
   readonly sort?: MysqlSort | null
   readonly onSort?: (sort: MysqlSort | null) => void
-  readonly stream?: Readonly<{ key: string; loading: boolean; hasMore: boolean; message: string; onLoadMore: () => void }>
+  readonly stream?: Readonly<{ key: string; loading: boolean; hasMore: boolean; retry?: boolean; message: string; onLoadMore: () => void }>
 }
 
 interface ResultViewState {
@@ -333,7 +333,7 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
               <span>{filter ? filteredRows.length + "/" + result.rowCount : result.rowCount} 行</span><span className="mysql-duration"> · {Math.round(result.durationMs)} ms</span>
             </Button></PopoverTrigger><PopoverContent align="start" className="text-xs"><p className="font-medium">查询成功</p><p>返回 {result.rowCount} 行 · 当前匹配 {filteredRows.length} 行</p><p>耗时 {Math.round(result.durationMs)} ms · {mysqlByteSize(result.bytes)}</p>{stream ? <p data-testid={`${prefix}-load-status`}>{stream.message}</p> : null}</PopoverContent></Popover>
             <div aria-live="polite" className={`mysql-results-status ${notice?.failed ? "text-danger" : ""}`}>{editing?.status || notice?.message}</div>
-            {stream ? stream.hasMore || stream.loading ? <Button className="mysql-results-loadmore" data-testid={`${prefix}-load-more`} disabled={stream.loading || Boolean(filter) || Boolean(editing?.locked)} onClick={stream.onLoadMore} size="xs" variant="ghost" aria-label="加载更多数据" title={stream.loading ? "正在加载更多数据" : "加载更多数据"}><CaretDown /><span className="mysql-load-label">{stream.loading ? "加载中…" : "加载更多"}</span></Button> : null : lastPage > 0 ? <div className="mysql-results-pagination">
+            {stream ? stream.hasMore || stream.loading || stream.retry ? <Button className="mysql-results-loadmore" data-testid={stream.retry ? `${prefix}-retry` : `${prefix}-load-more`} disabled={stream.loading || Boolean(filter) || (Boolean(editing?.locked) && !stream.retry)} onClick={stream.onLoadMore} size="xs" variant="ghost" aria-label={stream.retry ? "重试加载" : "加载更多数据"} title={stream.loading ? "正在加载更多数据" : stream.retry ? "重试加载" : "加载更多数据"}>{stream.retry ? <ArrowClockwise /> : <CaretDown />}<span className="mysql-load-label">{stream.loading ? "加载中…" : stream.retry ? "重试加载" : "加载更多"}</span></Button> : null : lastPage > 0 ? <div className="mysql-results-pagination">
               <label className="mysql-page-size"><span className="sr-only">每页结果行数</span><SelectControl aria-label="每页结果行数" size="sm" onValueChange={value => changeView({ pageSize: Number(value), page: 0, selectedRow: null })} value={String(state.pageSize)}>{[25, 50, MYSQL_RESULT_PAGE_SIZE].map(size => <SelectItem key={size} value={String(size)}>{size} 行 / 页</SelectItem>)}</SelectControl></label>
               <Button aria-label="上一页结果" disabled={visiblePage === 0} onClick={() => changeView({ page: visiblePage - 1, selectedRow: null })} size="icon-xs" type="button" variant="ghost"><CaretLeft /></Button>
               <span>{visiblePage + 1}/{lastPage + 1}</span>

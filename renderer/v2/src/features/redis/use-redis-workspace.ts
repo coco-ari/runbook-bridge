@@ -9,6 +9,7 @@ const SEARCH_MAX_REQUESTS = 1000
 
 export interface RedisTab {
   readonly id: string
+  readonly writeSummary?: string
   readonly creating?: boolean
   readonly key: string
   readonly patternId: string
@@ -172,7 +173,7 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
     tabSequences.current.set(id, sequence)
     const captured = epoch.current
     const current = () => mounted.current && captured === epoch.current && tabSequences.current.get(id) === sequence && tabsRef.current.some((item) => item.id === id)
-    patchTab(id, { loading: true, error: "", ...(!more && field === undefined ? { content: null, fieldContent: null, fieldName: null, info: null } : {}) })
+    patchTab(id, { loading: true, error: "", ...(!more && field === undefined ? { fieldContent: null, fieldName: null } : {}) })
     try {
       await enqueue(async () => {
         if (!current()) return
@@ -201,7 +202,7 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
     } catch (failure) {
       if (current()) {
         const code = (failure as { code?: string })?.code
-        patchTab(id, { error: message(failure), ...(["REDIS_TYPE_CHANGED", "REDIS_WORKSPACE_STALE", "PLUGIN_NOT_CONNECTED"].includes(code ?? "") ? { info: null, content: null, fieldContent: null } : {}) })
+        patchTab(id, { error: (tab.writeSummary ? tab.writeSummary + "；刷新失败，可重新刷新。" : "") + message(failure), ...(["REDIS_TYPE_CHANGED", "REDIS_WORKSPACE_STALE", "PLUGIN_NOT_CONNECTED"].includes(code ?? "") ? { info: null, content: null, fieldContent: null } : {}) })
       }
     } finally { if (current()) patchTab(id, { loading: false }) }
   }
@@ -229,12 +230,13 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
     setActiveId(id)
     return id
   }
-  function written(id: string, key: string, removed: boolean) {
+  function written(id: string, key: string, removed: boolean, summary = "") {
+    setNotice("")
     if (removed) {
       for (const tab of tabsRef.current.filter(tab => tab.key === key)) closeTab(tab.id)
       keysRef.current = keysRef.current.filter(value => value !== key); setKeys(keysRef.current)
     } else {
-      patchTab(id,{key,creating:false,pinned:true}); void readTab(id)
+      patchTab(id,{key,creating:false,pinned:true,writeSummary:summary}); void readTab(id)
       if (!keywordRef.current && !keysRef.current.includes(key) && keysRef.current.length < REDIS_MAX_KEYS) { keysRef.current = [key,...keysRef.current]; setKeys(keysRef.current) }
       else if (!keysRef.current.includes(key)) setNotice("Key 已保存，当前搜索结果可能不包含它；右侧可查看最新内容。")
     }

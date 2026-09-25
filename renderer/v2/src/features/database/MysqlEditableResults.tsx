@@ -1,3 +1,4 @@
+import { OperationMessage, OperationSpinner, useOperationLabel } from "@/components/workspace/OperationFeedback"
 import { MysqlRowSheet } from "./MysqlRowSheet"
 import { mysqlDraftColumn, mysqlDraftPlaceholder, type MysqlInsertDraft } from "./mysql-row-draft-model"
 import { useEffect, useMemo, useRef, useState, type ReactNode, type ComponentProps } from "react"
@@ -25,9 +26,10 @@ function MysqlRowAction({ hint, railClassName, ...props }: ComponentProps<typeof
   return <Tooltip><TooltipTrigger asChild><span className={"mysql-row-action " + (railClassName ?? "")} tabIndex={props.disabled ? 0 : undefined}><Button {...props} size="icon-sm" variant="ghost" /></span></TooltipTrigger><TooltipContent side="right" sideOffset={8}>{hint}</TooltipContent></Tooltip>
 }
 
-export function MysqlEditableResults({ api, scope, documentKey, sql, result, visible = true, onReload, children }: {
+export function MysqlEditableResults({ api, scope, documentKey, sql, result, visible = true, onReload, feedback, children }: {
   readonly api: AiOpsV2Api; readonly scope: PluginScope; readonly documentKey: string; readonly sql: string; readonly result: MysqlQueryResult
-  readonly visible?: boolean; readonly onReload: () => void; readonly children: ReactNode
+  readonly visible?: boolean; readonly onReload: (summary?: string) => void; readonly children: ReactNode
+  readonly feedback?: { busy: boolean; error: string; message: string }
 }) {
   const guard = useMysqlEditingGuard()
   const [edit, setEdit] = useState<MysqlEditData | null>(null)
@@ -54,13 +56,17 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   const [saved, setSaved] = useState(new Map<MysqlDisplayedRow, Record<string, string | null>>())
   const [activeCell, setActiveCell] = useState<ActiveCell | null>(null)
   const activeRef = useRef<ActiveCell | null>(null)
-  const [busy, setBusy] = useState<"open" | "prepare" | "commit" | null>(null)
+  const [busy, setBusy] = useState<"open" | "prepare" | "commit" | "check" | null>(null)
+  const [reading, setReading] = useState("正在读取字段…")
+  const [rowAction, setRowAction] = useState<"add" | "copy" | "delete" | null>(null)
   const busyRef = useRef(busy)
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
   const [conflicts, setConflicts] = useState(new Set<string>())
   const [plan, setPlan] = useState<MysqlEditPlan | null>(null)
   const [uncertain, setUncertain] = useState(false)
+  const uncertainRef = useRef(false)
+  uncertainRef.current = uncertain
   const [stale, setStale] = useState(false)
   const [exportSelection, setExportSelection] = useState<MysqlSqlExportSelection | null>(null)
   const [batch, setBatch] = useState(false)
@@ -92,16 +98,13 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   const pendingRows = Object.keys(drafts).filter(id => !deleted.has(id))
   const pendingCount = pendingRows.length + inserts.length + deleted.size
   const cellCount = Object.entries(drafts).filter(([id]) => !deleted.has(id)).reduce((count, [, values]) => count + Object.keys(values).length, 0) + inserts.reduce((count, row) => count + Object.keys(row.values).length, 0)
-  const locked = Boolean(busy || uncertain || stale || !guard.connected)
-  useEffect(() => {
-    if (!notice) return
-    const timer = window.setTimeout(() => setNotice(""), 3500)
-    return () => window.clearTimeout(timer)
-  }, [notice])
+  const locked = Boolean(busy || uncertain || stale || !guard.connected || feedback?.busy || feedback?.error)
+  const waiting = useOperationLabel(Boolean(busy || feedback?.busy), busy === "check" ? "正在检查保存状态…" : busy === "prepare" ? "正在校验更改…" : busy === "commit" ? "正在保存更改…" : busy === "open" ? reading : "正在刷新数据…")
   useEffect(() => {
     alive.current = true
     const unregister = guard.register(documentKey, () => ({
       busy: Boolean(busyRef.current),
+      uncertain: uncertainRef.current,
       dirty: insertsRef.current.length > 0 || deletedRef.current.size > 0 || Boolean(rowDraftRef.current) || Object.keys(draftsRef.current).length > 0 || Boolean(activeRef.current && (activeRef.current.isNull ? null : activeRef.current.value) !== editRef.current?.rows.find(row => row.rowId === activeRef.current?.rowId)?.values[activeRef.current.name]),
       discard: () => { updateDrafts({}); updateInserts([]); updateDeleted(new Set()); updateRowDraft(null); setCell(null); setPlan(null) },
     }))
@@ -246,13 +249,15 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
       })
       setEdit(current => current ? { ...current, rows: current.rows.map(row => updated.get(row.rowId) ?? row) } : current)
       const refreshRows = insertsRef.current.length > 0 || deletedRef.current.size > 0
+      const copies = insertsRef.current.filter(row => row.copied).length
+      const summary = `已保存：新增 ${insertsRef.current.length - copies} · 复制 ${copies} · 修改 ${Object.keys(draftsRef.current).filter(id => !deletedRef.current.has(id)).length} · 删除 ${deletedRef.current.size}` + (status.result.auditWarning ? "；操作记录写入失败。" : "。") + (insertsRef.current.length ? " 新增和复制行按当前筛选及返回行数限制显示。" : "")
       updateDrafts({}); updateInserts([]); updateDeleted(new Set()); setConflicts(new Set()); setPlan(null); setUncertain(false); setError("")
-      setNotice(status.result.auditWarning ? "数据已保存，但操作记录写入失败。" : "已保存 " + status.result.rowCount + " 行修改。")
+      setNotice(summary)
       if (refreshRows) {
         if (editRef.current) void api.mysqlEditRelease({ ...scope, editId: editRef.current.editId }).catch(() => {})
         setSelection(new Set()); setEdit(null); editRef.current = null; guard.setEditing(documentKey, false)
-        toast.success("更改已保存。新增行按当前查询条件显示，未出现时请检查筛选及返回行数限制。")
-        onReload()
+        toast.success(summary)
+        onReload(summary)
       }
     } else if (status.status === "running") { setUncertain(true); setError("保存仍在进行，请检查保存状态，不要重复提交。") }
     else {
@@ -263,8 +268,8 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
     }
   }
   async function commit(prepared: MysqlEditPlan, checkOnly = false) {
-    if (!editRef.current) return
-    setWorking("commit")
+    if (!editRef.current || busyRef.current === "commit" || busyRef.current === "check") return
+    setError(""); setWorking(checkOnly ? "check" : "commit")
     try {
       const payload = { ...scope, editId: editRef.current.editId, planId: prepared.planId }
       const response = checkOnly ? await api.mysqlEditStatus(payload) : await api.mysqlEditCommit(payload)
@@ -310,8 +315,9 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
     finishCell()
     if (pendingCount >= (edit?.limits.maxRows ?? 100)) { toast.error("每批最多暂存 100 行，请先保存。"); return }
     const localSource = insertsRef.current.find(row => insertSources.current.get(row.rowId) === copySource)
+    setRowAction(copySource ? "copy" : "add"); setReading(copySource ? "正在读取源行…" : "正在读取字段…")
     const data = await ensureSnapshot(copySource && !localSource ? [copySource] : [])
-    if (!data?.insertColumns || !alive.current) return
+    if (!data?.insertColumns || !alive.current) { setRowAction(null); return }
     try {
       let values: Record<string, string | null> = {}
       if (localSource) values = { ...localSource.values }
@@ -343,7 +349,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
       if (draft.copied) toast.info("已复制为草稿，请检查主键和唯一字段，避免与已有记录重复。")
       setNotice(draft.copied ? "已复制为草稿，请检查主键和唯一字段后统一保存。" : "已添加草稿，填写后统一保存。")
     } catch (failure) { setError(failure instanceof Error ? failure.message : "无法添加行") }
-    finally { if (alive.current) setWorking(null) }
+    finally { if (alive.current) { setWorking(null); setRowAction(null) } }
   }
   async function deleteRows(targets = [...selection]) {
     if (locked || busyRef.current || !targets.length) return
@@ -355,12 +361,14 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
     }
     targets = targets.filter(row => !insertBindings.has(row))
     if (!targets.length) return
+    setRowAction("delete"); setReading("正在核对待删除行…")
     const data = await ensureSnapshot(targets)
-    if (!data || !alive.current) return
+    if (!data || !alive.current) { setRowAction(null); return }
     setWorking("open")
     try {
       const mapped = bindMysqlEditRows(result.rows, data), next = new Set(deletedRef.current)
-      for (const source of targets) {
+      for (const [index, source] of targets.entries()) {
+        setReading(`正在核对待删除行 ${index + 1}/${targets.length}…`)
         const row = mapped.get(source)
         if (!row) throw new Error("无法定位待删除行，请刷新后重试。")
         if (next.has(row.rowId)) continue
@@ -370,7 +378,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
       }
       if (alive.current) { updateDeleted(next); setError(""); setNotice("已标记待删除，保存前可撤销。") }
     } catch (failure) { if (alive.current) setError(failure instanceof Error ? failure.message : "无法删除行") }
-    finally { if (alive.current) setWorking(null) }
+    finally { if (alive.current) { setWorking(null); setRowAction(null) } }
   }
   function stageRow() {
     const draft = rowDraftRef.current
@@ -423,13 +431,13 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   const controller: MysqlInlineEditing = {
     locked: locked || deleteConfirmation, selection,
     toolbar: <aside className="mysql-row-toolbar" aria-label="数据行操作" data-testid="mysql-row-toolbar">
-      <MysqlRowAction disabled={locked} onClick={() => void addRow()} data-testid="mysql-add-row" aria-label="新增行" hint="新增行"><Plus /></MysqlRowAction>
-      <MysqlRowAction disabled={locked || selection.size !== 1} onClick={() => void addRow([...selection][0])} data-testid="mysql-copy-row" aria-label="复制为新行" hint={selection.size === 1 ? "复制为新行" : "复制为新行 · 请先选择一行"}><Copy /></MysqlRowAction>
-      <MysqlRowAction className="text-danger" disabled={locked || !selection.size} onClick={() => void deleteRows()} data-testid="mysql-delete-rows" aria-label="删除行" hint={selection.size ? "删除选中行 · 保存后生效" : "删除行 · 请先选择要删除的行"}><Trash /></MysqlRowAction>
+      <MysqlRowAction disabled={locked} onClick={() => void addRow()} data-testid="mysql-add-row" aria-label="新增行" hint="新增行">{busy && rowAction === "add" ? <OperationSpinner /> : <Plus />}</MysqlRowAction>
+      <MysqlRowAction disabled={locked || selection.size !== 1} onClick={() => void addRow([...selection][0])} data-testid="mysql-copy-row" aria-label="复制为新行" hint={selection.size === 1 ? "复制为新行" : "复制为新行 · 请先选择一行"}>{busy && rowAction === "copy" ? <OperationSpinner /> : <Copy />}</MysqlRowAction>
+      <MysqlRowAction className="text-danger" disabled={locked || !selection.size} onClick={() => void deleteRows()} data-testid="mysql-delete-rows" aria-label="删除行" hint={selection.size ? "删除选中行 · 保存后生效" : "删除行 · 请先选择要删除的行"}>{busy && rowAction === "delete" ? <OperationSpinner /> : <Trash />}</MysqlRowAction>
       <hr className="my-1 border-border" />
       <MysqlRowAction disabled={!selection.size || locked || [...selection].some(row => insertBindings.has(row))} data-testid="mysql-edit-batch" aria-label="批量赋值" hint="批量赋值 · 请先选择已有行" onClick={() => void openBatch()}><Rows /></MysqlRowAction>
       {selection.size ? <MysqlRowAction aria-label="取消选择" hint={"取消选择 · 已选 " + selection.size + " 行"} onClick={() => setSelection(new Set())}><SelectionSlash /></MysqlRowAction> : null}
-      <MysqlRowAction railClassName="mysql-row-refresh" disabled={Boolean(busy) || !guard.connected} data-testid="mysql-edit-refresh" aria-label="刷新数据" hint="刷新数据 · 有草稿时先确认是否放弃" onClick={refresh}><ArrowClockwise /></MysqlRowAction>
+      <MysqlRowAction railClassName="mysql-row-refresh" disabled={Boolean(busy || feedback?.busy) || !guard.connected} data-testid="mysql-edit-refresh" aria-label="刷新数据" hint="刷新数据 · 有草稿时先确认是否放弃" onClick={refresh}>{feedback?.busy ? <OperationSpinner /> : <ArrowClockwise />}</MysqlRowAction>
     </aside>,
     pendingRows: gridDrafts,
     rowState: row => {
@@ -505,12 +513,11 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
         {deleted.size ? <span className="text-danger">删除 {deleted.size}</span> : null}
         <span className="sr-only">（{cellCount} 处字段）</span>
       </span> : null}
-      <span data-testid="mysql-edit-message" className="min-w-0 truncate">{error || (busy === "open" ? "核对字段…" : notice)}</span>
+      <span data-testid="mysql-edit-message" className="min-w-0 flex-1"><OperationMessage error={Boolean(error || feedback?.error)} message={error || feedback?.error || (feedback?.busy && feedback.message ? feedback.message + " · " : "") + waiting || notice || feedback?.message || ""} /></span>
     </span>,
     footer: <div className="mysql-inline-actions">
-      {uncertain && plan ? <Button size="xs" variant="outline" disabled={Boolean(busy)} onClick={() => void commit(plan, true)}>检查保存状态</Button> : null}
       <Button size="xs" variant="ghost" disabled={Boolean(busy) || uncertain || (!pendingCount && !activeCell)} data-testid="mysql-edit-undo" aria-label="取消更改" onClick={() => { finishCell(true); updateDrafts({}); updateInserts([]); updateDeleted(new Set()); updateRowDraft(null); setSelection(new Set()); setError(""); setNotice("已取消全部未保存更改。"); }}><ArrowCounterClockwise />取消更改</Button>
-      <Button size="xs" data-testid="mysql-edit-save" disabled={locked || (!pendingCount && !activeCell)} onClick={() => void save()}><FloppyDisk />{busy === "commit" || busy === "prepare" ? "保存中…" : "保存更改"}</Button>
+      <Button size="xs" className="mysql-save-operation" aria-label={uncertain ? "检查保存状态" : "保存更改"} aria-busy={busy === "commit" || busy === "prepare" || busy === "check"} data-testid="mysql-edit-save" disabled={uncertain && plan ? Boolean(busy) : locked || (!pendingCount && !activeCell)} onClick={() => uncertain && plan ? void commit(plan, true) : void save()}>{busy === "commit" || busy === "prepare" || busy === "check" ? <OperationSpinner /> : uncertain ? <ArrowClockwise /> : <FloppyDisk />}{busy === "check" ? "核对中…" : uncertain ? "检查状态" : busy === "commit" || busy === "prepare" ? "保存中…" : "保存更改"}</Button>
     </div>,
   }
   const batchMetadata = edit?.columns.find(column => column.name === batchColumn)

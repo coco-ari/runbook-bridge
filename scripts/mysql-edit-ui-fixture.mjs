@@ -13,6 +13,7 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
   const {registerMysqlEditIpc}=await readModule("mysql-edit-ipc.mjs");
   let live, connection, rows=Array.from({length:32},(_,index)=>({id:String(9007199254740993n+BigInt(index)),label:'测试记录 '+String(index+1).padStart(2,'0'),optional:index===0?null:'',amount:(index+1)+'.0000',state:'open',quantity:'1',doubled:'2'})),backup;
   const audits=[],writes=[];
+  const network={delays:{},failPreview:false,loseCommitReply:false,failStatus:false,commits:0};
   const exportRoot=await fs.mkdtemp(path.join(os.tmpdir(),"mysql-export-ui-"));
   const exportPath=path.join(exportRoot,"selected.sql");
   const names=['id','label','optional','amount','state','quantity','doubled'];
@@ -76,7 +77,11 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
   const services={isWorkspaceRenderer:()=>true,pickMysqlExportPath:async()=>exportPath,v2Service:{mysqlEditor:editor,invokeDesktopMysqlEdit:async(owner,payload,operation,assertOwner)=>{
     assert.deepEqual(Object.fromEntries(Object.keys(scope).map(key=>[key,payload[key]])),scope);
     if(operation==='release')return editor.release(owner,scope,payload.editId);
-    return editor[operation](owner,plugin,payload,assertOwner);
+    if(network.delays[operation])await new Promise(resolve=>setTimeout(resolve,network.delays[operation]));
+    if(operation==='status'&&network.failStatus){network.failStatus=false;throw new Error('模拟状态查询失败');}
+    const result=await editor[operation](owner,plugin,payload,assertOwner);
+    if(operation==='commit'){network.commits++;if(network.loseCommitReply){network.loseCommitReply=false;throw new Error('模拟提交回复丢失');}}
+    return result;
   }}};
   for(const operation of ['open','row','prepare','commit','status','release']){
     const channel='v2:mysql-edit-'+operation;ipcMain.removeHandler(channel);registeredChannels.add(channel);
@@ -92,9 +97,10 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
     return {rows:snapshot.rows.map(row=>row.values),columns:snapshot.columns.map(column=>({name:column.name,table:'orders',type:253})),rowCount:snapshot.rows.length,bytes:2000,truncated:false,durationMs:3,limitsApplied:plugin.limits};
   };
   handler('v2:mysql-query-readonly',payload=>read(payload.sql));
-  handler('v2:mysql-preview-table',payload=>read('SELECT * FROM orders ORDER BY id LIMIT '+(payload.limit??20)+' OFFSET '+(payload.offset??0)));
+  ipcMain.removeHandler('v2:mysql-preview-table');
+  ipcMain.handle('v2:mysql-preview-table',async(_event,payload)=>{if(network.delays.preview)await new Promise(resolve=>setTimeout(resolve,network.delays.preview));if(network.failPreview){network.failPreview=false;return {ok:false,error:{code:'MYSQL_READ_FAILED',message:'模拟刷新失败'}};}return {ok:true,data:await read('SELECT * FROM orders ORDER BY id LIMIT '+(payload.limit??20)+' OFFSET '+(payload.offset??0))};});
   return {
-    editor,audits,writes,live:Boolean(live),
+    editor,audits,writes,network,live:Boolean(live),
     readExport:()=>fs.readFile(exportPath,"utf8"),
     read:async()=>live?(await live.admin.query({sql:'SELECT id,label,optional,amount,state FROM orders ORDER BY id',bigNumberStrings:true}))[0].map(row=>({...row})):structuredClone(rows),
     external:async(id,label)=>{if(live)await live.admin.query('UPDATE orders SET label=? WHERE id=?',[label,id]);else rows.find(row=>row.id===id).label=label;},

@@ -135,3 +135,23 @@
   .redis-key-heading:has(.redis-key-actions) { display:grid; grid-template-columns:minmax(0,1fr) auto; column-gap:12px; }
   .redis-key-heading:has(.redis-key-actions) .redis-key-meta { grid-column:1 / -1; }
 }
+
+/* 状态区域始终占据固定空间，异步文案和校验错误不推动内容。 */
+.redis-edit-footer { height:80px; min-height:80px; flex-shrink:0; flex-direction:column; flex-wrap:nowrap; align-items:stretch; gap:4px; padding:6px 12px; }
+.redis-edit-footer .redis-edit-error { height:24px; min-height:24px; max-height:24px; padding:0; overflow:hidden; color:inherit; }
+.redis-edit-footer .redis-edit-error.text-danger { color:var(--danger); }
+.redis-edit-actions { display:flex; align-items:center; gap:6px; min-height:32px; overflow-x:auto; }
+.redis-edit-actions > button { flex-shrink:0; }
+.redis-edit-recovery { display:flex; align-items:center; gap:4px; flex:1; min-width:0; }
+.redis-edit-recovery button { flex-shrink:0; padding-inline:6px; }
+.redis-save-operation { width:92px; }
+.redis-document-status { margin-top:auto; height:32px; min-height:32px; flex-shrink:0; padding:3px 12px; border-top:1px solid var(--border); }
+.redis-workspace-footer { display:flex; height:32px; min-height:32px; overflow:hidden; }
+.redis-workspace-footer > span { white-space:nowrap; }
+.redis-workspace-footer [role=status] span, .redis-workspace-footer [role=alert] span { display:block; }
+.redis-delete-key { height:48px; overflow:auto; overflow-wrap:anywhere; font-family:var(--font-mono); font-size:var(--text-sm); }
+.redis-delete-feedback { height:28px; min-height:28px; overflow:hidden; }
+.redis-delete-actions { display:flex; flex-direction:row; justify-content:flex-end; flex-wrap:nowrap; gap:8px; }
+.redis-delete-actions > button { flex-shrink:0; }
+.redis-delete-submit { width:128px; }
+@media (max-height:620px) { .redis-workspace-footer { display:flex; } }

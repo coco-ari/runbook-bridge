@@ -5,6 +5,8 @@ import type { AiOpsV2Api, MysqlQueryResult, PluginScope } from "@/bridge/ai-ops-
 export const MYSQL_MAX_QUERY_DOCUMENTS = 6
 
 interface MysqlDocumentRead {
+  readonly revision?: number
+  readonly writeSummary?: string
   readonly executedSql?: string
   readonly data: MysqlQueryResult | null
   readonly loading: boolean
@@ -62,21 +64,24 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
     setDocuments((current) => current.map((document) => document.id === id ? { ...document, sql } : document))
   }
 
-  async function runQuery(id: string, sql: string) {
+  async function runQuery(id: string, sql: string, summary?: string) {
     const owner = tickets.current.get(id)
     if (!active.current || !owner || owner.busy || !sql.trim()) return
     const ticket = ++owner.ticket
     owner.busy = true
     const currentRequest = () => active.current && tickets.current.get(id) === owner && owner.ticket === ticket
     const setResult = (result: MysqlDocumentRead) => setDocuments((current) => current.map((document) => document.id === id ? { ...document, result } : document))
-    setResult({ data: null, loading: true, error: null })
+    const previous = documents.find(document => document.id === id)?.result
+    const writeSummary = summary ?? previous?.writeSummary ?? ""
+    const retained = writeSummary ? previous?.data ?? null : null
+    setResult({ data: retained, revision: previous?.revision ?? 0, executedSql: sql, writeSummary, loading: true, error: null })
     try {
       const response = await api.mysqlQueryReadonly({ projectId, environmentId, pluginInstanceId, sql })
       if (!currentRequest()) return
       if (!response.ok) throw new Error(response.error.message)
-      setResult({ data: response.data, executedSql: sql, loading: false, error: null })
+      setResult({ data: response.data, revision: ticket, executedSql: sql, writeSummary, loading: false, error: null })
     } catch (error) {
-      if (currentRequest()) setResult({ data: null, loading: false, error: error instanceof Error ? error.message : "SQL 查询失败，请重试。" })
+      if (currentRequest()) setResult({ data: retained, revision: previous?.revision ?? 0, executedSql: sql, writeSummary, loading: false, error: (writeSummary ? writeSummary + " 刷新失败，可重新刷新。" : "") + (error instanceof Error ? error.message : "SQL 查询失败，请重试。") })
     } finally {
       if (currentRequest()) owner.busy = false
     }

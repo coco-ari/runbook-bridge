@@ -3,7 +3,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 
-interface GuardState { readonly dirty: boolean; readonly busy: boolean; readonly discard?: () => void }
+interface GuardState { readonly dirty: boolean; readonly busy: boolean; readonly uncertain?: boolean; readonly discard?: () => void }
 interface EditingContext {
   readonly hasEditing: boolean
   setEditing(key: string, value: boolean): void
@@ -21,7 +21,7 @@ const Context = createContext<EditingContext>({
 export function MysqlEditingProvider({ connected, connectionEpoch, onEditingChange, children }: { readonly connected: boolean; readonly connectionEpoch: number; readonly onEditingChange: (value: boolean) => void; readonly children: ReactNode }) {
   const guards = useRef(new Map<string, () => GuardState>())
   const [editing, setEditing] = useState(new Set<string>())
-  const [pending, setPending] = useState<{ action: () => void; count: number; discard: () => void } | null>(null)
+  const [pending, setPending] = useState<{ action: () => void; count: number; uncertain: boolean; discard: () => void } | null>(null)
   const methods = useMemo(() => ({
     setEditing(key: string, value: boolean) { setEditing(current => { const next = new Set(current); if (value) next.add(key); else next.delete(key); return next }) },
     register(key: string, inspect: () => GuardState) {
@@ -32,7 +32,7 @@ export function MysqlEditingProvider({ connected, connectionEpoch, onEditingChan
       const entries = [...guards.current].filter(([key]) => !keys || keys.includes(key)).map(([, inspect]) => inspect())
       if (entries.some(entry => entry.busy)) { toast.info("正在读取或保存数据，请等待结果。"); return }
       const count = entries.filter(entry => entry.dirty).length
-      if (count) setPending({ action, count, discard: () => entries.forEach(entry => entry.discard?.()) })
+      if (count) setPending({ action, count, uncertain: entries.some(entry => entry.uncertain), discard: () => entries.forEach(entry => entry.discard?.()) })
       else action()
     },
   }), [])
@@ -42,7 +42,7 @@ export function MysqlEditingProvider({ connected, connectionEpoch, onEditingChan
     {children}
     <Dialog open={Boolean(pending)} onOpenChange={open => { if (!open) setPending(null) }}>
       <DialogContent data-testid="mysql-edit-discard-dialog">
-        <DialogHeader><DialogTitle>还有未保存的修改</DialogTitle><DialogDescription>{pending?.count} 个数据标签有修改。继续操作会放弃相关草稿，数据库中的数据尚未改变。</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>{pending?.uncertain ? "提交结果尚未确认" : "还有未保存的修改"}</DialogTitle><DialogDescription>{pending?.uncertain ? "服务器可能已经完成写入。继续操作会放弃本地草稿并结束本次状态跟踪，不会撤销服务器操作；重新查询后请核实数据，勿直接重复提交。" : `${pending?.count} 个数据标签有修改。继续操作会放弃相关草稿，尚未提交的更改不会写入数据库。`}</DialogDescription></DialogHeader>
         <DialogFooter><Button variant="outline" onClick={() => setPending(null)}>保留修改</Button><Button variant="destructive" data-testid="mysql-edit-discard-confirm" onClick={() => { const action = pending?.action; pending?.discard(); setPending(null); action?.() }}>放弃修改并继续</Button></DialogFooter>
       </DialogContent>
     </Dialog>
