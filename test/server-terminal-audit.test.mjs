@@ -74,7 +74,7 @@ test('真实 Bash 记录每条完成命令并保留原提示钩子与退出码',
     assert.ok(predicate(),'Bash 未返回预期的执行记录：' + JSON.stringify({available:audit.available,entries}));
   };
   // 真实 PTY 合并输出流；管道夹具先合并，避免两个流的事件乱序破坏审计帧。
-  child.stdin.write("exec 2>&1; PROMPT_COMMAND='printf existing-prompt'; " + audit.command + '\n');
+  child.stdin.write("exec 2>&1; set -o history; PROMPT_COMMAND='printf existing-prompt'; " + audit.command + '\n');
   await until(() => audit.available && output.includes('existing-prompt'));
   assert.ok(output.includes('existing-prompt'));
   audit.noteInput(Buffer.from('pwd\nfalse\necho fixture-private\n'));

@@ -156,14 +156,15 @@ test('SOCKS5 拒绝认证后返回稳定错误并关闭连接', async t => {
 
 test('SOCKS5 交接回调期间取消或关闭释放 socket 与临时监听', async t => {
   for (const mode of ['cancel', 'close', 'reset']) {
-    await t.test(mode, async child => {
+    await t.test(mode, { timeout: 5000 }, async child => {
       const address = await proxyFixture(child, socket => socksHandshake(socket, Buffer.from('SSH-2.0-fixture\r\n')));
       const controller = new AbortController();
       const original = SocksClient.createConnection;
-      let socket;
+      let socket, closed;
       child.mock.method(SocksClient, 'createConnection', async options => {
         const result = await original.call(SocksClient, options);
         socket = result.socket;
+        closed = new Promise(resolve => socket.once('close', resolve));
         setImmediate(() => {
           if (mode === 'cancel') controller.abort(new Error('fixture-private-cancel'));
           else socket.destroy(mode === 'reset' ? new Error('fixture-private-reset') : undefined);
@@ -176,7 +177,8 @@ test('SOCKS5 交接回调期间取消或关闭释放 socket 与临时监听', as
         assert.ok(!JSON.stringify(error).includes('fixture-private'));
         return true;
       });
-      await delay(0);
+      // destroy 后的 close 事件可能晚于零延时计时器，资源断言以真实关闭为准。
+      await closed;
       assert.equal(socket.destroyed, true);
       assert.equal(socket.listenerCount('data'), 0);
       assert.equal(socket.listenerCount('error'), 0);

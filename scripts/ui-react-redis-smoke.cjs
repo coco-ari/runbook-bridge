@@ -686,6 +686,8 @@ async function run() {
     await waitFor(win,'document.querySelector("[data-testid=redis-confirm-delete]")','删除确认');
     assert.equal(writeValues.has('cache:ui-created'),true,'确认前数据保留');
     const dialogGeometry=()=>win.webContents.executeJavaScript('(()=>{const r=document.querySelector(".redis-delete-dialog").getBoundingClientRect();return [r.x,r.y,r.width,r.height]})()',true);
+    // 等待入场动画结束再建立尺寸基线，避免将初始缩放误判为状态提示导致的布局变化。
+    await waitFor(win,'document.querySelector(".redis-delete-dialog").getAnimations().every(animation=>animation.playState!=="running")','删除弹窗入场动画结束');
     const beforeDelete=await dialogGeometry();
     state.loseWriteReply=true;state.writeDelays.commit=900;
     await click(win,testId('redis-confirm-delete'));
