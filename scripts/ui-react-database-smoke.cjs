@@ -465,7 +465,7 @@ async function assertQueryDocuments(win,originalSql) {
   await click(win,testId('mysql-sql-document-tab'));
   await fill(win,testId('mysql-sql-editor'),'SELECT * FROM orders WHERE 1 = 0');
   await click(win,testId('mysql-query-run'));
-  await textContains(win,'mysql-query-summary','返回 0 行');
+  await textContains(win,'mysql-query-summary','0 行');
   await click(win,testId('mysql-sql-tab'));
   assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').value`,true),originalSql,'每个 SQL 标签必须保留独立文本。');
   await textContains(win,'mysql-query-result','模拟订单 100');
@@ -542,6 +542,19 @@ async function screenshot(win,name) {
   fs.mkdirSync(screenshotRoot,{recursive:true});
   // 隐藏窗口截图暂停过渡，按最终主题样式采集，避免继承颜色停留在中间帧。
   await win.webContents.executeJavaScript(`(() => {const style=document.createElement('style');style.id='database-screenshot-motion';style.textContent='*,*::before,*::after{transition:none!important;animation:none!important}';document.head.append(style)})()`,true);
+  if (win.webContents.getZoomFactor() !== 1) {
+    const originalTheme = nativeTheme.themeSource;
+    for (const theme of ['dark','light']) {
+      nativeTheme.themeSource = theme;
+      await waitFor(win,`document.documentElement.dataset.theme === '${theme}'`,'缩放截图主题');
+      await wait(200);
+      fs.writeFileSync(path.join(screenshotRoot,`database-${name}-${theme}.png`),(await captureFrame(win)).toPNG());
+    }
+    nativeTheme.themeSource = originalTheme;
+    await captureFrame(win);
+    await win.webContents.executeJavaScript("document.getElementById('database-screenshot-motion')?.remove()",true);
+    return;
+  }
   const originalTheme = nativeTheme.themeSource;
   const originalSize = await win.webContents.executeJavaScript('[innerWidth,innerHeight]',true);
   for (const theme of ['dark','light']) {
@@ -667,7 +680,28 @@ async function run() {
     await assertTextOnly(win,'mysql-preview-result');
     await textContains(win,'mysql-preview-result','NULL');
     await textContains(win,'mysql-preview-result','（空字符串）');
-    await textContains(win,'mysql-preview-summary','耗时 12 ms');
+    await textContains(win,'mysql-preview-summary','12 ms');
+    const compactLayout = await win.webContents.executeJavaScript(`(() => {
+      const toolbar=document.querySelector('.mysql-table-toolbar'),condition=document.querySelector('.mysql-table-filter-bar'),result=document.querySelector('[data-testid=mysql-preview-result]'),rail=result.querySelector('[data-testid=mysql-row-toolbar]'),footer=result.querySelector('.mysql-results-footer'),filter=document.querySelector('[data-testid=mysql-preview-filter]');
+      return {top:toolbar.getBoundingClientRect().height+condition.getBoundingClientRect().height,footer:footer.getBoundingClientRect().height,rail:rail.getBoundingClientRect().width,vertical:getComputedStyle(rail).flexDirection,filterInTop:toolbar.contains(filter),extraHeader:Boolean(result.querySelector('.mysql-result-search-bar')),structureRefresh:Boolean(toolbar.querySelector('[aria-label="刷新表结构"]'))};
+    })()`,true);
+    assert.ok(compactLayout.top<=80,'顶部仅保留两行工具栏');assert.equal(compactLayout.footer,36,'底栏保持单行');assert.equal(compactLayout.rail,56,'竖栏固定宽度');assert.equal(compactLayout.vertical,'column');assert.equal(compactLayout.filterInTop,true);assert.equal(compactLayout.extraHeader,false);assert.equal(compactLayout.structureRefresh,false);
+    await click(win,testId('mysql-query-options'));
+    await textContains(win,'mysql-query-options-panel','LIMIT 20');
+    const beforeSettings=databaseCalls.length;
+    await click(win,'[aria-label="每批读取行数"]');
+    await waitFor(win,'[...document.querySelectorAll("[role=option]")].some(e=>e.textContent.includes("50 行"))','读取数量选项');
+    await win.webContents.executeJavaScript('[...document.querySelectorAll("[role=option]")].find(e=>e.textContent.includes("50 行")).click()',true);
+    assert.equal(databaseCalls.length,beforeSettings,'调整读取数量不立即请求数据库');
+    await click(win,testId('mysql-query-options'));
+    await click(win,testId('mysql-preview-run'));
+    assert.equal(databaseCalls.at(-1).payload.limit,50,'执行后使用新的每批读取数量');
+    await click(win,testId('mysql-query-options'));
+    await click(win,'[aria-label="每批读取行数"]');
+    await win.webContents.executeJavaScript('[...document.querySelectorAll("[role=option]")].find(e=>e.textContent.includes("20 行")).click()',true);
+    await click(win,testId('mysql-query-options'));
+    await click(win,testId('mysql-preview-run'));
+
     await screenshot(win,'preview');
     state.failPreview = true;
     await click(win,testId('mysql-preview-run'));
@@ -714,7 +748,7 @@ async function run() {
     win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter',modifiers:[process.platform === 'darwin' ? 'meta' : 'control']});
     win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter',modifiers:[process.platform === 'darwin' ? 'meta' : 'control']});
     await textContains(win,'mysql-query-result','查询成功，没有符合条件的数据');
-    await textContains(win,'mysql-query-summary','返回 0 行');
+    await textContains(win,'mysql-query-summary','0 行');
     await fill(win,testId('mysql-sql-editor'),'SELECT duplicate_columns FROM orders');
     await click(win,testId('mysql-query-run'));
     await textContains(win,'mysql-query-duplicate-columns','查询返回了重名列');

@@ -39,6 +39,7 @@ export function MysqlTableDocument({ api, scope, table, visible, dragScope, maxR
   readonly visible: boolean; readonly dragScope: string; readonly maxRows: number
 }) {
   const [tab, setTab] = useState("preview")
+  const [filterHost, setFilterHost] = useState<HTMLDivElement | null>(null)
   const [description, setDescription] = useState<MysqlTableDescription | null>(null)
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(true)
@@ -59,11 +60,11 @@ export function MysqlTableDocument({ api, scope, table, visible, dragScope, maxR
   useEffect(() => { void refresh(); return () => { ticket.current++ } }, [])
   return <div className="mysql-table-content">
     {visible ? <>
-      <div className="mysql-table-toolbar"><Tabs value={tab} onValueChange={setTab}><TabsList aria-label="数据表视图" variant="line"><TabsTrigger data-testid="mysql-table-preview-tab" value="preview"><TableIcon />数据预览</TabsTrigger><TabsTrigger data-testid="mysql-table-structure-tab" value="structure"><ListBullets />表结构</TabsTrigger></TabsList></Tabs><span className="mysql-table-name" title={table}>{table}</span><WorkspaceIconButton action="refresh" label="刷新表结构" busy={loading} onClick={() => void refresh()} /></div>
+      <div className="mysql-table-toolbar"><Tabs value={tab} onValueChange={setTab}><TabsList aria-label="数据表视图" variant="line"><TabsTrigger data-testid="mysql-table-preview-tab" value="preview"><TableIcon />数据</TabsTrigger><TabsTrigger data-testid="mysql-table-structure-tab" value="structure"><ListBullets />结构</TabsTrigger></TabsList></Tabs><div className="mysql-table-result-filter" ref={setFilterHost} hidden={tab !== "preview"} />{tab === "structure" ? <WorkspaceIconButton action="refresh" label="刷新表结构" busy={loading} onClick={() => void refresh()} /> : null}</div>
       {error ? <div role="alert" className="mysql-browser-error" data-testid="mysql-structure-error">{error}<Button onClick={() => void refresh()} size="sm" variant="ghost">重试</Button></div> : null}
       {description?.auditWarning ? <p role="status" className="mysql-browser-error">表结构已读取，但操作记录未能保存。</p> : null}
       {tab === "structure" ? loading ? <p role="status">正在读取表结构…</p> : description ? <TableStructure description={description} /> : null : null}
     </> : null}
-    <MysqlTableBrowser api={api} scope={scope} table={table} description={description} maxRows={maxRows} visible={visible && tab === "preview"} dragScope={dragScope} />
+    <MysqlTableBrowser api={api} scope={scope} table={table} description={description} maxRows={maxRows} visible={visible && tab === "preview"} dragScope={dragScope} filterHost={filterHost} />
   </div>
 }

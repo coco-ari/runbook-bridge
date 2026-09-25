@@ -46,8 +46,8 @@ function enumValues(type) {
   return [...type.matchAll(/'((?:''|\\.|[^'])*)'/gu)].map(match=>match[1].replace(/''/gu,"'").replace(/\\([0bnrtZ\\'"])/gu,(_all,char)=>({'0':'\0',b:'\b',n:'\n',r:'\r',t:'\t',Z:'\x1a'}[char] ?? char)));
 }
 
-export function normalizeMysqlEditValue(column, value) {
-  if (!mysqlEditableColumn(column).editable) throw new AppError('MYSQL_EDIT_COLUMN_READONLY','该字段不可修改。',{column:column.name});
+export function normalizeMysqlEditValue(column, value, {insert = false} = {}) {
+  if (!mysqlEditableColumn(insert ? {...column,key:''} : column).editable || (insert && /auto_increment/iu.test(column.extra))) throw new AppError('MYSQL_EDIT_COLUMN_READONLY','该字段不可修改。',{column:column.name});
   if (value === null) {
     if (!column.nullable) throw new AppError('MYSQL_EDIT_VALUE_INVALID','该字段不允许 NULL。',{column:column.name});
     return null;

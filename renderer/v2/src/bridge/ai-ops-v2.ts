@@ -167,6 +167,11 @@ export interface MysqlTableDescription {
 }
 
 
+export interface RedisEditData { readonly editId: string; readonly key: string; readonly type: string; readonly value: string | null; readonly ttlMilliseconds: number; readonly maxBytes: number; readonly expiresAt: number }
+export type RedisEditExpiry = { readonly mode: "keep" | "persistent" } | { readonly mode: "relative"; readonly milliseconds: number }
+export interface RedisEditPlan { readonly planId: string; readonly editId: string; readonly key: string; readonly type: string; readonly mode: "create" | "update" | "delete"; readonly expiresAt: number }
+export interface RedisEditStatus { readonly planId: string; readonly status: "prepared" | "running" | "success" | "failed" | "unknown"; readonly result?: { readonly key: string; readonly mode: string; readonly auditWarning?: boolean }; readonly error?: { readonly code: string; readonly message: string } }
+
 export interface MysqlEditColumn {
   readonly name: string
   readonly source: string
@@ -178,9 +183,16 @@ export interface MysqlEditColumn {
   readonly editable: boolean
   readonly reason: string | null
 }
+export interface MysqlInsertColumn extends MysqlEditColumn {
+  readonly autoIncrement: boolean
+  readonly unique: boolean
+  readonly defaultValue: string | null
+  readonly required: boolean
+}
 export interface MysqlEditRow { readonly rowId: string; readonly values: Readonly<Record<string, string | null>> }
 export interface MysqlEditData {
   readonly database?: string
+  readonly insertColumns?: readonly MysqlInsertColumn[]
   readonly insertMissingColumns?: readonly string[]
   readonly auditWarning?: boolean
   readonly editId: string
@@ -191,8 +203,9 @@ export interface MysqlEditData {
   readonly rows: readonly MysqlEditRow[]
   readonly truncated: boolean
 }
-export interface MysqlEditChange { readonly rowId: string; readonly values: Readonly<Record<string, string | null>> }
+export type MysqlEditChange = { readonly kind?: "update" | "insert"; readonly rowId: string; readonly values: Readonly<Record<string, string | null>> } | { readonly kind: "delete"; readonly rowId: string }
 export interface MysqlEditPlan {
+  readonly counts?: Readonly<{insert: number; update: number; delete: number}>
   readonly planId: string
   readonly editId: string
   readonly table: string
@@ -204,7 +217,7 @@ export interface MysqlEditPlan {
 export interface MysqlEditStatus {
   readonly planId: string
   readonly status: "prepared" | "running" | "success" | "failed" | "unknown"
-  readonly result?: Readonly<{rowCount: number; rows: readonly MysqlEditRow[]; auditWarning?: boolean}>
+  readonly result?: Readonly<{rowCount: number; rows: readonly MysqlEditRow[]; deletedRowIds?: readonly string[]; counts?: Readonly<{insert: number; update: number; delete: number}>; auditWarning?: boolean}>
   readonly error?: Readonly<{code: string; message: string; details?: Readonly<{rowIds?: readonly string[]}>}>
 }
 
@@ -773,6 +786,11 @@ export interface AiOpsV2Api {
   serverDockerRead(payload: DockerReadRequest): Promise<IpcResult<DockerReadResult>>
   serverDockerCancel(payload: PluginScope & { requestId?: string }): Promise<IpcResult<{ stopped: boolean }>>
 
+  redisEditOpen(payload: RedisKeyPayload & {mode: "create" | "update" | "delete"}): Promise<IpcResult<RedisEditData>>
+  redisEditPrepare(payload: PluginScope & {editId: string; value?: string; format?: "text" | "json"; expiry?: RedisEditExpiry}): Promise<IpcResult<RedisEditPlan>>
+  redisEditCommit(payload: PluginScope & {editId: string; planId: string}): Promise<IpcResult<RedisEditStatus>>
+  redisEditStatus(payload: PluginScope & {editId: string; planId: string}): Promise<IpcResult<RedisEditStatus>>
+  redisEditRelease(payload: PluginScope & {editId: string}): Promise<IpcResult<{released: boolean}>>
   redisWorkspaceScan(payload: PluginScope & { patternId: string; keyword?: string; cursor?: string | null; limit?: number }): Promise<IpcResult<RedisKeyPage>>
   redisWorkspaceInspect(payload: RedisKeyPayload): Promise<IpcResult<RedisKeyInfo>>
   redisWorkspaceRead(payload: RedisKeyPayload & { cursor?: string | null; limit?: number; field?: string; expectedType?: string }): Promise<IpcResult<RedisContentPage>>
@@ -859,6 +877,7 @@ export interface AiOpsV2Api {
   mysqlListTables(payload: MysqlTableListPayload): Promise<IpcResult<MysqlTableListData>>
   mysqlDescribeTable(payload: MysqlTablePayload): Promise<IpcResult<MysqlTableDescription>>
   mysqlExportSave(payload: {fileName: string; sql: string}): Promise<IpcResult<{saved: boolean}>>
+  mysqlEditRow(payload: PluginScope & {editId: string; rowId: string}): Promise<IpcResult<MysqlEditRow & {unsupportedColumns: readonly string[]}>>
   mysqlEditOpen(payload: MysqlQueryPayload): Promise<IpcResult<MysqlEditData>>
   mysqlEditPrepare(payload: PluginScope & {editId: string; changes: readonly MysqlEditChange[]}): Promise<IpcResult<MysqlEditPlan>>
   mysqlEditCommit(payload: PluginScope & {editId: string; planId: string}): Promise<IpcResult<MysqlEditStatus>>
@@ -881,6 +900,11 @@ export const AI_OPS_V2_API_NAMES = [
   "cloudConfig",
   "serverDockerRead",
   "serverDockerCancel",
+  "redisEditOpen",
+  "redisEditPrepare",
+  "redisEditCommit",
+  "redisEditStatus",
+  "redisEditRelease",
   "redisWorkspaceScan",
   "redisWorkspaceInspect",
   "redisWorkspaceRead",
@@ -966,6 +990,7 @@ export const AI_OPS_V2_API_NAMES = [
   "mysqlListTables",
   "mysqlDescribeTable",
   "mysqlExportSave",
+  "mysqlEditRow",
   "mysqlEditOpen",
   "mysqlEditPrepare",
   "mysqlEditCommit",

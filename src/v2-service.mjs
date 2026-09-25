@@ -1,3 +1,4 @@
+import { DesktopRedisEditor, prepareRedisEditRequest } from './desktop-redis-editor.mjs';
 import { builtinPluginRegistry } from './plugins/builtins.mjs';
 import crypto from 'node:crypto';
 import { auditExecutionContext, operationAuditMetadata } from './audit-record.mjs';
@@ -97,6 +98,7 @@ export class V2Service {
   constructor({ workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, operationGate = null, serverOperations, credentialVault, mutationCoordinator = null, workspaceChanged = null }) {
     Object.assign(this, { workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault, mutationCoordinator, workspaceChanged });
     this.mysqlEditor = new DesktopMysqlEditor(pluginManager?.runtimes?.mysql, workspaceStore);
+    this.redisEditor = new DesktopRedisEditor(pluginManager?.runtimes?.redis, workspaceStore);
     this.redisWorkspaceManager = new RedisWorkspaceManager(pluginManager?.runtimes?.redis);
     this.operationGate = operationGate ?? new OperationGate(confirmationManager);
   }
@@ -360,6 +362,28 @@ export class V2Service {
       : execute();
   }
 
+  async invokeDesktopRedisEdit(owner, payload, operation, assertOwner = () => {}) {
+    const scope = prepareRedisEditRequest(payload,operation);
+    if (operation === 'release') return this.redisEditor.release(owner,scope,payload.editId);
+    const execute = async () => {
+      assertOwner();
+      this.connectionManager.assertConfigurationStable?.(scope.projectId,scope.environmentId);
+      const plugin = await this.workspaceStore.getPlugin(scope.projectId,scope.environmentId,scope.pluginInstanceId);
+      if (plugin.pluginType !== 'redis') throw new AppError('PLUGIN_TYPE_MISMATCH','目标不是 Redis 插件。');
+      if (['projectId','environmentId','pluginInstanceId'].some(field=>scope[field]!==plugin[field])) throw new AppError('SCOPE_MISMATCH','编辑目标不属于当前作用域。');
+      assertPluginConfigurationReady(plugin);
+      if (operation !== 'status') this.assertPluginConnected(scope,plugin);
+      assertOwner();
+      if (operation === 'open') return this.redisEditor.open(owner,plugin,payload,assertOwner);
+      if (operation === 'prepare') return this.redisEditor.prepare(owner,plugin,payload);
+      if (operation === 'commit') return this.redisEditor.commit(owner,plugin,payload,assertOwner);
+      return this.redisEditor.status(owner,plugin,payload);
+    };
+    return this.mutationCoordinator
+      ? this.mutationCoordinator.runEnvironmentOperation(scope.projectId,scope.environmentId,execute)
+      : execute();
+  }
+
   async invokeDesktopMysqlEdit(owner, payload, operation, assertOwner = () => {}) {
     const scope = prepareMysqlEditRequest(payload,operation);
     if (operation === 'release') return this.mysqlEditor.release(owner,scope,payload.editId);
@@ -373,6 +397,7 @@ export class V2Service {
       if (operation !== 'status') this.assertPluginConnected(scope,plugin);
       assertOwner();
       if (operation === 'open') return this.mysqlEditor.open(owner,plugin,payload,assertOwner);
+      if (operation === 'row') return this.mysqlEditor.row(owner,plugin,payload,assertOwner);
       if (operation === 'prepare') return this.mysqlEditor.prepare(owner,plugin,payload);
       if (operation === 'commit') return this.mysqlEditor.commit(owner,plugin,payload,assertOwner);
       return this.mysqlEditor.status(owner,plugin,payload);

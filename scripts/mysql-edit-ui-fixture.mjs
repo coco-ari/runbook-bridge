@@ -31,10 +31,21 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
       if(sql.includes('SELECT TABLE_TYPE'))return [[{TABLE_TYPE:'BASE TABLE',ENGINE:'InnoDB'}]];
       if(sql.includes('information_schema.KEY_COLUMN_USAGE'))return [[{COLUMN_NAME:'id'}]];
       if(sql.includes('information_schema.COLUMNS'))return [schema.columns.map(c=>({COLUMN_NAME:c.name,COLUMN_TYPE:c.type,DATA_TYPE:c.dataType,IS_NULLABLE:c.nullable?'YES':'NO',COLUMN_KEY:c.key,COLUMN_DEFAULT:c.name==='state'?'open':c.name==='quantity'?'1':null,EXTRA:c.extra,CHARACTER_MAXIMUM_LENGTH:c.maxLength,NUMERIC_PRECISION:c.precision,NUMERIC_SCALE:c.scale,DATETIME_PRECISION:c.datetimePrecision}))];
+      if(sql.includes(' AS effective_grants '))return [[{PRIVILEGE_TYPE:'TRIGGER'}]];
+      if(sql.includes('LIMIT 0 FOR UPDATE'))return [[],[]];
+      if(sql.includes('information_schema.TRIGGERS')||sql.includes('information_schema.INNODB_FOREIGN'))return [[]];
       if(sql.includes('@@SESSION.sql_mode'))return [[{sqlMode:'STRICT_TRANS_TABLES'}]];
       if(sql==='START TRANSACTION'){backup=structuredClone(rows);return [{}];}
       if(sql==='ROLLBACK'){rows=backup;return [{}];}
       if(sql==='COMMIT'){backup=null;return [{}];}
+      if(sql.startsWith('DELETE ')){const previous=rows.length;rows=rows.filter(row=>row.id!==params[0]);writes.push(sql);return [{affectedRows:previous-rows.length,warningStatus:0}];}
+      if(sql.startsWith('INSERT ')){
+        const selected=[...sql.slice(sql.indexOf(' (')+2,sql.indexOf(') VALUES')).matchAll(/`([^`]+)`/gu)].map(match=>match[1]);
+        const row={id:null,label:null,optional:null,amount:null,state:'open',quantity:'1'};
+        selected.forEach((name,index)=>{row[name]=params[index];});
+        if(rows.some(item=>item.id===row.id))throw new Error('fixture duplicate');
+        row.doubled=String(Number(row.quantity)*2);rows.push(row);writes.push(sql);return [{affectedRows:1,warningStatus:0}];
+      }
       if(sql.startsWith('UPDATE ')){
         const row=rows.find(row=>row.id===params.at(-1));
         if(!row)return [{affectedRows:0,warningStatus:0}];
@@ -67,7 +78,7 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
     if(operation==='release')return editor.release(owner,scope,payload.editId);
     return editor[operation](owner,plugin,payload,assertOwner);
   }}};
-  for(const operation of ['open','prepare','commit','status','release']){
+  for(const operation of ['open','row','prepare','commit','status','release']){
     const channel='v2:mysql-edit-'+operation;ipcMain.removeHandler(channel);registeredChannels.add(channel);
   }
   ipcMain.removeHandler('v2:mysql-export-save');registeredChannels.add('v2:mysql-export-save');

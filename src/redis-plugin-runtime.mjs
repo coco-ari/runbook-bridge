@@ -2,6 +2,7 @@ import redisPackage from 'redis';
 import { EventEmitter } from 'node:events';
 import { AppError } from './errors.mjs';
 import { normalizeRedisCursor } from './pagination-cursor.mjs';
+import { RedisEditConnection } from './redis-edit-connection.mjs';
 import { RedisWorkspaceReader } from './redis-workspace-reader.mjs';
 
 const { createClient } = redisPackage;
@@ -63,6 +64,13 @@ export class RedisPluginRuntime extends EventEmitter {
     session.workspaceReaders.add(reader);
     reader.onClose = () => session.workspaceReaders.delete(reader);
     return reader;
+  }
+
+  desktopEditConnection(plugin) {
+    const session=this.require(plugin),connection=new RedisEditConnection(session.workspaceOptions);
+    session.workspaceReaders.add(connection);
+    connection.onClose=()=>session.workspaceReaders.delete(connection);
+    return connection;
   }
 
   async connect(plugin, suppliedSecrets = {}, { signal = null, attemptToken = null } = {}) {

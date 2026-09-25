@@ -1,8 +1,10 @@
+import { RedisWriteEditor } from "./RedisWriteEditor"
+import { useRedisEditing } from "./use-redis-editing"
 import { WorkspaceNotice } from "@/components/workspace/WorkspaceNotice"
 import { StatusIndicator } from "@/components/app-shell/StatusIndicator"
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from "@/components/ui/empty"
-import { lazy, Suspense, useId, useRef, useState } from "react"
-import { Copy, Database, PushPin, ShieldCheck } from "@phosphor-icons/react"
+import { lazy, Suspense, useId, useRef, useState, type ReactNode } from "react"
+import { Copy, Database, PushPin, ShieldCheck, Plus, PencilSimple, Trash } from "@phosphor-icons/react"
 import { toast } from "sonner"
 import { usePanelRef } from "react-resizable-panels"
 import type { AiOpsV2Api, PluginScope, RedisValuePreview } from "@/bridge/ai-ops-v2"
@@ -36,6 +38,9 @@ interface Props {
   readonly projectName: string
   readonly environmentName: string
   readonly visible: boolean
+  readonly connected?: boolean
+  readonly connectionEpoch?: number
+  readonly onDirtyChange?: (dirty: boolean) => void
   readonly onBack: () => void
   readonly onClose: () => void
 }
@@ -45,7 +50,8 @@ async function copy(value: string) {
 }
 function time(value: string) { return value ? new Date(value).toLocaleTimeString() : "尚未读取" }
 
-function KeyDocument({ tab, refresh, more, field, clearField }: {
+function KeyDocument({ tab, refresh, more, field, clearField, actions, editor }: {
+  readonly actions?: ReactNode; readonly editor?: ReactNode
   readonly tab: RedisTab; readonly refresh: () => void; readonly more: () => void
   readonly field: (name: string) => void; readonly clearField: () => void
 }) {
@@ -59,9 +65,10 @@ function KeyDocument({ tab, refresh, more, field, clearField }: {
     <header className="redis-key-heading">
       <div className="redis-key-title">
         {metadata ? <Badge variant="outline" className="redis-type-badge" title={"数据类型：" + metadata.type}>{metadata.type}</Badge> : null}
-        <h2 title={tab.key} tabIndex={0} aria-label="完整 Key">{tab.key}</h2>
+        <h2 title={tab.key} tabIndex={0} aria-label="完整 Key">{tab.creating ? "新增 Key" : tab.key}</h2>
         <Button size="icon-xs" variant="ghost" className="redis-inline-action" aria-label="复制 Key" title="复制完整 Key" data-testid="redis-copy-key" onClick={() => void copy(tab.key)}><Copy aria-hidden="true" /></Button>
       </div>
+      {actions ? <div className="redis-key-actions">{actions}</div> : null}
       <div className="redis-key-meta" data-testid="redis-key-meta">
         {metadata ? <>
           {metadata.length !== null ? <span className="redis-meta-item"><span className="redis-meta-label">大小</span><span>{redisBytes(metadata.length)}</span></span>
@@ -76,7 +83,7 @@ function KeyDocument({ tab, refresh, more, field, clearField }: {
     </header>
     {tab.error ? <WorkspaceNotice variant="destructive" data-testid="redis-key-error">{tab.error}</WorkspaceNotice> : null}
     {tab.loading ? <p role="status" className="redis-notice">正在读取…</p> : null}
-    {metadata && !metadata.exists ? <div className="redis-empty" data-testid="redis-key-missing">Key 已过期或被删除。可刷新重新检查。</div>
+    {editor ? editor : metadata && !metadata.exists ? <div className="redis-empty" data-testid="redis-key-missing">Key 已过期或被删除。可刷新重新检查。</div>
       : content?.unsupported ? <div className="redis-empty">暂不支持 {content.type} 类型的内容查看，仍可查看类型与 TTL。</div>
         : content?.value ? <RedisValueViewer value={content.value} />
           : content && ["hash", "list", "set", "zset"].includes(content.type) ? <>
@@ -108,8 +115,11 @@ function KeyDocument({ tab, refresh, more, field, clearField }: {
   </div>
 }
 
-export function RedisWorkspace({ api, scope, plugin, projectName, environmentName, visible, onBack, onClose }: Props) {
+const ignoreDirty = (_dirty: boolean) => {}
+
+export function RedisWorkspace({ api, scope, plugin, projectName, environmentName, visible, onBack, onClose, connected = true, connectionEpoch = 0, onDirtyChange = ignoreDirty }: Props) {
   const state = useRedisWorkspace(api, scope, plugin, visible)
+  const editing = useRedisEditing(api,scope,connected,connectionEpoch,onDirtyChange,state.written)
   const [search, setSearch] = useState("")
   const [searchMode, setSearchMode] = useState<RedisSearchMode>("keyword")
   const [searchHistory, setSearchHistory] = useState<readonly RedisSearchEntry[]>([])
@@ -129,6 +139,16 @@ export function RedisWorkspace({ api, scope, plugin, projectName, environmentNam
       onBack()
     } catch (error) { toast.error(error instanceof Error ? error.message : "断开失败") }
     finally { setDisconnecting(false) }
+  }
+  function createKey() {
+    if (!connected || editing.busy) return
+    const id = state.createTab()
+    if (id) editing.create(id)
+  }
+  function closeKey(id: string) { editing.protect(() => state.closeTab(id),[id]) }
+  function keyEditor(tab: RedisTab) {
+    const draft = editing.drafts[tab.id]
+    return draft ? <RedisWriteEditor draft={draft} connected={connected} onChange={patch=>editing.update(tab.id,patch)} onSave={()=>void editing.save(tab.id,tab.patternId)} onCheck={()=>void editing.save(tab.id,tab.patternId,true)} onRecheck={()=>void editing.recheck(tab.id,tab.patternId)} onCancel={()=>editing.protect(()=>{if(tab.creating)state.closeTab(tab.id)},[tab.id])} /> : null
   }
   function submitSearch(query = search, mode = searchMode) {
     if (!state.patternId || !visible) return
@@ -152,10 +172,10 @@ export function RedisWorkspace({ api, scope, plugin, projectName, environmentNam
     <header className="redis-workspace-header">
       <WorkspaceBackButton label="返回 Redis 详情" testId="redis-workspace-back" onClick={onBack} />
       <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold">{plugin.displayName}</h1><StatusIndicator appearance="badge" status="connected" /><Badge variant="outline"><ShieldCheck className="size-3" />只读</Badge></div>
+        <div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold">{plugin.displayName}</h1><StatusIndicator appearance="badge" status={connected ? "connected" : "disconnected"} /></div>
         <p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName}>{projectName} / {environmentName} · DB {String(plugin.target?.db ?? 0)}</p>
       </div>
-      <WorkspaceHeaderActions connected busy={disconnecting} onDisconnect={() => void disconnect()} onClose={() => setClosing(true)} prefix="redis-workspace" closeLabel="关闭 Redis 工作区" closeTitle="关闭工作区并清除浏览数据" />
+      <WorkspaceHeaderActions connected={connected} busy={disconnecting || editing.busy} onDisconnect={() => void disconnect()} onClose={() => { if (!editing.busy) setClosing(true) }} prefix="redis-workspace" closeLabel="关闭 Redis 工作区" closeTitle="关闭工作区并清除浏览数据" />
     </header>
     {state.notice ? <div className="redis-notice flex items-center justify-between" role="status" data-testid="redis-notice"><span>{state.notice}</span><WorkspaceIconButton action="close" label="收起提示" onClick={() => state.setNotice("")} /></div> : null}
     <div className="redis-workspace-body">
@@ -164,9 +184,10 @@ export function RedisWorkspace({ api, scope, plugin, projectName, environmentNam
           <aside className="redis-key-pane" hidden={!sidebar} inert={!sidebar}>
             <RedisKeyBrowser keys={state.keys} activeKey={activeTab?.key} keyword={state.keyword}
               queryKey={JSON.stringify([state.patternId, state.keyword])} loading={state.loading} visible={visible}
-              refreshDisabled={!state.patternId} onRefresh={() => void state.scan(false)}
+              refreshDisabled={!state.patternId || !connected} onRefresh={() => void state.scan(false)}
+              createAction={<Button size="xs" variant="outline" disabled={!connected || !state.patternId || editing.busy} onClick={createKey} data-testid="redis-create-key"><Plus />新增 Key</Button>}
               identity={<RedisScopePicker database={String(plugin.target?.db ?? 0)} patterns={state.patterns} patternId={state.patternId} visible={visible}
-                onChange={(value) => { setSearch(""); state.changePattern(value) }} />}
+                onChange={(value) => editing.protect(() => { setSearch(""); state.changePattern(value) })} />}
               onSearchFolder={searchFolder}
               search={<RedisKeySearch key={searchScope} value={search} mode={searchMode} inputRef={searchRef} visible={visible && sidebar} disabled={!state.patternId}
                 history={searchHistory.filter((entry) => entry.scope === searchScope)}
@@ -186,35 +207,38 @@ export function RedisWorkspace({ api, scope, plugin, projectName, environmentNam
               <div className="redis-tabs" role="tablist" aria-label="已打开的 Redis Key">
                 {state.tabs.map((tab, index) => <div key={tab.id} className="redis-tab" data-active={tab.id === state.activeId}>
                   <button type="button" role="tab" id={uniqueId + "-tab-" + tab.id} aria-controls={uniqueId + "-panel-" + tab.id} aria-selected={tab.id === state.activeId} tabIndex={tab.id === state.activeId ? 0 : -1}
-                    title={tab.key + (tab.pinned ? "" : " · 双击固定")} data-testid="redis-key-tab" onClick={() => state.setActiveId(tab.id)} onDoubleClick={() => state.openKey(tab.key, true, tab.patternId)}
+                    title={(tab.creating ? "新增 Key" : tab.key) + (tab.pinned ? "" : " · 双击固定")} data-testid="redis-key-tab" onClick={() => state.setActiveId(tab.id)} onDoubleClick={() => state.pin(tab.id)}
                     onKeyDown={(event) => {
                       let next = index
                       if (event.key === "ArrowRight") next = (index + 1) % state.tabs.length
                       else if (event.key === "ArrowLeft") next = (index + state.tabs.length - 1) % state.tabs.length
                       else if (event.key === "Home") next = 0
                       else if (event.key === "End") next = state.tabs.length - 1
-                      else if (event.key === "Delete") { event.preventDefault(); state.closeTab(tab.id); return }
+                      else if (event.key === "Delete") { event.preventDefault(); closeKey(tab.id); return }
                       else return
                       event.preventDefault(); const target = state.tabs[next]!; state.setActiveId(target.id); document.getElementById(uniqueId + "-tab-" + target.id)?.focus()
                     }}>
-                    {tab.pinned ? <PushPin size={12} /> : null}<span className={tab.pinned ? "" : "italic"}>{tab.key}</span>
+                    {tab.pinned ? <PushPin size={12} /> : null}<span className={tab.pinned ? "" : "italic"}>{tab.creating ? "新增 Key" : tab.key}{editing.drafts[tab.id] ? " · 未保存" : ""}</span>
                   </button>
-                  <WorkspaceIconButton action="close" label={"关闭 " + tab.key} className="redis-tab-close" onClick={() => state.closeTab(tab.id)} />
+                  <WorkspaceIconButton action="close" label={"关闭 " + tab.key} className="redis-tab-close" onClick={() => closeKey(tab.id)} />
                 </div>)}
               </div>
               <WorkspaceLayoutControls maximized={!sidebar} onToggle={() => { if (sidebarRef.current?.isCollapsed()) sidebarRef.current.expand(); else sidebarRef.current?.collapse() }} testId="redis-layout-toggle" controls={uniqueId + "-keys"} />
             </WorkspaceTabBar>
-            {!state.tabs.length ? <Empty className="redis-welcome"><EmptyHeader><EmptyMedia variant="icon"><Database /></EmptyMedia><EmptyTitle>查看 Redis 数据</EmptyTitle><EmptyDescription>展开左侧目录查找 Key，或输入完整 Key 精确定位。<br />单击预览，双击固定标签；数据仅保留在当前会话。</EmptyDescription></EmptyHeader></Empty> : null}
+            {!state.tabs.length ? <Empty className="redis-welcome"><EmptyHeader><EmptyMedia variant="icon"><Database /></EmptyMedia><EmptyTitle>查看 Redis 数据</EmptyTitle><EmptyDescription>展开左侧目录查找 Key，或输入完整 Key 精确定位。<br />单击预览，双击固定标签；数据仅保留在当前会话。</EmptyDescription></EmptyHeader><Button variant="outline" disabled={!connected || !state.patternId} onClick={createKey}><Plus />新增 Key</Button></Empty> : null}
             {state.tabs.map((tab) => <div className="redis-tab-panel" key={tab.id} id={uniqueId + "-panel-" + tab.id} role="tabpanel" aria-labelledby={uniqueId + "-tab-" + tab.id} hidden={tab.id !== state.activeId} inert={tab.id !== state.activeId}>
-              <KeyDocument tab={tab} refresh={() => void state.readTab(tab.id)} more={() => void state.readTab(tab.id, true)} field={(name) => void state.readTab(tab.id, false, name)} clearField={() => state.clearField(tab.id)} />
+              <KeyDocument tab={tab} editor={keyEditor(tab)} actions={!tab.creating ? <><Button size="xs" variant="outline" disabled={!connected || editing.busy || Boolean(editing.drafts[tab.id]) || tab.info?.type !== "string" || !tab.content?.value || tab.content.value.truncated || tab.content.value.text === null} title={tab.info?.type !== "string" ? "当前仅支持编辑 String / JSON 文本" : tab.content?.value?.truncated || tab.content?.value?.text === null ? "需要完整 UTF-8 文本才能编辑" : "编辑当前值"} data-testid="redis-edit-value" onClick={()=>{state.pin(tab.id);void editing.open(tab,"update")}}><PencilSimple />编辑值</Button><Button size="xs" variant="ghost" className="text-danger" disabled={!connected || editing.busy || !["string","hash","list","set","zset"].includes(tab.info?.type ?? "")} data-testid="redis-delete-key" onClick={()=>{state.pin(tab.id);void editing.open(tab,"delete")}}><Trash />删除 Key</Button>{tab.info?.type === "string" && (tab.content?.value?.truncated || tab.content?.value?.text === null) ? <span className="text-xs text-muted-foreground">内容未完整读取或不是文本，仅支持查看。</span> : null}</> : null} refresh={() => editing.protect(()=>void state.readTab(tab.id),[tab.id])} more={() => void state.readTab(tab.id, true)} field={(name) => void state.readTab(tab.id, false, name)} clearField={() => state.clearField(tab.id)} />
             </div>)}
           </div>
         </ResizablePanel>
       </ResizablePanelGroup>
     </div>
-    <footer className="redis-workspace-footer"><span><ShieldCheck size={12} />只读 · 固定 DB {String(plugin.target?.db ?? 0)}</span><span>最近扫描 {time(state.readAt)}</span><span>数据可能变化 · 仅会话保留</span></footer>
-    <Dialog open={closing} onOpenChange={setClosing}><DialogContent><DialogHeader><DialogTitle>关闭 Redis 工作区</DialogTitle><DialogDescription>将清除搜索条件、搜索历史、标签和浏览数据。Redis 插件连接保持。</DialogDescription></DialogHeader><DialogFooter>
-      <Button variant="outline" onClick={() => { setClosing(false); onBack() }}>返回详情并保留</Button><Button data-testid="redis-workspace-confirm-close" onClick={onClose}>关闭工作区</Button>
+    <footer className="redis-workspace-footer"><span><ShieldCheck size={12} />手动保存 · 固定 DB {String(plugin.target?.db ?? 0)}</span><span>最近扫描 {time(state.readAt)}</span><span>数据可能变化 · 仅会话保留</span></footer>
+    <Dialog open={closing} onOpenChange={setClosing}><DialogContent><DialogHeader><DialogTitle>关闭 Redis 工作区</DialogTitle><DialogDescription>{Object.keys(editing.drafts).length ? "还有未保存的修改。关闭将放弃草稿并清除浏览数据。" : "将清除搜索条件、搜索历史、标签和浏览数据。Redis 插件连接保持。"}</DialogDescription></DialogHeader><DialogFooter>
+      <Button variant="outline" onClick={() => { setClosing(false); if (!Object.keys(editing.drafts).length) onBack() }}>{Object.keys(editing.drafts).length ? "继续编辑" : "返回详情并保留"}</Button><Button data-testid="redis-workspace-confirm-close" disabled={editing.busy} onClick={onClose}>{Object.keys(editing.drafts).length ? "放弃更改并关闭" : "关闭工作区"}</Button>
     </DialogFooter></DialogContent></Dialog>
+    <Dialog open={Boolean(editing.pending)} onOpenChange={open=>{if(!open)editing.cancelPending()}}><DialogContent><DialogHeader><DialogTitle>还有未保存的修改</DialogTitle><DialogDescription>继续操作将放弃相关草稿，服务器数据不会改变。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={editing.cancelPending}>继续编辑</Button><Button variant="destructive" data-testid="redis-discard-confirm" onClick={editing.confirmPending}>放弃更改</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={Boolean(editing.deletion)} onOpenChange={open=>{if(!open)editing.cancelDelete()}}><DialogContent><DialogHeader><DialogTitle>删除 Key？</DialogTitle><DialogDescription>DB {String(plugin.target?.db ?? 0)} · {editing.deletion?.session.type} · 删除后无法撤销{editing.deletion && editing.drafts[editing.deletion.id] ? "，该 Key 的未保存草稿也将丢弃" : ""}。</DialogDescription></DialogHeader><p className="break-all font-mono text-sm">{editing.deletion?.session.key}</p>{editing.deletion?.error ? <p role="alert" className="text-sm text-danger">{editing.deletion.error}</p> : null}<DialogFooter><Button variant="outline" disabled={editing.deletion?.busy} onClick={editing.cancelDelete}>取消</Button>{editing.deletion?.uncertain ? <Button disabled={editing.deletion.busy} onClick={()=>void editing.confirmDelete(true)}>检查保存状态</Button>:<Button variant="destructive" disabled={!connected || editing.deletion?.busy || Boolean(editing.deletion?.error)} onClick={()=>void editing.confirmDelete()} data-testid="redis-confirm-delete">{editing.deletion?.busy ? "删除中…" : "删除 Key"}</Button>}</DialogFooter></DialogContent></Dialog>
+    <Dialog open={Boolean(editing.review)} onOpenChange={open=>{if(!open)editing.finishReview(false)}}><DialogContent className="sm:max-w-3xl"><DialogHeader><DialogTitle>核对当前值与保留的草稿</DialogTitle><DialogDescription>重新读取不会自动覆盖服务器。请核对差异后继续编辑。</DialogDescription></DialogHeader><div className="grid min-h-0 gap-3 sm:grid-cols-2"><label>服务器当前值<textarea readOnly className="redis-review-value" value={editing.review?.session.value ?? ""}/></label><label>本地草稿<textarea readOnly className="redis-review-value" value={editing.review ? editing.drafts[editing.review.id]?.value ?? "" : ""}/></label></div><DialogFooter><Button variant="outline" onClick={()=>editing.finishReview(false)}>返回</Button><Button onClick={()=>editing.finishReview(true)}>已核对，保留草稿继续编辑</Button></DialogFooter></DialogContent></Dialog>
   </section>
 }

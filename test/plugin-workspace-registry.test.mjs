@@ -104,3 +104,14 @@ test('定制插件的断线保留策略与选择切换策略独立生效', () =>
   const empty = {entries:[],activeKey:null};
   assert.equal(openWorkspaceSession(empty, wrongType, queueRegistry), empty);
 });
+
+
+test('Redis 草稿跨选择和断连保留，配置身份改变仍释放旧会话',()=>{
+  const retainedRegistry=createWorkspaceRegistry([definition('redis',{retainAcrossSelection:true,retainOnDisconnect:'dirty',maxSessions:4})]);
+  const redis=entry('redis',{dirty:true}),state={entries:[redis],activeKey:redis.key};
+  assert.equal(reconcileWorkspaceSelection(state,null,retainedRegistry),state);
+  const disconnected=disconnectWorkspaceScope(state,redis.scope,retainedRegistry);
+  assert.equal(disconnected.entries[0].dirty,true);assert.equal(disconnected.entries[0].connected,false);assert.equal(disconnected.entries[0].connectionEpoch,1);
+  const changed={...redis,key:'redis-v2',plugin:{...redis.plugin,revision:2}};
+  assert.deepEqual(reconcileWorkspaceSelection(state,changed,retainedRegistry),{entries:[],activeKey:null});
+});

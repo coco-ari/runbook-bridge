@@ -16,6 +16,7 @@ interface Props {
   readonly complete: boolean
   readonly error: string
   readonly onOpen: (key: string, pinned?: boolean) => void
+  readonly createAction?: ReactNode
   readonly identity: ReactNode
   readonly search: ReactNode
   readonly visible: boolean
@@ -29,7 +30,7 @@ function Highlight({ text, keyword }: { readonly text: string; readonly keyword:
   return index < 0 ? <>{text}</> : <>{text.slice(0, index)}<mark>{text.slice(index, index + keyword.length)}</mark>{text.slice(index + keyword.length)}</>
 }
 
-export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, complete, error, onOpen, identity, search, visible, refreshDisabled, onRefresh, onSearchFolder }: Props) {
+export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, complete, error, onOpen, identity, createAction, search, visible, refreshDisabled, onRefresh, onSearchFolder }: Props) {
   const tree = useMemo(() => buildRedisKeyTree(keys), [keys])
   const defaults = useMemo(() => defaultRedisTreeExpansion(tree, Boolean(keyword)), [tree, keyword])
   const [view, setView] = useState<"tree" | "list">("tree")
@@ -107,6 +108,7 @@ export function RedisKeyBrowser({ keys, activeKey, keyword, queryKey, loading, c
     <div className="redis-browser-header" data-testid="redis-browser-header">
       <div className="redis-browser-toolbar">
         {identity}
+        {createAction}
         <div className="redis-browser-actions">
           <WorkspaceIconButton action="refresh" label="重新扫描 Key" busy={loading} disabled={refreshDisabled} data-testid="redis-refresh-keys" onClick={onRefresh} />
           <Button size="icon-xs" variant="ghost" aria-label={view === "tree" ? "切换为列表视图" : "切换为目录视图"} title={view === "tree" ? "当前按 : 分组，点击显示完整 Key 列表" : "当前为列表，点击按 : 分组"} data-testid="redis-browser-view-toggle" data-view={view} onClick={() => setView(view === "tree" ? "list" : "tree")}>

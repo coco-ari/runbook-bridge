@@ -1,7 +1,7 @@
 const assert=require('node:assert/strict');
 
 module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,selectPlugin,PRIMARY_ID,plugins,state,runtime}){
-  const evaluate=source=>win.webContents.executeJavaScript(source,true);
+  const evaluate=async source=>{try{return await win.webContents.executeJavaScript(source,true);}catch(error){throw new Error("界面脚本执行失败："+source.slice(0,220),{cause:error});}};
   const visible='[data-testid=mysql-data-editor]';
   const cell=(index,name)=>visible+' tbody tr:nth-child('+index+') [data-edit-column="'+name+'"]';
   const current=selector=>evaluate('document.querySelector('+JSON.stringify(selector)+')?.textContent');
@@ -40,9 +40,9 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   };
   const geometry=()=>evaluate('(()=>{const root=document.querySelector("[data-testid=mysql-data-editor]"),scroll=root.querySelector("[data-testid$=table-scroll]");return {cells:[...root.querySelectorAll("tbody tr:first-child td")].map(e=>{const r=e.getBoundingClientRect();return [r.x,r.y,r.width,r.height]}),top:scroll.scrollTop,left:scroll.scrollLeft}})()');
   const stage=async(index,name,value,finish=true)=>{await doubleClick(cell(index,name));try{await waitFor(win,'document.querySelector('+JSON.stringify(cell(index,name)+' input')+')','双击显示原位输入框');}catch(error){process.stderr.write(await evaluate('document.querySelector("[data-testid=mysql-data-editor]")?.innerText')+'\n');await screenshot(win,'edit-failed');throw error;}await fill(win,cell(index,name)+' input',value);if(finish)await key('Enter');};
-  const save=async()=>{await click(win,testId('mysql-edit-save'));await waitFor(win,'document.querySelector("[data-testid=mysql-edit-save]")?.textContent.trim()==="保存" && document.querySelector("[data-testid=mysql-edit-save]")?.disabled','单次点击保存结束');assert.equal(await evaluate('Boolean(document.querySelector("[data-testid=mysql-edit-confirm-dialog]"))'),false);};
+  const save=async()=>{await click(win,testId('mysql-edit-save'));await waitFor(win,'document.querySelector("[data-testid=mysql-edit-save]")?.textContent.trim()==="保存更改" && document.querySelector("[data-testid=mysql-edit-save]")?.disabled','单次点击保存结束');assert.equal(await evaluate('Boolean(document.querySelector("[data-testid=mysql-edit-confirm-dialog]"))'),false);};
   const sameGeometry=(actual,expected,message)=>{assert.equal(actual.top,expected.top,message);assert.equal(actual.left,expected.left,message);assert.equal(actual.cells.length,expected.cells.length,message);actual.cells.forEach((cell,index)=>cell.forEach((value,axis)=>assert.ok(Math.abs(value-expected.cells[index][axis])<=1,message)));};
-  const button=async(text)=>{const index=await evaluate('Array.from(document.querySelectorAll("button")).findIndex(e=>e.getClientRects().length && e.textContent.trim()==='+JSON.stringify(text)+')');assert.ok(index>=0,text);await evaluate('document.querySelectorAll("button")['+index+'].click()');await new Promise(resolve=>setTimeout(resolve,90));};
+  const button=async(text)=>{const index=await evaluate('Array.from(document.querySelectorAll("button")).findIndex(e=>e.getClientRects().length && (e.textContent.trim()==='+JSON.stringify(text)+' || e.getAttribute("aria-label")==='+JSON.stringify(text)+'))');assert.ok(index>=0,text);await evaluate('document.querySelectorAll("button")['+index+'].click()');await new Promise(resolve=>setTimeout(resolve,90));};
   await selectPlugin(win,PRIMARY_ID);
   await click(win,'[data-testid=mysql-table-item][data-table-name=orders]');
   await enter();
@@ -53,6 +53,76 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   await waitFor(win,'document.querySelector('+JSON.stringify(cell(1,'label')+' input')+')','右键开始原位编辑');
   await fill(win,cell(1,'label')+' input','取消这个修改');await key('Escape');
   assert.equal(await current(cell(1,'label')),'测试记录 01');
+  const initialRows=await fixture.read();
+  await click(win,testId('mysql-add-row'));
+  await waitFor(win,'document.querySelector("tr[data-row-state=insert] input")','新增直接进入表格编辑');
+  assert.equal(await evaluate('Boolean(document.querySelector("[data-testid=mysql-row-sheet]"))'),false,'添加行不再强制打开侧栏');
+  await fill(win,'tr[data-row-state=insert] input','9999999999999999');await key('Enter');
+  await doubleClick('tr[data-row-state=insert] [data-edit-column=label]');
+  try { await waitFor(win,'document.querySelector("tr[data-row-state=insert] input")','草稿字段进入编辑'); } catch(error) { process.stderr.write(await evaluate('document.querySelector("[data-testid=mysql-data-editor]")?.innerText')+'\n'); throw error; }
+  await fill(win,'tr[data-row-state=insert] input','新增行界面验证');await key('Enter');
+  assert.match(await current('tr[data-row-state=insert] [data-edit-column=state]'),/默认：open/u);
+  const draftGeometry=await evaluate('(()=>{const row=document.querySelector("tr[data-row-state=insert]"),normal=document.querySelector("tr[data-row-index]");return {height:row.getBoundingClientRect().height,normalHeight:normal.getBoundingClientRect().height,widths:[...row.cells].map(c=>c.getBoundingClientRect().width),normalWidths:[...normal.cells].map(c=>c.getBoundingClientRect().width)}})()');
+  assert.equal(draftGeometry.height,draftGeometry.normalHeight,'新增草稿行高与普通行一致');assert.deepEqual(draftGeometry.widths,draftGeometry.normalWidths,'草稿按相同字段列对齐');
+  await screenshot(win,'insert-grid');
+  await click(win,'tr[data-row-state=insert] [aria-label="编辑完整行字段"]');
+  await waitFor(win,'document.querySelector("[data-testid=mysql-row-sheet]")','可选完整字段侧栏');
+  await screenshot(win,'insert-sheet');
+  for(const zoom of [1.25,1.5]){
+    win.webContents.setZoomFactor(zoom);await new Promise(resolve=>setTimeout(resolve,150));
+    assert.equal(await evaluate('(()=>{const r=document.querySelector("[data-testid=mysql-stage-insert]").getBoundingClientRect();return r.right<=innerWidth&&r.bottom<=innerHeight&&r.left>=0})()'),true,'缩放后应用草稿按钮可见');
+    await screenshot(win,'insert-sheet-zoom-'+zoom);
+  }
+  win.webContents.setZoomFactor(1);
+  await click(win,testId('mysql-stage-insert'));
+  await waitFor(win,'!document.querySelector("[data-testid=mysql-row-sheet]")','完整字段应用到草稿');
+  assert.equal((await fixture.read()).length,initialRows.length,'暂存新增不能写库');
+  await save();
+  assert.equal((await fixture.read()).length,initialRows.length+1);
+  await waitFor(win,'document.querySelector("[data-testid=mysql-data-editor] tbody tr[data-row-index]")','新增后刷新');
+  await click(win,visible+' tbody tr[data-row-index="0"] .mysql-edit-row-selector button');
+  await click(win,testId('mysql-copy-row'));
+  await waitFor(win,'document.querySelector("tr[data-row-state=copy]")','复制直接出现在源行旁');
+  await key('Escape');
+  assert.equal(await current('tr[data-row-state=copy] [data-edit-column=label]'),initialRows[0].label);
+  assert.equal(await evaluate('document.querySelector("tr[data-row-state=copy]").previousElementSibling.dataset.rowIndex'),'0','复制行紧邻源行');
+  await doubleClick('tr[data-row-state=copy] [data-edit-column=id]');
+  await fill(win,'tr[data-row-state=copy] input','9999999999999998');await key('Enter');
+  await fill(win,testId('mysql-preview-filter'),'无法匹配任何原始行');
+  assert.equal(await evaluate('document.querySelectorAll("tr[data-draft-row]").length'),1,'筛选不隐藏草稿');
+  await fill(win,testId('mysql-preview-filter'),'');
+  await click(win,testId('mysql-add-row'));await key('Escape');
+  await stage(3,'label','统一取消验证');
+  await click(win,visible+' tbody tr[data-row-index="0"] .mysql-edit-row-selector button');
+  await click(win,testId('mysql-delete-rows'));
+  await waitFor(win,'document.querySelector("tr[data-row-state=delete]")','混合草稿删除标记');
+  const colors=await evaluate('Object.fromEntries(["insert","copy","delete"].map(state=>[state,getComputedStyle(document.querySelector("tr[data-row-state="+state+"] [data-edit-column]")).backgroundColor]))');
+  assert.equal(new Set(Object.values(colors)).size,3,'新增、复制和删除具有不同底色');
+  await screenshot(win,'mixed-drafts');
+  for(const zoom of [1.25,1.5]){
+    win.webContents.setZoomFactor(zoom);await new Promise(resolve=>setTimeout(resolve,120));
+    assert.equal(await evaluate('(()=>{const buttons=[...document.querySelectorAll("[data-testid=mysql-edit-save],[data-testid=mysql-edit-undo]")];return buttons.every(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.bottom<=innerHeight})})()'),true,'缩放后保存和取消必须可见');
+    assert.equal(await evaluate('(()=>{const e=document.querySelector("[data-testid=mysql-edit-dirty-count]");return e.getBoundingClientRect().right<=e.closest(".mysql-results-status").getBoundingClientRect().right+1})()'),true,'缩放后分类数量不截断');
+    await screenshot(win,'compact-drafts-zoom-'+zoom);
+  }
+  win.webContents.setZoomFactor(1);
+
+  await click(win,testId('mysql-edit-undo'));
+  assert.equal(await evaluate('document.querySelectorAll("tr[data-row-state]").length'),0,'统一取消清除全部行状态');
+  assert.equal(await current(cell(2,'label')),initialRows[1].label,'统一取消恢复修改原值');
+  assert.equal((await fixture.read()).length,initialRows.length+1,'统一取消没有写库');
+  await click(win,visible+' tbody tr[data-row-index="0"] .mysql-edit-row-selector button');
+  await click(win,testId('mysql-delete-rows'));
+  await waitFor(win,'document.querySelector("tr[data-pending-delete]")','标记待删除');
+  assert.equal((await fixture.read()).length,initialRows.length+1,'标记删除不能写库');
+  await screenshot(win,'delete-staged');
+  await click(win,'[aria-label=撤销删除]');
+  assert.equal(await evaluate('Boolean(document.querySelector("tr[data-pending-delete]"))'),false);
+  await click(win,testId('mysql-delete-rows'));
+  await click(win,testId('mysql-edit-save'));
+  await waitFor(win,'document.querySelector("[data-testid=mysql-confirm-delete]")','统一删除确认');
+  await button('继续编辑');
+  await click(win,testId('mysql-edit-undo'));
   const beforeEdit=await geometry();
   await doubleClick(cell(1,'label'));
   sameGeometry(await geometry(),beforeEdit,'进入单元格编辑不得改变列宽、行高、坐标和滚动位置');
@@ -60,14 +130,14 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   await key('Enter');
   sameGeometry(await geometry(),beforeEdit,'暂存后表格位置不变');
   assert.equal((await fixture.read())[0].label,'测试记录 01','暂存不能立即写库');
-  assert.match(await current(testId('mysql-edit-dirty-count')),/1 行.*1 处/u);
+  assert.match(await current(testId('mysql-edit-dirty-count')),/修改 1.*1 处/u);
   await click(win,visible+' tbody tr:nth-child(1) .mysql-edit-row-selector button');
   await click(win,visible+' tbody tr:nth-child(2) .mysql-edit-row-selector button');
   await click(win,testId('mysql-edit-batch'));
   await fill(win,'[aria-label="批量赋值的新值"]','统一赋值');
   await click(win,testId('mysql-edit-apply-batch'));
   await waitFor(win,'!document.querySelector("[data-testid=mysql-edit-batch-dialog]")','批量赋值弹窗关闭');
-  assert.match(await current(testId('mysql-edit-dirty-count')),/2 行.*2 处/u);
+  assert.match(await current(testId('mysql-edit-dirty-count')),/修改 2.*2 处/u);
   await screenshot(win,'edit-staged');
   await save();
   assert.deepEqual((await fixture.read()).slice(0,3).map(row=>row.label),['统一赋值','统一赋值','测试记录 03']);
@@ -91,7 +161,16 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   await waitFor(win,'!document.querySelector("[role=dialog]")','关闭批量窗口');
   await button('取消选择');
   await click(win,testId('mysql-preview-load-more'));
-  await waitFor(win,'document.querySelectorAll("[data-testid=mysql-data-editor] tbody tr").length===32','编辑后继续加载剩余行');
+  await waitFor(win,'document.querySelectorAll("[data-testid=mysql-data-editor] tbody tr").length===33','编辑后继续加载剩余行');
+  await click(win,visible+' tbody tr:nth-child(33) .mysql-edit-row-selector button');
+  await click(win,testId('mysql-delete-rows'));
+  await waitFor(win,'document.querySelector("tr[data-pending-delete]")','新增测试行待删除');
+  await click(win,testId('mysql-edit-save'));
+  await click(win,testId('mysql-confirm-delete'));
+  await waitFor(win,'document.querySelector("[data-testid=mysql-edit-save]")?.disabled && !document.querySelector("tr[data-pending-delete]")','删除事务完成');
+  assert.equal((await fixture.read()).length,initialRows.length,'确认后只删除已选测试行');
+  await click(win,testId('mysql-preview-load-more'));
+  await waitFor(win,'document.querySelectorAll("[data-testid=mysql-data-editor] tbody tr").length===32','删除刷新后继续加载');
   await stage(21,'label','追加页原位修改');
   await save();
   assert.equal((await fixture.read())[20].label,'追加页原位修改','追加行必须更新到正确主键');

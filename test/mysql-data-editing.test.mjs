@@ -10,7 +10,7 @@ const plugin={...scope,revision:1,pluginType:'mysql',displayName:'测试数据�
 const column=(name,type='varchar',overrides={})=>({name,type:type==='varchar'?'varchar(100)':type,dataType:type,key:'',extra:'',nullable:true,maxLength:100,precision:20,scale:4,datetimePrecision:6,...overrides});
 const schema={table:'items',columns:[column('id','bigint',{key:'PRI'}),column('label'),column('amount','decimal')]};
 
-function harness({failure,auditFailure,metadata=schema,primaryNames}={}){
+function harness({failure,auditFailure,metadata=schema,primaryNames,triggers=[],cascades=[]}={}){
   let values=[['9007199254740993','first','1.0000'],['9007199254740994','second','2.0000']],backup=null;
   const statements=[],audits=[];
   let clock=1000,gate=null;
@@ -22,10 +22,23 @@ function harness({failure,auditFailure,metadata=schema,primaryNames}={}){
     if(sql.includes('SELECT TABLE_TYPE'))return [[{TABLE_TYPE:'BASE TABLE',ENGINE:'InnoDB'}]];
     if(sql.includes('information_schema.KEY_COLUMN_USAGE'))return [(primaryNames??metadata.columns.filter(c=>c.key==='PRI').map(c=>c.name)).map(name=>({COLUMN_NAME:name}))];
     if(sql.includes('information_schema.COLUMNS'))return [metadata.columns.map(c=>({COLUMN_NAME:c.name,COLUMN_TYPE:c.type,DATA_TYPE:c.dataType,IS_NULLABLE:c.nullable?'YES':'NO',COLUMN_KEY:c.key,COLUMN_DEFAULT:c.default??null,EXTRA:c.extra,CHARACTER_MAXIMUM_LENGTH:c.maxLength,NUMERIC_PRECISION:c.precision,NUMERIC_SCALE:c.scale,DATETIME_PRECISION:c.datetimePrecision}))];
+    if(sql.includes(' AS effective_grants '))return [[{PRIVILEGE_TYPE:'TRIGGER'}]];
+      if(sql.includes('LIMIT 0 FOR UPDATE'))return [[],[]];
+      if(sql.includes('information_schema.TRIGGERS'))return [triggers];
+    if(sql.includes('information_schema.INNODB_FOREIGN'))return [cascades];
     if(sql.includes('@@SESSION.sql_mode'))return [[{sqlMode:'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION'}]];
     if(sql==='START TRANSACTION'){backup=structuredClone(values);return [{affectedRows:0}];}
     if(sql==='ROLLBACK'){values=backup;return [{affectedRows:0}];}
     if(sql==='COMMIT'){backup=null;return [{affectedRows:0}];}
+    if(sql.startsWith('DELETE ')){
+      const previous=values.length;values=values.filter(row=>row[0]!==request.values[0]);return [{affectedRows:previous-values.length,warningStatus:0}];
+    }
+    if(sql.startsWith('INSERT ')){
+      const names=[...sql.slice(sql.indexOf(' (')+2,sql.indexOf(') VALUES')).matchAll(/`([^`]+)`/gu)].map(match=>match[1]);
+      const row=metadata.columns.map(column=>names.includes(column.name)?request.values[names.indexOf(column.name)]:/auto_increment/u.test(column.extra)?String(BigInt(values.at(-1)?.[0]??0)+1n):column.default??null);
+      if(values.some(existing=>existing[0]===row[0]))throw new Error('fixture duplicate key');
+      values.push(row);return [{affectedRows:1,warningStatus:0}];
+    }
     if(sql.startsWith('UPDATE ')){
       const row=values.find(row=>row[0]===request.values.at(-1));
       if(!row)return [{affectedRows:0,warningStatus:0}];
@@ -229,4 +242,56 @@ test('INSERT 缺失字段只包含无默认值的必填普通列',async()=>{
     column('auto_id','bigint',{nullable:false,default:null,extra:'auto_increment'}),
   );
   assert.deepEqual(h.editor.publicEdit(internal).insertMissingColumns,['required']);
+});
+
+
+test('新增、更新、删除按顺序在单个事务执行，完整行快照绑定删除',async()=>{
+  const h=harness(),opened=await h.open();
+  const source=await h.editor.row('window-a',plugin,{editId:opened.editId,rowId:opened.rows[0].rowId});
+  assert.equal(source.values.label,'first');
+  const plan=h.editor.prepare('window-a',plugin,{editId:opened.editId,changes:[{kind:'insert',rowId:'draft',values:{id:'3',label:'new',amount:'3.1400'}},{rowId:opened.rows[1].rowId,values:{label:'updated'}},{kind:'delete',rowId:opened.rows[0].rowId}]});
+  assert.deepEqual(plan.counts,{insert:1,update:1,delete:1});
+  const result=await h.editor.commit('window-a',plugin,{editId:opened.editId,planId:plan.planId});
+  assert.equal(result.status,'success');assert.equal(h.rows().length,2);assert.equal(h.rows()[0][1],'updated');assert.equal(h.rows()[1][1],'new');
+  assert.deepEqual(h.statements.filter(item=>/^(?:INSERT|DELETE|UPDATE) /u.test(item.sql)).map(item=>item.sql.split(' ')[0]),['DELETE','UPDATE','INSERT']);
+  assert.deepEqual(result.result.deletedRowIds,[opened.rows[0].rowId]);
+});
+
+test('删除或新增后的失败回滚整批，不暴露原始约束错误',async()=>{
+  const h=harness(),opened=await h.open(),before=structuredClone(h.rows());
+  await h.editor.row('window-a',plugin,{editId:opened.editId,rowId:opened.rows[0].rowId});
+  const plan=h.editor.prepare('window-a',plugin,{editId:opened.editId,changes:[{kind:'delete',rowId:opened.rows[0].rowId},{kind:'insert',rowId:'draft',values:{id:before[1][0],label:'duplicate'}}]});
+  const result=await h.editor.commit('window-a',plugin,{editId:opened.editId,planId:plan.planId});
+  assert.equal(result.status,'failed');assert.deepEqual(h.rows(),before);assert.doesNotMatch(JSON.stringify(result),/fixture duplicate/u);
+});
+
+test('删除必须核对完整行，快照后的变化不会被覆盖',async()=>{
+  const h=harness(),opened=await h.open(),request={editId:opened.editId,changes:[{kind:'delete',rowId:opened.rows[0].rowId}]};
+  assert.throws(()=>h.editor.prepare('window-a',plugin,request),{code:'INVALID_ARGUMENT'});
+  await h.editor.row('window-a',plugin,{editId:opened.editId,rowId:opened.rows[0].rowId});
+  const plan=h.editor.prepare('window-a',plugin,request);h.mutate(rows=>rows.map((row,index)=>index===0?[row[0],'external',row[2]]:row));
+  const result=await h.editor.commit('window-a',plugin,{editId:opened.editId,planId:plan.planId});
+  assert.equal(result.error.code,'MYSQL_EDIT_CONFLICT');assert.equal(h.rows().length,2);
+});
+
+test('新增支持手动主键、默认值和空表，自增及生成字段不可显式填写',async()=>{
+  const metadata={table:'items',columns:[column('id','bigint',{key:'PRI',extra:'auto_increment',nullable:false}),column('label','varchar',{default:'default-label'}),column('amount','decimal',{nullable:true})]};
+  const h=harness({metadata});h.mutate(()=>[]);const opened=await h.open();
+  assert.equal(opened.rows.length,0);assert.equal(opened.insertColumns[0].autoIncrement,true);
+  assert.throws(()=>h.editor.prepare('window-a',plugin,{editId:opened.editId,changes:[{kind:'insert',rowId:'draft',values:{id:'1'}}]}),{code:'MYSQL_EDIT_COLUMN_READONLY'});
+  const plan=h.editor.prepare('window-a',plugin,{editId:opened.editId,changes:[{kind:'insert',rowId:'draft',values:{}}]});
+  assert.equal((await h.editor.commit('window-a',plugin,{editId:opened.editId,planId:plan.planId})).status,'success');
+  assert.deepEqual(h.rows(),[['1','default-label',null]]);
+  assert.equal(normalizeMysqlEditValue(column('id','bigint',{key:'PRI'}),'9007199254740993',{insert:true}),'9007199254740993');
+  assert.throws(()=>normalizeMysqlEditValue(column('calculated','int',{extra:'STORED GENERATED'}),'1',{insert:true}));
+});
+
+test('相关触发器及跨表级联规则阻止新增删除，原数据保留',async()=>{
+  for(const options of [{triggers:[{EVENT_MANIPULATION:'DELETE'}]},{cascades:[{DELETE_RULE:'CASCADE'}]}]){
+    const h=harness(options),opened=await h.open(),before=structuredClone(h.rows());
+    await h.editor.row('window-a',plugin,{editId:opened.editId,rowId:opened.rows[0].rowId});
+    const plan=h.editor.prepare('window-a',plugin,{editId:opened.editId,changes:[{kind:'delete',rowId:opened.rows[0].rowId}]});
+    const result=await h.editor.commit('window-a',plugin,{editId:opened.editId,planId:plan.planId});
+    assert.equal(result.error.code,'MYSQL_EDIT_READONLY');assert.deepEqual(h.rows(),before);
+  }
 });

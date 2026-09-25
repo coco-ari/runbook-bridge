@@ -16,6 +16,8 @@ const ACTIONS = {
   'journal.read':'查询系统日志', 'shell.execute':'执行 Shell 命令', 'container.inspect':'查看容器状态',
   'docker.list':'列出容器', 'docker.inspect':'查看容器详情', 'docker.logs':'读取容器日志', 'docker.stats':'查看容器资源',
   'mysql.describe':'查看数据库结构', 'mysql.tables':'列出数据表', 'mysql.table':'查看表结构',
+  'mysql.rows.write':'保存数据表行更改',
+  'redis.create':'新增 Redis Key', 'redis.update':'修改 Redis 值', 'redis.delete':'删除 Redis Key',
   'mysql.update':'修改数据表', 'mysql.select':'执行只读查询', 'mysql.preview':'预览数据表', 'mysql.explain':'分析查询计划', 'mysql.search':'搜索数据库结构',
   'redis.scan':'扫描 Redis 键', 'redis.read':'读取 Redis 数据', 'redis.ttl':'查看 Redis 有效期', 'redis.type':'查看 Redis 类型',
   'terminal':'使用服务器终端', 'metrics':'查看服务器资源监控',
@@ -74,7 +76,7 @@ export function auditAction(entry) {
 }
 
 export function auditCategory(action) {
-  if (action === 'mysql.update') return 'change';
+  if (['mysql.update','mysql.rows.write','redis.create','redis.update','redis.delete'].includes(action)) return 'change';
   if (/^(fs\.(?:upload|write|move|delete|mkdir)|service\.(?:control|start|stop|restart|reload)|shell\.execute|execute)/u.test(action)) return 'change';
   if (/runbook|plugin-added|plugin-.*updated|plugin-deleted|config-imported|config-uploaded|credential|host-key/u.test(action)) return 'configuration';
   if (/connect|connection-plan/u.test(action)) return 'connection';

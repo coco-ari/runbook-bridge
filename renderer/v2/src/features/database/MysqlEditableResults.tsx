@@ -1,7 +1,9 @@
+import { MysqlRowSheet } from "./MysqlRowSheet"
+import { mysqlDraftColumn, mysqlDraftPlaceholder, type MysqlInsertDraft } from "./mysql-row-draft-model"
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
-import { ArrowClockwise, Copy, FloppyDisk, Rows, ArrowCounterClockwise } from "@phosphor-icons/react"
+import { ArrowClockwise, PencilSimple, Copy, FloppyDisk, Rows, ArrowCounterClockwise, Plus, Trash } from "@phosphor-icons/react"
 import { toast } from "sonner"
-import type { AiOpsV2Api, MysqlEditData, MysqlEditPlan, MysqlEditRow, MysqlEditStatus, MysqlQueryResult, PluginScope } from "@/bridge/ai-ops-v2"
+import type { AiOpsV2Api, MysqlEditData, MysqlEditChange, MysqlEditPlan, MysqlEditRow, MysqlEditStatus, MysqlQueryResult, PluginScope } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -16,7 +18,7 @@ import { MysqlSqlExportDialog, type MysqlSqlExportSelection } from "./MysqlSqlEx
 import type { MysqlSqlKind } from "./mysql-sql-export"
 
 type Drafts = Record<string, Record<string, string | null>>
-interface ActiveCell { rowId: string; name: string; value: string; isNull: boolean; modal: boolean }
+interface ActiveCell { rowId: string; name: string; value: string; isNull: boolean; modal: boolean; isDefault?: boolean }
 
 export function MysqlEditableResults({ api, scope, documentKey, sql, result, visible = true, onReload, children }: {
   readonly api: AiOpsV2Api; readonly scope: PluginScope; readonly documentKey: string; readonly sql: string; readonly result: MysqlQueryResult
@@ -27,6 +29,22 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   const editRef = useRef(edit)
   const [drafts, setDrafts] = useState<Drafts>({})
   const draftsRef = useRef(drafts)
+  const [inserts, setInserts] = useState<readonly MysqlInsertDraft[]>([])
+  const insertsRef = useRef(inserts)
+  const insertSources = useRef(new Map<string, MysqlDisplayedRow>())
+  const [deleted, setDeleted] = useState(new Set<string>())
+  const deletedRef = useRef(deleted)
+  const [rowDraft, setRowDraft] = useState<MysqlInsertDraft | null>(null)
+  const rowDraftRef = useRef(rowDraft)
+  const [deleteConfirmation, setDeleteConfirmation] = useState(false)
+  const updateInserts = (value: readonly MysqlInsertDraft[]) => {
+    const ids = new Set(value.map(row => row.rowId)), removed = new Set<MysqlDisplayedRow>()
+    for (const [id, source] of insertSources.current) if (!ids.has(id)) { removed.add(source); insertSources.current.delete(id) }
+    if (removed.size) setSelection(previous => new Set([...previous].filter(row => !removed.has(row))))
+    insertsRef.current = value; setInserts(value)
+  }
+  const updateDeleted = (value: Set<string>) => { deletedRef.current = value; setDeleted(value) }
+  const updateRowDraft = (value: MysqlInsertDraft | null) => { rowDraftRef.current = value; setRowDraft(value) }
   const [selection, setSelection] = useState(new Set<MysqlDisplayedRow>())
   const [saved, setSaved] = useState(new Map<MysqlDisplayedRow, Record<string, string | null>>())
   const [activeCell, setActiveCell] = useState<ActiveCell | null>(null)
@@ -59,15 +77,28 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   editRef.current = edit
   const rowMap = useMemo(() => new Map(edit?.rows.map(row => [row.rowId, row]) ?? []), [edit])
   const bindings = useMemo(() => edit ? bindMysqlEditRows(result.rows, edit) : new Map<MysqlDisplayedRow, MysqlEditRow>(), [result, edit])
-  const pendingRows = Object.keys(drafts)
-  const cellCount = Object.values(drafts).reduce((count, values) => count + Object.keys(values).length, 0)
+  const gridDrafts = useMemo(() => inserts.map(draft => {
+    let row = insertSources.current.get(draft.rowId)
+    if (!row) { row = {}; insertSources.current.set(draft.rowId, row) }
+    return { row, rowId: draft.rowId, afterRowId: draft.afterRowId }
+  }), [inserts])
+  const insertBindings = new Map(gridDrafts.map(item => [item.row, item.rowId]))
+  const copiedCount = inserts.filter(row => row.copied).length
+  const pendingRows = Object.keys(drafts).filter(id => !deleted.has(id))
+  const pendingCount = pendingRows.length + inserts.length + deleted.size
+  const cellCount = Object.entries(drafts).filter(([id]) => !deleted.has(id)).reduce((count, [, values]) => count + Object.keys(values).length, 0) + inserts.reduce((count, row) => count + Object.keys(row.values).length, 0)
   const locked = Boolean(busy || uncertain || stale || !guard.connected)
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(""), 3500)
+    return () => window.clearTimeout(timer)
+  }, [notice])
   useEffect(() => {
     alive.current = true
     const unregister = guard.register(documentKey, () => ({
       busy: Boolean(busyRef.current),
-      dirty: Object.keys(draftsRef.current).length > 0 || Boolean(activeRef.current && (activeRef.current.isNull ? null : activeRef.current.value) !== editRef.current?.rows.find(row => row.rowId === activeRef.current?.rowId)?.values[activeRef.current.name]),
-      discard: () => { updateDrafts({}); setCell(null); setPlan(null) },
+      dirty: insertsRef.current.length > 0 || deletedRef.current.size > 0 || Boolean(rowDraftRef.current) || Object.keys(draftsRef.current).length > 0 || Boolean(activeRef.current && (activeRef.current.isNull ? null : activeRef.current.value) !== editRef.current?.rows.find(row => row.rowId === activeRef.current?.rowId)?.values[activeRef.current.name]),
+      discard: () => { updateDrafts({}); updateInserts([]); updateDeleted(new Set()); updateRowDraft(null); setCell(null); setPlan(null) },
     }))
     return () => {
       alive.current = false; serial.current++; unregister(); guard.setEditing(documentKey, false)
@@ -81,7 +112,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
     if (connectionEpoch.current !== guard.connectionEpoch && editRef.current) { setStale(true); setError("连接已变化，旧数据不能继续保存。请刷新并核对修改。") }
     connectionEpoch.current = guard.connectionEpoch
   }, [guard.connectionEpoch])
-  useEffect(() => { if (activeCell) inputRef.current?.focus({ preventScroll: true }) }, [activeCell?.rowId, activeCell?.name, activeCell?.modal])
+  useEffect(() => { if (activeCell) { inputRef.current?.focus({ preventScroll: true }); if (insertsRef.current.some(row => row.rowId === activeCell.rowId && row.copied)) inputRef.current?.select() } }, [activeCell?.rowId, activeCell?.name, activeCell?.modal])
 
   function applyValue(rowId: string, name: string, value: string | null, source = draftsRef.current): Drafts {
     const original = rowMap.get(rowId)?.values[name]
@@ -96,10 +127,26 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   function finishCell(cancel = false) {
     const active = activeRef.current
     if (!active) return
-    if (!cancel) updateDrafts(applyValue(active.rowId, active.name, active.isNull ? null : active.value))
+    if (!cancel) {
+      const draft = insertsRef.current.find(row => row.rowId === active.rowId)
+      if (draft && editRef.current) {
+        const column = mysqlDraftColumn(editRef.current, active.name)
+        if (column) {
+          const values = { ...draft.values }
+          if (active.isDefault) delete values[column.name]
+          else values[column.name] = active.isNull ? null : active.value
+          updateInserts(insertsRef.current.map(row => row.rowId === draft.rowId ? { ...row, values } : row))
+        }
+      } else updateDrafts(applyValue(active.rowId, active.name, active.isNull ? null : active.value))
+    }
     setCell(null)
   }
   function valueOf(row: MysqlDisplayedRow, name: string, fallback: unknown): unknown {
+    const draft = insertsRef.current.find(item => insertSources.current.get(item.rowId) === row)
+    if (draft && editRef.current) {
+      const column = mysqlDraftColumn(editRef.current, name)
+      return column ? draft.values[column.name] : undefined
+    }
     const target = bindings.get(row)
     if (target && Object.hasOwn(drafts[target.rowId] ?? {}, name)) return drafts[target.rowId]![name]
     const committed = saved.get(row)
@@ -122,7 +169,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
     if (editRef.current) {
       const captured = bindMysqlEditRows(result.rows, editRef.current)
       if (targets.every(row => captured.has(row))) return editRef.current
-      if (Object.keys(draftsRef.current).length) { toast.info("请先保存或撤销当前修改，再编辑新加载的行。"); return null }
+      if (Object.keys(draftsRef.current).length || insertsRef.current.length || deletedRef.current.size) { toast.info("请先保存或撤销当前修改，再编辑新加载的行。"); return null }
       void api.mysqlEditRelease({ ...scope, editId: editRef.current.editId }).catch(() => {})
       editRef.current = null; setEdit(null)
     }
@@ -146,6 +193,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   function matchedRow(data: MysqlEditData, row: MysqlDisplayedRow, name: string): MysqlEditRow {
     const target = bindMysqlEditRows(result.rows, data).get(row)
     if (!target) throw new Error("无法按完整主键定位此行。请先保存当前修改，再刷新结果后编辑。")
+    if (deletedRef.current.has(target.rowId)) throw new Error("此行待删除，请先撤销删除再修改字段。")
     const column = data.columns.find(item => item.name === name)
     if (!column?.editable) throw new Error(column?.reason ?? "此字段只读")
     const shown = valueOf(row, name, row[name])
@@ -156,10 +204,19 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   async function beginCell(source: MysqlDisplayedRow, name: string, modal = false) {
     if (locked || busyRef.current) return
     finishCell()
+    const draft = insertsRef.current.find(row => insertSources.current.get(row.rowId) === source)
+    if (draft && editRef.current) {
+      const column = mysqlDraftColumn(editRef.current, name)
+      if (!column?.editable || column.generated || column.autoIncrement) { toast.info(column?.reason ?? "此字段由数据库自动生成。"); return }
+      const value = draft.values[column.name]
+      setError(""); setCell({ rowId: draft.rowId, name, value: value ?? "", isNull: value === null, isDefault: !Object.hasOwn(draft.values, column.name), modal: modal || column.dataType === "json" || (value?.length ?? 0) > 180 || Boolean(value?.includes("\n")) })
+      return
+    }
     const data = await ensureSnapshot([source])
     if (!data || !alive.current || !connected.current) return
     try {
       const row = matchedRow(data, source, name)
+      if (deletedRef.current.has(row.rowId)) return
       const value = Object.hasOwn(draftsRef.current[row.rowId] ?? {}, name) ? draftsRef.current[row.rowId]![name] ?? null : row.values[name] ?? null
       const column = data.columns.find(item => item.name === name)
       setError(""); setCell({ rowId: row.rowId, name, value: value ?? "", isNull: value === null, modal: modal || column?.dataType === "json" || (value?.length ?? 0) > 180 || Boolean(value?.includes("\n")) })
@@ -170,7 +227,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
     reset(() => {
       if (editRef.current) void api.mysqlEditRelease({ ...scope, editId: editRef.current.editId }).catch(() => {})
       setEdit(null); editRef.current = null; guard.setEditing(documentKey, false)
-      updateDrafts({}); setCell(null); setPlan(null); setError(""); setNotice(""); setUncertain(false); setStale(false); setConflicts(new Set()); setSelection(new Set()); setSaved(new Map())
+      updateDrafts({}); updateInserts([]); updateDeleted(new Set()); updateRowDraft(null); setCell(null); setPlan(null); setError(""); setNotice(""); setUncertain(false); setStale(false); setConflicts(new Set()); setSelection(new Set()); setSaved(new Map())
       onReload()
     })
   }
@@ -183,8 +240,15 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
         return next
       })
       setEdit(current => current ? { ...current, rows: current.rows.map(row => updated.get(row.rowId) ?? row) } : current)
-      updateDrafts({}); setConflicts(new Set()); setPlan(null); setUncertain(false); setError("")
+      const refreshRows = insertsRef.current.length > 0 || deletedRef.current.size > 0
+      updateDrafts({}); updateInserts([]); updateDeleted(new Set()); setConflicts(new Set()); setPlan(null); setUncertain(false); setError("")
       setNotice(status.result.auditWarning ? "数据已保存，但操作记录写入失败。" : "已保存 " + status.result.rowCount + " 行修改。")
+      if (refreshRows) {
+        if (editRef.current) void api.mysqlEditRelease({ ...scope, editId: editRef.current.editId }).catch(() => {})
+        setSelection(new Set()); setEdit(null); editRef.current = null; guard.setEditing(documentKey, false)
+        toast.success("更改已保存。新增行按当前查询条件显示，未出现时请检查筛选及返回行数限制。")
+        onReload()
+      }
     } else if (status.status === "running") { setUncertain(true); setError("保存仍在进行，请检查保存状态，不要重复提交。") }
     else {
       setUncertain(status.status === "unknown"); setError(status.error?.message ?? "保存未完成")
@@ -208,21 +272,111 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   async function save() {
     finishCell()
     if (!edit || busyRef.current || locked) return
-    const changes = Object.entries(draftsRef.current).map(([rowId, values]) => ({ rowId, values }))
+    const changes: MysqlEditChange[] = [
+      ...Object.entries(draftsRef.current).filter(([id]) => !deletedRef.current.has(id)).map(([rowId, values]) => ({ rowId, values })),
+      ...[...deletedRef.current].map(rowId => ({ kind: "delete" as const, rowId })),
+      ...insertsRef.current.map(row => ({ kind: "insert" as const, rowId: row.rowId, values: row.values })),
+    ]
     if (!changes.length) return
     setWorking("prepare"); setError(""); setNotice("")
     try {
       const response = await api.mysqlEditPrepare({ ...scope, editId: edit.editId, changes })
-      if (!response.ok) { if (response.error.code === "MYSQL_EDIT_STALE") setStale(true); throw new Error(response.error.message) }
+      if (!response.ok) {
+        if (response.error.code === "MYSQL_EDIT_STALE") setStale(true)
+        const details = response.error.details as { column?: string; rowIds?: string[] } | undefined
+        const draft = insertsRef.current.find(row => row.rowId === details?.rowIds?.[0])
+        if (draft && details?.column) {
+          const column = edit.columns.find(item => item.source === details.column)
+          if (column) focusCell(draft.rowId, column.name)
+          else updateRowDraft(draft)
+        }
+        throw new Error(response.error.message)
+      }
       if (!alive.current) return
       setPlan(response.data)
       // 点击保存即授权本次精确修改，仍由后端生成并消费一次性保存计划。
-      await commit(response.data)
+      if (deletedRef.current.size) setDeleteConfirmation(true)
+      else await commit(response.data)
     } catch (failure) { if (alive.current) setError(failure instanceof Error ? failure.message : "无法保存") }
     finally { if (alive.current) setWorking(null) }
   }
+  async function addRow(copySource?: MysqlDisplayedRow) {
+    if (locked || busyRef.current) return
+    finishCell()
+    if (pendingCount >= (edit?.limits.maxRows ?? 100)) { toast.error("每批最多暂存 100 行，请先保存。"); return }
+    const localSource = insertsRef.current.find(row => insertSources.current.get(row.rowId) === copySource)
+    const data = await ensureSnapshot(copySource && !localSource ? [copySource] : [])
+    if (!data?.insertColumns || !alive.current) return
+    try {
+      let values: Record<string, string | null> = {}
+      if (localSource) values = { ...localSource.values }
+      else if (copySource) {
+        const source = bindMysqlEditRows(result.rows, data).get(copySource)
+        if (!source) throw new Error("无法定位原行，请刷新后重试。")
+        setWorking("open")
+        const response = await api.mysqlEditRow({ ...scope, editId: data.editId, rowId: source.rowId })
+        if (!response.ok) throw new Error(response.error.message)
+        if (!alive.current) return
+        const available = data.insertColumns.filter(column => !column.autoIncrement && !column.generated)
+        if (available.some(column => response.data.unsupportedColumns.includes(column.name) || (!column.editable && (response.data.values[column.name] !== null || column.defaultValue !== null)))) throw new Error("原行包含无法完整复制的字段类型，暂不支持复制此行。")
+        values = Object.fromEntries(available.filter(column => column.editable).map(column => [column.name, response.data.values[column.name] ?? null]))
+        for (const column of data.columns) if (Object.hasOwn(draftsRef.current[source.rowId] ?? {}, column.name)) values[column.source] = draftsRef.current[source.rowId]![column.name] ?? null
+      }
+      const draft: MysqlInsertDraft = { rowId: crypto.randomUUID(), values, copied: Boolean(copySource), afterRowId: localSource?.rowId ?? (copySource ? bindings.get(copySource)?.rowId ?? bindMysqlEditRows(result.rows, data).get(copySource)?.rowId : undefined) }
+      updateInserts([...insertsRef.current, draft]); setError("")
+      const source: MysqlDisplayedRow = {}; insertSources.current.set(draft.rowId, source)
+      const fields = data.insertColumns?.filter(column => column.editable && !column.generated && !column.autoIncrement) ?? []
+      const preferred = fields.find(column => draft.copied && (column.primary || column.unique)) ?? fields.find(column => column.required) ?? fields[0]
+      const visibleColumn = data.columns.find(column => column.source === preferred?.name) ?? data.columns.find(column => fields.some(field => field.name === column.source))
+      window.setTimeout(() => {
+        if (!alive.current) return
+        const element = rootRef.current?.querySelector('[data-edit-row="' + CSS.escape(draft.rowId) + '"]')
+        element?.scrollIntoView({ block: "nearest" })
+        if (visibleColumn) void beginCell(source, visibleColumn.name)
+        else updateRowDraft(draft)
+      }, 0)
+      if (draft.copied) toast.info("已复制为草稿，请检查主键和唯一字段，避免与已有记录重复。")
+      setNotice(draft.copied ? "已复制为草稿，请检查主键和唯一字段后统一保存。" : "已添加草稿，填写后统一保存。")
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "无法添加行") }
+    finally { if (alive.current) setWorking(null) }
+  }
+  async function deleteRows(targets = [...selection]) {
+    if (locked || busyRef.current || !targets.length) return
+    finishCell()
+    const localIds = new Set(targets.map(source => insertBindings.get(source)).filter((id): id is string => Boolean(id)))
+    if (localIds.size) {
+      updateInserts(insertsRef.current.filter(row => !localIds.has(row.rowId)))
+      setSelection(previous => new Set([...previous].filter(row => !localIds.has(insertBindings.get(row) ?? ""))))
+    }
+    targets = targets.filter(row => !insertBindings.has(row))
+    if (!targets.length) return
+    const data = await ensureSnapshot(targets)
+    if (!data || !alive.current) return
+    setWorking("open")
+    try {
+      const mapped = bindMysqlEditRows(result.rows, data), next = new Set(deletedRef.current)
+      for (const source of targets) {
+        const row = mapped.get(source)
+        if (!row) throw new Error("无法定位待删除行，请刷新后重试。")
+        if (next.has(row.rowId)) continue
+        const response = await api.mysqlEditRow({ ...scope, editId: data.editId, rowId: row.rowId })
+        if (!response.ok) throw new Error(response.error.message)
+        next.add(row.rowId)
+      }
+      if (alive.current) { updateDeleted(next); setError(""); setNotice("已标记待删除，保存前可撤销。") }
+    } catch (failure) { if (alive.current) setError(failure instanceof Error ? failure.message : "无法删除行") }
+    finally { if (alive.current) setWorking(null) }
+  }
+  function stageRow() {
+    const draft = rowDraftRef.current
+    if (!draft) return
+    const next = insertsRef.current.map(row => row.rowId === draft.rowId ? draft : row)
+    if (next.length + deletedRef.current.size + Object.keys(draftsRef.current).filter(id => !deletedRef.current.has(id)).length > 100) { toast.error("每批最多暂存 100 行，请先保存。"); return }
+    updateInserts(next); updateRowDraft(null); setNotice("新增行已暂存，尚未写入数据库。")
+  }
   async function openBatch() {
     if (locked || busyRef.current || !selection.size) return
+    if ([...selection].some(row => insertBindings.has(row))) { toast.info("新增和复制草稿请直接编辑单元格或打开完整行字段。"); return }
     finishCell()
     const data = await ensureSnapshot([...selection])
     if (!data || !alive.current) return
@@ -240,6 +394,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   }
   async function openExport(kind: MysqlSqlKind, field?: string) {
     if (locked || busyRef.current || !selection.size) return
+    if ([...selection].some(row => insertBindings.has(row))) { toast.info("新增和复制草稿请直接编辑单元格或打开完整行字段。"); return }
     finishCell()
     const sources = [...selection]
     const data = await ensureSnapshot(sources)
@@ -249,6 +404,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
       const targets = sources.map(source => {
         const target = mapped.get(source)
         if (!target) throw new Error("无法按完整主键定位已选行，请刷新后重试。")
+        if (deletedRef.current.has(target.rowId)) throw new Error("已选行待删除，请先保存或取消删除再生成 SQL。")
         if (Object.keys(draftsRef.current[target.rowId] ?? {}).length) throw new Error("已选行包含未保存修改，请先保存或撤销后生成 SQL。")
         for (const column of data.columns) {
           if (column.generated || (!column.editable && !column.primary)) continue
@@ -260,11 +416,47 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
     } catch (failure) { toast.error(failure instanceof Error ? failure.message : "无法生成 SQL") }
   }
   const controller: MysqlInlineEditing = {
-    locked, selection,
+    locked: locked || deleteConfirmation, selection,
+    toolbar: <aside className="mysql-row-toolbar" aria-label="数据行操作" data-testid="mysql-row-toolbar">
+      <Button size="sm" variant="ghost" disabled={locked} onClick={() => void addRow()} data-testid="mysql-add-row" title="添加草稿行"><Plus /><span>新增行</span></Button>
+      <Button size="sm" variant="ghost" disabled={locked || selection.size !== 1} onClick={() => void addRow([...selection][0])} data-testid="mysql-copy-row" aria-label="复制为新行" title={selection.size === 1 ? "复制为新行" : "选择一行后复制为新行"}><Copy /><span>复制行</span></Button>
+      <Button size="sm" variant="ghost" className="text-danger" disabled={locked || !selection.size} onClick={() => void deleteRows()} data-testid="mysql-delete-rows" title="标记选中行待删除，保存后生效"><Trash /><span>删除行</span></Button>
+      <hr className="my-1 border-border" />
+      <Button size="sm" variant="ghost" disabled={!selection.size || locked || [...selection].some(row => insertBindings.has(row))} data-testid="mysql-edit-batch" aria-label="批量赋值" title="向选中的已有行批量赋值" onClick={() => void openBatch()}><Rows /><span>批量</span></Button>
+      {selection.size ? <Button size="sm" variant="ghost" aria-label="取消选择" title={"已选 " + selection.size + " 行，点击取消选择"} onClick={() => setSelection(new Set())}><span className="tabular-nums">{selection.size}</span><span>取消选择</span></Button> : null}
+      <Button className="mysql-row-refresh" size="sm" variant="ghost" disabled={Boolean(busy) || !guard.connected} data-testid="mysql-edit-refresh" aria-label="刷新数据" title="刷新数据，有草稿时先确认是否放弃" onClick={refresh}><ArrowClockwise /><span>刷新</span></Button>
+    </aside>,
+    pendingRows: gridDrafts,
+    rowState: row => {
+      const draft = inserts.find(item => item.rowId === insertBindings.get(row))
+      if (draft) return draft.copied ? "copy" : "insert"
+      const id = bindings.get(row)?.rowId ?? ""
+      return deleted.has(id) ? "delete" : Object.keys(drafts[id] ?? {}).length ? "update" : null
+    },
+    placeholder: (row, name) => {
+      const draft = inserts.find(item => item.rowId === insertBindings.get(row))
+      return draft && edit ? mysqlDraftPlaceholder(draft, edit, name) : null
+    },
+    fullRow: row => { finishCell(); const draft = insertsRef.current.find(item => item.rowId === insertBindings.get(row)); if (draft) updateRowDraft(draft) },
+    rowActions: row => {
+      const draft = inserts.find(item => item.rowId === insertBindings.get(row))
+      if (draft) return <Button size="icon-xs" variant="ghost" aria-label="编辑完整行字段" title="编辑完整行字段" disabled={locked} onClick={event => { event.stopPropagation(); finishCell(); updateRowDraft(insertsRef.current.find(item => item.rowId === draft.rowId) ?? draft) }}><PencilSimple /></Button>
+      const id = bindings.get(row)?.rowId ?? ""
+      if (deleted.has(id)) return <Button size="icon-xs" variant="ghost" aria-label="撤销删除" title="撤销删除" disabled={locked} onClick={event => { event.stopPropagation(); const next = new Set(deletedRef.current); next.delete(id); updateDeleted(next) }}><ArrowCounterClockwise /></Button>
+      return null
+    },
+    deleted: row => deleted.has(bindings.get(row)?.rowId ?? ""),
+    restore: row => { const next = new Set(deletedRef.current); next.delete(bindings.get(row)?.rowId ?? ""); updateDeleted(next) },
+    copyRow: row => { void addRow(row) },
+    deleteRow: row => { void deleteRows([row]) },
     replaceSelection: rows => { if (rows.size <= 100) setSelection(new Set(rows)) },
     clearSelection: () => setSelection(new Set()),
     batch: () => { void openBatch() },
-    canEdit: name => edit ? Boolean(edit.columns.find(column => column.name === name)?.editable) : true,
+    canEdit: (name, source) => {
+      if (source && deleted.has(bindings.get(source)?.rowId ?? "")) return false
+      if (source && insertBindings.has(source) && edit) return Boolean(mysqlDraftColumn(edit, name)?.editable)
+      return edit ? Boolean(edit.columns.find(column => column.name === name)?.editable) : true
+    },
     exportSql: (kind, field) => { void openExport(kind, field) },
     select: (rows, checked) => {
       const next = new Set(selection)
@@ -273,22 +465,22 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
       else setSelection(next)
     },
     value: valueOf,
-    rowId: row => bindings.get(row)?.rowId,
+    rowId: row => insertBindings.get(row) ?? bindings.get(row)?.rowId,
     conflict: row => conflicts.has(bindings.get(row)?.rowId ?? ""),
     dirty: (row, name) => Object.hasOwn(drafts[bindings.get(row)?.rowId ?? ""] ?? {}, name),
     begin: (row, name, modal) => { void beginCell(row, name, modal) },
     finish: () => finishCell(),
     cell: (source, name, content) => {
-      const row = bindings.get(source)
+      const row = bindings.get(source) ?? (insertBindings.has(source) ? { rowId: insertBindings.get(source)! } : undefined)
       if (!row || activeCell?.rowId !== row.rowId || activeCell.name !== name || activeCell.modal) return content
       return <Input ref={element => { inputRef.current = element }} className="mysql-inline-input" aria-label={"编辑 " + name} defaultValue={activeCell.value}
-        onChange={event => { if (activeRef.current) { activeRef.current.value = event.target.value; activeRef.current.isNull = false } }}
+        onChange={event => { if (activeRef.current) { activeRef.current.value = event.target.value; activeRef.current.isNull = false; activeRef.current.isDefault = false } }}
         onPaste={event => {
           const pasted = event.clipboardData.getData("text/plain")
           if (!/[\r\n]/u.test(pasted) || !activeRef.current) return
           event.preventDefault()
           const input = event.currentTarget, original = activeRef.current.value
-          setCell({ ...activeRef.current, value: original.slice(0, input.selectionStart ?? 0) + pasted + original.slice(input.selectionEnd ?? original.length), isNull: false, modal: true })
+          setCell({ ...activeRef.current, value: original.slice(0, input.selectionStart ?? 0) + pasted + original.slice(input.selectionEnd ?? original.length), isNull: false, isDefault: false, modal: true })
         }}
         onBlur={() => { if (!activeRef.current?.modal) finishCell() }}
         onKeyDown={event => {
@@ -299,27 +491,32 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
           if (event.key === "Escape") { event.preventDefault(); finishCell(true); focusCell(row.rowId, name) }
         }} />
     },
-    status: <span title={error || notice || "双击编辑 · Ctrl+C 复制 · 右键查看行详情"} className={error ? "text-danger" : ""} role="status">
-      <span data-testid="mysql-edit-dirty-count">{pendingRows.length ? pendingRows.length + " 行 · " + cellCount + " 处待保存" : busy === "open" ? "正在核对可编辑字段…" : error || notice || "双击编辑 · Ctrl+C 复制"}</span>
-      {error && pendingRows.length ? " · " + error : ""}
-      {selection.size ? " · 已选 " + selection.size + " 行" : ""}
+    pendingCount,
+    status: <span title={error || notice || (pendingCount ? "当前表格全部待保存更改，共 " + cellCount + " 处字段" : "双击编辑 · Ctrl+C 复制 · 右键更多操作")} className={error ? "text-danger" : ""} role="status">
+      <span data-testid="mysql-edit-dirty-count" className="mysql-draft-counts">{pendingCount ? <>
+        {inserts.length > copiedCount ? <span className="text-success">新增 {inserts.length - copiedCount}</span> : null}
+        {copiedCount ? <span className="text-info">复制 {copiedCount}</span> : null}
+        {pendingRows.length ? <span className="text-warning">修改 {pendingRows.length}</span> : null}
+        {deleted.size ? <span className="text-danger">删除 {deleted.size}</span> : null}
+        <span className="sr-only">（{cellCount} 处字段）</span>
+      </> : busy === "open" ? "核对字段…" : error || notice}</span>
     </span>,
     footer: <div className="mysql-inline-actions">
       {uncertain && plan ? <Button size="xs" variant="outline" disabled={Boolean(busy)} onClick={() => void commit(plan, true)}>检查保存状态</Button> : null}
-      {selection.size ? <Button size="xs" variant="ghost" onClick={() => setSelection(new Set())}>取消选择</Button> : null}
-      <Button size="icon-xs" variant="ghost" disabled={!selection.size || locked} data-testid="mysql-edit-batch" aria-label="批量赋值" title="批量赋值" onClick={() => void openBatch()}><Rows /></Button>
-      <Button size="icon-xs" variant="ghost" disabled={Boolean(busy) || !guard.connected} data-testid="mysql-edit-refresh" aria-label="刷新数据" title="刷新数据" onClick={refresh}><ArrowClockwise /></Button>
-      <Button size="icon-xs" variant="ghost" disabled={Boolean(busy) || (!pendingRows.length && !activeCell)} data-testid="mysql-edit-undo" aria-label="撤销修改" title="撤销修改" onClick={() => { finishCell(true); updateDrafts({}); setNotice("已撤销本地修改。") }}><ArrowCounterClockwise /></Button>
-      <Button size="xs" data-testid="mysql-edit-save" disabled={locked || (!pendingRows.length && !activeCell)} onClick={() => void save()}><FloppyDisk />{busy === "commit" || busy === "prepare" ? "保存中…" : "保存"}</Button>
+      <Button size="xs" variant="ghost" disabled={Boolean(busy) || uncertain || (!pendingCount && !activeCell)} data-testid="mysql-edit-undo" aria-label="取消更改" onClick={() => { finishCell(true); updateDrafts({}); updateInserts([]); updateDeleted(new Set()); updateRowDraft(null); setSelection(new Set()); setError(""); setNotice("已取消全部未保存更改。"); }}><ArrowCounterClockwise />取消更改</Button>
+      <Button size="xs" data-testid="mysql-edit-save" disabled={locked || (!pendingCount && !activeCell)} onClick={() => void save()}><FloppyDisk />{busy === "commit" || busy === "prepare" ? "保存中…" : "保存更改"}</Button>
     </div>,
   }
   const batchMetadata = edit?.columns.find(column => column.name === batchColumn)
   if (!visible && documentKey.startsWith("table:")) return null
   return <MysqlInlineEditingContext.Provider value={controller}>
     <div className="mysql-edit-container" data-testid={visible ? "mysql-data-editor" : undefined} ref={rootRef} onKeyDown={event => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); if (!exportSelection && !batch && !activeRef.current?.modal) void save() }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); if (!exportSelection && !batch && !rowDraft && !deleteConfirmation && !activeRef.current?.modal) void save() }
     }}>
+      {error ? <p className="shrink-0 max-h-24 overflow-auto border-b px-3 py-2 text-xs text-danger" role="alert">{error}</p> : null}
       {children}
+      {rowDraft && edit ? <MysqlRowSheet key={rowDraft.rowId} api={api} scope={scope} edit={edit} draft={rowDraft} locked={locked} onChange={updateRowDraft} onStage={stageRow} onClose={() => { updateRowDraft(null) }} /> : null}
+      <Dialog open={deleteConfirmation} onOpenChange={setDeleteConfirmation}><DialogContent><DialogHeader><DialogTitle>保存对 {edit?.table} 的更改？</DialogTitle><DialogDescription>本次新增 {inserts.length - copiedCount} 行、复制 {copiedCount} 行、修改 {plan?.counts?.update ?? pendingRows.length} 行、删除 {plan?.counts?.delete ?? deleted.size} 行。删除保存后无法通过此工作区撤销。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => setDeleteConfirmation(false)}>继续编辑</Button><Button variant="destructive" data-testid="mysql-confirm-delete" onClick={() => { setDeleteConfirmation(false); if (plan) void commit(plan) }}>确认保存并删除</Button></DialogFooter></DialogContent></Dialog>
       {exportSelection ? <MysqlSqlExportDialog api={api} selection={exportSelection} onClose={() => setExportSelection(null)} /> : null}
     {edit ? <><Dialog open={batch} onOpenChange={setBatch}>
       <DialogContent className="sm:max-w-lg" data-testid="mysql-edit-batch-dialog">
@@ -333,8 +530,8 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
     <Dialog open={Boolean(activeCell?.modal)} onOpenChange={open => { if (!open) finishCell(true) }}>
       <DialogContent className="sm:max-w-2xl" data-testid="mysql-edit-cell-dialog">
         <DialogHeader><DialogTitle>编辑字段 {activeCell?.name}</DialogTitle><DialogDescription>支持多行文本。空字符串与 NULL 是不同的值。</DialogDescription></DialogHeader>
-        {activeCell?.modal ? <textarea ref={element => { inputRef.current = element }} className="mysql-edit-textarea" aria-label={"编辑 " + activeCell.name} defaultValue={activeCell.value} rows={12} onChange={event => { if (activeRef.current) { activeRef.current.value = event.target.value; activeRef.current.isNull = false } }} /> : null}
-        <DialogFooter><Button variant="ghost" onClick={() => { if (activeCell) void copyMysqlText(activeRef.current?.value ?? "").then(() => toast.success("已复制"), () => toast.error("复制失败")) }}><Copy />复制</Button><Button variant="outline" disabled={!edit!.columns.find(column => column.name === activeCell?.name)?.nullable} onClick={() => { if (activeRef.current) activeRef.current.isNull = true; finishCell() }}>设为 NULL</Button><Button variant="outline" onClick={() => finishCell(true)}>取消</Button><Button onClick={() => finishCell()}>暂存修改</Button></DialogFooter>
+        {activeCell?.modal ? <textarea ref={element => { inputRef.current = element }} className="mysql-edit-textarea" aria-label={"编辑 " + activeCell.name} defaultValue={activeCell.value} rows={12} onChange={event => { if (activeRef.current) { activeRef.current.value = event.target.value; activeRef.current.isNull = false; activeRef.current.isDefault = false } }} /> : null}
+        <DialogFooter><Button variant="ghost" onClick={() => { if (activeCell) void copyMysqlText(activeRef.current?.value ?? "").then(() => toast.success("已复制"), () => toast.error("复制失败")) }}><Copy />复制</Button><Button variant="outline" disabled={!edit!.columns.find(column => column.name === activeCell?.name)?.nullable} onClick={() => { if (activeRef.current) { activeRef.current.isNull = true; activeRef.current.isDefault = false; } finishCell() }}>设为 NULL</Button>{inserts.some(row => row.rowId === activeCell?.rowId) ? <Button variant="outline" onClick={() => { if (activeRef.current) activeRef.current.isDefault = true; finishCell() }}>使用默认值</Button> : null}<Button variant="outline" onClick={() => finishCell(true)}>取消</Button><Button onClick={() => finishCell()}>暂存修改</Button></DialogFooter>
       </DialogContent>
     </Dialog>
     </> : null}

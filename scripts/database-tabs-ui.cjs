@@ -5,21 +5,21 @@ module.exports = async function ({win,fill,click,waitFor,textContains,testId,scr
   await click(win,'[data-testid=mysql-table-document-tab][data-table-name=orders]');
   await fill(win,testId('mysql-table-where'),'id >= 51');
   await click(win,testId('mysql-preview-run'));
-  await textContains(win,'mysql-preview-summary','返回 15 行');
+  await textContains(win,'mysql-preview-summary','15 行');
   const before = databaseCalls.length;
   await click(win,'[data-testid=mysql-table-item][data-table-name=orders]');
   assert.equal(databaseCalls.length,before,'重复点击表不得重复查询');
   await click(win,testId('mysql-tables-load-more'));
   await click(win,'[data-testid=mysql-table-item][data-table-name=archived_orders]');
-  await textContains(win,'mysql-preview-summary','返回 20 行');
+  await textContains(win,'mysql-preview-summary','20 行');
   assert.equal(await evaluate("document.querySelectorAll('[data-testid=mysql-table-document-tab]').length"),2);
   await fill(win,testId('mysql-table-where'),'id >= 61');
   await click(win,testId('mysql-preview-load-more'));
-  await textContains(win,'mysql-preview-summary','返回 40 行');
+  await textContains(win,'mysql-preview-summary','40 行');
   await evaluate("document.querySelector('[data-testid=mysql-preview-table-scroll]').scrollTop=180");
   const beforeSwitch = databaseCalls.length;
   await click(win,'[data-testid=mysql-table-document-tab][data-table-name=orders]');
-  await textContains(win,'mysql-preview-summary','返回 15 行');
+  await textContains(win,'mysql-preview-summary','15 行');
   assert.equal(await evaluate("document.querySelector('[data-testid=mysql-table-where]').value"),'id >= 51');
   assert.equal(databaseCalls.length,beforeSwitch,'切表恢复数据无需重新读取');
   assert.equal(await evaluate("document.querySelectorAll('[data-testid=mysql-preview-result]').length"),1,'后台表不保留表格 DOM');
@@ -49,14 +49,14 @@ module.exports = async function ({win,fill,click,waitFor,textContains,testId,scr
   await waitFor(win,"document.querySelector('[data-testid=mysql-preview-load-more]').textContent.includes('加载中')",'关闭前保持一个在途请求');
   await click(win,'[data-testid=mysql-table-close][data-table-name=archived_orders]');
   late.release();
-  await textContains(win,'mysql-preview-summary','返回 15 行');
+  await textContains(win,'mysql-preview-summary','15 行');
   assert.equal(await evaluate("document.querySelectorAll('[data-testid=mysql-table-document-tab]').length"),1);
   state.extraTables = true;
   await click(win,testId('mysql-tables-refresh'));
   await textContains(win,'mysql-table-list','fixture_6');
   for (let index=1;index<=5;index++) {
     await click(win,'[data-testid=mysql-table-item][data-table-name=fixture_'+index+']');
-    await textContains(win,'mysql-preview-summary','返回 20 行');
+    await textContains(win,'mysql-preview-summary','20 行');
   }
   const atLimit = databaseCalls.length;
   await click(win,'[data-testid=mysql-table-item][data-table-name=fixture_6]');

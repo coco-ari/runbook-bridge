@@ -9,6 +9,7 @@ const SEARCH_MAX_REQUESTS = 1000
 
 export interface RedisTab {
   readonly id: string
+  readonly creating?: boolean
   readonly key: string
   readonly patternId: string
   readonly pinned: boolean
@@ -221,6 +222,23 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
     setActiveId(id)
     void readTab(id)
   }
+  function createTab() {
+    if (tabsRef.current.length >= REDIS_MAX_TABS) { setNotice("最多打开 8 个标签，请先关闭已有标签。"); return null }
+    const id = crypto.randomUUID()
+    if (!updateTabs(current => [...current,{id,key:"",patternId,pinned:true,loading:false,error:"",info:null,content:null,fieldContent:null,fieldName:null,creating:true}])) return null
+    setActiveId(id)
+    return id
+  }
+  function written(id: string, key: string, removed: boolean) {
+    if (removed) {
+      for (const tab of tabsRef.current.filter(tab => tab.key === key)) closeTab(tab.id)
+      keysRef.current = keysRef.current.filter(value => value !== key); setKeys(keysRef.current)
+    } else {
+      patchTab(id,{key,creating:false,pinned:true}); void readTab(id)
+      if (!keywordRef.current && !keysRef.current.includes(key) && keysRef.current.length < REDIS_MAX_KEYS) { keysRef.current = [key,...keysRef.current]; setKeys(keysRef.current) }
+      else if (!keysRef.current.includes(key)) setNotice("Key 已保存，当前搜索结果可能不包含它；右侧可查看最新内容。")
+    }
+  }
   function closeTab(id: string) {
     tabSequences.current.delete(id)
     updateTabs((current) => current.filter((tab) => tab.id !== id))
@@ -255,5 +273,6 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
   }, [])
 
   return { patterns, patternId, changePattern, keys, cursor, complete, loading, error, notice, setNotice, readAt, keyword,
+    createTab, written, pin: (id: string) => patchTab(id,{pinned:true}),
     scan, stopScan, scanStatus, stopping, tabs, activeId, setActiveId, openKey, closeTab, readTab, clearField: (id: string) => patchTab(id, { fieldContent: null, fieldName: null }) }
 }

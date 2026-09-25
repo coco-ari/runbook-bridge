@@ -33,7 +33,7 @@ export function registerMysqlEditIpc(ipcMain, services) {
       return {ok:true,data:await saveMysqlSqlFile(payload,typeof services.pickMysqlExportPath==='function'?name=>services.pickMysqlExportPath(event.sender,name):undefined,assertOwner)};
     } catch(error) { return {ok:false,error:toPublicError(error)}; }
   });
-  for(const operation of ['open','prepare','commit','status','release']){
+  for(const operation of ['open','row','prepare','commit','status','release']){
     ipcMain.handle('v2:mysql-edit-'+operation,async(event,payload)=>{
       try{
         const owner=ownerFor(event),state=owners.get(owner);

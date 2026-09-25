@@ -1,11 +1,12 @@
+import { assertMysqlRowWriteSafe } from './mysql-row-write-policy.mjs';
 import crypto from 'node:crypto';
 import { AppError } from './errors.mjs';
 import { applyMysqlRowLimit } from './mysql-policy.mjs';
 import { mysqlRuntimeInternals } from './mysql-plugin-runtime.mjs';
-import { editableMysqlQuery, isMysqlGeneratedColumn, mysqlEditProjection, mysqlEditHash, mysqlEditError, normalizeMysqlEditValue, quoteMysqlName, MYSQL_EDIT_LIMITS as LIMIT } from './mysql-edit-policy.mjs';
+import { editableMysqlQuery, mysqlEditableColumn, isMysqlGeneratedColumn, mysqlEditProjection, mysqlEditHash, mysqlEditError, normalizeMysqlEditValue, quoteMysqlName, MYSQL_EDIT_LIMITS as LIMIT } from './mysql-edit-policy.mjs';
 
 const SCOPE = ['projectId','environmentId','pluginInstanceId'];
-const FIELDS = {open:['sql','params'],prepare:['editId','changes'],commit:['editId','planId'],status:['editId','planId'],release:['editId']};
+const FIELDS = {open:['sql','params'],row:['editId','rowId'],prepare:['editId','changes'],commit:['editId','planId'],status:['editId','planId'],release:['editId']};
 const identity = plugin => JSON.stringify([...SCOPE.map(field=>plugin[field]),plugin.revision,plugin.target.database]);
 const fail = (code,message,details) => new AppError(code,message,details);
 const stale = () => fail('MYSQL_EDIT_STALE','编辑数据已过期或连接已变化，请重新加载。');
@@ -67,6 +68,7 @@ export class DesktopMysqlEditor {
   }
   publicEdit(edit) {
     return {editId:edit.id,table:edit.table,database:edit.plugin.target.database,insertMissingColumns:edit.schema.columns.filter(column=>!edit.projection.some(item=>item.source===column.name)&&!column.nullable&&column.default===null&&!/auto_increment/iu.test(column.extra)&&!isMysqlGeneratedColumn(column)).map(column=>column.name),expiresAt:edit.expiresAt,limits:{maxRows:LIMIT.rows,maxCells:LIMIT.cells},
+      insertColumns:edit.schema.columns.map(column=>({name:column.name,source:column.name,type:column.type,dataType:column.dataType,nullable:column.nullable,primary:column.key==='PRI',unique:['PRI','UNI'].includes(column.key),generated:isMysqlGeneratedColumn(column),autoIncrement:/auto_increment/iu.test(column.extra),defaultValue:column.default,reason:null,required:!column.nullable&&column.default===null&&!/auto_increment/iu.test(column.extra)&&!isMysqlGeneratedColumn(column),...mysqlEditableColumn({...column,key:''})})),
       columns:edit.projection.map(item=>({name:item.name,source:item.source,type:item.column.type,dataType:item.column.dataType,nullable:item.column.nullable,primary:item.column.key === 'PRI',generated:isMysqlGeneratedColumn(item.column),editable:item.editable,reason:item.reason??null})),
       rows:[...edit.rows.values()].map(row=>({rowId:row.id,values:Object.fromEntries(edit.projection.map((column,index)=>[column.name,visible(row.values[index])]))})),
       truncated:edit.truncated};
@@ -103,6 +105,21 @@ export class DesktopMysqlEditor {
     assertOwner();
     return {...this.publicEdit(result),...(auditWarning?{auditWarning:true}:{})};
   }
+  async row(owner,plugin,payload,assertOwner=()=>{}) {
+    const edit=this.get(owner,plugin,payload.editId),row=edit.rows.get(payload.rowId);
+    if(!row) throw stale();
+    const projection=edit.schema.columns.map(column=>({name:column.name,source:column.name,column}));
+    const values=await this.runtime.desktopEditSession(plugin,edit.session,async query=>{
+      const where=edit.keys.map(index=>quoteMysqlName(edit.projection[index].source)+' <=> ?').join(' AND ');
+      const [found]=await query('SELECT '+projection.map(item=>quoteMysqlName(item.source)).join(',')+' FROM '+quoteMysqlName(plugin.target.database)+'.'+quoteMysqlName(edit.table)+' WHERE '+where+' LIMIT 2',edit.keys.map(index=>row.values[index]),rawOptions(projection,false));
+      if(found.length!==1 || mysqlEditHash(edit.projection.map(item=>found[0][projection.findIndex(full=>full.source===item.source)]))!==mysqlEditHash(row.values)) throw fail('MYSQL_EDIT_CONFLICT','原行已变化，请重新加载并核对。');
+      if(Buffer.byteLength(JSON.stringify(found[0]))>LIMIT.changeBytes) throw fail('RESULT_LIMIT_EXCEEDED','完整行超过编辑大小上限。');
+      return found[0];
+    });
+    assertOwner();this.get(owner,plugin,edit.id);
+    row.fullHash=mysqlEditHash(values);
+    return {rowId:row.id,values:Object.fromEntries(projection.map((item,index)=>[item.name,visible(values[index])])),unsupportedColumns:projection.filter((item,index)=>Buffer.isBuffer(values[index]) || (values[index]!==null&&typeof values[index]!=='string')).map(item=>item.name)};
+  }
   prepare(owner,plugin,payload) {
     const edit=this.get(owner,plugin,payload.editId);
     if([...edit.plans.values()].some(plan=>plan.status==='running'||plan.status==='unknown')) throw fail('MYSQL_EDIT_BUSY','上次保存尚未结束或结果不确定，请先核实。');
@@ -110,33 +127,41 @@ export class DesktopMysqlEditor {
     const seen=new Set(),changes=[];
     let cells=0;
     for(const input of payload.changes){
-      if(!input || typeof input!=='object' || Object.keys(input).some(key=>!['rowId','values'].includes(key)) || typeof input.rowId!=='string' || !input.values || typeof input.values!=='object' || Array.isArray(input.values)) throw fail('INVALID_ARGUMENT','修改行格式无效。');
+      const kind=input?.kind??'update';
+      if(!input || typeof input!=='object' || Array.isArray(input) || Object.keys(input).some(key=>!['kind','rowId','values'].includes(key)) || !['insert','update','delete'].includes(kind) || typeof input.rowId!=='string' || !input.rowId || input.rowId.length>128 || seen.has(input.rowId)) throw fail('INVALID_ARGUMENT','修改行格式无效或重复。');
+      seen.add(input.rowId);
       const row=edit.rows.get(input.rowId);
-      if(!row||seen.has(row.id)) throw fail('INVALID_ARGUMENT','修改行不存在或重复。');
-      seen.add(row.id);
+      if(kind==='delete'){
+        if(!row?.fullHash || input.values!==undefined) throw fail('INVALID_ARGUMENT','请先读取并核对待删除的完整行。');
+        changes.push({kind,rowId:row.id,signature:row.signature,values:[],originalHash:mysqlEditHash(row.values),fullHash:row.fullHash});continue;
+      }
+      if(!input.values || typeof input.values!=='object' || Array.isArray(input.values)) throw fail('INVALID_ARGUMENT','字段值格式无效。');
+      if(kind==='update'&&!row) throw fail('INVALID_ARGUMENT','修改行不存在。');
+      if(kind==='insert'&&row) throw fail('INVALID_ARGUMENT','新增行标识不能复用已有行。');
       const values=[];
       for(const [name,value] of Object.entries(input.values)){
         const index=edit.projection.findIndex(column=>column.name===name);
-        if(index<0) throw fail('MYSQL_EDIT_COLUMN_READONLY','字段不属于当前查询。');
-        const column=edit.projection[index];
+        const column=kind==='insert'?edit.schema.columns.find(column=>column.name===name):edit.projection[index]?.column;
+        if(!column) throw fail('MYSQL_EDIT_COLUMN_READONLY','字段不属于当前数据表。');
         let normalized;
-        try { normalized=normalizeMysqlEditValue(column.column,value); }
-        catch (error) {
-          if (error instanceof AppError) throw fail(error.code,"字段 "+column.name+"："+error.message,{column:column.name,rowIds:[row.id]});
-          throw error;
-        }
-        if(normalized!==row.values[index]) values.push({index,name,source:column.source,value:normalized,original:visible(row.values[index])});
+        try {normalized=normalizeMysqlEditValue(column,value,{insert:kind==='insert'});}
+        catch(error){if(error instanceof AppError) throw fail(error.code,'字段 '+name+'：'+error.message,{column:name,rowIds:[input.rowId]});throw error;}
+        if(kind==='insert'||normalized!==row.values[index]) values.push({index,name,source:column.name,value:normalized,original:kind==='insert'?null:visible(row.values[index])});
+      }
+      if(kind==='insert') for(const column of edit.schema.columns){
+        if(!column.nullable&&column.default===null&&!/auto_increment/iu.test(column.extra)&&!isMysqlGeneratedColumn(column)&&!Object.hasOwn(input.values,column.name)) throw fail('MYSQL_EDIT_VALUE_INVALID','请填写必填字段 '+column.name+'。',{column:column.name,rowIds:[input.rowId]});
       }
       cells+=values.length;
-      if(values.length) changes.push({rowId:row.id,signature:row.signature,values,originalHash:mysqlEditHash(row.values)});
+      if(kind==='insert'||values.length) changes.push({kind,rowId:input.rowId,signature:row?.signature??input.rowId,values,...(row?{originalHash:mysqlEditHash(row.values)}:{})});
     }
     if(!changes.length) throw fail('MYSQL_EDIT_NO_CHANGES','没有需要保存的修改。');
     if(cells>LIMIT.cells) throw fail('INVALID_ARGUMENT','单次修改的字段数量超出上限。');
     for(const [id,plan] of edit.plans) if(plan.status==='prepared'||edit.plans.size>=5) edit.plans.delete(id);
-    const plan={id:crypto.randomUUID(),status:'prepared',changes:structuredClone(changes).sort((a,b)=>a.signature.localeCompare(b.signature)),expiresAt:this.now()+LIMIT.planMs};
+    const counts={insert:0,update:0,delete:0};for(const change of changes) counts[change.kind]++;
+    const plan={id:crypto.randomUUID(),status:'prepared',changes:structuredClone(changes).sort((a,b)=>a.signature.localeCompare(b.signature)),counts,expiresAt:this.now()+LIMIT.planMs};
     edit.plans.set(plan.id,plan);
-    return {planId:plan.id,editId:edit.id,table:edit.table,rowCount:changes.length,cellCount:cells,expiresAt:plan.expiresAt,
-      changes:changes.map(change=>({rowId:change.rowId,keys:Object.fromEntries(edit.keys.map(index=>[edit.projection[index].name,visible(edit.rows.get(change.rowId).values[index])])),values:change.values.map(({name,original,value})=>({name,original,value}))}))};
+    return {planId:plan.id,editId:edit.id,table:edit.table,rowCount:changes.length,cellCount:cells,counts,expiresAt:plan.expiresAt,
+      changes:changes.map(change=>({kind:change.kind,rowId:change.rowId,keys:change.kind==='insert'?{}:Object.fromEntries(edit.keys.map(index=>[edit.projection[index].name,visible(edit.rows.get(change.rowId).values[index])])),values:change.values.map(({name,original,value})=>({name,original,value}))}))};
   }
   status(owner,plugin,payload) {
     const edit=this.get(owner,plugin,payload.editId,{connection:false}),plan=edit.plans.get(payload.planId);
@@ -153,7 +178,7 @@ export class DesktopMysqlEditor {
     assertOwner();
     plan.status='running';
     const operationId=plan.id;
-    const base={environmentId:plugin.environmentId,pluginInstanceId:plugin.pluginInstanceId,pluginType:'mysql',pluginNameSnapshot:plugin.displayName,actor:'user',operationId,auditAction:'mysql.update',auditTarget:'固定数据库 '+plugin.target.database+' · 表 '+edit.table,
+    const base={environmentId:plugin.environmentId,pluginInstanceId:plugin.pluginInstanceId,pluginType:'mysql',pluginNameSnapshot:plugin.displayName,actor:'user',operationId,auditAction:plan.changes.every(change=>change.kind==='update')?'mysql.update':'mysql.rows.write',auditTarget:'固定数据库 '+plugin.target.database+' · 表 '+edit.table,
       changedColumns:[...new Set(plan.changes.flatMap(change=>change.values.map(value=>value.source)))],requestedRows:plan.changes.length};
     let attemptedCommit=false,started=false;
     const startedAt=this.now();
@@ -174,25 +199,37 @@ export class DesktopMysqlEditor {
         try {
           await query('START TRANSACTION');started=true;
           const locked=new Map();
-          for(const change of plan.changes){
+          for(const change of plan.changes.filter(change=>change.kind!=='insert')){
             assertActive();
             const row=edit.rows.get(change.rowId);
             if(!row || mysqlEditHash(row.values)!==change.originalHash) throw stale();
             const found=await fetch(row,true);
             if(found.length!==1 || mysqlEditHash(found[0])!==change.originalHash) throw fail('MYSQL_EDIT_CONFLICT','数据已被修改或删除，本批修改未保存。请重新加载并核对。',{rowIds:[change.rowId]});
+            if(change.kind==='delete'){
+              const projection=edit.schema.columns.map(column=>({name:column.name,source:column.name,column}));
+              const [full]=await query('SELECT '+projection.map(item=>quoteMysqlName(item.source)).join(',')+' FROM '+table+' WHERE '+where+' LIMIT 2 FOR UPDATE',edit.keys.map(index=>row.values[index]),rawOptions(projection,false));
+              if(full.length!==1 || mysqlEditHash(full[0])!==change.fullHash) throw fail('MYSQL_EDIT_CONFLICT','待删除行已变化，本批修改未保存。',{rowIds:[change.rowId]});
+            }
             locked.set(change.rowId,row);
           }
+          // 新增批次也先持有目标表的元数据锁，避免校验后结构被并发替换。
+          if(plan.changes.some(change=>change.kind==='insert')) await query('SELECT '+quoteMysqlName(edit.projection[edit.keys[0]].source)+' FROM '+table+' LIMIT 0 FOR UPDATE',[],rawOptions(edit.projection,false));
           const currentSchema=await readSchema(query,plugin,edit.table);
           if(mysqlEditHash(currentSchema)!==mysqlEditHash(edit.schema)) throw fail('MYSQL_EDIT_SCHEMA_CHANGED','表结构已变化，本批修改未保存。');
-          for(const change of plan.changes){
+          const kinds=new Set(plan.changes.map(change=>change.kind));
+          if(kinds.has('insert')||kinds.has('delete')) await assertMysqlRowWriteSafe(query,plugin.target.database,edit.table,kinds);
+          const updated=[],deleted=[];
+          for(const kind of ['delete','update','insert']) for(const change of plan.changes.filter(change=>change.kind===kind)){
             assertActive();
             const row=locked.get(change.rowId);
-            const [result]=await query('UPDATE '+table+' SET '+change.values.map(value=>quoteMysqlName(value.source)+' = ?').join(',')+' WHERE '+where,
-              [...change.values.map(value=>value.value),...edit.keys.map(index=>row.values[index])]);
-            if(result.affectedRows!==1 || result.warningStatus>0) throw fail('MYSQL_EDIT_WRITE_MISMATCH','数据库返回了非预期的更新结果，本批修改已撤销。',{rowIds:[change.rowId]});
+            let outcome;
+            if(kind==='delete') [outcome]=await query('DELETE FROM '+table+' WHERE '+where,edit.keys.map(index=>row.values[index]));
+            else if(kind==='update') [outcome]=await query('UPDATE '+table+' SET '+change.values.map(value=>quoteMysqlName(value.source)+' = ?').join(',')+' WHERE '+where,[...change.values.map(value=>value.value),...edit.keys.map(index=>row.values[index])]);
+            else [outcome]=await query('INSERT INTO '+table+' ('+change.values.map(value=>quoteMysqlName(value.source)).join(',')+') VALUES ('+change.values.map(()=>'?').join(',')+')',change.values.map(value=>value.value));
+            if(outcome.affectedRows!==1 || outcome.warningStatus>0) throw fail('MYSQL_EDIT_WRITE_MISMATCH','数据库返回了非预期的写入结果，本批修改已撤销。',{rowIds:[change.rowId]});
+            if(kind==='delete') deleted.push(change.rowId);
           }
-          const updated=[];
-          for(const change of plan.changes){
+          for(const change of plan.changes.filter(change=>change.kind==='update')){
             const found=await fetch(locked.get(change.rowId));
             if(found.length!==1) throw fail('MYSQL_EDIT_WRITE_MISMATCH','更新后无法确认目标行，本批修改已撤销。');
             updated.push({rowId:change.rowId,values:found[0]});
@@ -200,7 +237,7 @@ export class DesktopMysqlEditor {
           assertActive();
           attemptedCommit=true;
           await query('COMMIT');started=false;
-          return updated;
+          return {updated,deleted};
         } catch(error) {
           if(started&&!attemptedCommit){
             try {await query('ROLLBACK');started=false;} catch {
@@ -210,13 +247,14 @@ export class DesktopMysqlEditor {
           throw error;
         }
       });
-      for(const item of fresh) edit.rows.get(item.rowId).values=cloneValues(item.values);
+      for(const item of fresh.updated) edit.rows.get(item.rowId).values=cloneValues(item.values);
+      for(const id of fresh.deleted) edit.rows.delete(id);
       edit.expiresAt=this.now()+LIMIT.lifetimeMs;
       plan.status='success';
-      plan.result={rowCount:plan.changes.length,rows:fresh.map(item=>({rowId:item.rowId,values:Object.fromEntries(edit.projection.map((column,index)=>[column.name,visible(item.values[index])]))}))};
+      plan.result={rowCount:plan.changes.length,counts:plan.counts,deletedRowIds:fresh.deleted,rows:fresh.updated.map(item=>({rowId:item.rowId,values:Object.fromEntries(edit.projection.map((column,index)=>[column.name,visible(item.values[index])]))}))};
     } catch(error) {
       plan.status=attemptedCommit?'unknown':'failed';
-      plan.error=error instanceof AppError?{code:error.code,message:error.message,...(error.details?{details:error.details}:{})}:{code:'MYSQL_EDIT_FAILED',message:'保存失败，本批修改未提交。请检查账号写入权限、字段约束及连接状态。'};
+      plan.error=error instanceof AppError?{code:error.code,message:error.message,...(error.details?{details:error.details}:{})}:{code:'MYSQL_EDIT_FAILED',message:['ER_DUP_ENTRY','ER_NO_REFERENCED_ROW_2','ER_ROW_IS_REFERENCED_2','ER_CHECK_CONSTRAINT_VIOLATED'].includes(error?.code)?'主键、唯一键或关联约束冲突，本批修改已回滚。请检查相关字段后重试。':'保存失败，本批修改未提交。请检查账号写入权限、字段约束及连接状态。'};
       if(attemptedCommit){
         plan.error={code:'MYSQL_EDIT_OUTCOME_UNKNOWN',message:'提交期间连接中断，保存结果不确定。请重新查询核实，勿重复提交。'};
         await this.runtime.invalidateSession(plugin,edit.session,fail('ROUTE_UNAVAILABLE','提交结果不确定。'));

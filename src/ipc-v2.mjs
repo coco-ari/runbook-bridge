@@ -1,3 +1,4 @@
+import { registerRedisEditIpc } from './redis-edit-ipc.mjs';
 import { PLUGIN_IPC_CHANNELS } from './plugin-ipc-contract.mjs';
 import { createPluginConfigurationService } from './plugin-configuration-service.mjs';
 import crypto from 'node:crypto';
@@ -124,6 +125,7 @@ export function registerV2Ipc(ipcMain, services) {
   registerServerWorkspaceIpc(ipcMain, services);
   registerCloudConfigIpc(ipcMain, services);
   registerRedisWorkspaceIpc(ipcMain, services);
+  registerRedisEditIpc(ipcMain, services);
   registerMysqlEditIpc(ipcMain, services);
   const { workspaceStore: store, connectionManager, credentialVault, legacyCredentialStore, configTransactionJournal, contextManager, confirmationManager, pluginManager, mysqlRuntime, pluginEditSessionManager, pluginProbeManager } = services;
   const credentialUseResolver = services.credentialUseResolver ?? new CredentialUseResolver(credentialVault);

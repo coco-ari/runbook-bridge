@@ -77,6 +77,8 @@ export function reconcileWorkspaceSelection(
   const entries = state.entries.flatMap((entry) => {
     const definition = registry.get(entry.type)
     if (!definition) { changed = true; return [] }
+    // 同一资源的配置身份改变时释放旧会话，不能因跨选择保留而继续使用旧范围。
+    if (selected && entry.type === selected.type && workspaceScopeMatches(entry.scope, selected.plugin) && entry.key !== selected.key) { changed = true; return [] }
     if (definition.retainAcrossSelection) return [entry]
     if (!selected || selected.type !== entry.type || selected.key !== entry.key
       || !workspaceScopeMatches(entry.scope, selected.plugin)

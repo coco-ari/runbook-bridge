@@ -121,7 +121,7 @@ test('React production smoke exercises real read-only workspace integration',asy
   assert.match(smoke,/Panel CSS pixel evidence/u);
   assert.match(smoke,/Accessibility geometry failures/u);
 
-  assert.match(smoke,/apiNames\.length,104/u);
+  assert.match(smoke,/apiNames\.length,110/u);
   assert.match(smoke,/contextIsolation,true/u);
   assert.match(smoke,/nodeIntegration,false/u);
   assert.match(smoke,/sandbox,true/u);
@@ -164,8 +164,8 @@ test('packaged React smoke verifies compact rail geometry and process-restart pe
   assert.doesNotMatch(smoke,/localStorage\.(?:setItem|removeItem|clear)\(/u);
   assert.doesNotMatch(smoke,/window\.aiOps\.v2\.(?:createProject|createEnvironment|createPlugin|connectPlugin|requestConnectionIntent)\(/u);
   assert.match(smoke,/assert\.equal\(inspection\.projectCount, 0\)/u);
-  assert.match(smoke,/assert\.equal\(inspection\.apiCount, 104\)/u);
-  assert.match(smoke,/projectCount: 0, apiCount: 104/u);
+  assert.match(smoke,/assert\.equal\(inspection\.apiCount, 110\)/u);
+  assert.match(smoke,/projectCount: 0, apiCount: 110/u);
   assert.match(smoke,/connect-src 'none'/u);
   assert.match(smoke,/assert\.deepEqual\(running\.httpRequests, \[\]\)/u);
 });

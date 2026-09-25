@@ -27,6 +27,9 @@ const runtime = () => ({ projectId, environmentId, sequence, phase: 'partial', d
   plugins: Object.fromEntries(plugins.map((entry) => [entry.pluginInstanceId, { pluginInstanceId: entry.pluginInstanceId, phase: entry.assessment.phase, assessment: entry.assessment }])) });
 const environment = () => ({ projectId, environmentId, name: '测试环境', revision: 1, pluginCount: 2, readyPluginCount: 2, draftCount: 0, resourcePreview: plugins, resourcePreviewTruncated: false, runtime: runtime() });
 const workspace = () => [{ projectId, name: 'Redis 工作区验证', revision: 1, schemaVersion: 2, environmentCount: 1, pluginCount: 2, environments: [environment()] }];
+const writeValues = new Map();
+const writeSessions = new Map();
+const writePlans = new Map();
 const calls = [];
 const forbidden = [];
 const external = [];
@@ -44,7 +47,7 @@ const value = (text, truncated = false) => ({ text, hex: Buffer.from(text ?? [0,
 const typeOf = (key) => ({ 'cache:hash': 'hash', 'cache:list': 'list', 'cache:set': 'set', 'cache:zset': 'zset', 'cache:stream': 'stream' }[key] ?? 'string');
 const ok = (data) => ({ ok: true, data });
 const fail = (code, message) => ({ ok: false, error: { code, message } });
-const state = { hold: null, auditWarning: false, failScan: false, scanPages: [], releaseScan: null };
+const state = { loseWriteReply:false, failWriteStatus:false, writeCommits:0, hold: null, auditWarning: false, failScan: false, scanPages: [], releaseScan: null };
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const testId = (id) => '[data-testid="' + id + '"]';
 const active = (id) => '.redis-tab-panel:not([hidden]) ' + testId(id);
@@ -84,6 +87,11 @@ function mocks(redisKeySearch) {
       return ok({ keys: selected.filter(redisKeySearch(payload.keyword)), nextCursor: null, complete: true, unsupportedKeys: 0, readAt: stamp(), auditWarning: state.auditWarning });
     }
     if (!payload.key.startsWith(payload.patternId + ':')) return fail('POLICY_DENIED', 'Redis Key 不在允许范围内。');
+    if (writeValues.has(payload.key)) {
+      const current=writeValues.get(payload.key);
+      if(operation==='inspect')return ok({key:payload.key,type:'string',exists:true,ttlSeconds:current.ttl,length:Buffer.byteLength(current.value),cardinality:null,readAt:stamp()});
+      return ok({key:payload.key,type:'string',exists:true,rows:[],nextCursor:null,complete:true,truncated:false,readAt:stamp(),value:value(current.value)});
+    }
     if (operation === 'inspect') return ok({ key: payload.key, type: typeOf(payload.key), exists: payload.key !== 'cache:expired', ttlSeconds: payload.key === 'cache:expired' ? -2 : payload.key === 'cache:text' ? 1680 : -1,
       length: typeOf(payload.key) === 'string' ? payload.key === 'cache:platform:' ? Buffer.byteLength(platformJson) : payload.key === 'cache:json-preview' ? 100000 : payload.key === 'cache:large-json' ? Buffer.byteLength(largeJson) : payload.key === 'cache:empty' ? 0 : 25 : null, cardinality: typeOf(payload.key) === 'string' ? null : 2, readAt: stamp() });
     const base = { key: payload.key, type: typeOf(payload.key), exists: true, rows: [], nextCursor: null, complete: true, truncated: false, readAt: stamp() };
@@ -95,6 +103,33 @@ function mocks(redisKeySearch) {
     if (base.type === 'string') return ok({ ...base, value: value(payload.key === 'cache:binary' ? null : payload.key === 'cache:empty' ? '' : '{"name":"示例","enabled":true}') });
     if (base.type === 'stream') return ok({ ...base, unsupported: true });
     return ok({ ...base, rows: [{ id: 'row-one', field: 'name', fieldLabel: 'name', index: 0, score: '1.5', value: value(markup) }, { id: 'row-two', field: 'enabled', fieldLabel: 'enabled', index: 1, score: '2', value: value('true') }] });
+  });
+  for(const operation of ['open','prepare','commit','status','release']) register('v2:redis-edit-'+operation,async(_event,payload)=>{
+    assert.deepEqual({projectId:payload.projectId,environmentId:payload.environmentId,pluginInstanceId:payload.pluginInstanceId},scope);
+    if(operation==='open'){
+      if(!payload.key.startsWith(payload.patternId+':'))return fail('POLICY_DENIED','Key 不在允许范围。');
+      if(payload.mode==='create'&&keys.includes(payload.key))return fail('REDIS_KEY_EXISTS','Key 已存在。');
+      const current=writeValues.get(payload.key),editId=require('node:crypto').randomUUID();
+      const session={editId,key:payload.key,mode:payload.mode,type:typeOf(payload.key),value:current?.value??'{"name":"示例","enabled":true}',ttlMilliseconds:(current?.ttl??-1)*1000,maxBytes:65536,expiresAt:Date.now()+1800000};
+      writeSessions.set(editId,session);return ok(session);
+    }
+    const session=writeSessions.get(payload.editId);
+    if(operation==='release'){writeSessions.delete(payload.editId);return ok({released:true});}
+    assert.ok(session);
+    if(operation==='prepare'){
+      const plan={...payload,planId:require('node:crypto').randomUUID(),key:session.key,type:session.type,mode:session.mode,expiresAt:Date.now()+120000,status:'prepared'};
+      writePlans.set(plan.planId,plan);return ok(plan);
+    }
+    const plan=writePlans.get(payload.planId);assert.ok(plan);
+    if(operation==='status'&&state.failWriteStatus){state.failWriteStatus=false;return fail('READ_FAILED','模拟状态查询失败');}
+    if(operation==='commit'&&plan.status==='prepared'){
+      state.writeCommits++;
+      if(session.mode==='delete'){writeValues.delete(session.key);const index=keys.indexOf(session.key);if(index>=0)keys.splice(index,1);}
+      else {writeValues.set(session.key,{value:plan.value,ttl:plan.expiry.mode==='relative'?plan.expiry.milliseconds/1000:plan.expiry.mode==='keep'?(writeValues.get(session.key)?.ttl??-1):-1});if(!keys.includes(session.key))keys.push(session.key);}
+      plan.status='success';
+      if(state.loseWriteReply){state.loseWriteReply=false;return fail('REPLY_LOST','模拟保存回复丢失');}
+    }
+    return ok({planId:plan.planId,status:plan.status,result:{key:session.key,mode:session.mode}});
   });
   register('v2:connection-intent', async (event, payload) => {
     assert.equal(payload.intent, 'disconnect');
@@ -125,7 +160,7 @@ async function click(win, selector) {
   await wait(60);
 }
 async function fill(win, selector, text) {
-  await win.webContents.executeJavaScript(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(text)}); e.dispatchEvent(new Event('input',{bubbles:true})); })()`, true);
+  await win.webContents.executeJavaScript(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(e instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(text)}); e.dispatchEvent(new Event('input',{bubbles:true})); })()`, true);
   await wait(40);
 }
 async function openMenu(win, id) {
@@ -147,7 +182,7 @@ async function assertCompactSearch(win) {
     return {headerHeight:header.getBoundingClientRect().height, selects:header.querySelectorAll('select').length,
       inputWidth:search.width, fits:search.right<=submit.left+1 && submit.right<=exact.left+1 && exact.right<=pane.right};
   })()`, true);
-  assert.ok(layout.headerHeight <= 90, '树上方控件保持两行');
+  assert.ok(layout.headerHeight <= 125, '树上方新增入口与搜索最多占三行');
   assert.equal(layout.selects, 0, '不再堆叠选择框');
   assert.ok(layout.inputWidth >= 110 && layout.fits, '窄侧栏搜索框与精确匹配开关不重叠');
   return layout;
@@ -584,6 +619,50 @@ async function run() {
     await menuAction(win, 'redis-browser-menu', 'redis-tree-expand-all');
     await openKey(win, 'cache:platform:', true);
     await click(win, active('redis-view-json'));
+    await click(win,testId('redis-create-key'));
+    await fill(win,'[aria-label="新增 Key 名称"]','cache:ui-created');
+    await fill(win,'[aria-label="Redis Value"]','{"id":9007199254740993}');
+    await shot(win,'redis-create');
+    assert.equal(writeValues.has('cache:ui-created'),false,'填写不立即写入');
+    await click(win,active('redis-save-value'));
+    await waitFor(win,'!document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]")','新增成功返回详情');
+    assert.equal(writeValues.get('cache:ui-created').value,'{"id":9007199254740993}');
+    await click(win,active('redis-edit-value'));
+    await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]")','原位编辑值');
+    await fill(win,'[aria-label="Redis Value"]','{');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-save-value]").disabled',true),true,'无效 JSON 禁止保存');
+    await fill(win,'[aria-label="Redis Value"]','{"edited":true}');
+    await click(win,'.redis-tab[data-active=true] .redis-tab-close');
+    await waitFor(win,'document.querySelector("[data-testid=redis-discard-confirm]")','关闭标签保护草稿');
+    await win.webContents.executeJavaScript('[...document.querySelectorAll("[role=dialog] button")].find(button=>button.textContent==="继续编辑").click()',true);
+    await waitFor(win,'!document.querySelector("[role=dialog]")','继续编辑后关闭保护提示');
+    await wait(200);
+    await shot(win,'redis-edit');
+    for(const zoom of [1.25,1.5]){
+      win.webContents.setZoomFactor(zoom);await wait(150);
+      assert.equal(await win.webContents.executeJavaScript('(()=>{const r=document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-save-value]").getBoundingClientRect();return r.right<=innerWidth&&r.bottom<=innerHeight&&r.left>=0})()',true),true,'缩放后保存按钮可见');
+      await shot(win,'redis-edit-zoom-'+zoom);
+    }
+    win.webContents.setZoomFactor(1);
+
+    const beforeCommitCount=state.writeCommits;
+    state.loseWriteReply=true;state.failWriteStatus=true;
+    await click(win,active('redis-save-value'));
+    await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-check-save]")','保存回复丢失后检查状态');
+    await click(win,active('redis-check-save'));
+    await text(win,'.redis-tab-panel:not([hidden]) .redis-edit-error','模拟状态查询失败');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-save-value]").disabled',true),true,'状态查询失败不能解锁重复提交');
+    await click(win,active('redis-check-save'));
+    await waitFor(win,'!document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]")','编辑保存完成');
+    assert.equal(state.writeCommits,beforeCommitCount+1,'检查状态不重复提交写入');
+    assert.equal(writeValues.get('cache:ui-created').value,'{"edited":true}');
+    await click(win,active('redis-delete-key'));
+    await waitFor(win,'document.querySelector("[data-testid=redis-confirm-delete]")','删除确认');
+    assert.equal(writeValues.has('cache:ui-created'),true,'确认前数据保留');
+    await click(win,testId('redis-confirm-delete'));
+    await waitFor(win,'!document.querySelector("[data-testid=redis-confirm-delete]")','删除完成');
+    assert.equal(writeValues.has('cache:ui-created'),false);
+    await openKey(win,'cache:platform:',true);
     for (const theme of ['dark', 'light']) {
       await click(win, '[data-testid="redis-workspace"] [data-testid="settings-open"]');
       await waitFor(win, 'Boolean(document.querySelector("[data-testid=theme-menu-trigger]"))', '进入配置页面');
