@@ -1874,6 +1874,12 @@ async function selectVisualScope(win,kind) {
     `document.querySelector('#detail-main')?.dataset.selectionKind === ${JSON.stringify(kind)}`,
     `${kind} visual scope`,
   );
+  // 范围先切换、菜单后退场；等待菜单解除背景屏蔽再开始下一步交互。
+  await waitFor(win, `(() => {
+    const target = document.querySelector(${JSON.stringify(selector)});
+    return target instanceof HTMLElement && document.querySelector('[role="menu"]') === null
+      && !target.closest('[inert],[aria-hidden="true"]');
+  })()`, `${kind} visual scope menu teardown`);
 }
 
 async function selectVisualTab(win,tab,readySelector,label) {
