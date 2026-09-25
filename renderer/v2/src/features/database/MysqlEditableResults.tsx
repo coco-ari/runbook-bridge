@@ -1,10 +1,11 @@
 import { MysqlRowSheet } from "./MysqlRowSheet"
 import { mysqlDraftColumn, mysqlDraftPlaceholder, type MysqlInsertDraft } from "./mysql-row-draft-model"
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
-import { ArrowClockwise, PencilSimple, Copy, FloppyDisk, Rows, ArrowCounterClockwise, Plus, Trash } from "@phosphor-icons/react"
+import { useEffect, useMemo, useRef, useState, type ReactNode, type ComponentProps } from "react"
+import { ArrowClockwise, PencilSimple, Copy, FloppyDisk, Rows, ArrowCounterClockwise, Plus, Trash, SelectionSlash } from "@phosphor-icons/react"
 import { toast } from "sonner"
 import type { AiOpsV2Api, MysqlEditData, MysqlEditChange, MysqlEditPlan, MysqlEditRow, MysqlEditStatus, MysqlQueryResult, PluginScope } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
 import { SelectControl, SelectItem } from "@/components/ui/select"
@@ -19,6 +20,10 @@ import type { MysqlSqlKind } from "./mysql-sql-export"
 
 type Drafts = Record<string, Record<string, string | null>>
 interface ActiveCell { rowId: string; name: string; value: string; isNull: boolean; modal: boolean; isDefault?: boolean }
+
+function MysqlRowAction({ hint, railClassName, ...props }: ComponentProps<typeof Button> & { readonly hint: string; readonly railClassName?: string }) {
+  return <Tooltip><TooltipTrigger asChild><span className={"mysql-row-action " + (railClassName ?? "")} tabIndex={props.disabled ? 0 : undefined}><Button {...props} size="icon-sm" variant="ghost" /></span></TooltipTrigger><TooltipContent side="right" sideOffset={8}>{hint}</TooltipContent></Tooltip>
+}
 
 export function MysqlEditableResults({ api, scope, documentKey, sql, result, visible = true, onReload, children }: {
   readonly api: AiOpsV2Api; readonly scope: PluginScope; readonly documentKey: string; readonly sql: string; readonly result: MysqlQueryResult
@@ -186,7 +191,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
       if (response.data.auditWarning) setNotice("数据已读取，但操作记录保存失败。")
       return response.data
     } catch (failure) {
-      if (alive.current) { const message = failure instanceof Error ? failure.message : "此结果暂不支持编辑"; setError(message); toast.error(message) }
+      if (alive.current) { const message = failure instanceof Error ? failure.message : "此结果暂不支持编辑"; setError(message) }
       return null
     } finally { if (alive.current && ticket === serial.current) setWorking(null) }
   }
@@ -220,7 +225,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
       const value = Object.hasOwn(draftsRef.current[row.rowId] ?? {}, name) ? draftsRef.current[row.rowId]![name] ?? null : row.values[name] ?? null
       const column = data.columns.find(item => item.name === name)
       setError(""); setCell({ rowId: row.rowId, name, value: value ?? "", isNull: value === null, modal: modal || column?.dataType === "json" || (value?.length ?? 0) > 180 || Boolean(value?.includes("\n")) })
-    } catch (failure) { const message = failure instanceof Error ? failure.message : "无法编辑此字段"; setError(message); toast.error(message) }
+    } catch (failure) { const message = failure instanceof Error ? failure.message : "无法编辑此字段"; setError(message) }
   }
   function reset(action: () => void) { finishCell(); guard.protect(action, [documentKey]) }
   function refresh() {
@@ -418,13 +423,13 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   const controller: MysqlInlineEditing = {
     locked: locked || deleteConfirmation, selection,
     toolbar: <aside className="mysql-row-toolbar" aria-label="数据行操作" data-testid="mysql-row-toolbar">
-      <Button size="sm" variant="ghost" disabled={locked} onClick={() => void addRow()} data-testid="mysql-add-row" title="添加草稿行"><Plus /><span>新增行</span></Button>
-      <Button size="sm" variant="ghost" disabled={locked || selection.size !== 1} onClick={() => void addRow([...selection][0])} data-testid="mysql-copy-row" aria-label="复制为新行" title={selection.size === 1 ? "复制为新行" : "选择一行后复制为新行"}><Copy /><span>复制行</span></Button>
-      <Button size="sm" variant="ghost" className="text-danger" disabled={locked || !selection.size} onClick={() => void deleteRows()} data-testid="mysql-delete-rows" title="标记选中行待删除，保存后生效"><Trash /><span>删除行</span></Button>
+      <MysqlRowAction disabled={locked} onClick={() => void addRow()} data-testid="mysql-add-row" aria-label="新增行" hint="新增行"><Plus /></MysqlRowAction>
+      <MysqlRowAction disabled={locked || selection.size !== 1} onClick={() => void addRow([...selection][0])} data-testid="mysql-copy-row" aria-label="复制为新行" hint={selection.size === 1 ? "复制为新行" : "复制为新行 · 请先选择一行"}><Copy /></MysqlRowAction>
+      <MysqlRowAction className="text-danger" disabled={locked || !selection.size} onClick={() => void deleteRows()} data-testid="mysql-delete-rows" aria-label="删除行" hint={selection.size ? "删除选中行 · 保存后生效" : "删除行 · 请先选择要删除的行"}><Trash /></MysqlRowAction>
       <hr className="my-1 border-border" />
-      <Button size="sm" variant="ghost" disabled={!selection.size || locked || [...selection].some(row => insertBindings.has(row))} data-testid="mysql-edit-batch" aria-label="批量赋值" title="向选中的已有行批量赋值" onClick={() => void openBatch()}><Rows /><span>批量</span></Button>
-      {selection.size ? <Button size="sm" variant="ghost" aria-label="取消选择" title={"已选 " + selection.size + " 行，点击取消选择"} onClick={() => setSelection(new Set())}><span className="tabular-nums">{selection.size}</span><span>取消选择</span></Button> : null}
-      <Button className="mysql-row-refresh" size="sm" variant="ghost" disabled={Boolean(busy) || !guard.connected} data-testid="mysql-edit-refresh" aria-label="刷新数据" title="刷新数据，有草稿时先确认是否放弃" onClick={refresh}><ArrowClockwise /><span>刷新</span></Button>
+      <MysqlRowAction disabled={!selection.size || locked || [...selection].some(row => insertBindings.has(row))} data-testid="mysql-edit-batch" aria-label="批量赋值" hint="批量赋值 · 请先选择已有行" onClick={() => void openBatch()}><Rows /></MysqlRowAction>
+      {selection.size ? <MysqlRowAction aria-label="取消选择" hint={"取消选择 · 已选 " + selection.size + " 行"} onClick={() => setSelection(new Set())}><SelectionSlash /></MysqlRowAction> : null}
+      <MysqlRowAction railClassName="mysql-row-refresh" disabled={Boolean(busy) || !guard.connected} data-testid="mysql-edit-refresh" aria-label="刷新数据" hint="刷新数据 · 有草稿时先确认是否放弃" onClick={refresh}><ArrowClockwise /></MysqlRowAction>
     </aside>,
     pendingRows: gridDrafts,
     rowState: row => {
@@ -492,14 +497,15 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
         }} />
     },
     pendingCount,
-    status: <span title={error || notice || (pendingCount ? "当前表格全部待保存更改，共 " + cellCount + " 处字段" : "双击编辑 · Ctrl+C 复制 · 右键更多操作")} className={error ? "text-danger" : ""} role="status">
-      <span data-testid="mysql-edit-dirty-count" className="mysql-draft-counts">{pendingCount ? <>
+    status: <span title={error || notice || (pendingCount ? "当前表格全部待保存更改，共 " + cellCount + " 处字段" : "双击编辑 · Ctrl+C 复制 · 右键更多操作")} className={error ? "text-danger" : ""} role={error ? "alert" : "status"}>
+      {pendingCount ? <span data-testid="mysql-edit-dirty-count" className="mysql-draft-counts shrink-0">
         {inserts.length > copiedCount ? <span className="text-success">新增 {inserts.length - copiedCount}</span> : null}
         {copiedCount ? <span className="text-info">复制 {copiedCount}</span> : null}
         {pendingRows.length ? <span className="text-warning">修改 {pendingRows.length}</span> : null}
         {deleted.size ? <span className="text-danger">删除 {deleted.size}</span> : null}
         <span className="sr-only">（{cellCount} 处字段）</span>
-      </> : busy === "open" ? "核对字段…" : error || notice}</span>
+      </span> : null}
+      <span data-testid="mysql-edit-message" className="min-w-0 truncate">{error || (busy === "open" ? "核对字段…" : notice)}</span>
     </span>,
     footer: <div className="mysql-inline-actions">
       {uncertain && plan ? <Button size="xs" variant="outline" disabled={Boolean(busy)} onClick={() => void commit(plan, true)}>检查保存状态</Button> : null}
@@ -513,7 +519,6 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
     <div className="mysql-edit-container" data-testid={visible ? "mysql-data-editor" : undefined} ref={rootRef} onKeyDown={event => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); if (!exportSelection && !batch && !rowDraft && !deleteConfirmation && !activeRef.current?.modal) void save() }
     }}>
-      {error ? <p className="shrink-0 max-h-24 overflow-auto border-b px-3 py-2 text-xs text-danger" role="alert">{error}</p> : null}
       {children}
       {rowDraft && edit ? <MysqlRowSheet key={rowDraft.rowId} api={api} scope={scope} edit={edit} draft={rowDraft} locked={locked} onChange={updateRowDraft} onStage={stageRow} onClose={() => { updateRowDraft(null) }} /> : null}
       <Dialog open={deleteConfirmation} onOpenChange={setDeleteConfirmation}><DialogContent><DialogHeader><DialogTitle>保存对 {edit?.table} 的更改？</DialogTitle><DialogDescription>本次新增 {inserts.length - copiedCount} 行、复制 {copiedCount} 行、修改 {plan?.counts?.update ?? pendingRows.length} 行、删除 {plan?.counts?.delete ?? deleted.size} 行。删除保存后无法通过此工作区撤销。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => setDeleteConfirmation(false)}>继续编辑</Button><Button variant="destructive" data-testid="mysql-confirm-delete" onClick={() => { setDeleteConfirmation(false); if (plan) void commit(plan) }}>确认保存并删除</Button></DialogFooter></DialogContent></Dialog>

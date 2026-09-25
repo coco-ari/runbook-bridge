@@ -47,7 +47,17 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   await click(win,'[data-testid=mysql-table-item][data-table-name=orders]');
   await enter();
   assert.equal(await current(cell(1,'id')),'9007199254740993');
+  assert.equal(await current('[data-testid=mysql-row-toolbar]'),'','操作栏仅显示图标');
+  const copyHintPoint=await point('[data-testid=mysql-copy-row]');
+  win.webContents.sendInputEvent({type:'mouseMove',...copyHintPoint});
+  await waitFor(win,'document.querySelector("[role=tooltip]")?.textContent.includes("复制为新行")','禁用的图标按钮悬停仍显示功能及选择要求');
+  await key('Escape');
+
+  const beforeReadonlyHint=await geometry();
   await doubleClick(cell(1,'id'));
+  sameGeometry(await geometry(),beforeReadonlyHint,'只读字段提示不能移动表格或改变滚动位置');
+  assert.match(await current('.mysql-results-footer [data-testid=mysql-edit-message]'),/主键/u);
+  assert.equal(await evaluate('document.querySelectorAll("[data-testid=mysql-data-editor] > [role=alert]").length'),0,'表格上方不再重复插入提示');
   assert.equal(await evaluate('Boolean(document.querySelector('+JSON.stringify(cell(1,'id')+' input')+'))'),false);
   await menuItem(cell(1,'label'),'编辑单元格');
   await waitFor(win,'document.querySelector('+JSON.stringify(cell(1,'label')+' input')+')','右键开始原位编辑');
@@ -141,7 +151,7 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   await screenshot(win,'edit-staged');
   await save();
   assert.deepEqual((await fixture.read()).slice(0,3).map(row=>row.label),['统一赋值','统一赋值','测试记录 03']);
-  assert.match(await current(testId('mysql-edit-dirty-count')),/已保存/u);
+  assert.match(await current(testId('mysql-edit-message')),/已保存/u);
   sameGeometry(await geometry(),beforeEdit,'保存后表格位置不变');
   await button('取消选择');
   await drag(1,4);
@@ -258,7 +268,7 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
 
   await doubleClick(cell(5,'label'));
   assert.equal(await evaluate('Boolean(document.querySelector('+JSON.stringify(cell(5,'label')+' input')+'))'),false,'首次快照前字段已变化时拒绝覆盖旧显示值');
-  assert.match(await current(testId('mysql-edit-dirty-count')),/已变化/u);
+  assert.match(await current(testId('mysql-edit-message')),/已变化/u);
   assert.equal((await fixture.read())[4].label,'初次编辑前已变化');
   await doubleClick(cell(1,'optional'));
   await evaluate('(()=>{const data=new DataTransfer();data.setData("text/plain","多行\\n内容");document.querySelector('+JSON.stringify(cell(1,'optional')+' input')+').dispatchEvent(new ClipboardEvent("paste",{bubbles:true,cancelable:true,clipboardData:data}))})()');
@@ -272,7 +282,11 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   assert.equal((await fixture.read())[0].optional,null);
   await stage(2,'label','不应覆盖并发修改');
   const second=(await fixture.read())[1];await fixture.external(second.id,'其他用户已修改');
+  const beforeConflictHint=await geometry();
   await save();
+  sameGeometry(await geometry(),beforeConflictHint,'保存冲突提示不能推动表格');
+  assert.ok(await current('.mysql-results-footer [data-testid=mysql-edit-message]'),'有草稿时底栏仍显示错误');
+  assert.match(await current(testId('mysql-edit-dirty-count')),/修改 1/u);
   await waitFor(win,'document.querySelector("[data-conflict]")','冲突行定位');
   assert.equal((await fixture.read())[1].label,'其他用户已修改');
   assert.equal(await evaluate('document.querySelector("[data-testid=mysql-edit-save]").disabled'),true);

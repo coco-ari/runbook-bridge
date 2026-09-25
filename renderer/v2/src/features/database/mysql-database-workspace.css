@@ -781,7 +781,7 @@ tr[data-conflict] .mysql-inline-cell { box-shadow:inset 0 -2px var(--danger); }
 .mysql-results-footer { display:flex; align-items:center; gap:8px; height:36px; min-height:36px; flex-shrink:0; padding:3px 8px; border-top:1px solid var(--border); font-size:var(--text-xs); color:var(--muted-foreground); white-space:nowrap; overflow:hidden; }
 .mysql-result-metrics { flex-shrink:0; padding:0 4px; font-variant-numeric:tabular-nums; }
 .mysql-results-status { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
-.mysql-results-status > [role=status] { display:block; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.mysql-results-status > [role=status], .mysql-results-status > [role=alert] { display:flex; align-items:center; gap:8px; min-width:0; overflow:hidden; }
 .mysql-draft-counts { display:inline-flex; align-items:center; gap:8px; }
 .mysql-results-pagination { display:flex; align-items:center; flex-shrink:0; gap:4px; }
 .mysql-results-loadmore { flex-shrink:0; }
@@ -801,9 +801,10 @@ tr[data-conflict] .mysql-inline-cell { box-shadow:inset 0 -2px var(--danger); }
 .mysql-query-result-area:not([hidden]) { display: flex; flex-direction: column; }
 .mysql-inline-cell[data-numeric] .mysql-inline-input { text-align:right; }
 
-.mysql-row-toolbar { display:flex; flex-direction:column; flex-shrink:0; gap:4px; width:56px; min-height:0; overflow-y:auto; padding:4px; border-right:1px solid var(--border); background:var(--surface); }
-.mysql-row-toolbar > button { flex-shrink:0; display:flex; flex-direction:column; gap:2px; height:44px; min-height:44px; padding:3px 0; font-size:var(--text-xs); line-height:16px; }
-.mysql-row-toolbar > button svg { width:16px; height:16px; }
+.mysql-row-toolbar { display:flex; flex-direction:column; flex-shrink:0; gap:4px; width:40px; min-height:0; overflow-y:auto; padding:4px 3px; border-right:1px solid var(--border); background:var(--surface); }
+.mysql-row-action { display:flex; flex-shrink:0; align-self:center; width:32px; height:32px; border-radius:var(--radius-md); }
+.mysql-row-action:focus-visible { outline:2px solid var(--ring); outline-offset:-2px; }
+.mysql-row-action svg { width:16px; height:16px; }
 .mysql-row-toolbar > .mysql-row-refresh { margin-top:auto; }
 .mysql-row-sheet { width:min(480px,100vw); max-width:480px; gap:12px; }
 .mysql-row-fields { flex:1; min-height:0; overflow:auto; padding:0 16px; font-size:var(--text-xs); }

@@ -685,7 +685,7 @@ async function run() {
       const toolbar=document.querySelector('.mysql-table-toolbar'),condition=document.querySelector('.mysql-table-filter-bar'),result=document.querySelector('[data-testid=mysql-preview-result]'),rail=result.querySelector('[data-testid=mysql-row-toolbar]'),footer=result.querySelector('.mysql-results-footer'),filter=document.querySelector('[data-testid=mysql-preview-filter]');
       return {top:toolbar.getBoundingClientRect().height+condition.getBoundingClientRect().height,footer:footer.getBoundingClientRect().height,rail:rail.getBoundingClientRect().width,vertical:getComputedStyle(rail).flexDirection,filterInTop:toolbar.contains(filter),extraHeader:Boolean(result.querySelector('.mysql-result-search-bar')),structureRefresh:Boolean(toolbar.querySelector('[aria-label="刷新表结构"]'))};
     })()`,true);
-    assert.ok(compactLayout.top<=80,'顶部仅保留两行工具栏');assert.equal(compactLayout.footer,36,'底栏保持单行');assert.equal(compactLayout.rail,56,'竖栏固定宽度');assert.equal(compactLayout.vertical,'column');assert.equal(compactLayout.filterInTop,true);assert.equal(compactLayout.extraHeader,false);assert.equal(compactLayout.structureRefresh,false);
+    assert.ok(compactLayout.top<=80,'顶部仅保留两行工具栏');assert.equal(compactLayout.footer,36,'底栏保持单行');assert.equal(compactLayout.rail,40,'纯图标竖栏固定宽度');assert.equal(compactLayout.vertical,'column');assert.equal(compactLayout.filterInTop,true);assert.equal(compactLayout.extraHeader,false);assert.equal(compactLayout.structureRefresh,false);
     await click(win,testId('mysql-query-options'));
     await textContains(win,'mysql-query-options-panel','LIMIT 20');
     const beforeSettings=databaseCalls.length;
