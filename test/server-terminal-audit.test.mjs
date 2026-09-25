@@ -55,7 +55,8 @@ test('真实 Bash 记录每条完成命令并保留原提示钩子与退出码',
   const entries = [];
   const audit = createTerminalCommandAudit(entry => entries.push(entry));
   const child = spawn(bash,['--noprofile','--norc','-i'],{
-    env:{...process.env,TERM:'dumb',INPUTRC:'/dev/null',HISTFILE:'/dev/null',HISTCONTROL:'',PS1:'fixture> '},windowsHide:true,
+    // 本用例验证开启历史后的审计；不继承 CI 可能设置的 HISTSIZE=0。
+    env:{...process.env,TERM:'dumb',INPUTRC:'/dev/null',HISTFILE:'/dev/null',HISTSIZE:'100',HISTFILESIZE:'0',HISTCONTROL:'',HISTIGNORE:'',PS1:'fixture> '},windowsHide:true,
   });
   const closed = once(child, 'close');
   let output = '';
