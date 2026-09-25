@@ -4,6 +4,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
+import { once } from 'node:events';
 import { createTerminalCommandAudit, summarizeTerminalCommand } from '../src/server-terminal-audit.mjs';
 
 test('命令摘要保留常见动作与资源，隐藏脚本和凭据参数', () => {
@@ -56,16 +57,23 @@ test('真实 Bash 记录每条完成命令并保留原提示钩子与退出码',
   const child = spawn(bash,['--noprofile','--norc','-i'],{
     env:{...process.env,TERM:'dumb',INPUTRC:'/dev/null',HISTFILE:'/dev/null',HISTCONTROL:'',PS1:'fixture> '},windowsHide:true,
   });
+  const closed = once(child, 'close');
   let output = '';
   child.stdout.on('data',chunk => { output += audit.consume(chunk); });
-  child.stderr.on('data',chunk => { output += audit.consume(chunk); });
-  t.after(() => { if (child.exitCode === null) child.kill(); });
+  child.stderr.on('data',chunk => { output += chunk.toString(); });
+  t.after(async () => {
+    // 交互 Bash 可能忽略 SIGTERM；只终止本测试子进程，并等待管道关闭。
+    child.stdin.destroy();
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await closed;
+  });
   const until = async predicate => {
     const end = Date.now()+5000;
     while (!predicate() && Date.now()<end) await delay(20);
-    assert.ok(predicate(),'Bash 未返回预期的执行记录');
+    assert.ok(predicate(),'Bash 未返回预期的执行记录：' + JSON.stringify({available:audit.available,entries}));
   };
-  child.stdin.write("PROMPT_COMMAND='printf existing-prompt'; " + audit.command + '\n');
+  // 真实 PTY 合并输出流；管道夹具先合并，避免两个流的事件乱序破坏审计帧。
+  child.stdin.write("exec 2>&1; PROMPT_COMMAND='printf existing-prompt'; " + audit.command + '\n');
   await until(() => audit.available && output.includes('existing-prompt'));
   assert.ok(output.includes('existing-prompt'));
   audit.noteInput(Buffer.from('pwd\nfalse\necho fixture-private\n'));

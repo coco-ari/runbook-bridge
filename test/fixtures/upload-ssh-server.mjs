@@ -180,8 +180,9 @@ export async function createUploadFixture(t, { writeDelayMs = 0, capacity = 0, a
     for (const client of sockets) client.destroy();
     for (const client of clients) client._sock.destroy();
     await new Promise(resolve => server.close(resolve));
-    const checked = path.resolve(root);
-    assert.equal(path.dirname(checked), path.resolve(os.tmpdir()));
+    const checked = await fsp.realpath(root);
+    assert.equal(checked, root);
+    assert.equal(path.dirname(checked), await fsp.realpath(os.tmpdir()));
     assert.ok(path.basename(checked).startsWith('runbook-resume-probe-'));
     await fsp.rm(checked, { recursive: true, force: true });
   });
