@@ -774,7 +774,7 @@
 tr[data-selected] > td { box-shadow:inset 0 1px color-mix(in srgb,var(--primary) 50%,transparent),inset 0 -1px color-mix(in srgb,var(--primary) 50%,transparent); }
 tr[data-selected] > td:first-child { border-left:2px solid var(--primary); }
 tr[data-conflict] .mysql-inline-cell { box-shadow:inset 0 -2px var(--danger); }
-.mysql-inline-input { position:absolute; inset:0; z-index:1; width:100%; height:100%; min-width:0; border:1px solid var(--primary); border-radius:0; padding:0 11px; background:var(--surface); font:inherit; box-shadow:none; }
+.mysql-inline-input { position:absolute; inset:0; z-index:1; width:100%; height:100%; min-width:0; border:1px solid var(--primary); border-radius:0; padding:0 7px; background:var(--surface); font:inherit; box-shadow:none; }
 .mysql-inline-input:focus-visible { border-color:var(--primary); box-shadow:inset 0 0 0 1px var(--primary); outline:none; }
 .mysql-inline-actions { display:flex; flex-shrink:0; align-items:center; gap:4px; }
 .mysql-results-region { container-type:inline-size; }
@@ -822,3 +822,9 @@ tr[data-row-state="update"] .mysql-inline-cell[data-dirty] { background:color-mi
 .mysql-row-status-content button:focus-visible { outline:2px solid var(--primary); }
 
 .mysql-inline-cell, .mysql-edit-number { scroll-margin-top:36px; }
+
+/* 列宽由内容或用户选择决定；拖动手柄独立于表头排序及字段拖放。 */
+.mysql-result-table th[data-column-index], .mysql-result-table .mysql-inline-cell { border-right:1px solid color-mix(in srgb,var(--border) 35%,transparent); }
+.mysql-column-resizer { position:absolute; top:0; right:0; bottom:0; width:7px; z-index:2; cursor:col-resize; touch-action:none; user-select:none; }
+.mysql-column-resizer:hover, .mysql-column-resizer:focus-visible { background:color-mix(in srgb,var(--primary) 25%,transparent); outline:none; }
+.mysql-column-resizer:focus-visible { box-shadow:inset 0 0 0 1px var(--primary); }

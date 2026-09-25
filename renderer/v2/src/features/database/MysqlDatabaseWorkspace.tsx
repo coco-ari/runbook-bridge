@@ -85,6 +85,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
   const editing = useMysqlEditingGuard()
   const state = useMysqlWorkspace(api, scope)
   const queries = useMysqlQueryDocuments(api, scope)
+  const queryColumnWidths = useRef(new Map<string, readonly number[]>())
   const getSchema = useMysqlSchemaCache(api, scope)
   const dragScope = mysqlWorkspaceSessionKey(scope, plugin)
   const [search, setSearch] = useState("")
@@ -220,7 +221,7 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
                       <div className="mysql-query-result-area mysql-query-document-view" data-query-document={document.id} hidden={document.id !== activeQueryId} key={document.id}>
                         {document.result.loading ? <ReadLoading label="正在执行查询…" /> : null}
                         {document.result.error ? <ReadError message={document.result.error} testId={document.id === activeQueryId ? "mysql-query-error" : `mysql-${document.id}-error`} /> : null}
-                        {document.result.data ? <MysqlEditableResults api={api} scope={scope} documentKey={document.id} result={document.result.data} sql={document.result.executedSql ?? document.sql} visible={document.id === activeQueryId && !selectedTable} onReload={() => void queries.runQuery(document.id, document.result.executedSql ?? document.sql)}><MysqlQueryResults kind="query" result={document.result.data} testIdPrefix={document.id === activeQueryId ? "mysql-query" : `mysql-${document.id}`} /></MysqlEditableResults> : null}
+                        {document.result.data ? <MysqlEditableResults api={api} scope={scope} documentKey={document.id} result={document.result.data} sql={document.result.executedSql ?? document.sql} visible={document.id === activeQueryId && !selectedTable} onReload={() => void queries.runQuery(document.id, document.result.executedSql ?? document.sql)}><MysqlQueryResults columnWidthCache={queryColumnWidths.current} columnWidthScope={document.id} kind="query" result={document.result.data} testIdPrefix={document.id === activeQueryId ? "mysql-query" : `mysql-${document.id}`} /></MysqlEditableResults> : null}
                         {!document.result.data && !document.result.loading && !document.result.error ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><Code aria-hidden="true" /></EmptyMedia><EmptyTitle>编写你的第一条查询</EmptyTitle><EmptyDescription>执行只读 SQL，结果将在此显示。<br />查询受当前连接配置的数量和大小上限约束。</EmptyDescription></EmptyHeader></Empty> : null}
                       </div>
                     ))}

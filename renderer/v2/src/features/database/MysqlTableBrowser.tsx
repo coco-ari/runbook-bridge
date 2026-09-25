@@ -20,6 +20,7 @@ export function MysqlTableBrowser({ api, scope, table, description, maxRows, vis
   const documentKey = "table:" + table
   const protect = (action: () => void) => editing.protect(action, [documentKey])
   const filterRef = useRef<HTMLInputElement>(null)
+  const columnWidthCache = useRef(new Map<string, readonly number[]>())
   const snapshot = useRef<MysqlResultViewSnapshot | null>(null)
   const started = useRef(false)
   const [where, setWhere] = useState("")
@@ -122,6 +123,6 @@ export function MysqlTableBrowser({ api, scope, table, description, maxRows, vis
     </form>
     {error ? <p className="mysql-browser-error" data-testid="mysql-preview-error" role="alert">{error}{result ? <Button data-testid="mysql-preview-retry" onClick={() => void readPage(false)} size="sm" variant="ghost">重试加载</Button> : null}</p> : null}
     </> : null}
-    {result ? <MysqlEditableResults api={api} scope={scope} documentKey={documentKey} result={result} sql={editSql} visible={visible} onReload={() => void readPage(true)}><MysqlQueryResults filterHost={filterHost} snapshot={snapshot} columnDragScope={{ workspace: dragScope, table }} kind="preview" result={result} sort={sort} onSort={next => protect(() => { setSort(next); void readPage(true, { where: where.trim(), sort: next, limit: requestedPageSize }) })} stream={{ key: `${table}/${generation}`, loading, hasMore: hasMore && !error, onLoadMore: () => void readPage(false), message }} /></MysqlEditableResults> : <div className="mysql-browser-empty" role="status">{loading ? "正在读取数据…" : message || `输入筛选条件或直接执行，每次读取 ${pageSize} 行。`}</div>}
+    {result ? <MysqlEditableResults api={api} scope={scope} documentKey={documentKey} result={result} sql={editSql} visible={visible} onReload={() => void readPage(true)}><MysqlQueryResults columnWidthCache={columnWidthCache.current} columnWidthScope={JSON.stringify([dragScope, table])} persistColumnWidths filterHost={filterHost} snapshot={snapshot} columnDragScope={{ workspace: dragScope, table }} kind="preview" result={result} sort={sort} onSort={next => protect(() => { setSort(next); void readPage(true, { where: where.trim(), sort: next, limit: requestedPageSize }) })} stream={{ key: `${table}/${generation}`, loading, hasMore: hasMore && !error, onLoadMore: () => void readPage(false), message }} /></MysqlEditableResults> : <div className="mysql-browser-empty" role="status">{loading ? "正在读取数据…" : message || `输入筛选条件或直接执行，每次读取 ${pageSize} 行。`}</div>}
   </div>
 }

@@ -1,3 +1,5 @@
+import { useMysqlColumnWidths } from "./use-mysql-column-widths"
+import { MYSQL_COLUMN_MIN_WIDTH, MYSQL_COLUMN_MAX_WIDTH, type MysqlWidthCache } from "./mysql-column-widths"
 import { createPortal } from "react-dom"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { mergeMysqlDraftRows } from "./mysql-row-draft-model"
@@ -21,6 +23,9 @@ import { MYSQL_RESULT_PAGE_SIZE, mysqlByteSize, mysqlCellText } from "@/features
 import { compareMysqlCells, type MysqlSort } from "./mysql-sql-assist"
 
 interface MysqlQueryResultsProps {
+  readonly columnWidthCache?: MysqlWidthCache
+  readonly columnWidthScope?: string
+  readonly persistColumnWidths?: boolean
   readonly filterHost?: HTMLElement | null
   readonly result: MysqlQueryResult
   readonly kind: "query" | "preview"
@@ -49,10 +54,12 @@ interface CopyNotice {
   readonly failed: boolean
 }
 
-export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, stream, columnDragScope, snapshot, filterHost }: MysqlQueryResultsProps) {
+export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, stream, columnDragScope, snapshot, filterHost, columnWidthCache, columnWidthScope = "result", persistColumnWidths = false }: MysqlQueryResultsProps) {
   const editing = useMysqlInlineEditing()
   const searchRef = useRef<HTMLInputElement>(null)
   const [menu, setMenu] = useState<{ row: Record<string, unknown>; index: number; column: string | null; element: HTMLElement } | null>(null)
+  const [headerMenu, setHeaderMenu] = useState<number | null>(null)
+  const headerMenuElement = useRef<HTMLElement | null>(null)
   const menuAction = useRef<(() => void) | null>(null)
   const viewIdentity = stream?.key ?? result
   const [viewState, setViewState] = useState<ResultViewState>(snapshot?.current?.state.result === viewIdentity ? snapshot.current.state : { result: viewIdentity, sort: null, filter: "", page: 0, pageSize: MYSQL_RESULT_PAGE_SIZE, selectedRow: null })
@@ -78,12 +85,19 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
     }
     return filtered
   }, [duplicateColumns, filter, result, selectedSort, onSort])
-  const columnWidths = useMemo(() => result.columns.map((column) => Math.min(280, Math.max(168, column.name.length * 8 + 32))), [result])
+  const localWidthCache = useRef<MysqlWidthCache>(new Map())
+  const columnSizing = useMysqlColumnWidths(result, columnWidthCache ?? localWidthCache.current, columnWidthScope, persistColumnWidths)
+  const columnWidths = columnSizing.widths
+  const tableWidth = (editing ? 136 : 44) + columnWidths.reduce((sum, width) => sum + width, 0)
   const lastPage = Math.max(0, Math.ceil(filteredRows.length / state.pageSize) - 1)
   const visiblePage = Math.min(state.page, lastPage)
   const start = visiblePage * state.pageSize
   const resultRows = stream ? filteredRows : filteredRows.slice(start, start + state.pageSize)
   const rows = mergeMysqlDraftRows(resultRows, editing?.pendingRows ?? [], row => editing?.rowId(row), result.rows.length)
+  function fitColumns(index?: number) {
+    const sample = rows.slice(0, 100).map(({ row }) => Object.fromEntries(result.columns.map(column => [column.name, editing?.placeholder?.(row, column.name) || (editing ? editing.value(row, column.name, row[column.name]) : row[column.name])])))
+    columnSizing.fit(index, sample)
+  }
   const rowSelection = useMysqlRowSelection(rows, editing, scrollRef)
   const selectedRow = !duplicateColumns && state.selectedRow !== null ? rows.find(item => item.index === state.selectedRow)?.row : undefined
   const detailRow = selectedRow && editing ? Object.fromEntries(result.columns.map(column => [column.name, editing.value(selectedRow, column.name, selectedRow[column.name])])) : selectedRow
@@ -197,6 +211,9 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
             <ContextMenu><ContextMenuTrigger asChild>
             <div onPointerDownCapture={rowSelection.pointerStart} onContextMenuCapture={event => {
               const target = event.target as HTMLElement
+              const header = target.closest<HTMLElement>("th[data-column-index]")
+              if (header) { setHeaderMenu(Number(header.dataset.columnIndex)); headerMenuElement.current = header.querySelector("button"); setMenu(null); return }
+              setHeaderMenu(null)
               if (target.closest("input,textarea") || !target.closest("td")) { event.stopPropagation(); return }
               const cell = target.closest<HTMLTableCellElement>("td"), row = cell?.closest<HTMLTableRowElement>("tr[data-row-index]")
               const index = Number(row?.dataset.rowIndex ?? -1)
@@ -204,16 +221,28 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
               if (!source || !cell) { event.stopPropagation(); return }
               setMenu({row:source,index,column:cell.dataset.editColumn ?? null,element:cell.querySelector<HTMLElement>("button") ?? cell})
             }} onPointerMove={rowSelection.move} onPointerUp={() => rowSelection.finish()} onPointerCancel={() => rowSelection.finish(true)} onLostPointerCapture={() => rowSelection.finish(true)} onClickCapture={rowSelection.click} aria-label="查询结果表格，可横向和纵向滚动" className="min-h-0 min-w-0 flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" data-testid={`${prefix}-table-scroll`} onScroll={(event) => { if (event.currentTarget.scrollTop > lastScrollTop.current) loadAtBottom(event.currentTarget); lastScrollTop.current = event.currentTarget.scrollTop }} onWheel={(event) => { if (event.deltaY > 0) loadAtBottom(event.currentTarget) }} ref={scrollRef} role="region" tabIndex={0}>
-              <table className="w-full table-fixed border-separate border-spacing-0 text-xs" style={{ minWidth: (editing ? 160 : 48) + columnWidths.reduce((sum, width) => sum + width, 0) }}>
-                <colgroup>{editing ? <col style={{ width: 32 }} /> : null}<col style={{ width: 48 }} />{editing ? <col style={{ width: 80 }} /> : null}{result.columns.map((column, index) => <col key={column.name} style={{ width: columnWidths[index] }} />)}</colgroup>
+              <table className="mysql-result-table table-fixed border-separate border-spacing-0 text-xs" style={{ width: tableWidth, minWidth: tableWidth }}>
+                <colgroup>{editing ? <col style={{ width: 32 }} /> : null}<col style={{ width: 44 }} />{editing ? <col style={{ width: 60 }} /> : null}{result.columns.map((column, index) => <col key={column.name} style={{ width: columnWidths[index] }} />)}</colgroup>
                 <thead>
                   <tr>
                     {editing ? <th className="mysql-inline-selector sticky top-0 z-10 border-b bg-surface-inset"><Checkbox aria-label="选择当前页全部行" disabled={editing.locked || !rows.length} checked={rows.length > 0 && rows.every(({row}) => editing.selection.has(row)) ? true : rows.some(({row}) => editing.selection.has(row)) ? "indeterminate" : false} onCheckedChange={checked => editing.select(rows.map(item => item.row), checked === true)} /></th> : null}
-                    <th className="sticky top-0 z-10 h-8 border-b border-r bg-surface-inset px-3 text-right font-normal text-text-faint" scope="col"><span className="sr-only">行号</span>#</th>
+                    <th className="sticky top-0 z-10 h-8 border-b border-r bg-surface-inset px-2 text-right font-normal text-text-faint" scope="col"><span className="sr-only">行号</span>#</th>
                     {editing ? <th className="mysql-row-status sticky top-0 z-10 h-8 border-b bg-surface-inset" scope="col">状态</th> : null}
-                    {result.columns.map((column) => (
-                      <th aria-sort={selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "ascending" : "descending" : "none"} className="sticky top-0 z-10 h-8 border-b bg-surface-inset px-3 text-left font-mono text-xs font-normal text-muted-foreground" key={column.name} scope="col" title={column.table ? `${column.table}.${column.name}` : column.name}>
+                    {result.columns.map((column, columnIndex) => (
+                      <th data-column-index={columnIndex} aria-sort={selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "ascending" : "descending" : "none"} className="sticky top-0 z-10 h-8 border-b bg-surface-inset px-2 text-left font-mono text-xs font-normal text-muted-foreground" key={column.name} scope="col" title={column.table ? `${column.table}.${column.name}` : column.name}>
                         <button aria-label={`按 ${column.name} 排序`} draggable={Boolean(columnDragScope)} onDragStart={event => { if (columnDragScope) { event.dataTransfer.effectAllowed = "copy"; event.dataTransfer.setData("application/x-runbook-mysql-column", JSON.stringify({ ...columnDragScope, column: column.name })) } }} className="mysql-column-sort" data-column={column.name} data-testid={`${prefix}-sort`} onClick={() => sortColumn(column.name)} title={onSort ? "在数据库中排序：降序 / 升序 / 默认" : "当前返回结果排序：降序 / 升序 / 默认"} type="button"><span>{column.name}</span><span aria-hidden="true">{selectedSort?.column === column.name ? selectedSort.direction === "asc" ? "↑" : "↓" : "↕"}</span></button>
+                        <span className="mysql-column-resizer" role="separator" tabIndex={0} aria-label={"调整 " + column.name + " 列宽"} aria-orientation="vertical" aria-valuemin={MYSQL_COLUMN_MIN_WIDTH} aria-valuemax={MYSQL_COLUMN_MAX_WIDTH} aria-valuenow={columnWidths[columnIndex]} title="左右拖动调整列宽，双击适应内容；方向键微调，Esc 取消拖动" data-testid="mysql-column-resizer" data-column={column.name}
+                          onPointerDown={event => columnSizing.down(event, columnIndex)}
+                          onPointerCancel={event => { event.stopPropagation(); columnSizing.finish(true) }} onLostPointerCapture={() => columnSizing.finish(true)}
+                          onClick={event => { event.preventDefault(); event.stopPropagation() }} onDragStart={event => event.preventDefault()}
+                          onDoubleClick={event => { event.preventDefault(); event.stopPropagation(); fitColumns(columnIndex) }}
+                          onKeyDown={event => {
+                            if (!["ArrowLeft", "ArrowRight", "Home", "End", "Enter", "Escape"].includes(event.key)) return
+                            event.preventDefault(); event.stopPropagation()
+                            if (event.key === "Escape") columnSizing.finish(true)
+                            else if (event.key === "Enter") fitColumns(columnIndex)
+                            else columnSizing.setWidth(columnIndex, event.key === "Home" ? MYSQL_COLUMN_MIN_WIDTH : event.key === "End" ? MYSQL_COLUMN_MAX_WIDTH : (columnWidths[columnIndex] ?? MYSQL_COLUMN_MIN_WIDTH) + (event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 32 : 8))
+                          }} />
                       </th>
                     ))}
                   </tr>
@@ -235,13 +264,13 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
                       key={index >= result.rows.length ? editing?.rowId(row) : index}
                     >
                       {editing ? <td className="mysql-inline-selector mysql-edit-row-selector" onPointerDown={event => rowSelection.down(event,index)}><Checkbox aria-label={"选择第 " + (index + 1) + " 行"} checked={editing.selection.has(row)} disabled={editing.locked} onCheckedChange={checked => editing.select([row],checked === true)} /></td> : null}
-                      <td onPointerDown={event => rowSelection.down(event,index)} className="mysql-edit-number h-8 border-b border-r border-border/50 px-3 py-0 text-right font-mono text-xs tabular-nums text-text-faint"><button type="button" className="block h-[31px] w-full leading-[31px]" title="点击或拖动选择行 · 右键更多操作" aria-label={"选择第 " + (index + 1) + " 行号"} onClick={() => { if (!editing?.locked) editing?.select([row],!editing.selection.has(row)) }}>{index >= result.rows.length ? "+" : index + 1}</button></td>
+                      <td onPointerDown={event => rowSelection.down(event,index)} className="mysql-edit-number h-8 border-b border-r border-border/50 px-2 py-0 text-right font-mono text-xs tabular-nums text-text-faint"><button type="button" className="block h-[31px] w-full leading-[31px]" title="点击或拖动选择行 · 右键更多操作" aria-label={"选择第 " + (index + 1) + " 行号"} onClick={() => { if (!editing?.locked) editing?.select([row],!editing.selection.has(row)) }}>{index >= result.rows.length ? "+" : index + 1}</button></td>
                       {editing ? <td className="mysql-row-status h-8 border-b border-border/50"><div className="mysql-row-status-content"><span>{rowStateLabel(row)}</span>{editing.rowActions?.(row)}</div></td> : null}
                       {result.columns.map((column) => {
                         const value = editing ? editing.value(row, column.name, row[column.name]) : row[column.name]
                         const placeholder = editing?.placeholder?.(row, column.name)
                         const content = placeholder ? <span className="block h-[31px] truncate leading-[31px] text-muted-foreground italic" title={placeholder}>{placeholder}</span> : <span className={`block h-[31px] truncate leading-[31px] ${typeof row[column.name] === "number" ? "text-right tabular-nums" : ""} ${value === null || value === undefined ? "text-muted-foreground italic" : ""}`}>{mysqlCellText(value)}</span>
-                        return <td className="mysql-inline-cell relative h-8 border-b border-border/50 px-3 py-0 font-mono text-xs" key={column.name} data-edit-column={column.name} data-numeric={typeof row[column.name] === "number" || undefined} data-dirty={editing?.dirty(row, column.name) || undefined} tabIndex={0}
+                        return <td className="mysql-inline-cell relative h-8 border-b border-border/50 px-2 py-0 font-mono text-xs" key={column.name} data-edit-column={column.name} data-numeric={typeof row[column.name] === "number" || undefined} data-dirty={editing?.dirty(row, column.name) || undefined} tabIndex={0}
                           onClick={event => { if (editing) { event.stopPropagation(); if (event.target === event.currentTarget || !(event.target instanceof HTMLInputElement)) event.currentTarget.focus({ preventScroll: true }) } }}
                           onDoubleClick={event => { event.stopPropagation(); if (event.target instanceof HTMLInputElement) return; if (editing) editing.begin(row, column.name); else void copyText(mysqlCopyCellText(value), "单元格已复制") }}
                           onKeyDown={event => {
@@ -270,8 +299,14 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
               event.preventDefault()
               const action = menuAction.current
               menuAction.current = null
-              window.setTimeout(() => { if (action) action(); else menu?.element.focus({preventScroll:true}) }, 0)
+              window.setTimeout(() => { if (action) action(); else (headerMenu !== null ? headerMenuElement.current : menu?.element)?.focus({preventScroll:true}) }, 0)
             }}>
+              {headerMenu !== null ? <>
+                <ContextMenuLabel>{result.columns[headerMenu]?.name} · 列宽</ContextMenuLabel>
+                <ContextMenuItem onSelect={() => { menuAction.current = () => fitColumns(headerMenu) }}>适应当前列内容</ContextMenuItem>
+                <ContextMenuItem onSelect={() => { menuAction.current = () => fitColumns() }}>适应全部列宽</ContextMenuItem>
+                <ContextMenuItem onSelect={() => { menuAction.current = columnSizing.reset }}>重置列宽</ContextMenuItem>
+              </> : null}
               {menu ? <>
                 <ContextMenuLabel>{menu.column ?? "行操作"} · {menu.index >= result.rows.length ? "未保存草稿" : "第 " + (menu.index + 1) + " 行"}</ContextMenuLabel>
                 {menu.column ? <>
