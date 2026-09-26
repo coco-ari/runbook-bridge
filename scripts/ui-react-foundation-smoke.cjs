@@ -230,6 +230,10 @@ function registerForbiddenMutation(channel) {
 }
 
 function registerMockApi() {
+  registerRead('v2:cloud-config',({action}) => {
+    assert.ok(['status','check'].includes(action),'后台云检测只允许只读请求');
+    return {repositories:[],cloudProjects:[],projects:[],backups:[],checkIntervalMinutes:0};
+  });
   registerRead('v2:project-list',() => workspaceProjects.map(({environments:_,...project}) => project));
   registerRead('v2:workspace-overview',() => workspaceProjects);
   registerRead('v2:environment-list',(projectId) => workspaceProjects.find((project) => project.projectId === projectId)?.environments ?? []);
@@ -302,6 +306,8 @@ async function waitFor(win,evaluate,label,timeoutMs = 10000) {
     if (await win.webContents.executeJavaScript(evaluate,true)) return;
     await wait(50);
   }
+  const focus = await win.webContents.executeJavaScript(`(() => ({active:document.activeElement?.outerHTML.slice(0,400), detail:document.querySelector('[data-testid="detail-workspace"]')?.dataset.collapsed, main:document.getElementById('detail-main')?.getBoundingClientRect().toJSON(), inert:document.getElementById('detail-main')?.closest('[inert], [aria-hidden="true"]')?.outerHTML.slice(0,200), modals:[...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].filter(el=>el.getClientRects().length).map(el=>el.textContent.slice(0,200))}))()`);
+  process.stderr.write(`Wait failure context: ${JSON.stringify({label,focus})}\n`);
   throw new Error(`Timed out waiting for ${label}`);
 }
 
@@ -4248,7 +4254,7 @@ async function run() {
       'v2:project-list','v2:workspace-overview','v2:environment-list','v2:environment-status',
       'v2:plugin-list','v2:runbook-read','v2:quick-question-opening-get','v2:quick-question-list',
       'v2:plugin-assess','v2:plugin-credential-status','v2:plugin-databases','v2:audit-list',
-      'v2:confirmation-list',
+      'v2:confirmation-list','v2:cloud-config',
     ]);
     await collectWindowErrorDiagnostics(win);
     process.stdout.write(`React smoke final diagnostics: ${JSON.stringify({

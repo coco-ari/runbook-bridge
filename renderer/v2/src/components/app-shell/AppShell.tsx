@@ -1,4 +1,5 @@
 import { PluginWorkspaceHost } from "@/features/plugins/PluginWorkspaceHost"
+import { CloudConfigProvider, useCloudConfig } from "@/features/cloud-config/CloudConfigProvider"
 import { usePluginWorkspaceSessions, useSelectedPluginWorkspace } from "@/features/plugins/use-plugin-workspaces"
 import { useAppShellLayout } from "@/components/app-shell/use-app-shell-layout"
 import { shortcutLabel } from "@/lib/platform"
@@ -121,6 +122,12 @@ function dependentPlugins(
 export function AppShell() {
   const api = useMemo(() => getAiOpsV2(), [])
   const workspace = useWorkspaceOverview()
+  return <CloudConfigProvider api={api} onChanged={workspace.reload}><AppShellContent api={api} workspace={workspace} /></CloudConfigProvider>
+}
+
+function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2>; workspace: ReturnType<typeof useWorkspaceOverview> }) {
+  const cloud = useCloudConfig()
+  useEffect(() => { if (workspace.data) void cloud.refresh() }, [workspace.data, cloud.refresh])
   const runtimeCache = useWorkspaceRuntimeCache(workspace.data)
   const [selection, dispatchSelection] = useReducer(
     workspaceSelectionReducer,
@@ -891,6 +898,17 @@ export function AppShell() {
             onToggleCollapsed={() => setProjectCollapsed(!compactProjectRail)}
             pendingConfirmationCount={confirmations.count}
             projects={navigationProjects}
+            cloudRepositories={cloud.data.repositories ?? []}
+            cloudProjects={cloud.data.cloudProjects ?? []}
+            cloudBusy={cloud.busy}
+            cloudChecking={cloud.checking}
+            onCheckCloud={() => void cloud.check()}
+            onOpenCloudProject={(repositoryId, projectId) => requestNavigation(() => {
+              void cloud.run({ action: "sync", repositoryId, projectId, direction: "download" }).then(result => {
+                const imported = result?.results?.find(item => item.status === "imported")
+                if (imported) setPendingSelection({ projectId: imported.projectId })
+              })
+            })}
             selectedProjectId={selectedProject?.projectId ?? null}
           />
         </ResizablePanel>
@@ -1007,7 +1025,7 @@ export function AppShell() {
         onSelectProject={selectProject}
         open={commandOpen}
         pluginsByScope={pluginsByScope}
-        projects={navigationProjects}
+        projects={navigationProjects.filter(project => !cloud.data.cloudProjects?.some(item => item.localId === project.projectId && !item.visible))}
       />
 
       {settingsOpen ? <SettingsPage api={api} onBack={closeSettings} onChanged={workspace.reload} /> : null}

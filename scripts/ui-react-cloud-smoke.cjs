@@ -27,53 +27,15 @@ async function clickText(text) {
   return window.webContents.executeJavaScript(`(() => { const button = [...document.querySelectorAll('[data-testid="cloud-config-panel"] button')].find(b => b.textContent.trim() === ${JSON.stringify(text)}); if (!button || button.disabled) throw new Error('按钮不可用'); button.click(); })()`).catch(() => { throw new Error('云配置按钮不可用：'+text); });
 }
 async function clickTestId(testId) {
+  await wait(`Boolean(document.querySelector('[data-testid="${testId}"]')) && !document.querySelector('[data-testid="${testId}"]').disabled`);
   await window.webContents.executeJavaScript(`(() => { const button = document.querySelector('[data-testid="'+${JSON.stringify(testId)}+'"]'); if (!button || button.disabled) throw new Error('按钮不可用'); button.click(); })()`);
 }
 async function fill(id,value) {
   await window.webContents.executeJavaScript(`(() => { const input = document.getElementById(${JSON.stringify(id)}); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)}); input.dispatchEvent(new Event('input',{bubbles:true})); })()`);
 }
-async function visibleProjects() {
-  return window.webContents.executeJavaScript('[...document.querySelectorAll("[data-testid=cloud-project-row]")].filter(row => row.getClientRects().length).map(row => ({id:row.dataset.projectId,checked:(row.querySelector("[role=checkbox]").getAttribute("aria-checked") === "true")}))');
-}
-async function assertSelected(count) {
-  const preview = await window.webContents.executeJavaScript('(() => { const button=document.querySelector("[data-testid=cloud-preview]"); return {label:button?.getAttribute("aria-label"),disabled:button?.disabled}; })()');
-  assert.match(preview.label ?? '',new RegExp(`(?:^|\\D)${count}(?:\\D|$)`),'预览入口应准确读出所有已选项目数量，包括被搜索隐藏的项目');
-  assert.equal(preview.disabled,count === 0);
-}
 async function assertLayout() {
   const layout = await window.webContents.executeJavaScript('(() => { const panel=document.querySelector("[data-testid=cloud-config-panel]"), page=document.querySelector("[data-testid=settings-main]"); return {overflow:panel.scrollWidth>panel.clientWidth || page.scrollWidth>page.clientWidth || document.documentElement.scrollWidth>innerWidth,inside:panel.getBoundingClientRect().left>=0 && panel.getBoundingClientRect().right<=innerWidth}; })()');
   assert.deepEqual(layout,{overflow:false,inside:true},'云配置及长项目名不得产生水平溢出');
-}
-async function assertScrollLayout() {
-  const evidence = await window.webContents.executeJavaScript('(() => { const list=document.querySelector("[data-testid=cloud-project-list]"), toolbar=document.querySelector("[data-testid=cloud-project-toolbar]"), footer=document.querySelector("[data-testid=cloud-project-actions]"), page=document.querySelector("[data-testid=settings-main]"); const position=()=>{const l=list.getBoundingClientRect(),t=toolbar.getBoundingClientRect(),f=footer.getBoundingClientRect(); return {listTop:l.top,listBottom:l.bottom,listHeight:l.height,toolbarTop:t.top,toolbarBottom:t.bottom,footerTop:f.top,footerBottom:f.bottom,scrollTop:list.scrollTop,pageScroll:page.scrollTop,mainBottom:page.getBoundingClientRect().bottom};}; const result=[]; for(const fraction of [0,0.5,1]) {list.scrollTop=(list.scrollHeight-list.clientHeight)*fraction; result.push(position());} const last=list.querySelector("[data-testid=cloud-project-row]:last-child"), rect=last.getBoundingClientRect(), listRect=list.getBoundingClientRect(); const hit=document.elementFromPoint(rect.left+rect.width/2,Math.min(rect.bottom-4,listRect.bottom-4)); const lastReachable=last.contains(hit), rowHeight=list.querySelector("[data-project-id=cloud-secondary]").getBoundingClientRect().height; list.scrollTop=0; return {positions:result,lastReachable,rowHeight,pageOverflow:page.scrollHeight>page.clientHeight+1}; })()');
-  assert.equal(evidence.pageOverflow,false,'项目同步外层页面不应形成第二个滚动区');
-  assert.ok(evidence.rowHeight >= 40 && evidence.rowHeight <= 50,'普通项目行应紧凑且保留点击空间');
-  assert.equal(evidence.lastReachable,true,'滚到末尾时最后一项必须完整可点击，不被操作栏盖住');
-  for (const position of evidence.positions) {
-    assert.ok(position.listHeight >= 96,'窄窗口也应为项目列表保留可用高度');
-    assert.ok(position.toolbarBottom <= position.listTop && position.listBottom <= position.footerTop+1,'工具栏、列表和操作栏必须占据互不重叠的空间');
-    assert.ok(position.footerBottom <= position.mainBottom,'预览入口始终在可见页面内');
-    assert.equal(position.toolbarTop,evidence.positions[0].toolbarTop,'滚动项目不应移走工具栏');
-    assert.equal(position.footerTop,evidence.positions[0].footerTop,'滚动项目不应移动操作栏');
-    assert.equal(position.pageScroll,0,'滚动只发生在项目列表内');
-  }
-  assert.ok(evidence.positions[1].scrollTop>0 && evidence.positions[2].scrollTop>evidence.positions[1].scrollTop,'必须用足量项目覆盖列表中段和末尾');
-  await window.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
-  window.webContents.invalidate();
-  await window.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-  await delay(180);
-  await window.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
-  const center = await window.webContents.executeJavaScript('(() => { const rect=document.querySelector("[data-testid=cloud-project-list]").getBoundingClientRect(); return {x:Math.round(rect.left+rect.width/2),y:Math.round(rect.top+rect.height/2)}; })()');
-  window.webContents.sendInputEvent({type:'mouseMove',...center});
-  window.webContents.sendInputEvent({type:'mouseWheel',...center,deltaY:-10000,canScroll:true});
-  await wait('(() => { const list=document.querySelector("[data-testid=cloud-project-list]"); return list.scrollTop>0 && list.scrollTop+list.clientHeight>=list.scrollHeight-1; })()');
-  const checkbox = await window.webContents.executeJavaScript('(() => { const rect=document.querySelector("[data-testid=cloud-project-row]:last-child [role=checkbox]").getBoundingClientRect(); return {x:Math.round(rect.left+rect.width/2),y:Math.round(rect.top+rect.height/2)}; })()');
-  for (const count of [2,1]) {
-    window.webContents.sendInputEvent({type:'mouseDown',...checkbox,button:'left',clickCount:1});
-    window.webContents.sendInputEvent({type:'mouseUp',...checkbox,button:'left',clickCount:1});
-    await wait('document.querySelector("[data-testid=cloud-preview]").getAttribute("aria-label").includes("（'+count+'）")');
-  }
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-project-list]").scrollTop=0');
 }
 async function capture(suffix='') {
   const destination = process.env.RUNBOOK_BRIDGE_CLOUD_SCREENSHOT || (process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR ? path.join(process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR, 'cloud-config.png') : null);
@@ -83,7 +45,7 @@ async function capture(suffix='') {
   const target = suffix ? original.slice(0,extension ? -extension.length : undefined)+suffix+(extension || '.png') : original;
   assert.ok(target.toLowerCase() !== root.toLowerCase() && !target.toLowerCase().startsWith((root+path.sep).toLowerCase()),'截图必须保存在仓库外');
   await fs.mkdir(path.dirname(target),{recursive:true});
-  await window.webContents.executeJavaScript('(() => { const style=document.createElement("style"); style.id="cloud-smoke-screenshot-mask"; style.textContent="#cloud-url, #cloud-password, #cloud-admin-token, input[type=password] { visibility: hidden !important; } *, *::before, *::after { transition: none !important; animation: none !important; caret-color: transparent !important; scroll-behavior: auto !important; }"; document.head.append(style); document.querySelector("[data-testid=settings-main]").scrollTo({top:0,left:0,behavior:"instant"}); })()');
+  await window.webContents.executeJavaScript('(() => { const style=document.createElement("style"); style.id="cloud-smoke-screenshot-mask"; style.textContent="#cloud-url, #cloud-password, #cloud-admin-token, input[type=password], [data-sonner-toaster] { visibility: hidden !important; } *, *::before, *::after { transition: none !important; animation: none !important; caret-color: transparent !important; scroll-behavior: auto !important; }"; document.head.append(style); document.querySelector("[data-testid=settings-main]").scrollTo({top:0,left:0,behavior:"instant"}); })()');
   try {
     // A hidden Electron window may expose the new DOM while capturePage still
     // returns the previous compositor frame. Prime it before requesting paint.
@@ -101,7 +63,7 @@ async function capture(suffix='') {
     const x = Math.round(expected.x*size.width/expected.width), y = Math.round(expected.y*size.height/expected.height);
     const offset = (y*size.width+x)*4;
     const actual = [pixels[offset+2],pixels[offset+1],pixels[offset]];
-    assert.ok(actual.every((value,index) => Math.abs(value-expected.rgb[index]) <= 3),'截图必须捕获与 computed 背景一致的新画面，不能沿用隐藏窗口旧帧');
+    if (!await window.webContents.executeJavaScript('Boolean(document.querySelector("[role=alertdialog]"))')) assert.ok(actual.every((value,index) => Math.abs(value-expected.rgb[index]) <= 3),'截图必须捕获与 computed 背景一致的新画面，不能沿用隐藏窗口旧帧');
     await fs.writeFile(target,frame.toPNG());
   } finally {
     await window.webContents.executeJavaScript('document.getElementById("cloud-smoke-screenshot-mask")?.remove()');
@@ -134,211 +96,168 @@ async function run() {
   await vault.save(plugin,{password:'synthetic-ui-only-secret'});
   const service = new CloudConfigService({workspace:new CloudConfigWorkspace(store,vault,encryption),mutationCoordinator:new WorkspaceMutationCoordinator(),client:new CloudConfigClient(),connectionManager:{disconnect:async () => {},forgetProject:async () => {}},contextManager:{invalidateProject(){}},confirmationManager:{invalidateProject(){}}});
   await service.init();
-  const originalCatalog = service.catalog.bind(service);
-  let catalogHold = null, catalogFailure = false;
-  service.catalog = async (...args) => {
-    if (catalogHold) await catalogHold;
-    if (catalogFailure) throw new Error('合成测试：项目列表暂时无法读取');
-    return originalCatalog(...args);
-  };
+  let checkFailure = false, checks = 0;
+  const originalRemote = service.remote.bind(service);
+  service.remote = async (...args) => { if (checkFailure) throw new Error('synthetic network failure'); return originalRemote(...args); };
+  const originalCheck = service.check.bind(service);
+  service.check = async (...args) => { checks++; return originalCheck(...args); };
   registerCloudConfigIpc(ipcMain,{cloudConfigService:service,isWorkspaceRenderer:sender => sender === window?.webContents});
-  for (const name of ['workspace-overview','project-list','confirmation-list']) ipcMain.handle('v2:'+name,() => ({ok:true,data:[]}));
+  ipcMain.handle('v2:workspace-overview',async () => ({ok:true,data:(await store.listProjects()).map(p => ({...p,environments:[],environmentCount:1,pluginCount:0}))}));
+  for (const name of ['project-list','confirmation-list','audit-list']) ipcMain.handle('v2:'+name,() => ({ok:true,data:[]}));
   ipcMain.handle('v2:quick-question-opening-get',() => ({ok:true,data:{schemaVersion:1,text:'',defaultText:'',revision:0}}));
   session.defaultSession.webRequest.onBeforeRequest({urls:['http://*/*','https://*/*']},(details,callback) => { network.push(details.url); callback({cancel:true}); });
   window = new BrowserWindow({show:false,width:1264,height:846,webPreferences:{preload:path.join(root,'src/preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false}});
   window.webContents.on('console-message',(_event,details) => { if (details.level === 'error') errors.push(details.message); });
   await window.loadFile(path.join(root,'renderer-build/v2/index.html'));
-  // 与其他 UI 回归一致，先建立真实窗口焦点，再验证 Tab 和 Enter 导航。
   if (process.platform === 'darwin') { window.show(); window.focus(); }
   window.webContents.focus();
-  await wait('document.hasFocus() === true');
+  const js = expression => window.webContents.executeJavaScript(expression).catch(() => { throw new Error('UI expression failed: '+expression); });
+  const idle = () => wait('document.querySelector("[data-testid=cloud-config-panel]")?.getAttribute("aria-busy") === "false"');
+  const openSettings = async () => { await clickTestId('settings-open'); await wait('Boolean(document.querySelector("[data-testid=settings-cloud]"))'); await clickTestId('settings-cloud'); await idle(); };
+  const createRepository = async name => {
+    await clickText('创建新仓库');
+    assert.equal(await js('document.getElementById("cloud-password").value.length'),48);
+    await fill('cloud-name',name); await fill('cloud-url',`http://127.0.0.1:${server.address().port}`);
+    await fill('cloud-admin-token',admin); await fill('cloud-password','synthetic-ui-password-long-enough');
+    await clickText('创建仓库');
+    await wait('Boolean(document.querySelector("[data-testid=cloud-check]"))'); await idle();
+  };
   await wait('Boolean(document.querySelector("[data-testid=settings-open]"))');
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=settings-open]").click()');
-  await wait('Boolean(document.querySelector("[data-testid=settings-page]"))');
-  assert.equal(await window.webContents.executeJavaScript('Boolean(document.querySelector("[role=dialog],[data-slot=dialog-overlay]"))'),false);
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=settings-cloud]").click()');
-  await wait('Boolean(document.querySelector("[data-testid=cloud-config-panel]")) && !document.querySelector("[data-testid=cloud-config-panel] fieldset").disabled');
-  await clickText('创建新仓库');
-  assert.equal(await window.webContents.executeJavaScript('document.getElementById("cloud-password").value.length'),48);
-  await fill('cloud-url',`http://127.0.0.1:${server.address().port}`);
-  assert.equal(await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("仓库访问凭证会明文传输")'),true);
-  await fill('cloud-admin-token',admin);
-  await fill('cloud-password','synthetic-ui-password-long-enough');
-  await clickText('创建仓库');
-  await wait('document.querySelector("[data-testid=settings-back]").disabled');
-  assert.equal(await window.webContents.executeJavaScript('document.querySelector("[data-testid=settings-appearance]").disabled'),true,'处理时禁止切换页面');
-  await wait('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("仓库已解锁") && !document.querySelector("[data-testid=settings-back]").disabled');
-  assert.equal(await window.webContents.executeJavaScript('Boolean(document.getElementById("cloud-password"))'),false);
-  assert.equal(await window.webContents.executeJavaScript('document.getElementById("cloud-url").getClientRects().length'),0,'项目同步时仓库设置不占列表空间');
-  await clickTestId('cloud-view-repository');
-  assert.equal(await window.webContents.executeJavaScript('Boolean(document.querySelector("#cloud-url[readonly]")?.getClientRects().length)'),true,'仓库设置页可查看完整链接');
-  await clickTestId('cloud-view-sync');
-  await clickTestId('cloud-direction-upload');
-  assert.equal((await visibleProjects()).length,projectCount);
-  assert.equal(await window.webContents.executeJavaScript('document.getElementById("cloud-project-search").getAttribute("aria-label")'),'搜索项目');
-  await assertSelected(0);
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-project-row][data-project-id=cloud-demo] [role=checkbox]").click()');
-  await assertSelected(1);
-  await window.webContents.executeJavaScript('document.getElementById("cloud-project-search").focus()');
-  await window.webContents.insertText('cLoUd uX');
-  await wait('document.getElementById("cloud-project-search").value === "cLoUd uX"');
-  assert.deepEqual(await visibleProjects(),[{id:'cloud-long',checked:false}],'项目搜索忽略大小写');
-  // 等待浏览器实际接收可信按键后再松开，避免隐藏窗口中连续投递事件的时序差异。
-  await window.webContents.executeJavaScript('document.addEventListener("keydown",event=>{window.__cloudTab={key:event.key,trusted:event.isTrusted}},{once:true})');
-  window.webContents.sendInputEvent({type:'keyDown',keyCode:'Tab'});
-  await wait('window.__cloudTab?.key === "Tab" && window.__cloudTab.trusted');
-  window.webContents.sendInputEvent({type:'keyUp',keyCode:'Tab'});
-  await wait('document.activeElement?.getAttribute("aria-label") === "清除搜索"');
-  window.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});
-  window.webContents.sendInputEvent({type:'char',keyCode:'\r'});
-  window.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});
-  await wait('document.getElementById("cloud-project-search").value === ""');
-  assert.equal((await visibleProjects()).length,projectCount,'键盘可以清除搜索并恢复项目列表');
-  await fill('cloud-project-search','cLoUd uX');
-  await assertSelected(1);
-  await clickText('全选匹配项目');
-  assert.deepEqual(await visibleProjects(),[{id:'cloud-long',checked:true}]);
-  await assertSelected(2);
-  await clickText('取消匹配选择');
-  assert.deepEqual(await visibleProjects(),[{id:'cloud-long',checked:false}]);
-  await assertSelected(1);
-  await fill('cloud-project-search','云配置演示项目');
-  assert.equal((await visibleProjects()).length,2);
-  await clickText('全选匹配项目');
-  assert.equal((await visibleProjects()).every(row => row.checked),true,'搜索后的全选仅作用于匹配项目');
-  await assertSelected(2);
-  await fill('cloud-project-search','no-synthetic-project-matches');
-  assert.deepEqual(await visibleProjects(),[],'无匹配结果时不显示其他项目');
-  await assertSelected(2);
+  await openSettings();
+  await createRepository('团队仓库');
+  console.log('UI: created repository');
+  const repositoryId = service.state.activeRepositoryId;
+  await clickTestId('settings-back');
+  await wait('!document.querySelector("[data-testid=settings-page]")');
+  await js('document.querySelector("[data-project-id=cloud-demo] button,button[data-project-id=cloud-demo]").click()');
+  await wait('Boolean(document.querySelector("[data-testid=cloud-project-upload]"))');
+  await clickTestId('cloud-project-upload');
+  await wait('Boolean(document.querySelector("button[data-project-id=cloud-demo] [data-cloud-status=synced]"))');
+  const owner = `renderer:${window.webContents.id}`;
+  const cloudProjectId = service.state.repositories.find(r=>r.repositoryId===repositoryId).catalog[0].projectId;
+  // Seed the long-list fixture through the service; the UI intentionally has no bulk upload.
+  const seeded = await service.invoke(owner,'prepare',{repositoryId,direction:'upload',projectIds:['cloud-secondary','cloud-long',...additionalProjects.map(p => p.projectId)]});
+  await service.invoke(owner,'confirm',{planId:seeded.planId,choices:Object.fromEntries(seeded.rows.map(row => [row.rowId,'local']))});
+  console.log('UI: uploaded project and seeded catalog');
+  await openSettings(); await clickTestId('cloud-check');
+  await wait(`document.querySelectorAll('[data-testid=cloud-project-card]').length === ${projectCount}`);
+  assert.equal(await js('document.querySelector("[data-testid=cloud-project-toolbar]").textContent.includes("上传")'),false,'仓库不提供批量上传');
+  assert.equal(await js('[...document.querySelectorAll("[data-testid=cloud-project-card]")].every(card => card.querySelector("[data-testid=cloud-project-update]") && card.querySelector("[data-testid=cloud-project-upload]") && card.querySelector("[role=switch]"))'),true);
+  await fill('cloud-project-search','Alpha');
+  await wait('document.querySelectorAll("[data-testid=cloud-project-card]").length === 1');
   await fill('cloud-project-search','');
-  assert.deepEqual(Object.fromEntries((await visibleProjects()).map(row => [row.id,row.checked])),{
-    'cloud-demo':true,'cloud-secondary':true,'cloud-long':false,...Object.fromEntries(additionalProjects.map(project => [project.projectId,false])),
-  },'清空搜索后保留隐藏项目的勾选状态');
-  await clickText('全选');
-  await assertSelected(projectCount);
-  await clickText('取消全选');
-  await assertSelected(0);
-  await clickText('全选');
-  await clickTestId('cloud-preview');
-  await wait('Boolean(document.querySelector("[aria-label=同步预览]"))');
-  await window.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(resolve))');
-  assert.equal(await window.webContents.executeJavaScript('document.activeElement === document.querySelector("[aria-label=同步预览] h2")'),true,'进入预览后将焦点移至预览标题');
-  assert.equal((await visibleProjects()).length,0,'预览阶段隐藏项目选择列表');
-  await clickText('返回选择项目');
-  await window.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(resolve))');
-  assert.equal(await window.webContents.executeJavaScript('document.activeElement?.id'),'cloud-project-selection','返回选择后将焦点移至项目选择标题');
-  assert.equal(await window.webContents.executeJavaScript('Boolean(document.querySelector("[aria-label=同步预览]"))'),false,'返回后清除旧同步预览');
-  await assertSelected(projectCount);
-  await clickTestId('cloud-preview');
-  await wait('Boolean(document.querySelector("[aria-label=同步预览]"))');
-  assert.equal(await window.webContents.executeJavaScript('document.querySelector("[aria-label=同步预览]").textContent.includes("synthetic-ui-only-secret")'),false);
-  await clickText('确认上传');
-  await wait('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("已完成 '+projectCount+' 个项目") && !document.querySelector("[data-testid=settings-back]").disabled');
-  await store.updateProject(project.projectId,{name:'本地尚未上传的修改'});
-  await clickTestId('cloud-direction-download');
-  assert.equal((await visibleProjects()).length,projectCount);
-  let releaseCatalog;
-  catalogHold = new Promise(resolve => { releaseCatalog=resolve; });
-  catalogFailure = true;
-  await window.webContents.executeJavaScript('document.querySelector("[aria-label=刷新云配置]").click()');
-  await wait('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("正在读取项目…")');
-  assert.equal(await window.webContents.executeJavaScript('document.querySelector("[data-testid=settings-back]").disabled'),true,'项目列表读取中禁止离开配置');
-  assert.equal(await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("云仓库还没有项目")'),false,'读取中的仓库不能显示为空仓库');
-  releaseCatalog();
-  catalogHold = null;
-  await wait('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("项目读取失败") && !document.querySelector("[data-testid=settings-back]").disabled');
-  assert.equal(await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("云仓库还没有项目")'),false,'读取失败不能显示为空仓库');
-  catalogFailure = false;
-  await clickText('重新读取');
-  await wait('document.querySelectorAll("[data-testid=cloud-project-row]").length === '+projectCount+' && !document.querySelector("[data-testid=settings-back]").disabled');
-  assert.equal(await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("项目读取失败")'),false,'重新读取成功后清除失败状态');
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-project-row][data-project-id=cloud-demo] [role=checkbox]").click()');
-  await assertSelected(1);
-  await assertLayout();
-  await clickTestId('cloud-selected-only');
-  assert.deepEqual(await visibleProjects(),[{id:'cloud-demo',checked:true}],'仅看已选能准确核对长列表中的项目');
-  await clickText('清空选择');
-  await assertSelected(0);
-  assert.deepEqual(await visibleProjects(),[],'清空选择后仅看已选显示明确空状态');
-  await clickText('查看全部项目');
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=cloud-project-row][data-project-id=cloud-demo] [role=checkbox]").click()');
-  await assertSelected(1);
-  await clickTestId('cloud-view-repository');
-  await clickTestId('cloud-view-sync');
-  await assertSelected(1);
-  await assertScrollLayout();
-  const originalTheme = await window.webContents.executeJavaScript('document.documentElement.getAttribute("data-theme")');
-  try {
-    await window.webContents.executeJavaScript('document.documentElement.dataset.theme="light"');
-    const lightBackground = await window.webContents.executeJavaScript('getComputedStyle(document.querySelector("[data-testid=settings-page]")).backgroundColor');
-    await capture();
-    await window.webContents.executeJavaScript('(() => { const list=document.querySelector("[data-testid=cloud-project-list]"); list.scrollTop=(list.scrollHeight-list.clientHeight)/2; })()');
-    await capture('-middle');
-    await window.webContents.executeJavaScript('(() => { const list=document.querySelector("[data-testid=cloud-project-list]"); list.scrollTop=list.scrollHeight; })()');
-    await capture('-bottom');
-    await window.webContents.executeJavaScript('document.documentElement.dataset.theme="dark"');
-    assert.equal(await window.webContents.executeJavaScript('document.documentElement.dataset.theme'),'dark','深色截图使用实际生效的主题属性');
-    assert.notEqual(await window.webContents.executeJavaScript('getComputedStyle(document.querySelector("[data-testid=settings-page]")).backgroundColor'),lightBackground,'浅色和深色模式的 computed 背景必须实际改变');
-    await capture('-dark');
-  } finally {
-    await window.webContents.executeJavaScript(originalTheme === null ? 'document.documentElement.removeAttribute("data-theme")' : `document.documentElement.setAttribute('data-theme',${JSON.stringify(originalTheme)})`);
+  await wait(`document.querySelectorAll('[data-testid=cloud-project-card]').length === ${projectCount}`);
+  console.log('UI: card catalog and search ready');
+  for (const theme of ['light','dark']) {
+    await js(`document.documentElement.dataset.theme=${JSON.stringify(theme)}`);
+    for (const [width,height] of [[1264,846],[900,700],[520,620]]) {
+      window.setContentSize(width,height); await wait(`innerWidth === ${width}`); await assertLayout();
+      const scroll = await js('(() => { const list=document.querySelector("[data-testid=cloud-project-list]"), toolbar=document.querySelector("[data-testid=cloud-project-toolbar]"); list.scrollTop=list.scrollHeight; const last=list.lastElementChild.lastElementChild, rect=last.getBoundingClientRect(), bounds=list.getBoundingClientRect(); const hit=document.elementFromPoint(rect.left+rect.width/2,Math.min(rect.bottom-2,bounds.bottom-2)); const result={scroll:list.scrollTop>0,reachable:last.contains(hit),toolbar:toolbar.getBoundingClientRect().bottom<=bounds.top,outer:document.querySelector("[data-testid=settings-main]").scrollTop}; list.scrollTop=0; return result; })()');
+      assert.deepEqual(scroll,{scroll:true,reachable:true,toolbar:true,outer:0});
+      await capture(`-${theme}-${width}`);
+    }
   }
-  window.setContentSize(520,620);
-  await wait('innerWidth === 520');
-  await assertLayout();
-  await assertScrollLayout();
-  await capture('-narrow');
-  window.setContentSize(1264,780);
-  await wait('innerWidth === 1264');
-  await clickTestId('cloud-preview');
-  await wait('document.querySelector("[aria-label=同步预览]")?.textContent.includes("需要选择")');
-  assert.equal(await window.webContents.executeJavaScript('[...document.querySelectorAll("[aria-label=同步预览] button")].find(b => b.textContent.trim() === "确认导入").disabled'),true);
-  assert.equal(await window.webContents.executeJavaScript('(() => { const radio=document.querySelector("[aria-label=同步预览] input[type=radio]"); return Boolean(radio?.closest("fieldset")?.querySelector("legend")?.textContent.includes("选择配置")); })()'),true,'冲突选项通过 fieldset 和 legend 提供明确的选择范围');
-  await window.webContents.executeJavaScript('[...document.querySelectorAll("[aria-label=同步预览] label")].find(label => label.textContent.includes("采用云端")).querySelector("input").click()');
-  await capture('-preview');
-  await assertLayout();
-  await clickText('确认导入');
-  await wait('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("已完成 1 个项目") && !document.querySelector("[data-testid=cloud-config-panel] fieldset").disabled');
+  window.setContentSize(1264,846); await wait('innerWidth === 1264');
+  await js('document.documentElement.dataset.theme="light"');
+  const cardAction = async action => { await js(`document.querySelector('[data-testid=cloud-project-card][data-project-id=${cloudProjectId}] [data-testid=cloud-project-${action}]').click()`); };
+  console.log('UI: responsive layouts verified');
+  checkFailure = true; await clickTestId('cloud-check');
+  await wait('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("检测失败")');
+  assert.equal(await js('document.querySelectorAll("[data-testid=cloud-project-card]").length'),projectCount,'离线保留缓存项目');
+  checkFailure = false; await clickTestId('cloud-check');
+  await wait('!document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("检测失败")');
+  await store.updateProject(project.projectId,{name:'本地尚未上传的修改'});
+  await clickTestId('cloud-check');
+  await wait(`Boolean(document.querySelector('[data-testid=cloud-project-card][data-project-id="${cloudProjectId}"] [data-cloud-status=modified]'))`);
+  assert.equal((await store.getProject(project.projectId)).name,'本地尚未上传的修改','检测不得覆盖本地修改');
+  await cardAction('update');
+  await wait('Boolean(document.querySelector("[data-testid=cloud-update-confirmation]"))');
+  assert.equal((await store.getProject(project.projectId)).name,'本地尚未上传的修改','打开确认不得覆盖');
+  assert.equal(await js('document.querySelector("[data-testid=settings-back]").disabled'),true);
+  await capture('-confirmation');
+  await js('[...document.querySelectorAll("[role=alertdialog] button")].find(button => button.textContent === "保留本地").click()');
+  await wait('!document.querySelector("[role=alertdialog]")'); await idle();
+  await cardAction('update'); await wait('Boolean(document.querySelector("[data-testid=cloud-confirm-update]"))');
+  await clickTestId('cloud-confirm-update'); await idle();
   assert.equal((await store.getProject(project.projectId)).name,'云配置演示项目 · Alpha');
-  await clickTestId('cloud-view-backups');
-  await clickText('预览恢复');
-  await wait('document.querySelector("[aria-label=同步预览]")?.textContent.includes("本地备份恢复预览")');
-  await window.webContents.executeJavaScript('[...document.querySelectorAll("[aria-label=同步预览] label")].find(label => label.textContent.includes("采用备份")).querySelector("input").click()');
-  await clickText('确认恢复');
-  await wait('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("已完成 1 个项目") && !document.querySelector("[data-testid=cloud-config-panel] fieldset").disabled');
-  assert.equal((await store.getProject(project.projectId)).name,'本地尚未上传的修改');
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=settings-back]").click()');
-  await wait('!document.querySelector("[data-testid=settings-page]")');
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=settings-open]").click()');
-  await wait('Boolean(document.querySelector("[data-testid=settings-cloud]"))');
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=settings-cloud]").click()');
-  await wait('Boolean(document.querySelector("[data-testid=cloud-config-panel]")) && !document.querySelector("[data-testid=settings-back]").disabled');
-  assert.equal(await window.webContents.executeJavaScript('Boolean(document.querySelector("[aria-label=同步预览]"))'),false,'返回后清除旧同步预览');
+  assert.equal(await js('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("synthetic-ui-only-secret")'),false);
+  console.log('UI: conflict confirmation and cancellation verified');
+  await store.updateProject(project.projectId,{name:'上传后的 Alpha'});
+  await cardAction('upload'); await idle();
+  assert.equal(service.state.repositories[0].catalog.find(p => p.projectId === cloudProjectId).name,'上传后的 Alpha');
+  await js(`document.querySelector('[data-testid=cloud-project-card][data-project-id="${cloudProjectId}"] [role=switch]').click()`);
+  await idle(); await wait(`document.querySelector('[data-testid=cloud-project-card][data-project-id="${cloudProjectId}"] [role=switch]').getAttribute('aria-checked') === 'false'`);
+  await clickTestId('settings-back');
+  await wait('!document.querySelector("button[data-project-id=cloud-demo]")');
+  assert.equal(await js('document.querySelector("#project-list").textContent.includes("已同步")'),false,'左侧不显示同步状态文字');
+  assert.equal((await store.listProjects()).length,projectCount,'隐藏不删除配置');
+  await openSettings(); await clickText('全部显示'); await idle();
+  await clickTestId('settings-back'); await wait('!document.querySelector("[data-testid=settings-page]")');
+  await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  await js('document.querySelector("button[data-project-id=cloud-demo]").focus()');
+  const orderBefore = await js('[...document.querySelectorAll("#project-list button[data-project-id]")].map(button=>button.dataset.projectId)');
+  const beforeIndex = orderBefore.indexOf('cloud-demo');
+  assert.ok(beforeIndex>=0 && beforeIndex<orderBefore.length-1);
+  window.webContents.sendInputEvent({type:'keyDown',keyCode:'Down',modifiers:['alt']});
+  window.webContents.sendInputEvent({type:'keyUp',keyCode:'Down',modifiers:['alt']});
+  await wait(`[...document.querySelectorAll("#project-list button[data-project-id]")].findIndex(button=>button.dataset.projectId === "cloud-demo") === ${beforeIndex+1}`);
+  await openSettings();
+  console.log('UI: visibility and forced upload verified');
+  // Speed up only the preference-controlled interval to exercise the real timer callback.
   await clickTestId('cloud-view-repository');
-  await clickText('解除绑定');
-  await wait('Boolean(document.getElementById("cloud-password")) && !document.querySelector("[data-testid=settings-back]").disabled');
+  await js('window.__cloudSetInterval=window.setInterval; window.setInterval=(callback,ms,...args)=>window.__cloudSetInterval(callback,ms===300000?200:ms,...args); void 0');
+  await js('document.querySelector("[aria-label=定时检测间隔]").click()');
+  await wait('Boolean(document.querySelector("[role=option]"))');
+  await js('[...document.querySelectorAll("[role=option]")].find(option=>option.textContent.includes("每 5 分钟")).click()');
+  await idle();
+  const checksBefore = checks;
+  await store.updateProject(project.projectId,{name:'定时检测不覆盖的修改'});
+  const deadline = Date.now()+5000; while(checks<=checksBefore && Date.now()<deadline) await delay(50);
+  assert.ok(checks>checksBefore,'定时器必须调用检测');
+  assert.equal((await store.getProject(project.projectId)).name,'定时检测不覆盖的修改');
+  await js('document.querySelector("[aria-label=定时检测间隔]").click()');
+  await wait('Boolean(document.querySelector("[role=option]"))');
+  await js('[...document.querySelectorAll("[role=option]")].find(option=>option.textContent === "关闭").click()');
+  await idle(); await js('window.setInterval=window.__cloudSetInterval; void 0');
+  await clickText('查看版本'); await idle();
+  assert.equal(await js('Boolean(document.querySelector("[aria-label=历史版本]"))'),true);
+  console.log('UI: timer and history verified');
   await clickTestId('cloud-view-backups');
-  await window.webContents.executeJavaScript('(() => { const backups=document.querySelector("[data-testid=cloud-backups]"); if(!backups) throw new Error("解除绑定后本地备份不可用"); backups.open=true; const button=[...backups.querySelectorAll("button")].find(item => item.textContent.trim() === "预览恢复"); button.dataset.smokeRestoreSource="true"; button.focus(); button.click(); })()');
-  await wait('document.querySelector("[aria-label=同步预览]")?.textContent.includes("本地备份恢复预览") && !document.querySelector("[data-testid=settings-back]").disabled');
-  assert.equal(await window.webContents.executeJavaScript('document.querySelector("[aria-label=同步预览]").textContent.includes("返回本地备份")'),true,'未绑定仓库时恢复预览应提供返回本地备份入口');
-  await clickText('返回本地备份');
-  await window.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(resolve))');
-  assert.equal(await window.webContents.executeJavaScript('Boolean(document.querySelector("[aria-label=同步预览]"))'),false,'返回本地备份后清除恢复预览');
-  assert.equal(await window.webContents.executeJavaScript('document.activeElement === document.querySelector("[data-smoke-restore-source=true]")'),true,'返回本地备份后恢复到原恢复按钮的焦点');
-  await clickTestId('cloud-view-repository');
-  await fill('cloud-password','synthetic-unsaved-password');
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=settings-back]").click()');
+  await clickTestId('cloud-add-repository'); await createRepository('个人仓库');
+  const secondId = service.state.activeRepositoryId;
+  await clickTestId('settings-back');
   await wait('!document.querySelector("[data-testid=settings-page]")');
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=settings-open]").click()');
-  await wait('Boolean(document.querySelector("[data-testid=settings-cloud]"))');
-  await window.webContents.executeJavaScript('document.querySelector("[data-testid=settings-cloud]").click()');
-  await wait('Boolean(document.getElementById("cloud-password")) && !document.querySelector("[data-testid=settings-back]").disabled');
-  assert.equal(await window.webContents.executeJavaScript('document.getElementById("cloud-password").value'),'', '离开配置页面后清除未提交的密码');
-  window.setContentSize(520,620);
-  await wait('innerWidth === 520');
-  assert.equal(await window.webContents.executeJavaScript('(() => { const page=document.querySelector("[data-testid=settings-main]"); return page.scrollWidth <= page.clientWidth && document.documentElement.scrollWidth <= innerWidth; })()'),true,'窄窗口云配置无水平溢出');
+  await js('document.querySelector("button[data-project-id=cloud-demo]").click()');
+  await wait('Boolean(document.querySelector("[aria-label=上传到其他仓库]"))');
+  await js('document.querySelector("[aria-label=上传到其他仓库]").focus()');
+  window.webContents.sendInputEvent({type:'keyDown',keyCode:'Down'});
+  window.webContents.sendInputEvent({type:'keyUp',keyCode:'Down'});
+  await wait('Boolean(document.querySelector("[role=menuitem]"))');
+  await js('[...document.querySelectorAll("[role=menuitem]")].find(item=>item.textContent.includes("个人仓库")).click()');
+  await wait('Boolean(document.querySelector("[data-cloud-project-id]"))');
+  const copiedId = service.state.repositories.find(r=>r.repositoryId===secondId).catalog[0].projectId;
+  assert.notEqual(copiedId,cloudProjectId);
+  assert.equal((await store.listProjects()).length,projectCount);
+  await js(`document.querySelector('[data-cloud-project-id="${copiedId}"]').click()`);
+  await wait(`Boolean(document.querySelector('button[data-project-id="${copiedId}"]'))`);
+  assert.equal((await store.listProjects()).length,projectCount+1);
+  if (process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR) {
+    await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    await delay(200);
+    const directory = path.resolve(process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR);
+    assert.ok(!directory.startsWith(root+path.sep));
+    await fs.writeFile(path.join(directory,'workbench-cloud.png'),(await window.webContents.capturePage()).toPNG());
+  }
+  await openSettings();
+  for(let index=0;index<2;index++) { await clickTestId('cloud-view-repository'); await clickText('解除绑定'); await idle(); }
+  await wait('Boolean(document.getElementById("cloud-password"))');
+  await clickTestId('cloud-view-backups');
+  await wait('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("恢复备份")');
+  await clickText('恢复备份');
+  await wait('document.querySelector("[role=alertdialog]")?.textContent.includes("恢复本机备份")');
+  await js('[...document.querySelectorAll("[role=alertdialog] button")].find(button => button.textContent === "保留本地").click()');
   assert.deepEqual(network,[]); assert.deepEqual(errors,[]);
-  console.log('云配置 Electron 冒烟通过：搜索与跨筛选选择、读取失败重试、预览返回、24 项长列表顶部/中部/底部无覆盖、仅列表滚动、窄屏与长名称、创建上传、冲突导入、解绑后备份预览及凭据不回显。');
+  console.log('云配置 Electron 冒烟通过：单项目双向同步、修改确认、图标状态、真实定时检测不写配置、多仓库独立 ID、显示开关、24 个项目卡片滚动、浅深色与窄屏、离线缓存、解绑后备份恢复入口。');
 }
 run().then(() => finish(0)).catch(error => { console.error(error); return finish(1); });
 async function finish(code) {

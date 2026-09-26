@@ -398,7 +398,8 @@ test('AppShell feeds live-overlaid projects to every navigation surface', () => 
   assert.match(shell,/overlayWorkspaceRuntimeStatuses\(/u);
   assert.match(shell,/<ProjectRail[\s\S]*?projects=\{navigationProjects\}/u);
   assert.match(shell,/<ResourcePane[\s\S]*?project=\{navigationProject\}/u);
-  assert.match(shell,/<GlobalCommand[\s\S]*?projects=\{navigationProjects\}/u);
+  assert.match(shell,/<GlobalCommand[\s\S]*?projects=\{navigationProjects\.filter\(/u);
+  assert.match(shell,/item\.localId === project\.projectId && !item\.visible/u);
 });
 
 test('overview components are prop-driven shadcn compositions', () => {

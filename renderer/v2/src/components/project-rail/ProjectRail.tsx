@@ -1,5 +1,7 @@
+import { CloudProjectIcon, cloudStatusLabels } from "@/features/cloud-config/CloudProjectActions"
+import type { CloudLinkedProject, CloudRepository } from "@/features/cloud-config/cloud-types"
 import { shortcutLabel } from "@/lib/platform"
-import { useEffect, useMemo, useState } from "react"
+import { Fragment, useEffect, useMemo, useState } from "react"
 import {
   ArrowClockwise,
   DotsThree,
@@ -101,6 +103,12 @@ export type ProjectRailAction =
   | Readonly<{ type: "open-confirmations" }>
 
 interface ProjectRailProps {
+  readonly cloudRepositories?: readonly CloudRepository[]
+  readonly cloudProjects?: readonly CloudLinkedProject[]
+  readonly cloudBusy?: boolean
+  readonly cloudChecking?: boolean
+  readonly onCheckCloud?: () => void
+  readonly onOpenCloudProject?: (repositoryId: string, projectId: string) => void
   readonly shortcutsDisabled?: boolean
   readonly collapsed: boolean
   readonly expandDisabled?: boolean
@@ -213,6 +221,7 @@ function ProjectActionsMenu({ project, onAction, selectedProjectId }: {
 }
 
 export function ProjectRail({
+  cloudRepositories = [], cloudProjects = [], cloudBusy = false, cloudChecking = false, onCheckCloud, onOpenCloudProject,
   shortcutsDisabled = false,
   collapsed,
   expandDisabled = false,
@@ -230,10 +239,27 @@ export function ProjectRail({
 }: ProjectRailProps) {
   const projectNavigation = useRovingNavigation<HTMLElement>()
   const [projectQuery, setProjectQuery] = useState("")
+  const linkedByLocalId = new Map(cloudProjects.filter(item => item.localId).map(item => [item.localId, item]))
+  const localProjects = projects.filter(project => !linkedByLocalId.has(project.projectId))
+  const groups = [{ id: "local", name: "本地仓库", projects: localProjects }, ...cloudRepositories.map(repository => ({
+    id: repository.repositoryId,
+    name: repository.name,
+    projects: [
+      ...projects.filter(project => { const linked = linkedByLocalId.get(project.projectId); return linked?.repositoryId === repository.repositoryId && linked.visible }),
+      ...cloudProjects.filter(item => item.repositoryId === repository.repositoryId && item.visible && !projects.some(project => project.projectId === item.localId)).map(item => ({
+        projectId: `cloud:${item.repositoryId}:${item.projectId}`, name: item.name, environmentCount: item.environmentCount,
+        pluginCount: item.pluginCount, environments: [], revision: 0, isolated: false, status: "disconnected" as const,
+      })),
+    ],
+  }))]
+  const linkedByDisplayId = new Map(cloudProjects.map(item => [projects.some(project => project.projectId === item.localId) ? item.localId : `cloud:${item.repositoryId}:${item.projectId}`, item]))
+  const displayedProjects = groups.flatMap(group => group.projects)
   const projectDrag = useProjectDragOrder({
     disabled: loading || !!error,
-    onMoveProjectRelative,
-    projects,
+    onMoveProjectRelative: onMoveProjectRelative ? (sourceId, targetId, after) => {
+      return linkedByLocalId.get(sourceId)?.repositoryId === linkedByLocalId.get(targetId)?.repositoryId && onMoveProjectRelative(sourceId, targetId, after)
+    } : undefined,
+    projects: displayedProjects.filter(project => !project.projectId.startsWith("cloud:")),
     query: projectQuery,
   })
   const confirmationCount = pendingConfirmationCount
@@ -260,11 +286,11 @@ export function ProjectRail({
   }, [onToggleCollapsed, toggleDisabled, shortcutsDisabled])
   const normalizedProjectQuery = normalizeProjectQuery(projectQuery)
   const visibleProjects = useMemo(() => {
-    if (!normalizedProjectQuery) return projects
-    return projects.filter((project) => normalizeProjectQuery(
+    if (!normalizedProjectQuery) return displayedProjects
+    return displayedProjects.filter((project) => normalizeProjectQuery(
       project.name + " " + projectDescription(project),
     ).includes(normalizedProjectQuery))
-  }, [normalizedProjectQuery, projects])
+  }, [normalizedProjectQuery, displayedProjects])
   const selectedProject = visibleProjects.find(
     (project) => project.projectId === selectedProjectId && !project.isolated,
   )
@@ -351,15 +377,16 @@ export function ProjectRail({
             </InputGroup>
             <p aria-live="polite" className="sr-only" id="project-search-status">
               {normalizedProjectQuery
-                ? `找到 ${visibleProjects.length} 个项目，共 ${projects.length} 个项目`
-                : `共 ${projects.length} 个项目`}
+                ? `找到 ${visibleProjects.length} 个项目，共 ${displayedProjects.length} 个项目`
+                : `共 ${displayedProjects.length} 个项目`}
             </p>
           </div>
           <SidebarGroupLabel className="mx-4 mt-3 mb-2 h-6 px-0 text-xs leading-4 tracking-normal">
             项目
             <span aria-hidden="true" className={cn("ml-2 text-xs font-normal text-muted-foreground", (!projectDrag.enabled || collapsed) && "hidden")}>拖动排序</span>
+            {cloudRepositories.length > 0 ? <Button aria-label="检测云仓库更新" size="icon-xs" variant="ghost" className="ml-auto mr-1" disabled={cloudChecking} onClick={onCheckCloud}><ArrowClockwise className={cloudChecking ? "animate-spin" : undefined} /></Button> : null}
             <span className="ml-auto font-mono tabular-nums">
-              {normalizedProjectQuery ? `${visibleProjects.length}/${projects.length}` : projects.length}
+              {normalizedProjectQuery ? `${visibleProjects.length}/${displayedProjects.length}` : displayedProjects.length}
             </span>
           </SidebarGroupLabel>
           <p className="sr-only" id="project-order-help">拖动项目调整顺序，也可按 Alt + 上下方向键排序。顺序保存在本机。</p>
@@ -422,7 +449,7 @@ export function ProjectRail({
                   </div>
                 ) : null}
                 <SidebarMenu className="gap-0.5" id="project-list">
-                  {loading && projects.length === 0 ? (
+                  {loading && displayedProjects.length === 0 ? (
                     <>
                       {[0, 1, 2].map((index) => (
                         <SidebarMenuItem aria-busy="true" key={index}>
@@ -432,8 +459,19 @@ export function ProjectRail({
                         </SidebarMenuItem>
                       ))}
                     </>
-                  ) : error && projects.length === 0 ? null : visibleProjects.length > 0 ? (
-                    visibleProjects.map((project) => {
+                  ) : error && displayedProjects.length === 0 ? null : visibleProjects.length > 0 || (!normalizedProjectQuery && cloudRepositories.length > 0) ? (
+                    groups.map(group => <Fragment key={group.id}>
+                    {(!normalizedProjectQuery || group.projects.some(project => visibleProjects.includes(project))) ? <li role="presentation"><SidebarGroupLabel className="h-8 truncate px-2.5 text-xs" title={group.name}>{group.name}</SidebarGroupLabel></li> : null}
+                    {group.projects.filter(project => visibleProjects.includes(project)).map((project) => {
+                      const linked = linkedByDisplayId.get(project.projectId)
+                      if (linked && project.projectId.startsWith("cloud:")) return <SidebarMenuItem key={project.projectId}>
+                        <SidebarMenuButton className="h-8 gap-2 px-2.5" data-shell-nav-item data-cloud-project-id={linked.projectId}
+                          aria-label={`${project.name}，${cloudStatusLabels[linked.syncStatus]}`} disabled={cloudBusy || !cloudRepositories.find(repo => repo.repositoryId === linked.repositoryId)?.unlocked}
+                          tabIndex={tabStopProjectId === project.projectId ? 0 : -1}
+                          onClick={() => onOpenCloudProject?.(linked.repositoryId, linked.projectId)}>
+                          <CloudProjectIcon status={linked.syncStatus} /><span className="min-w-0 flex-1 truncate text-xs font-medium" data-project-name>{project.name}</span>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
                       const selected =
                         selectedProjectId === project.projectId && !project.isolated
                       const isolationDescriptionId = `project-isolated-${project.projectId}`
@@ -467,7 +505,7 @@ export function ProjectRail({
                               aria-describedby={project.isolated ? isolationDescriptionId : "project-order-help"}
                               aria-keyshortcuts={project.isolated ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
                               aria-disabled={project.isolated || undefined}
-                              aria-label={`${project.name}，${projectDescription(project)}，${statusLabel(project.status)}`}
+                              aria-label={`${project.name}，${projectDescription(project)}，${statusLabel(project.status)}${linked ? `，${cloudStatusLabels[linked.syncStatus]}` : ""}`}
                               className={cn(
                                 "relative before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-r-full before:bg-transparent",
                                 "transition-colors duration-150",
@@ -486,7 +524,14 @@ export function ProjectRail({
                                 if (!project.isolated) onSelectProject(project.projectId)
                               }}
                               onKeyDown={(event) => {
-                                if (!project.isolated) onProjectKeyDown?.(event, project.projectId)
+                                if (project.isolated) return
+                                if (cloudRepositories.length && event.altKey && !event.ctrlKey && !event.metaKey && ["ArrowUp", "ArrowDown"].includes(event.key)) {
+                                  event.preventDefault()
+                                  const siblings = group.projects.filter(item => !item.isolated && !item.projectId.startsWith("cloud:"))
+                                  const offset = event.key === "ArrowUp" ? -1 : 1
+                                  const target = siblings[siblings.findIndex(item => item.projectId === project.projectId) + offset]
+                                  if (target) onMoveProjectRelative?.(project.projectId, target.projectId, offset === 1)
+                                } else onProjectKeyDown?.(event, project.projectId)
                               }}
                               onDragEnd={projectDrag.clearDrag}
                               onDragStart={(event) => projectDrag.onDragStart(event, project)}
@@ -507,6 +552,7 @@ export function ProjectRail({
                               }}
                               type="button"
                             >
+                              {linked ? <CloudProjectIcon status={linked.syncStatus} /> : null}
                               <span aria-hidden="true" className="min-w-0 flex-1 truncate text-left text-xs font-medium leading-5" data-project-name data-project-compact-name>
                                 {project.name}
                               </span>
@@ -529,8 +575,9 @@ export function ProjectRail({
                           <ProjectActionsMenu onAction={onAction} project={project} selectedProjectId={selectedProjectId} />
                         </SidebarMenuItem>
                       )
-                    })
-                  ) : projects.length > 0 && normalizedProjectQuery ? (
+                    })}
+                    </Fragment>)
+                  ) : displayedProjects.length > 0 && normalizedProjectQuery ? (
                     <li data-testid="project-search-empty-state">
                       <Empty className="min-h-32 gap-2 rounded-md p-3">
                         <EmptyHeader className="gap-1">

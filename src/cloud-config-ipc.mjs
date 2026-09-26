@@ -2,8 +2,9 @@ import { cloudError } from './cloud-config-crypto.mjs';
 import { toPublicError } from './errors.mjs';
 
 const ACTIONS = {
-  status:[],bind:['url','password','remember'],create:['serviceUrl','adminToken','password','remember'],unbind:[],
-  catalog:['snapshotId'],prepare:['direction','projectIds','snapshotId'],confirm:['planId','choices'],prepareRestore:['backupId'],
+  status:[],bind:['url','password','remember','name'],create:['serviceUrl','adminToken','password','remember','name'],unbind:['repositoryId'],
+  catalog:['snapshotId','repositoryId'],prepare:['direction','projectIds','snapshotId','repositoryId'],confirm:['planId','choices'],prepareRestore:['backupId'],
+  check:['repositoryId'],visibility:['repositoryId','projectIds','visible'],preferences:['checkIntervalMinutes'],sync:['repositoryId','direction','projectId'],
 };
 export function registerCloudConfigIpc(ipcMain,services) {
   const installed = new WeakSet();

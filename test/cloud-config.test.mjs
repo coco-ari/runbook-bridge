@@ -407,3 +407,151 @@ test('恢复已提交事务保留新配置，记住凭据重启后可用且不�
   const saved = await fs.readFile(a.service.stateFile,'utf8');
   assert.ok(!saved.includes(PASSWORD));
 });
+
+test('多仓库复制生成独立 ID，检测不写配置，隐藏只改变本机显示，解除单仓库保留数据',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client);
+  const p = await project(a);
+  const one = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD,remember:true,name:'合成仓库一'});
+  await a.call('sync',{repositoryId:one.repositoryId,direction:'upload',projectId:p.projectId});
+  const two = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD,remember:true,name:'合成仓库二'});
+  await a.call('sync',{repositoryId:two.repositoryId,direction:'upload',projectId:p.projectId});
+  const before = snapshotDigest(await a.workspace.capture(p.projectId));
+  const status = await a.call('check');
+  assert.equal(status.repositories.length,2);
+  const first = status.cloudProjects.find(p => p.repositoryId === one.repositoryId), second = status.cloudProjects.find(p => p.repositoryId === two.repositoryId);
+  assert.notEqual(first.projectId,second.projectId);
+  assert.match(first.projectId,/^project-[a-f0-9-]{36}$/);
+  assert.equal(second.downloaded,false);
+  assert.equal(second.localId,null);
+  assert.equal((await a.store.listProjects()).length,1);
+  assert.equal(snapshotDigest(await a.workspace.capture(p.projectId)),before);
+  assert.equal((await a.call('sync',{repositoryId:two.repositoryId,direction:'download',projectId:second.projectId})).results[0].status,'imported');
+  assert.equal((await a.store.listProjects()).length,2);
+  await a.store.updateProject(second.projectId,{name:'独立副本'});
+  assert.equal((await a.store.getProject(p.projectId)).name,'合成测试项目');
+  await a.call('visibility',{repositoryId:one.repositoryId,projectIds:[first.projectId],visible:false});
+  const hidden = await a.call('check');
+  assert.equal(hidden.cloudProjects.find(p => p.repositoryId === one.repositoryId).visible,false);
+  assert.equal(hidden.cloudProjects.find(p => p.repositoryId === two.repositoryId).visible,true);
+  assert.equal((await a.store.listProjects()).length,2);
+  await assert.rejects(a.call('visibility',{repositoryId:two.repositoryId,projectIds:[first.projectId],visible:false}),{code:'CLOUD_INVALID_ARGUMENT'});
+  await assert.rejects(a.call('sync',{repositoryId:crypto.randomUUID(),direction:'upload',projectId:p.projectId}),{code:'CLOUD_NOT_FOUND'});
+  const reloaded = await device(t,remote.client);
+  await reloaded.workspace.writeSealed(reloaded.service.stateFile,a.service.state);
+  await reloaded.service.init();
+  assert.equal((await reloaded.call('status')).repositories.length,2);
+  await a.call('unbind',{repositoryId:one.repositoryId});
+  const unbound = await a.call('status');
+  assert.equal(unbound.repositories.length,1);
+  assert.equal(unbound.cloudProjects[0].repositoryId,two.repositoryId);
+  assert.equal((await a.store.listProjects()).length,2);
+  assert.ok(!JSON.stringify(status).includes('synthetic-ssh-secret'));
+  assert.ok(!JSON.stringify(status).includes('digest'));
+});
+
+test('显式更新直接覆盖已知旧版本，未知修改需一次性确认，检测及取消不覆盖',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), b = await device(t,remote.client);
+  const p = await project(a);
+  const one = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  await upload(a,p.projectId);
+  const two = await b.call('bind',{url:one.url,password:PASSWORD});
+  const sync = (device,repositoryId,direction) => device.call('sync',{repositoryId,direction,projectId:p.projectId});
+  await sync(b,two.repositoryId,'download');
+  await a.store.updateProject(p.projectId,{name:'云端第二版'});
+  await sync(a,one.repositoryId,'upload');
+  assert.equal((await b.call('check')).cloudProjects[0].syncStatus,'behind');
+  assert.equal((await b.store.getProject(p.projectId)).name,'合成测试项目');
+  const clean = await sync(b,two.repositoryId,'download');
+  assert.equal(clean.planId,undefined);
+  assert.equal(clean.results[0].status,'imported');
+  assert.equal((await b.store.getProject(p.projectId)).name,'云端第二版');
+  await b.store.updateProject(p.projectId,{name:'仅在本地修改'});
+  assert.equal((await b.call('check')).cloudProjects[0].syncStatus,'modified');
+  const conflict = await sync(b,two.repositoryId,'download');
+  assert.ok(conflict.planId);
+  assert.equal(conflict.rows[0].conflict,true);
+  assert.equal((await b.store.getProject(p.projectId)).name,'仅在本地修改');
+  const confirmed = await b.call('confirm',{planId:conflict.planId,choices:{[conflict.rows[0].rowId]:'cloud'}});
+  assert.equal(confirmed.results[0].status,'imported');
+  await assert.rejects(b.call('confirm',{planId:conflict.planId,choices:{[conflict.rows[0].rowId]:'cloud'}}),{code:'CLOUD_PLAN_EXPIRED'});
+  // 回到更早的、不是最近同步基线的云端版本，也应通过哈希识别后直接更新。
+  await b.service.saveRepository({...b.service.repository(two.repositoryId),hashes:{}});
+  await b.store.updateProject(p.projectId,{name:'合成测试项目'});
+  const old = await sync(b,two.repositoryId,'download');
+  assert.equal(old.planId,undefined);
+  assert.equal(old.results[0].status,'imported');
+  assert.equal((await b.store.getProject(p.projectId)).name,'云端第二版');
+});
+
+test('单项目上传硬覆盖并保留其他云项目，整库更新包含隐藏项目且不下载未打开项目',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), b = await device(t,remote.client);
+  const p = await project(a), other = await project(a,'other-project');
+  const one = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  for (const item of [p,other]) await upload(a,item.projectId);
+  const two = await b.call('bind',{url:one.url,password:PASSWORD});
+  await b.call('check');
+  await b.call('sync',{repositoryId:two.repositoryId,direction:'download',projectId:p.projectId});
+  await b.call('visibility',{repositoryId:two.repositoryId,projectIds:[p.projectId],visible:false});
+  await a.store.updateProject(p.projectId,{name:'来自设备一'});
+  await a.call('sync',{repositoryId:one.repositoryId,direction:'upload',projectId:p.projectId});
+  await b.store.updateProject(p.projectId,{name:'强制上传设备二'});
+  const uploaded = await b.call('sync',{repositoryId:two.repositoryId,direction:'upload',projectId:p.projectId});
+  assert.equal(uploaded.planId,undefined);
+  assert.equal(uploaded.results[0].status,'uploaded');
+  const catalog = await b.call('catalog',{repositoryId:two.repositoryId});
+  assert.equal(catalog.projects.length,2);
+  assert.equal(catalog.projects.find(item => item.projectId === p.projectId).name,'强制上传设备二');
+  await a.call('sync',{repositoryId:one.repositoryId,direction:'upload',projectId:p.projectId});
+  const bulk = await b.call('sync',{repositoryId:two.repositoryId,direction:'download'});
+  assert.equal(bulk.results.length,1);
+  assert.equal(bulk.results[0].status,'imported');
+  assert.equal((await b.store.listProjects()).length,1);
+  assert.equal((await b.store.getProject(p.projectId)).name,'来自设备一');
+  assert.equal((await b.call('status')).cloudProjects.find(item => item.projectId === p.projectId).visible,false);
+  await assert.rejects(b.call('sync',{repositoryId:two.repositoryId,direction:'upload'}),{code:'CLOUD_INVALID_ARGUMENT'});
+});
+
+test('旧单仓库状态自动迁移且保留关联、密码与旧版本更新基线',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client);
+  const p = await project(a);
+  await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD,remember:true});
+  await upload(a,p.projectId);
+  const {repositoryId, ...repository} = a.service.state.repositories[0];
+  const mappings = a.service.state.mappings.map(({repositoryId,...mapping}) => mapping);
+  await a.workspace.writeSealed(a.service.stateFile,{schemaVersion:1,repository,mappings});
+  a.service.closeOwner('test-owner');
+  await a.service.init();
+  assert.equal(a.service.state.schemaVersion,2);
+  const status = await a.call('check');
+  assert.equal(status.repositories.length,1);
+  assert.equal(status.repositories[0].remembered,true);
+  assert.equal(status.cloudProjects[0].syncStatus,'synced');
+  assert.equal(status.cloudProjects[0].localId,p.projectId);
+  assert.notEqual(status.repositories[0].repositoryId,repositoryId);
+});
+
+test('手动硬上传在条件提交冲突后读取新版本重试，保留并发设备对其他项目的更新',async t => {
+  const remote = await cloud(t), a = await device(t,new CloudConfigClient()), b = await device(t,new CloudConfigClient());
+  const p = await project(a), other = await project(a,'other-project');
+  const one = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  for (const item of [p,other]) await upload(a,item.projectId);
+  const two = await b.call('bind',{url:one.url,password:PASSWORD});
+  await b.call('sync',{repositoryId:two.repositoryId,direction:'download',projectId:other.projectId});
+  await b.store.updateProject(other.projectId,{name:'并发设备更新其他项目'});
+  await a.store.updateProject(p.projectId,{name:'当前设备手动硬上传'});
+  const original = a.service.client.call.bind(a.service.client);
+  let raced = false;
+  a.service.client.call = async (session,resource,options) => {
+    if (!raced && resource === 'snapshots' && options?.method === 'POST') {
+      raced = true;
+      await b.call('sync',{repositoryId:two.repositoryId,direction:'upload',projectId:other.projectId});
+    }
+    return original(session,resource,options);
+  };
+  const result = await a.call('sync',{repositoryId:one.repositoryId,direction:'upload',projectId:p.projectId});
+  assert.equal(raced,true);
+  assert.equal(result.results[0].status,'uploaded');
+  const catalog = await a.call('catalog',{repositoryId:one.repositoryId});
+  assert.equal(catalog.projects.find(item => item.projectId === p.projectId).name,'当前设备手动硬上传');
+  assert.equal(catalog.projects.find(item => item.projectId === other.projectId).name,'并发设备更新其他项目');
+});

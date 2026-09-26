@@ -70,7 +70,7 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(projectRail,/aria-current=\{selected \? "page" : undefined\}/u);
   assert.match(projectRail,/aria-disabled=\{project\.isolated \|\| undefined\}/u);
   assert.match(projectRail,/项目配置已隔离，无法选择、排序或新增环境/u);
-  assert.match(projectRail,/if \(!project\.isolated\) onProjectKeyDown/u);
+  assert.match(projectRail,/if \(project\.isolated\) return[\s\S]*?onProjectKeyDown/u);
   assert.doesNotMatch(projectRail,/data-project-meta/u);
   assert.match(projectRail,/data-project-status-badge/u);
   assert.match(projectRail,/\[&_svg\]:size-3!/u);
@@ -196,7 +196,7 @@ test('navigation read failures take precedence over empty states and expose scop
   assert.match(projectRail,/from "@\/components\/ui\/alert"/u);
   assert.match(projectRail,/data-testid="project-navigation-read-error"/u);
   assert.match(projectRail,/当前显示上次成功读取的项目摘要/u);
-  assert.match(projectRail,/error && projects\.length === 0 \? null/u);
+  assert.match(projectRail,/error && displayedProjects\.length === 0 \? null/u);
   assert.ok(
     projectRail.indexOf('data-testid="project-navigation-read-error"')
       < projectRail.indexOf('data-testid="project-empty-state"'),
