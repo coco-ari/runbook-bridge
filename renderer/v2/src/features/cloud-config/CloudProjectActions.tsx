@@ -1,4 +1,5 @@
-import { CaretDown, Cloud, DownloadSimple, UploadSimple } from "@phosphor-icons/react"
+import { CaretDown, Cloud, DownloadSimple, FolderSimple, UploadSimple } from "@phosphor-icons/react"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
@@ -10,6 +11,15 @@ export const cloudStatusLabels: Record<CloudSyncStatus, string> = {
 }
 export function CloudProjectIcon({ status }: { status: CloudSyncStatus }) {
   return <Cloud aria-label={cloudStatusLabels[status]} data-cloud-status={status} className={cn("size-3.5 shrink-0", status === "behind" ? "text-primary" : status === "modified" ? "text-warning" : status === "error" ? "text-destructive" : "text-muted-foreground")} />
+}
+export function CloudProjectSource({ projectId }: { projectId: string }) {
+  const { data } = useCloudConfig()
+  const connection = data.cloudProjects?.find(item => item.localId === projectId)
+  const repository = data.repositories?.find(repo => repo.repositoryId === connection?.repositoryId)
+  const label = connection ? repository?.name ?? "云仓库" : "本地项目"
+  return <Badge variant="outline" className="min-w-0 max-w-full gap-1.5" data-testid="cloud-project-source" title={connection ? `云仓库：${label}` : label}>
+    {connection ? <Cloud className="shrink-0" /> : <FolderSimple className="shrink-0" />}<span className="truncate">{label}</span>
+  </Badge>
 }
 export function CloudProjectActions({ projectId, linked, elsewhere = true }: { projectId?: string; linked?: CloudLinkedProject; elsewhere?: boolean }) {
   const cloud = useCloudConfig()

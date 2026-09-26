@@ -1,13 +1,16 @@
-import { CloudProjectIcon, cloudStatusLabels } from "@/features/cloud-config/CloudProjectActions"
+import { cloudStatusLabels } from "@/features/cloud-config/CloudProjectActions"
 import type { CloudLinkedProject, CloudRepository } from "@/features/cloud-config/cloud-types"
 import { shortcutLabel } from "@/lib/platform"
 import { useEffect, useMemo, useState } from "react"
 import {
   ArrowClockwise,
   DotsThree,
+  DownloadSimple,
   FolderSimple,
   GearSix,
+  LockKey,
   MagnifyingGlass,
+  PencilSimple,
   Plus,
   ShieldWarning,
   Trash,
@@ -93,6 +96,22 @@ function projectDescription(project: WorkspaceProjectReadModel): string {
 
 function normalizeProjectQuery(value: string): string {
   return value.normalize("NFKC").trim().toLowerCase()
+}
+
+function ProjectListStatus({ project, linked, hasActions = true }: { project: WorkspaceProjectReadModel; linked?: CloudLinkedProject | undefined; hasActions?: boolean }) {
+  const syncStatus = linked?.syncStatus
+  const NoticeIcon = syncStatus === "behind" || syncStatus === "remote" ? DownloadSimple
+    : syncStatus === "modified" ? PencilSimple
+    : syncStatus === "error" ? WarningCircle
+    : syncStatus === "locked" ? LockKey : null
+  const showNotice = NoticeIcon && !project.isolated && (project.status === "connected" || project.status === "disconnected")
+  return <span aria-hidden="true" className={cn("grid size-3 shrink-0 place-items-center", hasActions && "group-hover/menu-item:opacity-0 group-focus-within/menu-item:opacity-0 group-has-[[data-sidebar=menu-action][aria-expanded=true]]/menu-item:opacity-0")} data-project-compact-status data-project-status-badge data-cloud-status={syncStatus}>
+    {showNotice ? <NoticeIcon data-cloud-notice={syncStatus} className={cn("size-3", syncStatus === "behind" ? "text-primary" : syncStatus === "modified" ? "text-warning" : syncStatus === "error" ? "text-destructive" : "text-muted-foreground")} /> : project.status === "disconnected" ? (
+      <span className="grid size-3 place-items-center" data-status="disconnected" title={statusLabel(project.status)}>
+        <span className="size-[7px] rounded-full border border-muted-foreground" />
+      </span>
+    ) : <StatusIndicator className="size-3 justify-center leading-none [&_svg]:size-3!" compact status={project.status} />}
+  </span>
 }
 
 export type ProjectRailAction =
@@ -454,12 +473,15 @@ export function ProjectRail({
                   ) : error && displayedProjects.length === 0 ? null : visibleProjects.length > 0 ? (
                     visibleProjects.map((project) => {
                       const linked = linkedByDisplayId.get(project.projectId)
+                      const repository = cloudRepositories.find(repo => repo.repositoryId === linked?.repositoryId)
+                      const cloudDescription = linked ? `${repository?.name ?? "云仓库"} · ${cloudStatusLabels[linked.syncStatus]}` : ""
                       if (linked && project.projectId.startsWith("cloud:")) return <SidebarMenuItem key={project.projectId}>
                         <SidebarMenuButton className="h-8 gap-2 px-2.5" data-shell-nav-item data-cloud-project-id={linked.projectId}
-                          aria-label={`${project.name}，${cloudStatusLabels[linked.syncStatus]}`} disabled={cloudBusy || !cloudRepositories.find(repo => repo.repositoryId === linked.repositoryId)?.unlocked}
+                          aria-label={`${project.name}，${cloudDescription}`} disabled={cloudBusy || !repository?.unlocked}
+                          tooltip={{ hidden: false, children: <span className="space-y-1"><span className="block font-semibold">{project.name}</span><span className="block text-xs">{cloudDescription}</span></span> }}
                           tabIndex={tabStopProjectId === project.projectId ? 0 : -1}
                           onClick={() => onOpenCloudProject?.(linked.repositoryId, linked.projectId)}>
-                          <CloudProjectIcon status={linked.syncStatus} /><span className="min-w-0 flex-1 truncate text-xs font-medium" data-project-name>{project.name}</span>
+                          <span className="min-w-0 flex-1 truncate text-xs font-medium" data-project-name>{project.name}</span><ProjectListStatus project={project} linked={linked} hasActions={false} />
                         </SidebarMenuButton>
                       </SidebarMenuItem>
                       const selected =
@@ -495,7 +517,7 @@ export function ProjectRail({
                               aria-describedby={project.isolated ? isolationDescriptionId : "project-order-help"}
                               aria-keyshortcuts={project.isolated ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
                               aria-disabled={project.isolated || undefined}
-                              aria-label={`${project.name}，${projectDescription(project)}，${statusLabel(project.status)}${linked ? `，${cloudStatusLabels[linked.syncStatus]}` : ""}`}
+                              aria-label={`${project.name}，${projectDescription(project)}，${statusLabel(project.status)}${cloudDescription ? `，${cloudDescription}` : ""}`}
                               className={cn(
                                 "relative before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-r-full before:bg-transparent",
                                 "transition-colors duration-150",
@@ -536,25 +558,17 @@ export function ProjectRail({
                                     <span className="block text-xs [overflow-wrap:anywhere]">
                                       {projectDescription(project)} · {statusLabel(project.status)}
                                     </span>
+                                    {cloudDescription ? <span className="block text-xs [overflow-wrap:anywhere]">{cloudDescription}</span> : null}
                                     {projectDrag.canDrag(project) ? <span className="block text-xs">拖动排序 · Alt + ↑ / ↓</span> : null}
                                   </span>
                                 ),
                               }}
                               type="button"
                             >
-                              {linked ? <CloudProjectIcon status={linked.syncStatus} /> : null}
                               <span aria-hidden="true" className="min-w-0 flex-1 truncate text-left text-xs font-medium leading-5" data-project-name data-project-compact-name>
                                 {project.name}
                               </span>
-                              <span aria-hidden="true" className="grid size-3 shrink-0 place-items-center group-hover/menu-item:opacity-0 group-focus-within/menu-item:opacity-0 group-has-[[data-sidebar=menu-action][aria-expanded=true]]/menu-item:opacity-0" data-project-compact-status data-project-status-badge>
-                                {project.status === "disconnected" ? (
-                                  <span className="grid size-3 place-items-center" data-status="disconnected" title={statusLabel(project.status)}>
-                                    <span className="size-[7px] rounded-full border border-muted-foreground" />
-                                  </span>
-                                ) : (
-                                  <StatusIndicator className="size-3 justify-center leading-none [&_svg]:size-3!" compact status={project.status} />
-                                )}
-                              </span>
+                              <ProjectListStatus project={project} linked={linked} />
                               {project.isolated ? (
                                 <span className="sr-only" id={isolationDescriptionId}>
                                   {ISOLATED_PROJECT_MESSAGE}

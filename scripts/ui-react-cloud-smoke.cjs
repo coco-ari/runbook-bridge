@@ -133,6 +133,7 @@ async function run() {
   await wait('!document.querySelector("[data-testid=settings-page]")');
   await js('document.querySelector("[data-project-id=cloud-demo] button,button[data-project-id=cloud-demo]").click()');
   await wait('Boolean(document.querySelector("[data-testid=cloud-project-upload]"))');
+  assert.equal(await js('document.querySelector("[data-testid=cloud-project-source]").textContent'),'本地项目');
   const mixedOrder = await js('[...document.querySelectorAll("#project-list button[data-project-id]")].map(button=>button.dataset.projectId)');
   await clickTestId('cloud-project-upload');
   await wait('Boolean(document.querySelector("button[data-project-id=cloud-demo] [data-cloud-status=synced]"))');
@@ -140,6 +141,36 @@ async function run() {
   assert.equal(await js('Boolean(document.querySelector("#project-list [data-sidebar=group-label]"))'),false,'项目列表不再显示仓库分组标题');
   const owner = `renderer:${window.webContents.id}`;
   const cloudProjectId = service.state.repositories.find(r=>r.repositoryId===repositoryId).catalog[0].projectId;
+  assert.equal(await js('document.querySelector("[data-testid=cloud-project-source]").textContent'),'团队仓库','仓库归属在项目详情显示');
+  const singleStatus = () => js('(() => { const row=document.querySelector("button[data-project-id=cloud-demo]"), name=row.querySelector("[data-project-name]"), status=row.querySelector("[data-project-status-badge]"); return row.querySelectorAll("[data-project-status-badge]").length===1 && row.querySelectorAll(":scope > svg").length===0 && name.getBoundingClientRect().right<=status.getBoundingClientRect().left; })()');
+  assert.equal(await singleStatus(),true,'列表只保留名称右侧的单个状态位');
+  // Publish a newer snapshot, then restore the old local version to model another device's upload.
+  await store.updateProject(project.projectId,{name:'云端新版本 · Alpha'});
+  await service.invoke(owner,'sync',{repositoryId,direction:'upload',projectId:project.projectId});
+  await store.updateProject(project.projectId,{name:project.name});
+  await js('document.querySelector("[aria-label=检测云仓库更新]").click()');
+  await wait('Boolean(document.querySelector("button[data-project-id=cloud-demo] [data-cloud-notice=behind]"))');
+  assert.equal(await singleStatus(),true,'云更新标记替换原状态，不增加第二个图标');
+  assert.match(await js('document.querySelector("button[data-project-id=cloud-demo]").getAttribute("aria-label")'),/未连接.*团队仓库.*云端有更新/);
+  if (process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR) {
+    const directory=path.resolve(process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR);
+    assert.ok(!directory.startsWith(root+path.sep)); await fs.mkdir(directory,{recursive:true});
+    await js('document.activeElement.blur(); document.querySelector("button[data-project-id=cloud-demo]").scrollIntoView({block:"center",behavior:"instant"}); const style=document.createElement("style"); style.id="status-screenshot-mask"; style.textContent="[data-sonner-toaster] { visibility: hidden !important; }"; document.head.append(style); void 0');
+    window.webContents.sendInputEvent({type:'mouseMove',x:600,y:100});
+    try {
+      await window.webContents.capturePage(); window.webContents.invalidate();
+      await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      await delay(180);
+      await fs.writeFile(path.join(directory,'workbench-unified-status.png'),(await window.webContents.capturePage()).toPNG());
+    } finally { await js('document.getElementById("status-screenshot-mask").remove()'); }
+  }
+  await clickTestId('cloud-project-update');
+  await wait('Boolean(document.querySelector("button[data-project-id=cloud-demo] [data-cloud-status=synced]"))');
+  assert.equal(await js('Boolean(document.querySelector("button[data-project-id=cloud-demo] [data-status=disconnected]"))'),true,'更新完成后恢复连接状态标记');
+  assert.equal(await js('Boolean(document.querySelector("[data-testid=cloud-update-confirmation]"))'),false,'已知旧版本直接更新');
+  await store.updateProject(project.projectId,{name:project.name});
+  await clickTestId('cloud-project-upload');
+  await wait('Boolean(document.querySelector("button[data-project-id=cloud-demo] [data-cloud-status=synced]"))');
   // Seed the long-list fixture through the service; the UI intentionally has no bulk upload.
   const seeded = await service.invoke(owner,'prepare',{repositoryId,direction:'upload',projectIds:['cloud-secondary','cloud-long',...additionalProjects.map(p => p.projectId)]});
   await service.invoke(owner,'confirm',{planId:seeded.planId,choices:Object.fromEntries(seeded.rows.map(row => [row.rowId,'local']))});
@@ -241,6 +272,7 @@ async function run() {
   await wait('Boolean(document.querySelector("[role=menuitem]"))');
   await js('[...document.querySelectorAll("[role=menuitem]")].find(item=>item.textContent.includes("个人仓库")).click()');
   await wait('Boolean(document.querySelector("[data-cloud-project-id]"))');
+  assert.equal(await js('Boolean(document.querySelector("[data-cloud-project-id] [data-project-status-badge] [data-cloud-notice=remote]"))'),true,'尚未下载的项目也只在右侧显示下载标记');
   const copiedId = service.state.repositories.find(r=>r.repositoryId===secondId).catalog[0].projectId;
   assert.notEqual(copiedId,cloudProjectId);
   assert.equal((await store.listProjects()).length,projectCount);

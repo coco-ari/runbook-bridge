@@ -53,7 +53,7 @@ import { EnvironmentOverview } from "@/features/environments/EnvironmentOverview
 import { PluginOverview } from "@/features/plugins/PluginOverview"
 import type { PluginConfigurationRecord } from "@/features/plugins/plugin-types"
 import { ProjectOverview } from "@/features/projects/ProjectOverview"
-import { CloudProjectActions } from "@/features/cloud-config/CloudProjectActions"
+import { CloudProjectActions, CloudProjectSource } from "@/features/cloud-config/CloudProjectActions"
 import { QuickQuestionsFeature } from "@/features/quick-questions/QuickQuestionsFeature"
 import { RunbookFeature } from "@/features/runbooks/RunbookFeature"
 import type {
@@ -517,7 +517,7 @@ export function WorkspaceDetail({
         ) : null}
       </header>
 
-      {project && !hasEnvironment && !hasPlugin ? <div className="flex shrink-0 justify-end border-t border-border/70 bg-surface px-4 py-2"><CloudProjectActions projectId={project.projectId} /></div> : null}
+      {project && !hasEnvironment && !hasPlugin ? <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border/70 bg-surface px-4 py-2"><CloudProjectSource projectId={project.projectId} /><CloudProjectActions projectId={project.projectId} /></div> : null}
 
       <main className="min-h-0 flex-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60" data-selection-kind={hasPlugin ? "plugin" : hasEnvironment ? "environment" : "project"} id="detail-main" tabIndex={-1}>
         <ScrollArea className="h-full" viewportClassName={activeTab === "audit" ? "[&>div]:h-full" : ""}>
