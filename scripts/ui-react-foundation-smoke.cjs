@@ -339,6 +339,10 @@ async function collectWindowErrorDiagnostics(win) {
 }
 
 async function pressKey(win,keyCode,modifiers = []) {
+  // Desktop focus can move to another app while a long smoke is running.
+  // Native keyboard assertions require the fixture's own window to be active.
+  win.focus();
+  win.webContents.focus();
   if (process.platform === 'darwin') modifiers = modifiers.map(value => value === 'control' ? 'meta' : value);
   if (process.platform === 'darwin' && keyCode.toLowerCase() === 'a' && modifiers.length === 1 && modifiers[0] === 'meta') {
     // Mac 的自动化按键需同时携带编辑命令，才能经过浏览器默认编辑路径完成全选。
@@ -658,6 +662,7 @@ async function assertKeyboardResizerPersistence(win,{testId,keyCode,panelId}) {
 }
 
 async function assertRendererKeyboardFocus(win) {
+  win.focus();
   win.webContents.focus();
   await wait(100);
   const focus = await win.webContents.executeJavaScript(`(() => {
@@ -2742,6 +2747,7 @@ async function assertCreatePluginWorkspace(win,theme) {
   ),false,'non-modal plugin workspace must not trap Tab focus');
 
   const draftName = '零变更草稿验证';
+  await assertRendererKeyboardFocus(win);
   await win.webContents.executeJavaScript(`(() => {
     const probe = {phase:'enter-draft',events:[]};
     probe.listener = (event) => {
@@ -4180,6 +4186,8 @@ async function run() {
     assert.equal(accessibility.h1,1);
     assert.equal(accessibility.selectedTabs,1);
     assert.equal(accessibility.tabVariant,'navigation');
+
+    await assertRendererKeyboardFocus(win);
 
     await win.webContents.executeJavaScript(
       `document.querySelector('[data-testid="detail-collapse"]')?.click()`,

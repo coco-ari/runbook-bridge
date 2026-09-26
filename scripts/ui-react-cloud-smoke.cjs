@@ -21,6 +21,8 @@ async function wait(expression) {
     if (await window.webContents.executeJavaScript(expression).catch(() => { throw new Error('云配置 UI 检查失败：'+expression); })) return;
     await delay(50);
   }
+  const overlays = await window.webContents.executeJavaScript('([...document.querySelectorAll("[role=dialog], [role=alertdialog]")].map(el => ({state:el.dataset.state,opacity:getComputedStyle(el).opacity,animation:getComputedStyle(el).animationName,focused:el.contains(document.activeElement)})))');
+  console.error('Overlay wait diagnostics:',JSON.stringify(overlays));
   throw new Error('云配置 UI 等待超时：'+expression);
 }
 async function clickText(text) {
@@ -33,6 +35,16 @@ async function clickTestId(testId) {
 async function fill(id,value) {
   await window.webContents.executeJavaScript(`(() => { const input = document.getElementById(${JSON.stringify(id)}); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)}); input.dispatchEvent(new Event('input',{bubbles:true})); })()`);
 }
+async function pressKey(keyCode,modifiers = []) {
+  window.focus(); window.webContents.focus();
+  if (process.platform === 'darwin') await wait('document.hasFocus()');
+  window.webContents.sendInputEvent({type:'keyDown',keyCode,modifiers});
+  window.webContents.sendInputEvent({type:'keyUp',keyCode,modifiers});
+}
+async function waitForOverlay() {
+  await window.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  await wait('([...document.querySelectorAll("[role=alertdialog]")].some(el => { const rect=el.getBoundingClientRect(); return el.dataset.state === "open" && Boolean(el.querySelector("button:not(:disabled)")) && Number(getComputedStyle(el).opacity) >= 0.99 && el.contains(document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2)); }))');
+}
 async function assertLayout() {
   const layout = await window.webContents.executeJavaScript('(() => { const panel=document.querySelector("[data-testid=cloud-config-panel]"), page=document.querySelector("[data-testid=settings-main]"); return {overflow:panel.scrollWidth>panel.clientWidth || page.scrollWidth>page.clientWidth || document.documentElement.scrollWidth>innerWidth,inside:panel.getBoundingClientRect().left>=0 && panel.getBoundingClientRect().right<=innerWidth}; })()');
   assert.deepEqual(layout,{overflow:false,inside:true},'云配置及长项目名不得产生水平溢出');
@@ -42,6 +54,9 @@ async function assertLayout() {
 async function capture(suffix='') {
   const destination = process.env.RUNBOOK_BRIDGE_CLOUD_SCREENSHOT || (process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR ? path.join(process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR, 'cloud-config.png') : null);
   if (!destination) return;
+  // Do not disable an in-progress Radix exit animation: Presence needs its
+  // animationend event to release the modal and restore keyboard focus.
+  await wait('!document.querySelector(\'[role="dialog"][data-state="closed"], [role="alertdialog"][data-state="closed"]\')');
   const original = path.resolve(destination);
   const extension = path.extname(original);
   const target = suffix ? original.slice(0,extension ? -extension.length : undefined)+suffix+(extension || '.png') : original;
@@ -113,7 +128,8 @@ async function run() {
   for (const name of ['project-list','confirmation-list','audit-list']) ipcMain.handle('v2:'+name,() => ({ok:true,data:[]}));
   ipcMain.handle('v2:quick-question-opening-get',() => ({ok:true,data:{schemaVersion:1,text:'',defaultText:'',revision:0}}));
   session.defaultSession.webRequest.onBeforeRequest({urls:['http://*/*','https://*/*']},(details,callback) => { network.push(details.url); callback({cancel:true}); });
-  window = new BrowserWindow({show:false,width:1264,height:846,webPreferences:{preload:path.join(root,'src/preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false}});
+  // macOS requires a visible test window for native focus and exit animations.
+  window = new BrowserWindow({show:process.platform === 'darwin',width:1264,height:846,webPreferences:{preload:path.join(root,'src/preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false}});
   window.webContents.on('console-message',(_event,details) => { if (details.level === 'error') errors.push(details.message); });
   await window.loadFile(path.join(root,'renderer-build/v2/index.html'));
   if (process.platform === 'darwin') { window.show(); window.focus(); }
@@ -216,6 +232,7 @@ async function run() {
   await wait('Boolean(document.querySelector("[data-testid=cloud-update-confirmation]"))');
   assert.equal((await store.getProject(project.projectId)).name,'本地尚未上传的修改','打开确认不得覆盖');
   assert.equal(await js('document.querySelector("[data-testid=settings-back]").disabled'),true);
+  await waitForOverlay();
   await capture('-confirmation');
   await js('[...document.querySelectorAll("[role=alertdialog] button")].find(button => button.textContent === "保留本地").click()');
   await wait('!document.querySelector("[role=alertdialog]")'); await idle();
@@ -240,8 +257,7 @@ async function run() {
   const orderBefore = await js('[...document.querySelectorAll("#project-list button[data-project-id]")].map(button=>button.dataset.projectId)');
   const beforeIndex = orderBefore.indexOf('cloud-demo');
   assert.ok(beforeIndex>=0 && beforeIndex<orderBefore.length-1);
-  window.webContents.sendInputEvent({type:'keyDown',keyCode:'Down',modifiers:['alt']});
-  window.webContents.sendInputEvent({type:'keyUp',keyCode:'Down',modifiers:['alt']});
+  await pressKey('Down',['alt']);
   await wait(`[...document.querySelectorAll("#project-list button[data-project-id]")].findIndex(button=>button.dataset.projectId === "cloud-demo") === ${beforeIndex+1}`);
   await openSettings();
   console.log('UI: visibility and forced upload verified');
@@ -267,7 +283,7 @@ async function run() {
   await clickTestId('cloud-view-projects');
   const openCloudMenu = async projectId => {
     await js(`document.querySelector('[data-testid=cloud-project-card][data-project-id="${projectId}"] [data-testid=cloud-project-menu]').focus()`);
-    window.webContents.sendInputEvent({type:'keyDown',keyCode:'Down'}); window.webContents.sendInputEvent({type:'keyUp',keyCode:'Down'});
+    await pressKey('Down');
     await wait('Boolean(document.querySelector("[data-testid=cloud-project-history]"))');
   };
   const filterCloud = async label => {
@@ -316,7 +332,12 @@ async function run() {
   await filterCloud('全部项目');
   await wait(`document.querySelectorAll('[data-testid=cloud-project-card]').length === ${projectCount}`);
   console.log('UI: repository rename, project history, rollback, deletion cancellation and trash restore verified');
+  await fs.mkdir(path.join(service.workspace.directory,'backups'),{recursive:true});
+  await fs.writeFile(path.join(service.workspace.directory,'backups',`${crypto.randomUUID()}.json`),'synthetic corrupt backup');
   await clickTestId('cloud-view-backups');
+  await wait('Boolean(document.querySelector("[data-testid=cloud-backup-warning]"))');
+  assert.ok(await js('document.querySelector("[data-testid=cloud-backup-warning]").textContent.includes("原文件保留")'));
+  await capture('-backups');
   await clickTestId('cloud-add-repository'); await createRepository('个人仓库');
   const secondId = service.state.activeRepositoryId;
   await clickTestId('settings-back');
@@ -324,8 +345,7 @@ async function run() {
   await js('document.querySelector("button[data-project-id=cloud-demo]").click()');
   await wait('Boolean(document.querySelector("[aria-label=上传到其他仓库]"))');
   await js('document.querySelector("[aria-label=上传到其他仓库]").focus()');
-  window.webContents.sendInputEvent({type:'keyDown',keyCode:'Down'});
-  window.webContents.sendInputEvent({type:'keyUp',keyCode:'Down'});
+  await pressKey('Down');
   await wait('Boolean(document.querySelector("[role=menuitem]"))');
   await js('[...document.querySelectorAll("[role=menuitem]")].find(item=>item.textContent.includes("个人仓库")).click()');
   await wait('Boolean(document.querySelector("[data-cloud-project-id]"))');
@@ -345,7 +365,7 @@ async function run() {
   }
   const openLocalDelete = async () => {
     await js('document.querySelector("button[data-project-id=cloud-secondary]").closest("li").querySelector("[data-sidebar=menu-action]").focus()');
-    window.webContents.sendInputEvent({type:'keyDown',keyCode:'Down'}); window.webContents.sendInputEvent({type:'keyUp',keyCode:'Down'});
+    await pressKey('Down');
     await wait('Boolean(document.querySelector("[role=menuitem]"))');
     await js('[...document.querySelectorAll("[role=menuitem]")].find(item=>item.textContent.trim() === "删除项目").click()');
     await wait('Boolean(document.querySelector("[data-testid=delete-project-dialog]"))');

@@ -11,10 +11,11 @@ import { Switch } from "@/components/ui/switch"
 import { useCloudConfig } from "./CloudConfigProvider"
 import { CloudProjectActions, CloudProjectIcon, cloudStatusLabels } from "./CloudProjectActions"
 import { CloudProjectMenu, useCloudProjectManagement } from "./CloudProjectManagement"
+import { CloudBackups } from "./CloudBackups"
 
 const randomPassword = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, "0")).join("")
 
-export function CloudConfigPanel({ onBusyChange }: { api: AiOpsV2Api; onChanged: () => void; onBusyChange: (busy: boolean) => void }) {
+export function CloudConfigPanel({ api, onBusyChange }: { api: AiOpsV2Api; onChanged: () => void; onBusyChange: (busy: boolean) => void }) {
   const cloud = useCloudConfig()
   const management = useCloudProjectManagement()
   const repositories = cloud.data.repositories ?? []
@@ -103,7 +104,7 @@ export function CloudConfigPanel({ onBusyChange }: { api: AiOpsV2Api; onChanged:
           <Button size="xs" variant="ghost" className="text-destructive" disabled={cloud.busy} onClick={() => { if (repository) void cloud.run({ action: "unbind", repositoryId: repository.repositoryId }) }}><LinkBreak />解除绑定</Button><p className="text-xs text-muted-foreground">解除绑定后，已下载项目保留在本地仓库。</p>
         </CardContent></Card>
 
-      </div> : <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-0.5">{cloud.data.backups?.map(backup => <Card key={backup.backupId} size="sm"><CardContent className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-medium">{backup.name}</p><p className="text-xs text-muted-foreground">{new Date(backup.createdAt).toLocaleString()}</p></div><Button size="xs" variant="outline" disabled={cloud.busy} onClick={() => void cloud.run({ action: "prepareRestore", backupId: backup.backupId })}>恢复备份</Button></CardContent></Card>)}{!cloud.data.backups?.length ? <p className="p-8 text-center text-xs text-muted-foreground">暂无本机备份，覆盖项目配置前会自动保存。</p> : null}</div>}
+      </div> : <CloudBackups api={api} />}
     </>}
     {management.overlays}
   </div>

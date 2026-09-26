@@ -81,6 +81,192 @@ async function projectOperation(device,repositoryId,projectId,operation,versionI
   return (await device.call('prepareProjectOperation',{repositoryId,projectId,operation,snapshotId,...(versionId ? {versionId} : {})})).projectOperation;
 }
 
+test('同步先持久化关联，保存失败时不写入云端或本地项目',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), b = await device(t,remote.client), p = await project(a);
+  const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  const save = a.service.saveState.bind(a.service);
+  a.service.saveState = async state => { if (state.mappings.length) throw Object.assign(new Error('synthetic disk failure'),{code:'EIO'}); return save(state); };
+  await assert.rejects(a.call('sync',{repositoryId:created.repositoryId,direction:'upload',projectId:p.projectId}),{code:'EIO'});
+  assert.equal((await a.service.remote('test-owner',null,created.repositoryId)).snapshotId,null);
+  a.service.saveState = save;
+  await upload(a,p.projectId);
+  const bound = await b.call('bind',{url:created.url,password:PASSWORD});
+  const saveB = b.service.saveState.bind(b.service);
+  b.service.saveState = async state => { if (state.mappings.length) throw new Error('synthetic disk failure'); return saveB(state); };
+  const failed = await b.call('sync',{repositoryId:bound.repositoryId,direction:'download',projectId:p.projectId});
+  assert.equal(failed.results[0].status,'failed');
+  assert.equal((await b.store.listProjects()).length,0);
+  b.service.saveState = saveB;
+  await download(b,p.projectId);
+  assert.equal((await b.store.listProjects()).length,1);
+});
+
+test('上传已成功但基线写入失败，重启重试仍使用同一云项目 ID',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), p = await project(a);
+  const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD,remember:true});
+  const save = a.service.saveState.bind(a.service);
+  a.service.saveState = async state => { if (state.mappings.some(m => m.remoteDigest)) throw new Error('synthetic baseline failure'); return save(state); };
+  const first = await a.call('sync',{repositoryId:created.repositoryId,direction:'upload',projectId:p.projectId});
+  assert.equal(first.syncStateWarning,true);
+  const remoteId = a.service.state.mappings[0].remoteId;
+  a.service.saveState = save;
+  a.service.closeOwner('test-owner'); await a.service.init();
+  await a.call('sync',{repositoryId:created.repositoryId,direction:'upload',projectId:p.projectId});
+  const current = await a.service.remote('test-owner',null,created.repositoryId);
+  assert.deepEqual(current.payload.projects.map(p => p.projectId),[remoteId]);
+  assert.equal(current.payload.history[0].versions.length,1);
+  assert.equal(a.service.state.mappings[0].pendingUploadSource,undefined);
+});
+
+test('跨仓库上传丢失响应后重试不创建第三个项目，副本 ID 保持独立',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), p = await project(a);
+  const one = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD,remember:true});
+  await a.call('sync',{repositoryId:one.repositoryId,direction:'upload',projectId:p.projectId});
+  const two = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD,remember:true});
+  const call = remote.client.call.bind(remote.client);
+  let lost = false;
+  remote.client.call = async (...args) => { const result = await call(...args); if (!lost && args[1] === 'snapshots' && args[2]?.method === 'POST') { lost = true; throw new Error('synthetic lost response'); } return result; };
+  await assert.rejects(a.call('sync',{repositoryId:two.repositoryId,direction:'upload',projectId:p.projectId}));
+  a.service.closeOwner('test-owner'); await a.service.init();
+  await a.call('sync',{repositoryId:two.repositoryId,direction:'upload',projectId:p.projectId});
+  const first = await a.service.remote('test-owner',null,one.repositoryId), second = await a.service.remote('test-owner',null,two.repositoryId);
+  assert.equal(second.payload.projects.length,1);
+  assert.notEqual(first.payload.projects[0].projectId,second.payload.projects[0].projectId);
+  const mapping = a.service.state.mappings.find(m => m.repositoryId === two.repositoryId);
+  assert.equal(mapping.localId,second.payload.projects[0].projectId);
+  assert.notEqual(mapping.localId,p.projectId);
+});
+
+test('下载提交后的基线保存失败，重启与重新绑定不会产生重复本地项目',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), b = await device(t,remote.client), p = await project(a);
+  const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD}); await upload(a,p.projectId);
+  const bound = await b.call('bind',{url:created.url,password:PASSWORD,remember:true});
+  // A different local project with the same ID must remain untouched.
+  await b.store.createProject({projectId:p.projectId,name:'独立本地项目',environmentId:'local-env'});
+  const save = b.service.saveState.bind(b.service);
+  b.service.saveState = async state => { if (state.mappings.some(m => m.localDigest)) throw new Error('synthetic baseline failure'); return save(state); };
+  const first = await download(b,p.projectId);
+  assert.equal(first.results[0].syncStateWarning,true);
+  const localId = b.service.state.mappings[0].localId;
+  assert.notEqual(localId,p.projectId);
+  b.service.saveState = save; b.service.closeOwner('test-owner'); await b.service.init();
+  await download(b,p.projectId);
+  await b.call('unbind',{repositoryId:bound.repositoryId});
+  assert.equal(b.service.state.detachedMappings.length,1);
+  assert.ok(!JSON.stringify(b.service.state.detachedMappings).includes('encryption'));
+  const other = await b.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  await b.call('sync',{repositoryId:other.repositoryId,direction:'upload',projectId:localId});
+  assert.notEqual(b.service.state.mappings.find(m => m.repositoryId === other.repositoryId).localId,localId,'解绑后的原关联仍与其他仓库副本隔离');
+  await b.call('bind',{url:created.url,password:PASSWORD}); await download(b,p.projectId);
+  assert.equal(b.service.state.mappings.find(m => m.repositoryId === b.service.state.activeRepositoryId).localId,localId);
+  assert.equal((await b.store.listProjects()).length,2);
+  assert.equal((await b.store.getProject(p.projectId)).name,'独立本地项目');
+});
+
+test('损坏备份隔离且按页解密，状态刷新不读取任何备份',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), b = await device(t,remote.client), p = await project(a);
+  const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD}); await upload(a,p.projectId);
+  await b.call('bind',{url:created.url,password:PASSWORD}); await download(b,p.projectId); await download(b,p.projectId);
+  const directory = path.join(b.workspace.directory,'backups'), badId = crypto.randomUUID();
+  await fs.writeFile(path.join(directory,`${badId}.json`),'synthetic corrupt backup');
+  const read = b.workspace.readBackup.bind(b.workspace);
+  let reads = 0;
+  b.workspace.readBackup = (...args) => { reads++; return read(...args); };
+  assert.equal((await b.call('status')).projects.length,1); assert.equal(reads,0);
+  const first = await b.call('backups',{offset:0,limit:1});
+  assert.equal(reads,1); assert.equal(first.unreadableBackups,1); assert.equal(first.nextBackupOffset,1);
+  const next = await b.call('backups',{offset:1,limit:50});
+  assert.equal(next.backups.length,1); assert.equal(next.nextBackupOffset,null);
+  await b.call('prepareRestore',{backupId:next.backups[0].backupId});
+  await assert.rejects(b.call('prepareRestore',{backupId:badId}),{code:'CLOUD_LOCAL_DECRYPT_FAILED'});
+  await assert.rejects(b.call('backups',{offset:-1}),{code:'CLOUD_INVALID_ARGUMENT'});
+  assert.equal(await fs.readFile(path.join(directory,`${badId}.json`),'utf8'),'synthetic corrupt backup');
+});
+
+test('普通上传不能恢复其他设备删除的项目，显式恢复后仍可同步',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), b = await device(t,remote.client), p = await project(a);
+  const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD}); await upload(a,p.projectId);
+  const bound = await b.call('bind',{url:created.url,password:PASSWORD}); await download(b,p.projectId);
+  const removal = await projectOperation(a,created.repositoryId,p.projectId,'delete'); await a.call('confirmProjectOperation',{planId:removal.planId});
+  // A retained schema 2 deletion must gain the same protection on upgrade.
+  const current = await a.service.remote('test-owner',null,created.repositoryId);
+  const legacy = {schemaVersion:2,projects:current.payload.projects,history:current.payload.history};
+  const envelope = encryptCloudSnapshot(legacy,current.session.metadata,current.session.keys.encryption,current.snapshotId);
+  await remote.client.call(current.session,'snapshots',{method:'POST',body:envelope,parentId:current.snapshotId});
+  const deletedHead = (await a.service.remote('test-owner',null,created.repositoryId)).snapshotId;
+  await assert.rejects(b.call('sync',{repositoryId:bound.repositoryId,direction:'upload',projectId:p.projectId}),{code:'CLOUD_PROJECT_DELETED'});
+  assert.equal((await a.service.remote('test-owner',null,created.repositoryId)).snapshotId,deletedHead);
+  assert.equal((await b.store.listProjects()).length,1);
+  const restore = await projectOperation(a,created.repositoryId,p.projectId,'restore'); await a.call('confirmProjectOperation',{planId:restore.planId});
+  await b.call('sync',{repositoryId:bound.repositoryId,direction:'upload',projectId:p.projectId});
+  const restored = (await a.service.remote('test-owner',null,created.repositoryId)).payload;
+  assert.equal(restored.schemaVersion,3); assert.equal(restored.tombstones.length,0);
+});
+
+test('慢仓库检测不阻塞其他操作；相同检测合并，旧响应不能覆盖新上传状态',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), p = await project(a);
+  const one = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD}); await upload(a,p.projectId);
+  const two = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  const target = a.service.session('test-owner',one.repositoryId).repoId;
+  const call = remote.client.call.bind(remote.client);
+  let release, entered, intercepted = false;
+  const gate = new Promise(resolve => { release = resolve; }), started = new Promise(resolve => { entered = resolve; });
+  t.after(() => release());
+  remote.client.call = async (session,route,options) => {
+    const result = await call(session,route,options);
+    if (!intercepted && session.repoId === target && route === 'head') { intercepted = true; entered(); await gate; }
+    return result;
+  };
+  const check = a.call('check',{repositoryId:one.repositoryId}); await started;
+  const again = a.call('check',{repositoryId:one.repositoryId});
+  assert.equal(a.service.checkFlights.size,1);
+  let timer;
+  try {
+    await Promise.race([a.call('renameRepository',{repositoryId:two.repositoryId,name:'合成仓库新名称'}),new Promise((_,reject) => { timer = setTimeout(() => reject(new Error('local mutation blocked by check')),2000); })]);
+  } finally { clearTimeout(timer); }
+  await a.store.updateProject(p.projectId,{name:'检测期间上传的新版本'});
+  await a.call('sync',{repositoryId:one.repositoryId,direction:'upload',projectId:p.projectId});
+  const snapshotId = a.service.repository(one.repositoryId).snapshotId;
+  release(); await Promise.all([check,again]);
+  assert.equal(a.service.repository(one.repositoryId).snapshotId,snapshotId);
+  assert.equal(a.service.repository(one.repositoryId).catalog[0].name,'检测期间上传的新版本');
+  assert.equal(a.service.checkFlights.size,0);
+});
+
+test('全仓检测最多两个并发，解除绑定取消请求并阻止迟到结果重新关联',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client);
+  const repositories = [];
+  for (let i=0;i<3;i++) repositories.push(await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD}));
+  const call = remote.client.call.bind(remote.client);
+  let entered, active = 0, peak = 0, aborted = 0;
+  const started = new Promise(resolve => { entered = resolve; });
+  const releases = new Map();
+  remote.client.call = async (session,route,options) => {
+    if (route === 'head' && options?.signal) {
+      active++; peak = Math.max(peak,active);
+      await new Promise(resolve => {
+        const finish = () => { options.signal.removeEventListener('abort',cancel); releases.delete(session.repoId); active--; resolve(); };
+        const cancel = () => { aborted++; finish(); };
+        releases.set(session.repoId,finish); options.signal.addEventListener('abort',cancel,{once:true});
+        if (active === 2) entered();
+      });
+    }
+    return call(session,route,options);
+  };
+  t.after(() => { for (const release of releases.values()) release(); });
+  const check = a.call('check'); await started;
+  assert.equal(peak,2); assert.equal(a.service.checkWaiters.length,1);
+  await a.call('unbind',{repositoryId:repositories[0].repositoryId});
+  // Unbinding must finish while the other network read remains suspended.
+  assert.equal(aborted,1);
+  a.service.closeOwner('test-owner');
+  await assert.rejects(check,{code:'CLOUD_SESSION_EXPIRED'});
+  assert.ok(peak <= 2);
+  assert.equal(a.service.state.repositories.length,2);
+  assert.equal(a.service.checkFlights.size,0);
+  assert.equal(a.service.checkSlots,0);
+});
+
 test('项目历史独立保留、重复上传去重、旧版本发布不覆盖本地或其他项目',async t => {
   const remote = await cloud(t,2), a = await device(t,remote.client), b = await device(t,remote.client);
   const p = await project(a), other = await project(a,'other-project');
@@ -172,6 +358,7 @@ test('旧快照迁移已有历史；30 天过期只在写入时清理，检测�
   let current = await a.service.remote('test-owner',null,repositoryId);
   const expired = structuredClone(current.payload);
   expired.history[0].deletedAt = new Date(Date.now()-31*86400_000).toISOString();
+  expired.tombstones[0].deletedAt = expired.history[0].deletedAt;
   const envelope = encryptCloudSnapshot(expired,session.metadata,session.keys.encryption,current.snapshotId);
   await remote.client.call(session,'snapshots',{method:'POST',body:envelope,parentId:current.snapshotId});
   await a.call('check',{repositoryId});
@@ -181,6 +368,8 @@ test('旧快照迁移已有历史；30 天过期只在写入时清理，检测�
   const other = await project(a,'other-project'); await upload(a,other.projectId);
   current = await a.service.remote('test-owner',null,repositoryId);
   assert.equal(current.payload.history.some(r => r.projectId === p.projectId),false);
+  assert.ok(current.payload.tombstones.some(r => r.projectId === p.projectId));
+  await assert.rejects(upload(a,p.projectId),{code:'CLOUD_PROJECT_DELETED'});
   assert.equal((await a.store.getProject(p.projectId)).name,'合成测试项目');
 });
 
@@ -405,7 +594,7 @@ test('跨设备同步配置、密码、TLS、依赖及历史版本，不同步�
   assert.ok(!JSON.stringify(plan).includes('synthetic-ssh-secret'));
   const restored = await download(b,p.projectId,first.snapshotId);
   assert.equal(restored.results[0].status,'imported');
-  const backups = (await b.call('status')).backups;
+  const backups = (await b.call('backups')).backups;
   assert.ok(backups.length >= 1);
   const localRestore = await b.call('prepareRestore',{backupId:backups[0].backupId});
   assert.equal((await b.call('confirm',{planId:localRestore.planId,choices:{[p.projectId]:'cloud'}})).results[0].status,'imported');

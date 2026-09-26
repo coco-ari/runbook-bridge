@@ -178,9 +178,18 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
   const focusGenerationRef = useRef(0)
   const scheduleWorkspaceFocus = useCallback((resolveTarget: () => HTMLElement | null = () => document.getElementById("detail-main")) => {
     const generation = ++focusGenerationRef.current
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (focusGenerationRef.current === generation) focusWorkspaceElement(settingsOpenRef.current ? document.getElementById("settings-heading") : resolveTarget())
-    }))
+    let attempts = 0
+    const focus = () => {
+      if (focusGenerationRef.current !== generation) return
+      const target = settingsOpenRef.current ? document.getElementById("settings-heading") : resolveTarget()
+      if (focusWorkspaceElement(target)) return
+      // Panel expansion can commit after the first two frames. Wait briefly
+      // for its content, but never move focus out of a newly opened modal.
+      const modal = [...document.querySelectorAll<HTMLElement>('[role="dialog"], [role="alertdialog"]')]
+        .some(element => element.getClientRects().length > 0 && element.dataset.state !== "closed")
+      if (!modal && ++attempts < 8) requestAnimationFrame(focus)
+    }
+    requestAnimationFrame(() => requestAnimationFrame(focus))
   }, [])
   useEffect(() => () => { focusGenerationRef.current += 1 }, [])
   const registerEditorLeaveGuard = useCallback((request: WorkspaceLeaveRequest | null) => {

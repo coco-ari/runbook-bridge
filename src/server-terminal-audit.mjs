@@ -42,9 +42,11 @@ export function createTerminalCommandAudit(onCommand) {
   let input = false;
   let available = false;
   // 固定函数只影响当前交互会话，不改启动文件、历史策略或现有 DEBUG trap。
-  const hook = name + '() { local rbb_code=$? rbb_text rbb_hex; if [ -n "$' + '{BASH_VERSION-}" ]; then rbb_text=$(HISTTIMEFORMAT= builtin history 1 2>/dev/null); rbb_text="$' + '{rbb_text#*[0-9]  }"; else rbb_text=$(builtin fc -ln -1 2>/dev/null); fi; rbb_text='
+  // Bash 3.2 freezes HISTCMD inside a function. Read the number from the same
+  // history entry as the command so consecutive prompt hooks remain reliable.
+  const hook = name + '() { local rbb_code=$? rbb_text rbb_hex rbb_id=0; if [ -n "$' + '{BASH_VERSION-}" ]; then rbb_text=$(HISTTIMEFORMAT= builtin history 1 2>/dev/null); if [[ "$rbb_text" =~ ^[[:space:]]*([0-9]+)[[:space:]] ]]; then rbb_id=$' + '{BASH_REMATCH[1]}; fi; rbb_text="$' + '{rbb_text#*[0-9]  }"; else rbb_id=$' + '{HISTCMD:-0}; rbb_text=$(builtin fc -ln -1 2>/dev/null); fi; rbb_text='
     + '$' + '{rbb_text:0:4096}; rbb_hex=$(builtin printf \'%s\' "$rbb_text" | command od -An -v -tx1 | command tr -d \' \\n\'); builtin printf \'\\033]runbook-command:'
-    + token + ':%s:%s:%s\\007\' "$' + '{HISTCMD:-0}" "$rbb_code" "$rbb_hex"; return "$rbb_code"; }';
+    + token + ':%s:%s:%s\\007\' "$rbb_id" "$rbb_code" "$rbb_hex"; return "$rbb_code"; }';
   const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
   const bash = hook + '; if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == \'declare -a\'* ]]; then PROMPT_COMMAND=(' + name
     + ' "$' + '{PROMPT_COMMAND[@]}"); else PROMPT_COMMAND="' + name + '$' + '{PROMPT_COMMAND:+; $PROMPT_COMMAND}"; fi';

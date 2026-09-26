@@ -202,17 +202,29 @@ export class CloudConfigWorkspace {
     if (record.id !== backupId || record.phase !== 'backup') throw cloudError('FORMAT_INVALID','本机备份标识无效。');
     return {record,digest:snapshotDigest(text)};
   }
-  async listBackups() {
+  backupSummary(record) {
+    if (!record.before.files['workspace.yaml']) return null;
+    const project = YAML.parse(Buffer.from(record.before.files['workspace.yaml'],'base64').toString('utf8'));
+    return {backupId:record.id,projectId:record.projectId,name:project.name,createdAt:record.createdAt};
+  }
+  async listBackups({offset = 0,limit = 20} = {}) {
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw cloudError('INVALID_ARGUMENT','备份分页参数无效。');
+    const directory = path.join(this.directory,'backups');
     let names;
-    try { names = await fs.readdir(path.join(this.directory,'backups')); }
-    catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+    try { names = await fs.readdir(directory); }
+    catch (error) { if (error.code === 'ENOENT') return {backups:[],unreadableBackups:0,nextBackupOffset:null}; throw error; }
+    // Sort cheap filesystem metadata first; decrypt only the requested page.
+    const files = await Promise.all(names.filter(n => n.endsWith('.json')).map(async name => ({name,mtime:(await fs.stat(path.join(directory,name)).catch(() => null))?.mtimeMs ?? 0})));
+    files.sort((a,b) => b.mtime-a.mtime || a.name.localeCompare(b.name));
     const result = [];
-    for (const name of names.filter(n => n.endsWith('.json'))) {
-      const {record} = await this.readBackup(name.slice(0,-5));
-      if (!record.before.files['workspace.yaml']) continue;
-      const project = YAML.parse(Buffer.from(record.before.files['workspace.yaml'],'base64').toString('utf8'));
-      result.push({backupId:record.id,projectId:record.projectId,name:project.name,createdAt:record.createdAt});
+    let unreadableBackups = 0;
+    for (const {name} of files.slice(offset,offset+limit)) {
+      try {
+        const {record} = await this.readBackup(name.slice(0,-5));
+        const summary = this.backupSummary(record);
+        if (summary) result.push(summary);
+      } catch { unreadableBackups++; }
     }
-    return result.sort((a,b) => b.createdAt.localeCompare(a.createdAt));
+    return {backups:result,unreadableBackups,nextBackupOffset:offset+limit < files.length ? offset+limit : null};
   }
 }

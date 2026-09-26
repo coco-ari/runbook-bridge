@@ -80,8 +80,8 @@ function normalizeProject(input, vault) {
 }
 export function normalizeCloudSnapshot(value, vault) {
   if (Buffer.byteLength(JSON.stringify(value)) > CLOUD_MAX_BYTES) throw cloudError('TOO_LARGE','云配置内容过大。');
-  if (![1,2].includes(value?.schemaVersion)) throw cloudError('FORMAT_UNSUPPORTED','不支持此云配置版本，请更新应用。');
-  object(value,value.schemaVersion === 1 ? ['schemaVersion','projects'] : ['schemaVersion','projects','history']);
+  if (![1,2,3].includes(value?.schemaVersion)) throw cloudError('FORMAT_UNSUPPORTED','不支持此云配置版本，请更新应用。');
+  object(value,value.schemaVersion === 1 ? ['schemaVersion','projects'] : ['schemaVersion','projects','history',...(value.schemaVersion === 3 ? ['tombstones'] : [])]);
   const projects = list(value.projects,200).map(project => normalizeProject(project,vault));
   unique(projects.map(p => p.projectId));
   if (value.schemaVersion === 1) return {schemaVersion:1,projects};
@@ -107,7 +107,14 @@ export function normalizeCloudSnapshot(value, vault) {
   });
   unique(history.map(record => record.projectId));
   if (projects.some(project => !history.some(record => record.projectId === project.projectId))) throw cloudError('FORMAT_INVALID','项目缺少版本记录。');
-  return {schemaVersion:2,projects,history};
+  if (value.schemaVersion === 2) return {schemaVersion:2,projects,history};
+  const tombstones = list(value.tombstones,10000).map(raw => {
+    object(raw,['projectId','deletedAt']);
+    return {projectId:id(raw.projectId),deletedAt:timestamp(raw.deletedAt)};
+  });
+  unique(tombstones.map(record => record.projectId));
+  if (projects.some(p => tombstones.some(r => r.projectId === p.projectId)) || history.some(h => h.deletedAt !== null && !tombstones.some(r => r.projectId === h.projectId && r.deletedAt === h.deletedAt))) throw cloudError('FORMAT_INVALID','项目删除记录与当前配置不一致。');
+  return {schemaVersion:3,projects,history,tombstones};
 }
 
 async function privateKeyFile(file) {

@@ -788,9 +788,13 @@ async function main() {
     assert.equal(importContract.empty.error.code, 'INVALID_ARGUMENT');
     assert.equal(importContract.memory.error.code, 'UPLOAD_SOURCE_UNAVAILABLE');
     assert.equal(importContract.forged.error.code, 'UPLOAD_SOURCE_UNAVAILABLE');
-    const cloudContract = await running.cdp.evaluate("(async () => ({status:await window.aiOps.v2.cloudConfig({action:'status'}),invalid:await window.aiOps.v2.cloudConfig({action:'status',password:'synthetic-rejected'})}))()");
+    const cloudContract = await running.cdp.evaluate("(async () => ({status:await window.aiOps.v2.cloudConfig({action:'status'}),backups:await window.aiOps.v2.cloudConfig({action:'backups',offset:0,limit:20}),invalidBackups:await window.aiOps.v2.cloudConfig({action:'backups',offset:-1}),invalid:await window.aiOps.v2.cloudConfig({action:'status',password:'synthetic-rejected'})}))()");
     assert.equal(cloudContract.status.ok,true);
     assert.deepEqual(cloudContract.status.data.projects,[]);
+    assert.equal(cloudContract.status.data.backups,undefined,'状态查询不加载备份');
+    assert.equal(cloudContract.backups.ok,true);
+    assert.deepEqual(cloudContract.backups.data,{backups:[],unreadableBackups:0,nextBackupOffset:null});
+    assert.equal(cloudContract.invalidBackups.error.code,'CLOUD_INVALID_ARGUMENT');
     assert.equal(cloudContract.invalid.error.code,'CLOUD_INVALID_ARGUMENT');
     await running.cdp.evaluate('document.querySelector("[data-testid=settings-open]").click()');
     await waitForThemeUi(running.cdp,'Boolean(document.querySelector("[data-testid=settings-cloud]"))','配置页面加载完成');

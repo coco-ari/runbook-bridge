@@ -24,13 +24,13 @@ export class CloudConfigClient {
     if (!match) throw cloudError('URL_INVALID','仓库链接应包含协议、服务地址和 /r/仓库标识。');
     return {origin:url.origin,repoId:cloudId(match[1]),url:`${url.origin}/r/${match[1]}`};
   }
-  async request(origin,route,{method = 'GET',token,body,parentId} = {}) {
+  async request(origin,route,{method = 'GET',token,body,parentId,signal} = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(),30_000);
     try {
       const text = body === undefined ? undefined : JSON.stringify(body);
       if (text && Buffer.byteLength(text) > CLOUD_MAX_BYTES) throw cloudError('TOO_LARGE','云快照超过 20 MiB 限制。');
-      const response = await this.fetch(`${origin}${route}`,{method,redirect:'error',signal:controller.signal,headers:{Accept:'application/json',...(text ? {'Content-Type':'application/json'} : {}),...(token ? {Authorization:`Bearer ${token}`} : {}),...(parentId !== undefined ? {'If-Match':parentId ?? 'empty'} : {})},body:text});
+      const response = await this.fetch(`${origin}${route}`,{method,redirect:'error',signal:signal ? AbortSignal.any([signal,controller.signal]) : controller.signal,headers:{Accept:'application/json',...(text ? {'Content-Type':'application/json'} : {}),...(token ? {Authorization:`Bearer ${token}`} : {}),...(parentId !== undefined ? {'If-Match':parentId ?? 'empty'} : {})},body:text});
       const fail = {
         401:['AUTH_FAILED','仓库密码或管理员令牌错误。'],403:['AUTH_FAILED','无权访问此仓库。'],404:['NOT_FOUND','仓库或历史版本不存在。'],409:['CONFLICT','云端已更新，请重新预览后再上传。'],413:['TOO_LARGE','云快照超过服务端限制。'],429:['RATE_LIMITED','请求过于频繁，请稍后重试。'],
       };
@@ -46,6 +46,7 @@ export class CloudConfigClient {
       try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
       catch { throw cloudError('FORMAT_INVALID','云服务返回格式无效。'); }
     } catch (error) {
+      if (signal?.aborted) throw cloudError('CANCELLED','云仓库检测已取消。');
       if (error?.code?.startsWith('CLOUD_')) throw error;
       throw cloudError('NETWORK_FAILED','无法连接云仓库，请检查网络、HTTPS 证书和服务地址。');
     } finally { clearTimeout(timer); }

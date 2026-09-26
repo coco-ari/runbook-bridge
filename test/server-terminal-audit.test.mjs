@@ -82,5 +82,12 @@ test('真实 Bash 记录每条完成命令并保留原提示钩子与退出码',
   await until(() => entries.length >= 3);
   assert.deepEqual(entries.slice(0,3).map(entry => [entry.summary,entry.exitCode]),[['pwd',0],['false',1],['echo [参数已隐藏]',0]]);
   assert.doesNotMatch(JSON.stringify(entries),/fixture-private/u);
+  child.stdin.write('set +o history\n');
+  await until(() => entries.length >= 4);
+  audit.noteInput(Buffer.from('echo fixture-private\n'));
+  child.stdin.write('echo fixture-private\n');
+  await until(() => entries.length >= 5);
+  assert.deepEqual(entries[4],{summary:'命令内容未由 Shell 提供',exitCode:0,known:false});
+  assert.doesNotMatch(JSON.stringify(entries),/fixture-private/u);
   child.stdin.end('exit\n');
 });

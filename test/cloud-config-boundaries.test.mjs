@@ -88,3 +88,16 @@ test('云客户端限制响应长度并拒绝重定向和外部错误正文',asy
   client.fetch = async () => new Response('{}',{headers:{'content-length':String(CLOUD_MAX_BYTES+1)}});
   await assert.rejects(client.request('https://example.invalid','/test'),{code:'CLOUD_TOO_LARGE'});
 });
+
+test('取消检测传递到网络层，取消错误不泄露响应或令牌',async () => {
+  const controller = new AbortController();
+  let entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const client = new CloudConfigClient({fetchImpl:async (_url,{signal}) => new Promise((_,reject) => {
+    signal.addEventListener('abort',() => reject(new Error('synthetic-sensitive-network-detail')),{once:true});
+    entered();
+  })});
+  const request = client.request('https://example.invalid','/test',{signal:controller.signal,token:'synthetic-token'});
+  await started; controller.abort();
+  await assert.rejects(request,error => error.code === 'CLOUD_CANCELLED' && !error.message.includes('synthetic'));
+});

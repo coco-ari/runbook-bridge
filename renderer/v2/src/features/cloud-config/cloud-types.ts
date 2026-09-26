@@ -74,6 +74,8 @@ export interface CloudConfigData {
   readonly remembered?: boolean
   readonly projects?: readonly CloudProject[]
   readonly backups?: readonly CloudBackup[]
+  readonly unreadableBackups?: number
+  readonly nextBackupOffset?: number | null
   readonly versions?: readonly CloudVersion[]
   readonly snapshotId?: string | null
   readonly planId?: string
@@ -85,6 +87,7 @@ export interface CloudConfigData {
 }
 export type CloudConfigRequest =
   | { action: "status" }
+  | { action: "backups"; offset?: number; limit?: number }
   | { action: "unbind" | "check"; repositoryId?: string }
   | { action: "bind"; url: string; password: string; remember: boolean; name?: string }
   | { action: "create"; serviceUrl: string; adminToken: string; password: string; remember: boolean; name?: string }

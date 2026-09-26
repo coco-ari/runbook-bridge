@@ -48,6 +48,8 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
   const active = useRef(false)
   const busyRef = useRef(false)
   const checkingRef = useRef<Promise<void> | null>(null)
+  const refreshingRef = useRef<Promise<void> | null>(null)
+  const refreshAgain = useRef(false)
   const sequence = useRef(0)
   const onChangedRef = useRef(onChanged)
   onChangedRef.current = onChanged
@@ -56,11 +58,21 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
     if (!result.ok) throw new Error(result.error.message)
     return result.data
   }, [api])
-  const refresh = useCallback(async () => {
-    const revision = ++sequence.current
-    try { const next = await call({ action: "status" }); if (active.current && sequence.current === revision) { setData(next); setError("") } }
-    catch (cause) { if (active.current && sequence.current === revision) setError(cause instanceof Error ? cause.message : "无法读取云配置") }
-    finally { if (active.current) setLoading(false) }
+  const refresh = useCallback(() => {
+    refreshAgain.current = true
+    if (refreshingRef.current) return refreshingRef.current
+    const pending = (async () => {
+      do {
+        refreshAgain.current = false
+        const revision = ++sequence.current
+        try { const next = await call({ action: "status" }); if (active.current && sequence.current === revision && !refreshAgain.current) { setData(next); setError("") } }
+        catch (cause) { if (active.current && sequence.current === revision) setError(cause instanceof Error ? cause.message : "无法读取云配置") }
+        finally { if (active.current) setLoading(false) }
+      } while (active.current && refreshAgain.current)
+    })()
+    refreshingRef.current = pending
+    void pending.finally(() => { if (refreshingRef.current === pending) refreshingRef.current = null })
+    return pending
   }, [call])
   const check = useCallback(async (repositoryId?: string) => {
     if (checkingRef.current) {
@@ -70,13 +82,13 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
     setChecking(true)
     const revision = ++sequence.current
     const pending = (async () => {
-      try { const next = await call({ action: "check", ...(repositoryId ? { repositoryId } : {}) }); if (active.current && revision === sequence.current) { setData(next); setError("") } }
+      try { const next = await call({ action: "check", ...(repositoryId ? { repositoryId } : {}) }); if (active.current && revision === sequence.current) { setData(next); setError("") } else if (active.current) await refresh() }
       catch (cause) { if (active.current) setError(cause instanceof Error ? cause.message : "云仓库检测失败") }
     })()
     checkingRef.current = pending
     try { await pending }
     finally { if (checkingRef.current === pending) checkingRef.current = null; if (active.current) setChecking(false) }
-  }, [call])
+  }, [call, refresh])
   useEffect(() => {
     active.current = true
     void refresh().then(() => { if (active.current) void check() })
