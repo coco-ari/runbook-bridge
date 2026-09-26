@@ -1,6 +1,7 @@
+import { CloudFieldDiff } from "./CloudFieldDiff"
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react"
 import { toast } from "sonner"
-import type { AiOpsV2Api } from "@/bridge/ai-ops-v2"
+import type { AiOpsV2Api, PublicError } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
@@ -24,6 +25,8 @@ interface CloudController {
   readonly checking: boolean
   readonly loading: boolean
   readonly error: string
+  readonly operationError: PublicError | null
+  readonly clearOperationError: () => void
   readonly refresh: () => Promise<void>
   readonly check: (repositoryId?: string) => Promise<void>
   readonly run: (request: CloudConfigRequest) => Promise<CloudConfigData | null>
@@ -42,6 +45,7 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
   const [checking, setChecking] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+  const [operationError, setOperationError] = useState<PublicError | null>(null)
   const [plan, setPlan] = useState<(CloudConfigData & { historical: boolean }) | null>(null)
   const [choices, setChoices] = useState<Record<string, "local" | "cloud">>({})
   const [uploadId, setUploadId] = useState<string | null>(null)
@@ -55,7 +59,7 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
   onChangedRef.current = onChanged
   const call = useCallback(async (request: CloudConfigRequest) => {
     const result = await api.cloudConfig(request)
-    if (!result.ok) throw new Error(result.error.message)
+    if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
     return result.data
   }, [api])
   const refresh = useCallback(() => {
@@ -103,7 +107,7 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
   const run = useCallback(async (request: CloudConfigRequest) => {
     if (busyRef.current) return null
     busyRef.current = true
-    setWorking(true); setError("")
+    setWorking(true); setError(""); setOperationError(null)
     try {
       const result = await call(request)
       if (!active.current) return null
@@ -114,7 +118,7 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
       if (result.results) {
         const failed = result.results.filter(row => row.status === "failed")
         const completed = result.results.filter(row => row.status === "imported" || row.status === "uploaded")
-        if (failed.length) toast.error(`${failed.length} 个项目未完成同步`, { description: failed.map(row => row.error?.message).join("；") })
+        if (failed.length) { setOperationError(failed[0]?.error ?? { code: "CLOUD_OPERATION_FAILED", message: "部分项目同步失败" }); toast.error(`${failed.length} 个项目未完成同步`, { description: failed.map(row => row.error?.message).join("；") }) }
         else if (result.results.some(row => row.status === "cloud-deleted")) toast.success("云端项目已移入已删除，可在 30 天内恢复")
         else if (result.results.some(row => row.status === "cloud-restored")) toast.success("已发布新的云端版本，点击更新可同步到本机")
         else if (completed.length) toast.success(`已完成 ${completed.length} 个项目${request.action === "sync" && request.direction === "upload" ? "上传" : "更新"}`)
@@ -126,7 +130,7 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
       await refresh()
       return result
     } catch (cause) {
-      if (active.current) { const message = cause instanceof Error ? cause.message : "云配置操作失败"; setError(message); toast.error(message) }
+      if (active.current) { const message = cause instanceof Error ? cause.message : "云配置操作失败"; setError(message); setOperationError({ code: cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string" ? cause.code : "CLOUD_OPERATION_FAILED", message }); toast.error(message) }
       return null
     } finally { busyRef.current = false; if (active.current) setWorking(false) }
   }, [call, check, refresh])
@@ -137,18 +141,18 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
     else setUploadId(projectId)
   }, [data.repositories, run])
   const busy = working || plan !== null
-  return <CloudContext.Provider value={{ data, busy, checking, loading, error, refresh, check, run, upload }}>
+  return <CloudContext.Provider value={{ data, busy, checking, loading, error, operationError, clearOperationError: () => { if (error === operationError?.message) setError(""); setOperationError(null) }, refresh, check, run, upload }}>
     {children}
     <AlertDialog open={Boolean(plan)} onOpenChange={open => { if (!open && !working) setPlan(null) }}>
-      <AlertDialogContent data-testid="cloud-update-confirmation">
+      <AlertDialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl" data-testid="cloud-update-confirmation">
         <AlertDialogHeader>
           <AlertDialogTitle>{plan?.direction === "restore" ? "恢复本机备份" : plan?.historical ? "恢复云端历史版本？" : "覆盖本地修改？"}</AlertDialogTitle>
           <AlertDialogDescription>{plan?.direction === "restore" ? "选中项目将用备份完整替换。" : plan?.historical ? "选中项目将用所选历史版本完整替换。" : "以下项目存在本地修改。选中项目将用云端配置完整替换。"}覆盖前自动备份，原连接将断开。</AlertDialogDescription>
         </AlertDialogHeader>
-        <div className="max-h-[50vh] space-y-3 overflow-y-auto">{plan?.rows?.map(row => <label key={row.rowId} className="flex items-start gap-2 text-xs">
+        <div className="max-h-[50vh] space-y-3 overflow-y-auto">{plan?.rows?.map(row => <div key={row.rowId} className="space-y-2"><label className="flex items-start gap-2 text-xs">
           <Checkbox checked={choices[row.rowId] === "cloud"} disabled={working} onCheckedChange={checked => setChoices(current => ({ ...current, [row.rowId]: checked ? "cloud" : "local" }))} />
           <span className="min-w-0"><span className="block break-words font-medium">{row.name}</span><span className="text-muted-foreground">{changeSummary(row.diff)}</span></span>
-        </label>)}</div>
+        </label><CloudFieldDiff diff={row.diff} /></div>)}</div>
         <AlertDialogFooter>
           <Button variant="outline" disabled={working} onClick={() => setPlan(null)}>保留本地</Button>
           <Button disabled={working} data-testid="cloud-confirm-update" onClick={() => { const current = plan; setPlan(null); if (current?.planId) void run({ action: "confirm", planId: current.planId, choices }) }}>确认覆盖</Button>

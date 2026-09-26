@@ -129,7 +129,7 @@ function interruptTerminals(reason='connection-lost') {
     item.status='closed';item.closeReason=reason;item.recoverable=true;
   }
 }
-const project = () => ({ schemaVersion: 2, projectId: scope.projectId, name: '服务器工作区演示', revision: 1, environmentCount: 1, pluginCount: plugins.length, environments: [{ projectId: scope.projectId, environmentId: scope.environmentId, name: '测试环境', revision: 1, pluginCount: plugins.length, readyPluginCount: plugins.length, resourcePreview: plugins, resourcePreviewTruncated: false, runtime: runtime() }] });
+const project = () => ({ schemaVersion: 2, projectId: scope.projectId, name: '服务器工作区演示', revision: 1, environmentCount: 1, pluginCount: plugins.length, environments: [{ projectId: scope.projectId, environmentId: scope.environmentId, name: '测试环境', environmentType:'test', revision: 1, pluginCount: plugins.length, readyPluginCount: plugins.length, resourcePreview: plugins, resourcePreviewTruncated: false, runtime: runtime() }] });
 function handle(channel, handler) { ipcMain.handle('v2:' + channel, async (_event, input) => { try { return ok(await handler(input)); } catch (error) { return { ok: false, error: { code: error.code ?? 'INTERNAL_ERROR', message: error.message } }; } }); }
 function scoped(input) { assert.equal(input.projectId, scope.projectId); assert.equal(input.environmentId, scope.environmentId); assert.equal(input.pluginInstanceId, scope.pluginInstanceId); }
 function canonicalFixturePath(value) {
@@ -562,9 +562,12 @@ async function snapshot(name) {
   await wait(180);
   await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const frame = await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
-  // 页面缩放改变 CSS 视口，截图仍使用窗口内容区的像素尺寸。
+  // Native macOS captures may retain Retina pixels even with a forced CSS scale.
+  // Zoom changes the CSS viewport; the capture must still match the content aspect ratio.
   const [width, height] = win.getContentSize();
-  assert.deepEqual(frame.getSize(),{width,height},'截图与内容区尺寸一致');
+  const pixels = frame.getSize();
+  assert.ok(pixels.width >= width && pixels.height >= height,'截图不能低于内容区分辨率');
+  assert.equal(pixels.width * height,pixels.height * width,'截图比例与内容区一致，允许 Retina 像素缩放');
   fs.writeFileSync(path.join(absolute, name), frame.toPNG());
 }
 
@@ -739,6 +742,7 @@ async function run() {
     completed = true; return;
   }
   await until(`document.querySelector('.xterm-rows')?.textContent.includes('operator@demo')`, '真实 xterm 收到输出');
+  assert.equal(await evaluate('Boolean(document.querySelector(".server-workspace-header [data-environment-type=test]"))'),true,'终端显示明确的测试环境标识');
   assert.ok(await evaluate("document.querySelector('[data-terminal-command-audit=available]')?.textContent.includes('命令完成后记录')"));
   assert.equal(opened.length, 1, '首次点击只创建一个会话');
   await assertFileSidebarLayout();

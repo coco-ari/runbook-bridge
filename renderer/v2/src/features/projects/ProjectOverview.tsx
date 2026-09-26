@@ -1,4 +1,5 @@
-import { ArrowClockwise, FolderOpen, Plugs, Stack, WarningCircle } from "@phosphor-icons/react"
+import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
+import { ArrowClockwise, FolderOpen, Stack, WarningCircle } from "@phosphor-icons/react"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { StatusIndicator } from "@/components/app-shell/StatusIndicator"
@@ -18,7 +19,6 @@ import {
   ItemContent,
   ItemDescription,
   ItemGroup,
-  ItemMedia,
   ItemTitle,
 } from "@/components/ui/item"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -40,6 +40,7 @@ export interface ProjectOverviewProps {
   readonly error?: WorkspaceReadError | null
   readonly loading?: boolean
   readonly onReload?: (() => void) | undefined
+  readonly onSelectEnvironment?: ((environmentId: string) => void) | undefined
   readonly project: WorkspaceProjectReadModel | null
 }
 
@@ -51,9 +52,9 @@ function ProjectOverviewSkeleton() {
         <Skeleton className="h-3 w-3/5" />
       </div>
       <Card className="gap-0 py-0" size="sm">
-        <CardContent className="grid grid-cols-1 gap-2 p-2 @sm/project-overview:grid-cols-[minmax(0,1.25fr)_minmax(0,0.75fr)]">
-          <Skeleton className="h-24 w-full rounded-lg" />
-          <Skeleton className="h-24 w-full rounded-lg" />
+        <CardContent className="flex gap-2 p-2">
+          <Skeleton className="h-8 w-full rounded-md" />
+          <Skeleton className="h-8 w-full rounded-md" />
         </CardContent>
       </Card>
     </section>
@@ -86,6 +87,7 @@ export function ProjectOverview({
   error = null,
   loading = false,
   onReload,
+  onSelectEnvironment,
   project,
 }: ProjectOverviewProps) {
   if (loading && !project) return <ProjectOverviewSkeleton />
@@ -119,28 +121,11 @@ export function ProjectOverview({
     <section aria-labelledby="project-overview-heading" className="@container/project-overview" data-testid="project-overview">
       <h2 className="sr-only" id="project-overview-heading">项目范围只读概览</h2>
 
-      <Card className="gap-0 py-0" size="sm">
-        <CardContent className="p-2">
-          <dl className="grid grid-cols-1 gap-2 @sm/project-overview:grid-cols-[minmax(0,1.25fr)_minmax(0,0.75fr)]">
-            <Item className="min-h-20 bg-primary/[0.075] px-3 py-3 ring-1 ring-inset ring-primary/15 @sm/project-overview:min-h-24" size="sm" variant="muted">
-              <ItemMedia className="grid size-9 place-items-center rounded-lg bg-primary/12 text-primary" variant="icon">
-                <Stack aria-hidden="true" size={17} weight="duotone" />
-              </ItemMedia>
-              <ItemContent>
-                <ItemDescription asChild><dt>环境总数</dt></ItemDescription>
-                <ItemTitle asChild className="font-mono text-2xl font-semibold tracking-tight text-primary"><dd>{project.environmentCount}</dd></ItemTitle>
-              </ItemContent>
-            </Item>
-            <Item className="bg-surface-inset px-2.5 py-2 ring-1 ring-inset ring-border/55" size="xs" variant="muted">
-              <ItemMedia className="text-muted-foreground" variant="icon"><Plugs aria-hidden="true" size={14} /></ItemMedia>
-              <ItemContent>
-                <ItemDescription asChild><dt>插件</dt></ItemDescription>
-                <ItemTitle asChild className="font-mono text-base"><dd>{project.pluginCount}</dd></ItemTitle>
-              </ItemContent>
-            </Item>
-          </dl>
-        </CardContent>
-      </Card>
+      <dl className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-lg border bg-surface px-3 py-2.5" aria-label="项目摘要" data-testid="project-summary-strip">
+        {[["环境", project.environmentCount], ["插件", project.pluginCount], ["已连接", project.environments.reduce((total, environment) => total + environment.runtime.connectedCount, 0)]].map(([label, value]) => <div key={label} className="flex items-baseline gap-2">
+          <dt className="text-xs text-muted-foreground">{label}</dt><dd className="font-mono text-sm font-medium tabular-nums">{value}</dd>
+        </div>)}
+      </dl>
 
       <div className="mt-4">
         {project.environments.length === 0 ? (
@@ -161,7 +146,7 @@ export function ProjectOverview({
                 {project.environments.map((environment) => (
                   <Item className="min-w-0" key={environment.environmentId} role="listitem" size="xs" variant="muted">
                     <ItemContent>
-                      <ItemTitle className="w-full truncate" title={environment.name}>{environment.name}</ItemTitle>
+                      <ItemTitle className="flex w-full min-w-0 gap-2"><Button size="xs" variant="link" className="h-auto min-w-0 truncate p-0" onClick={() => onSelectEnvironment?.(environment.environmentId)}>{environment.name}</Button><EnvironmentTypeBadge type={environment.environmentType} /></ItemTitle>
                       <ItemDescription className="font-mono">
                         {environment.readyPluginCount}/{environment.pluginCount} 个插件就绪
                       </ItemDescription>
@@ -185,9 +170,7 @@ export function ProjectOverview({
                     {project.environments.map((environment) => (
                       <TableRow key={environment.environmentId}>
                         <TableCell className="max-w-0 py-2">
-                          <span className="block truncate text-xs font-medium" title={environment.name}>
-                            {environment.name}
-                          </span>
+                          <div className="flex min-w-0 items-center gap-2"><Button size="xs" variant="link" className="h-auto min-w-0 truncate p-0" title={environment.name} onClick={() => onSelectEnvironment?.(environment.environmentId)}>{environment.name}</Button><EnvironmentTypeBadge type={environment.environmentType} /></div>
                         </TableCell>
                         <TableCell className="py-2 text-right font-mono text-xs">
                           {environment.readyPluginCount}/{environment.pluginCount}

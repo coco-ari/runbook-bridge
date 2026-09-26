@@ -1,3 +1,4 @@
+import { DiagnosticDetails } from "./DiagnosticDetails"
 import {
   ArrowClockwise,
   ArrowsOutSimple,
@@ -228,7 +229,7 @@ export function PluginConnectionPanel({
     <section aria-labelledby="plugin-connection-title" className="space-y-4 @container/plugin-connection" data-testid="plugin-connection-panel">
       <Card className="relative gap-0 overflow-hidden py-0" data-status={connection.state.phase} data-testid="plugin-status-console">
         <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-0.5 ${statusRailTone}`} data-testid="plugin-status-rail" />
-        <CardContent className="space-y-4 p-4">
+        <CardContent className="space-y-3 p-3">
           <div className="flex min-w-0 items-start gap-3">
             <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-surface-inset text-muted-foreground">
               {editingBlocked
@@ -243,7 +244,7 @@ export function PluginConnectionPanel({
               <p className="text-xs leading-5 text-muted-foreground">{guidance.description}</p>
             </div>
           </div>
-          <ButtonGroup aria-label="插件连接操作" className="max-w-full @sm/plugin-connection:ml-12" data-testid="plugin-overview-actions">
+          <ButtonGroup aria-label="插件连接操作" className="max-w-full flex-wrap gap-y-1" data-testid="plugin-overview-actions">
             <Button
               data-testid="plugin-connection-primary"
               disabled={primaryAction.disabled}
@@ -285,7 +286,7 @@ export function PluginConnectionPanel({
             <Alert variant="destructive">
               <XCircle aria-hidden="true" weight="fill" />
               <AlertTitle>连接异常</AlertTitle>
-              <AlertDescription>{connection.state.error.message}</AlertDescription>
+              <AlertDescription><p>{connection.state.error.message}</p><DiagnosticDetails error={connection.state.error} /></AlertDescription>
             </Alert>
           ) : null}
           {actions.map((action, index) => (
@@ -296,14 +297,14 @@ export function PluginConnectionPanel({
             >
               <WarningCircle aria-hidden="true" />
               <AlertTitle>{action.title}</AlertTitle>
-              <AlertDescription>请核对当前插件的配置、凭据状态与连接依赖后重试。</AlertDescription>
+              <AlertDescription><DiagnosticDetails error={{ code: action.code, message: action.title }} /></AlertDescription>
             </Alert>
           ))}
         </CardContent>
       </Card>
 
       <Card aria-labelledby="plugin-config-title" className="gap-0 overflow-hidden py-0" data-testid="plugin-fact-strip">
-        <CardHeader className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
+        <CardHeader className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2.5">
           <CardTitle><h3 className="text-section font-medium" id="plugin-config-title">配置摘要</h3></CardTitle>
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Badge variant="outline">{pluginTypeLabel(draft.pluginType)}</Badge>

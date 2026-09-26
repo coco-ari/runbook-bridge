@@ -90,7 +90,7 @@ function environment(environmentId = ENVIRONMENT_ID) {
     runtime:{...runtime(),environmentId,phase:'disconnected',desiredConnected:false,eligibleCount:0,connectedCount:0,plugins:{}},
   };
   return {
-    projectId:PROJECT_ID,environmentId:ENVIRONMENT_ID,name:'数据库模拟环境',revision:1,
+    projectId:PROJECT_ID,environmentId:ENVIRONMENT_ID,name:'数据库模拟环境',environmentType:'production',revision:1,
     pluginCount:plugins.length,readyPluginCount:plugins.length,draftCount:0,
     resourcePreview:plugins.map(({target:_,auth:__,transport:___,tls:____,limits:_____,...record}) => record),
     resourcePreviewTruncated:false,runtime:runtime(),
@@ -210,7 +210,14 @@ function registerMockApi() {
     event.sender.send('v2:environment-status-changed',runtime());
     return ok({snapshot:runtime()});
   });
-  // 所有未列入本次测试范围的真实 preload 通道都明确禁止执行。
+  register('v2:cloud-config',async (_event,payload) => {
+    if (!['status','check'].includes(payload?.action)) {
+      forbiddenCalls.push(`v2:cloud-config:${payload?.action}`);
+      return failed('数据库测试禁止云配置变更。');
+    }
+    return ok({repositories:[],cloudProjects:[],checkIntervalMinutes:0});
+  });
+  // Allow only the shell's read-only cloud status; all other unlisted channels stay forbidden.
   const preload = fs.readFileSync(path.join(root,'src','preload.cjs'),'utf8');
   for (const [,channel] of preload.matchAll(/ipcRenderer\.invoke\('([^']+)'/gu)) {
     if (registeredChannels.has(channel)) continue;
@@ -306,6 +313,7 @@ async function openDatabaseWorkspace(win) {
   await click(win,testId('plugin-workspace-open'));
   await waitFor(win,`document.querySelector('${testId('mysql-full-window-workspace')}')?.getClientRects().length > 0`,'数据库大窗口');
   await waitFor(win,`document.querySelector('${testId('mysql-database-workspace')}')?.getClientRects().length > 0`,'数据库工作区');
+  assert.equal(await win.webContents.executeJavaScript(`Boolean(document.querySelector('.mysql-workspace-header [data-environment-type=production]'))`,true),true,'数据库操作始终显示生产环境标识');
 }
 
 async function selectPlugin(win,pluginInstanceId) {

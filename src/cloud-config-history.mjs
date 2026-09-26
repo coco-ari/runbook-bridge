@@ -11,7 +11,7 @@ export function projectSummary(project) {
 export function pruneCloudHistory(payload, now = Date.now()) {
   const tombstones = new Map((payload.tombstones ?? []).map(record => [record.projectId,record]));
   for (const {projectId,deletedAt} of payload.history) if (deletedAt !== null) tombstones.set(projectId,{projectId,deletedAt});
-  return {...payload,schemaVersion:3,tombstones:[...tombstones.values()],history:payload.history.filter(record => record.deletedAt === null || cloudTrashAvailable(record,now))};
+  return {...payload,schemaVersion:Math.max(3,payload.schemaVersion),tombstones:[...tombstones.values()],history:payload.history.filter(record => record.deletedAt === null || cloudTrashAvailable(record,now))};
 }
 
 export function appendCloudVersion(payload,project,{versionId = crypto.randomUUID(),createdAt = new Date().toISOString(),force = false,restore = false} = {}) {
@@ -24,8 +24,9 @@ export function appendCloudVersion(payload,project,{versionId = crypto.randomUUI
   const index = payload.projects.findIndex(p => p.projectId === project.projectId);
   const projects = [...payload.projects];
   if (index === -1) projects.push(project); else projects[index] = project;
-  return {...payload,projects,history:[...payload.history.filter(r => r.projectId !== project.projectId),record],
-    ...(payload.schemaVersion === 3 ? {tombstones:(payload.tombstones ?? []).filter(r => r.projectId !== project.projectId)} : {})};
+  const schemaVersion = project.environments.some(env => env.environmentType) ? 4 : payload.schemaVersion;
+  return {...payload,schemaVersion,projects,history:[...payload.history.filter(r => r.projectId !== project.projectId),record],
+    ...(schemaVersion >= 3 ? {tombstones:(payload.tombstones ?? []).filter(r => r.projectId !== project.projectId)} : {})};
 }
 
 export function cloudVersionSummaries(record) {

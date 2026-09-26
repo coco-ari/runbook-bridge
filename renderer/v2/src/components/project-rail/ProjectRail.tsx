@@ -559,7 +559,8 @@ export function ProjectRail({
                                       {projectDescription(project)} · {statusLabel(project.status)}
                                     </span>
                                     {cloudDescription ? <span className="block text-xs [overflow-wrap:anywhere]">{cloudDescription}</span> : null}
-                                    {projectDrag.canDrag(project) ? <span className="block text-xs">拖动排序 · Alt + ↑ / ↓</span> : null}
+                                    {/* Keep help stable during refresh; the row separately enforces drag availability. */}
+                                    {onMoveProjectRelative && !project.isolated ? <span className="block text-xs">拖动排序 · Alt + ↑ / ↓</span> : null}
                                   </span>
                                 ),
                               }}

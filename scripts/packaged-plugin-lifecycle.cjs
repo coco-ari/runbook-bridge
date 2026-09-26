@@ -177,7 +177,9 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
   const invoke = async (method, payload) => {
     calls += 1;
     // Do not include payloads or credential values in assertions/diagnostics.
-    return cdp.evaluate(`window.aiOps.v2[${JSON.stringify(method)}](${JSON.stringify(payload)})`);
+    if (process.env.RUNBOOK_BRIDGE_PACKAGED_TRACE_METHODS === '1') process.stdout.write(`Packaged lifecycle call ${calls}: ${method}\n`);
+    try { return await cdp.evaluate(`window.aiOps.v2[${JSON.stringify(method)}](${JSON.stringify(payload)})`); }
+    catch (error) { throw new Error(`Packaged lifecycle ${method}: ${error.message}`); }
   };
   const success = async (method, payload) => {
     const result = await invoke(method, payload);
@@ -187,6 +189,14 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
   try {
     const project = await success('createProject', {name:'Packaged lifecycle fixture'});
     const [environment] = await success('listEnvironments', project.projectId);
+    assert.equal(environment.environmentType,undefined,'旧环境不按名称推断类型');
+    const marked = await success('updateEnvironment',{projectId:project.projectId,environmentId:environment.environmentId,expectedRevision:environment.revision,patch:{environmentType:'production'}});
+    assert.equal(marked.environmentType,'production','真实 preload/IPC 保存生产环境标识');
+    assert.equal((await success('listEnvironments',project.projectId))[0].environmentType,'production');
+    const invalidType = await invoke('updateEnvironment',{projectId:project.projectId,environmentId:environment.environmentId,expectedRevision:marked.revision,patch:{environmentType:'invalid'}});
+    assert.equal(invalidType.ok,false);
+    assert.equal(invalidType.error.code,'INVALID_ARGUMENT');
+
     const scope = {projectId:project.projectId,environmentId:environment.environmentId};
     const begin = async (plugin) => {
       const preview = await success('preparePluginConnectionEdit', {...scope,

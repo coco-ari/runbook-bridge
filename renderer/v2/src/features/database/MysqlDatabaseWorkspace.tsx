@@ -1,3 +1,6 @@
+import { DiagnosticDetails } from "@/features/connections/DiagnosticDetails"
+import type { PublicError } from "@/bridge/ai-ops-v2"
+import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
 import { StatusIndicator } from "@/components/app-shell/StatusIndicator"
 import { WorkspaceBackButton, WorkspaceHeaderActions, WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { WorkspaceLayoutControls, WorkspacePanelToggle, WorkspaceTabBar } from "@/components/workspace/WorkspaceLayoutControls"
@@ -43,8 +46,8 @@ export interface MysqlDatabaseWorkspaceProps {
   readonly environmentName: string
 }
 
-function ReadError({ message, testId }: { readonly message: string; readonly testId: string }) {
-  return <Alert className="rounded-none border-x-0" data-testid={testId} variant="destructive"><WarningCircle aria-hidden="true" /><AlertTitle>读取失败</AlertTitle><AlertDescription>{message}</AlertDescription></Alert>
+function ReadError({ message, testId, diagnostic }: { readonly message: string; readonly testId: string; readonly diagnostic?: PublicError | undefined }) {
+  return <Alert className="rounded-none border-x-0" data-testid={testId} variant="destructive"><WarningCircle aria-hidden="true" /><AlertTitle>读取失败</AlertTitle><AlertDescription><p>{message}</p><DiagnosticDetails error={diagnostic ?? { code: "UNKNOWN_ERROR", message }} domain="operation" /></AlertDescription></Alert>
 }
 
 function AuditWarning({ testId }: { readonly testId: string }) {
@@ -74,7 +77,7 @@ function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, envi
     <header className="mysql-workspace-header">
       <WorkspaceBackButton label="返回数据库详情" testId="mysql-workspace-back" onClick={() => editing.protect(onBack)} />
       <span className="mysql-workspace-header-divider" />
-      <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold" title={plugin.displayName}>{plugin.displayName}</h1><StatusIndicator appearance="badge" status={connected ? "connected" : "disconnected"} /><Badge variant="outline"><ShieldCheck className="size-3" />Agent 只读</Badge></div><p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName + " · " + database}>{projectName} / {environmentName} · {database}</p></div>
+      <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold" title={plugin.displayName}>{plugin.displayName}</h1><EnvironmentTypeBadge /><StatusIndicator appearance="badge" status={connected ? "connected" : "disconnected"} /><Badge variant="outline"><ShieldCheck className="size-3" />Agent 只读</Badge></div><p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName + " · " + database}>{projectName} / {environmentName} · {database}</p></div>
       <WorkspaceHeaderActions connected={connected} busy={disconnecting} onDisconnect={() => editing.protect(() => void disconnect())} onClose={() => setClosing(true)} prefix="mysql-workspace" closeLabel="关闭数据库工作区" closeTitle="关闭工作区并清除查询" />
     </header>
     <Dialog open={closing} onOpenChange={setClosing}><DialogContent><DialogHeader><DialogTitle>关闭数据库工作区</DialogTitle><DialogDescription>将清除当前工作区的 SQL、筛选条件和查询结果。数据库连接保持。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => { setClosing(false); editing.protect(onBack) }}>返回详情并保留</Button><Button data-testid="mysql-workspace-confirm-close" onClick={() => { setClosing(false); editing.protect(onClose) }}>关闭工作区</Button></DialogFooter></DialogContent></Dialog>
@@ -220,8 +223,8 @@ function MysqlConnectedWorkspace({ api, scope, plugin }: Pick<MysqlDatabaseWorks
                     {queries.documents.map((document) => (
                       <div className="mysql-query-result-area mysql-query-document-view" data-query-document={document.id} hidden={document.id !== activeQueryId} key={document.id}>
                         {document.result.loading && !document.result.data ? <ReadLoading label="正在执行查询…" /> : null}
-                        {document.result.error && !document.result.data ? <ReadError message={document.result.error} testId={document.id === activeQueryId ? "mysql-query-error" : `mysql-${document.id}-error`} /> : null}
-                        {document.result.data ? <MysqlEditableResults key={document.result.revision ?? 0} feedback={{busy: document.result.loading, error: document.result.error ?? "", message: document.result.writeSummary ?? ""}} api={api} scope={scope} documentKey={document.id} result={document.result.data} sql={document.result.executedSql ?? document.sql} visible={document.id === activeQueryId && !selectedTable} onReload={summary => void queries.runQuery(document.id, document.result.executedSql ?? document.sql, summary)}><MysqlQueryResults columnWidthCache={queryColumnWidths.current} columnWidthScope={document.id} kind="query" result={document.result.data} testIdPrefix={document.id === activeQueryId ? "mysql-query" : `mysql-${document.id}`} /></MysqlEditableResults> : null}
+                        {document.result.error && !document.result.data ? <ReadError diagnostic={document.result.diagnostic} message={document.result.error} testId={document.id === activeQueryId ? "mysql-query-error" : `mysql-${document.id}-error`} /> : null}
+                        {document.result.data ? <MysqlEditableResults key={document.result.revision ?? 0} feedback={{diagnostic: document.result.diagnostic, busy: document.result.loading, error: document.result.error ?? "", message: document.result.writeSummary ?? ""}} api={api} scope={scope} documentKey={document.id} result={document.result.data} sql={document.result.executedSql ?? document.sql} visible={document.id === activeQueryId && !selectedTable} onReload={summary => void queries.runQuery(document.id, document.result.executedSql ?? document.sql, summary)}><MysqlQueryResults columnWidthCache={queryColumnWidths.current} columnWidthScope={document.id} kind="query" result={document.result.data} testIdPrefix={document.id === activeQueryId ? "mysql-query" : `mysql-${document.id}`} /></MysqlEditableResults> : null}
                         {!document.result.data && !document.result.loading && !document.result.error ? <Empty className="h-full"><EmptyHeader><EmptyMedia variant="icon"><Code aria-hidden="true" /></EmptyMedia><EmptyTitle>编写你的第一条查询</EmptyTitle><EmptyDescription>执行只读 SQL，结果将在此显示。<br />查询受当前连接配置的数量和大小上限约束。</EmptyDescription></EmptyHeader></Empty> : null}
                       </div>
                     ))}

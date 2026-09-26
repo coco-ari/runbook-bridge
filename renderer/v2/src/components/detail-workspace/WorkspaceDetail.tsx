@@ -1,3 +1,4 @@
+import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
 import { pluginUi } from "@/features/plugins/plugin-ui-contributions"
 import {
   BookOpenText,
@@ -90,6 +91,7 @@ export interface WorkspaceDetailProps {
   readonly onAgentAccessDirtyChange: (dirty: boolean) => void
   readonly onAgentAccessSavingChange: (saving: boolean) => void
   readonly onLocateScope: (scope: ConfirmationScope, tab?: "overview" | "audit") => void
+  readonly onOpenEnvironment: (projectId: string, environmentId: string) => void
   readonly onOpenPlugin: (projectId: string, environmentId: string, pluginInstanceId: string) => void
   readonly onTabChange: (value: string) => void
   readonly onPluginUpdated: () => void
@@ -234,6 +236,7 @@ export function WorkspaceDetail({
   onAgentAccessSavingChange,
   onLocateScope,
   onOpenPlugin,
+  onOpenEnvironment,
   onTabChange,
   onPluginUpdated,
   onDismissSaveNotice,
@@ -434,6 +437,7 @@ export function WorkspaceDetail({
             <div className="mt-1 flex min-w-0 items-center gap-2">
               <h1 className="truncate text-base font-semibold tracking-tight" title={title}>{title}</h1>
               <StatusIndicator appearance="badge" status={selectedStatus} />
+              <EnvironmentTypeBadge type={environment?.environmentType} />
               {workspaceLoading || environmentLoading ? <Badge variant="info">正在刷新</Badge> : null}
             </div>
           </div>
@@ -569,7 +573,7 @@ export function WorkspaceDetail({
                   )}
                 />
               ) : (
-                <ProjectOverview error={workspaceError} loading={workspaceLoading} onReload={onReloadWorkspace} project={project} />
+                <ProjectOverview onSelectEnvironment={environmentId => { if (project) onOpenEnvironment(project.projectId, environmentId) }} error={workspaceError} loading={workspaceLoading} onReload={onReloadWorkspace} project={project} />
               )}
             </PersistentTabsContent>
 

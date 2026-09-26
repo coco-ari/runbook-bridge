@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 
-import type { AiOpsV2Api, MysqlQueryResult, PluginScope } from "@/bridge/ai-ops-v2"
+import type { AiOpsV2Api, MysqlQueryResult, PluginScope, PublicError } from "@/bridge/ai-ops-v2"
 
 export const MYSQL_MAX_QUERY_DOCUMENTS = 6
 
@@ -11,6 +11,7 @@ interface MysqlDocumentRead {
   readonly data: MysqlQueryResult | null
   readonly loading: boolean
   readonly error: string | null
+  readonly diagnostic?: PublicError
 }
 
 interface MysqlQueryDocument {
@@ -78,10 +79,10 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
     try {
       const response = await api.mysqlQueryReadonly({ projectId, environmentId, pluginInstanceId, sql })
       if (!currentRequest()) return
-      if (!response.ok) throw new Error(response.error.message)
+      if (!response.ok) throw Object.assign(new Error(response.error.message), { publicError: response.error })
       setResult({ data: response.data, revision: ticket, executedSql: sql, writeSummary, loading: false, error: null })
     } catch (error) {
-      if (currentRequest()) setResult({ data: retained, revision: previous?.revision ?? 0, executedSql: sql, writeSummary, loading: false, error: (writeSummary ? writeSummary + " 刷新失败，可重新刷新。" : "") + (error instanceof Error ? error.message : "SQL 查询失败，请重试。") })
+      if (currentRequest()) setResult({ data: retained, revision: previous?.revision ?? 0, executedSql: sql, writeSummary, loading: false, diagnostic: error && typeof error === "object" && "publicError" in error ? error.publicError as PublicError : { code: "UNKNOWN_ERROR", message: "查询未完成" }, error: (writeSummary ? writeSummary + " 刷新失败，可重新刷新。" : "") + (error instanceof Error ? error.message : "SQL 查询失败，请重试。") })
     } finally {
       if (currentRequest()) owner.busy = false
     }

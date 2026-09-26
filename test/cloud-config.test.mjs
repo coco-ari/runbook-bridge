@@ -81,6 +81,57 @@ async function projectOperation(device,repositoryId,projectId,operation,versionI
   return (await device.call('prepareProjectOperation',{repositoryId,projectId,operation,snapshotId,...(versionId ? {versionId} : {})})).projectOperation;
 }
 
+test('环境类型随 schema 4 往返，旧哈希不漂移，旧版本更新仍直接覆盖，本地修改显示字段差异',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), b = await device(t,remote.client), p = await project(a);
+  const original = await exportCloudProject(a.store,a.vault,p.projectId);
+  assert.equal(Object.hasOwn(original.environments[0],'environmentType'),false);
+  assert.equal(snapshotDigest(normalizeCloudSnapshot({schemaVersion:1,projects:[original]},a.vault).projects[0]),snapshotDigest(original));
+  const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  await upload(a,p.projectId);
+  const bound = await b.call('bind',{url:created.url,password:PASSWORD});
+  await download(b,p.projectId);
+  await a.store.updateEnvironment(p.projectId,'env-test',{environmentType:'production'});
+  await upload(a,p.projectId);
+  const archive = await a.service.remote('test-owner',null,created.repositoryId);
+  assert.equal(archive.payload.schemaVersion,4);
+  assert.throws(() => normalizeCloudSnapshot({...archive.payload,schemaVersion:3},a.vault),{code:'CLOUD_FORMAT_INVALID'});
+  const sync = await b.call('sync',{repositoryId:bound.repositoryId,direction:'download',projectId:p.projectId});
+  assert.equal(sync.planId,undefined);
+  assert.equal((await b.store.getEnvironment(p.projectId,'env-test')).environmentType,'production');
+  await b.store.updateEnvironment(p.projectId,'env-test',{environmentType:'test'});
+  const plan = await b.call('sync',{repositoryId:bound.repositoryId,direction:'download',projectId:p.projectId});
+  assert.ok(plan.planId);
+  assert.ok(plan.rows[0].diff.fields.some(field => field.field === '类型' && field.before === '测试' && field.after === '生产'));
+  assert.doesNotMatch(JSON.stringify(plan.rows),/synthetic-ssh-secret|synthetic-mysql-secret/);
+  await b.call('confirm',{planId:plan.planId,choices:Object.fromEntries(plan.rows.map(row => [row.rowId,'cloud']))});
+  assert.equal((await b.store.getEnvironment(p.projectId,'env-test')).environmentType,'production');
+  const history = await b.call('projectHistory',{repositoryId:bound.repositoryId,projectId:p.projectId});
+  assert.ok(history.projectHistory.versions[0].diff.fields.some(field => field.field === '类型'));
+  // Clearing the badge does not downgrade the repository or discard old typed versions.
+  await a.store.updateEnvironment(p.projectId,'env-test',{environmentType:'unspecified'});
+  await upload(a,p.projectId);
+  assert.equal((await a.service.remote('test-owner',null,created.repositoryId)).payload.schemaVersion,4);
+});
+
+test('字段对比白名单不包含凭据、运维说明、提问和自定义命令正文，数量有界',async t => {
+  const a = await device(t,{}), p = await project(a);
+  const before = await exportCloudProject(a.store,a.vault,p.projectId), after = structuredClone(before);
+  after.environments[0].runbook = 'sensitive-runbook-sentinel';
+  after.environments[0].questions = [{questionId:'question-test',text:'sensitive-question-sentinel'}];
+  after.environments[0].plugins[0].secrets.password = 'sensitive-password-sentinel';
+  after.environments[0].plugins[0].config.target.port = 2222;
+  after.environments[0].plugins[0].config.actions = [{command:'sensitive-command-sentinel'}];
+  const diff = cloudProjectDiff(before,after);
+  assert.ok(diff.fields.some(field => field.field === '端口' && field.before === '22' && field.after === '2222'));
+  assert.ok(diff.fields.some(field => field.field === '凭据' && field.redacted));
+  assert.doesNotMatch(JSON.stringify(diff),/sensitive-|synthetic-ssh-secret/);
+  const large = structuredClone(after);
+  large.environments = Array.from({length:100},(_,index) => ({...structuredClone(after.environments[0]),environmentId:`env-${index}`}));
+  const bounded = cloudProjectDiff(null,large);
+  assert.equal(bounded.fields.length,200);
+  assert.ok(bounded.fieldsOmitted > 0);
+});
+
 test('同步先持久化关联，保存失败时不写入云端或本地项目',async t => {
   const remote = await cloud(t), a = await device(t,remote.client), b = await device(t,remote.client), p = await project(a);
   const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});

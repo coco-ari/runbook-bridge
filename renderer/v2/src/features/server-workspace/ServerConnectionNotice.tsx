@@ -1,3 +1,4 @@
+import { DiagnosticDetails } from "@/features/connections/DiagnosticDetails"
 import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import type { TerminalConnection } from "./terminal-recovery"
@@ -29,7 +30,7 @@ export function ServerConnectionNotice({ connection, busy, error, onRetry, onSet
     <div className="min-w-0 flex-1">
       <p role="status" aria-live="polite">{message}</p>
       {connection.phase === "waiting" ? <p className="text-xs text-muted-foreground">{countdown > 0 ? countdown + " 秒后重试" : "等待重试开始…"}</p> : null}
-      {detail ? <details className="mt-1 text-xs"><summary className="cursor-pointer">查看原因</summary><p className="mt-1 break-words">{detail}</p></details> : null}
+      {detail ? <details className="mt-1 text-xs"><summary className="cursor-pointer">查看原因</summary><p className="mt-1 break-words">{detail}</p><DiagnosticDetails error={{ code: connection.reason || "UNKNOWN_ERROR", message: detail }} /></details> : null}
     </div>
     {connection.phase === "action-required"
       ? <Button size="sm" variant="outline" onClick={onSettings}>连接设置</Button>

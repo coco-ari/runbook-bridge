@@ -1,3 +1,4 @@
+import { version as appVersion } from "../../../../../package.json"
 import { useEffect, useRef, useState } from "react"
 import { ArrowLeft, Cloud, GearSix, Palette } from "@phosphor-icons/react"
 import type { AiOpsV2Api } from "@/bridge/ai-ops-v2"
@@ -37,6 +38,10 @@ export function SettingsPage({ api, onBack, onChanged }: {
           <div className="space-y-1"><h2 className="text-section font-medium">界面主题</h2><p className="text-xs text-muted-foreground">选择浅色、深色，或跟随系统自动切换。</p></div>
           <ThemeMenu />
           <p className="text-xs text-muted-foreground">更改立即生效，并保存在本机。</p>
+        </section> : null}
+        {section === "appearance" ? <section className="max-w-xl rounded-lg border bg-card p-4 text-xs" aria-label="版本信息" data-testid="settings-version">
+          <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium">Agent运维工作台</span><span className="font-mono">{appVersion}</span></div>
+          <p className="mt-2 leading-5 text-muted-foreground">版本号来自当前应用包。共享云仓库的设备请保持客户端功能兼容；使用生产/测试环境标识时，其他设备也需更新到支持此功能的版本。</p>
         </section> : null}
         {cloudVisited ? <div hidden={section !== "cloud"} className={section === "cloud" ? "flex min-h-0 flex-1 flex-col" : "hidden"}><CloudConfigPanel api={api} onChanged={onChanged} onBusyChange={setBusy} /></div> : null}
       </div>

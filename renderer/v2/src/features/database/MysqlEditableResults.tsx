@@ -1,3 +1,5 @@
+import type { PublicError } from "@/bridge/ai-ops-v2"
+import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
 import { OperationMessage, OperationSpinner, useOperationLabel } from "@/components/workspace/OperationFeedback"
 import { MysqlRowSheet } from "./MysqlRowSheet"
 import { mysqlDraftColumn, mysqlDraftPlaceholder, type MysqlInsertDraft } from "./mysql-row-draft-model"
@@ -29,7 +31,7 @@ function MysqlRowAction({ hint, railClassName, ...props }: ComponentProps<typeof
 export function MysqlEditableResults({ api, scope, documentKey, sql, result, visible = true, onReload, feedback, children }: {
   readonly api: AiOpsV2Api; readonly scope: PluginScope; readonly documentKey: string; readonly sql: string; readonly result: MysqlQueryResult
   readonly visible?: boolean; readonly onReload: (summary?: string) => void; readonly children: ReactNode
-  readonly feedback?: { busy: boolean; error: string; message: string }
+  readonly feedback?: { diagnostic?: PublicError | undefined; busy: boolean; error: string; message: string }
 }) {
   const guard = useMysqlEditingGuard()
   const [edit, setEdit] = useState<MysqlEditData | null>(null)
@@ -513,7 +515,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
         {deleted.size ? <span className="text-danger">删除 {deleted.size}</span> : null}
         <span className="sr-only">（{cellCount} 处字段）</span>
       </span> : null}
-      <span data-testid="mysql-edit-message" className="min-w-0 flex-1"><OperationMessage error={Boolean(error || feedback?.error)} message={error || feedback?.error || (feedback?.busy && feedback.message ? feedback.message + " · " : "") + waiting || notice || feedback?.message || ""} /></span>
+      <EnvironmentTypeBadge /><span data-testid="mysql-edit-message" className="min-w-0 flex-1"><OperationMessage diagnostic={uncertain ? { code: "MYSQL_WRITE_OUTCOME_UNKNOWN", message: error } : stale ? { code: "MYSQL_EDIT_STALE", message: error } : !error ? feedback?.diagnostic : undefined} error={Boolean(error || feedback?.error)} message={error || feedback?.error || (feedback?.busy && feedback.message ? feedback.message + " · " : "") + waiting || notice || feedback?.message || ""} /></span>
     </span>,
     footer: <div className="mysql-inline-actions">
       <Button size="xs" variant="ghost" disabled={Boolean(busy) || uncertain || (!pendingCount && !activeCell)} data-testid="mysql-edit-undo" aria-label="取消更改" onClick={() => { finishCell(true); updateDrafts({}); updateInserts([]); updateDeleted(new Set()); updateRowDraft(null); setSelection(new Set()); setError(""); setNotice("已取消全部未保存更改。"); }}><ArrowCounterClockwise />取消更改</Button>
@@ -528,7 +530,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
     }}>
       {children}
       {rowDraft && edit ? <MysqlRowSheet key={rowDraft.rowId} api={api} scope={scope} edit={edit} draft={rowDraft} locked={locked} onChange={updateRowDraft} onStage={stageRow} onClose={() => { updateRowDraft(null) }} /> : null}
-      <Dialog open={deleteConfirmation} onOpenChange={setDeleteConfirmation}><DialogContent><DialogHeader><DialogTitle>保存对 {edit?.table} 的更改？</DialogTitle><DialogDescription>本次新增 {inserts.length - copiedCount} 行、复制 {copiedCount} 行、修改 {plan?.counts?.update ?? pendingRows.length} 行、删除 {plan?.counts?.delete ?? deleted.size} 行。删除保存后无法通过此工作区撤销。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => setDeleteConfirmation(false)}>继续编辑</Button><Button variant="destructive" data-testid="mysql-confirm-delete" onClick={() => { setDeleteConfirmation(false); if (plan) void commit(plan) }}>确认保存并删除</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={deleteConfirmation} onOpenChange={setDeleteConfirmation}><DialogContent><DialogHeader><EnvironmentTypeBadge /><DialogTitle>保存对 {edit?.table} 的更改？</DialogTitle><DialogDescription>本次新增 {inserts.length - copiedCount} 行、复制 {copiedCount} 行、修改 {plan?.counts?.update ?? pendingRows.length} 行、删除 {plan?.counts?.delete ?? deleted.size} 行。删除保存后无法通过此工作区撤销。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => setDeleteConfirmation(false)}>继续编辑</Button><Button variant="destructive" data-testid="mysql-confirm-delete" onClick={() => { setDeleteConfirmation(false); if (plan) void commit(plan) }}>确认保存并删除</Button></DialogFooter></DialogContent></Dialog>
       {exportSelection ? <MysqlSqlExportDialog api={api} selection={exportSelection} onClose={() => setExportSelection(null)} /> : null}
     {edit ? <><Dialog open={batch} onOpenChange={setBatch}>
       <DialogContent className="sm:max-w-lg" data-testid="mysql-edit-batch-dialog">

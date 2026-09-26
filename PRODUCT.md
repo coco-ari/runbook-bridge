@@ -2,18 +2,18 @@
 
 ## Platform
 
-Windows Electron 桌面应用
+Windows / macOS Electron 本地桌面应用。Windows 提供安装包；macOS 支持源码及开发测试包，正式分发的签名、公证与验收状态见 [macOS 指南](docs/macos-getting-started.md)。
 
 ## Users
 
 - 主要用户是独立维护系统的个人开发者或运维人员。
-- 他们在 Windows 桌面端管理运维作用域和连接，并通过 Codex 等 Agent 调查和处理系统问题。
+- 他们在 Windows 或 macOS 桌面端管理运维作用域和连接，并通过 Codex 等 Agent 调查和处理系统问题。
 - 最高频任务是故障排查，尤其是结合服务器日志、MySQL、Redis 等中间件证据定位问题。
 - 项目部署是已确认的未来使用场景，当前版本尚未提供完整部署能力。
 
 ## Product Purpose
 
-Agent运维工作台是一个面向个人运维的 Windows 本地工作台。它统一管理项目、环境、Server、MySQL、Redis、连接状态、运维说明和加密凭据，并通过本地 MCP 向 Codex 等 Agent 提供结构化、受控的运维能力。
+Agent运维工作台是一个面向个人运维的跨平台本地工作台。它统一管理项目、环境、Server、MySQL、Redis、连接状态、运维说明和加密凭据，并通过本地 MCP 向 Codex 等 Agent 提供结构化、受控的运维能力。
 
 产品成功意味着用户能够在一个明确的项目和环境作用域内，让 Agent 快速组合日志、服务器状态和数据库、中间件证据完成故障排查，同时不向 Agent 暴露凭据，也不放弃连接和危险变更的最终控制权。
 
@@ -42,17 +42,18 @@ Agent运维工作台是一个面向个人运维的 Windows 本地工作台。它
 5. Agent 组合日志、系统状态、MySQL 和 Redis 等证据推进排查；安全读取直接执行，危险操作返回桌面确认中心。
 6. 用户在桌面端核对目标和完整参数后允许或拒绝一次性操作，并通过操作记录复核结果。
 
-桌面应用必须保持运行，本地 Named Pipe Broker 才接受 MCP 调用。产品数据和凭据保存在当前 Windows 用户的本地数据目录，不依赖云账号。界面以中文为主。快捷提问功能可将全局 Agent 开场词、当前项目、当前环境和业务问题组合后复制给 Agent。
+桌面应用必须保持运行，本地 Broker（Windows Named Pipe / macOS Unix Socket） 才接受 MCP 调用。产品数据和凭据保存在当前操作系统用户的本地数据目录，不依赖云账号。界面以中文为主。快捷提问功能可将全局 Agent 开场词、当前项目、当前环境和业务问题组合后复制给 Agent。
 
 ## Capabilities and Constraints
 
 - 当前内置插件为 Server、MySQL 和 Redis；未来可以扩展其他插件，但当前不提供第三方插件市场或动态安装。
 - Server 支持有界的系统状态、服务、Journal、容器、文件、目录和日志读取，以及经过确认的文件变更、服务控制和 Shell。
-- MySQL 插件固定连接一个数据库，只允许策略批准的单条 `SELECT` 或 `EXPLAIN SELECT`。
-- Redis 插件固定一个 Logical DB，只允许登记 Key pattern 内的有界读取和 TTL 查询。
+- MySQL 插件固定连接一个数据库。Agent 只允许策略批准的单条 `SELECT` 或 `EXPLAIN SELECT`；桌面人工编辑支持新增、修改和删除行，并保留事务、冲突检查与结果核实。
+- Redis 插件固定一个 Logical DB。Agent 只允许登记 Key pattern 内的有界读取和 TTL 查询；桌面人工操作支持 String/JSON 写入、TTL 和单 Key 删除。
+- 环境可明确标为生产或测试；默认未标注，不根据名称推断。标识随项目云配置同步，显示于详情、工作区和数据修改处。
 - 环境允许部分连接成功；某个资源失败不应阻断其他仍安全可用的独立资源。
 - 用户必须主动建立首次连接。应用重启、从未连接或用户主动断开的环境不会被 Agent 自动连接。
-- 凭据通过 Electron `safeStorage` 和 Windows DPAPI 本地加密，不写入工作区 YAML、运维说明、错误信息或审计日志，也不返回给 Agent。
+- 凭据通过 Electron `safeStorage`（Windows DPAPI / macOS Keychain） 本地加密，不写入工作区 YAML、运维说明、错误信息或审计日志，也不返回给 Agent。
 - 确认绑定项目、环境、插件、能力和完整规范化参数，只能使用一次；文件变更额外绑定已实现的 stat/hash/状态前置条件，相关变化必须重新确认。服务控制和 Shell 不快照实时远端状态。
 - 远端读取有深度、数量、字节、并发和超时边界；不跟随符号链接目录，不读取设备、FIFO、Socket 等特殊文件。
 - 活动界面由 React、TypeScript、Tailwind CSS、shadcn/ui 和 Radix UI 实现，经 Vite 构建。

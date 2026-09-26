@@ -1,3 +1,4 @@
+import { DiagnosticDetails } from "./DiagnosticDetails"
 import {
   ArrowClockwise,
   LinkBreak,
@@ -232,6 +233,7 @@ export function EnvironmentConnectionPanel({
             {action.affectedCount > 0
               ? `影响 ${action.affectedCount} 个插件。`
               : "请检查当前环境状态后再继续。"}
+            <DiagnosticDetails error={{ code: action.code, message: action.title }} />
           </AlertDescription>
         </Alert>
       ))}
@@ -240,7 +242,7 @@ export function EnvironmentConnectionPanel({
         <Alert variant="destructive">
           <XCircle />
           <AlertTitle>连接操作失败</AlertTitle>
-          <AlertDescription>{connection.state.error.message}</AlertDescription>
+          <AlertDescription><p>{connection.state.error.message}</p><DiagnosticDetails error={connection.state.error} /></AlertDescription>
         </Alert>
       ) : null}
 

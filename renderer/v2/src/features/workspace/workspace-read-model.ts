@@ -1,5 +1,5 @@
 import { PLUGIN_CATALOG, isRegisteredPluginType, type RegisteredPluginType } from "../plugins/plugin-catalog.ts"
-import type { EnvironmentRuntime, PublicError } from "@/bridge/ai-ops-v2"
+import type { EnvironmentRuntime, EnvironmentType, PublicError } from "@/bridge/ai-ops-v2"
 
 export type WorkspaceReadStatus =
   | "connected"
@@ -75,6 +75,7 @@ export interface WorkspacePluginReadModel {
 }
 
 export interface WorkspaceEnvironmentReadModel {
+  readonly environmentType?: EnvironmentType
   readonly draftCount: number
   readonly environmentId: string
   readonly name: string
@@ -488,6 +489,7 @@ function normalizeEnvironment(
     ),
     environmentId,
     name,
+    environmentType: source.environmentType === "production" || source.environmentType === "test" ? source.environmentType : "unspecified",
     pluginCount,
     projectId,
     readyPluginCount,

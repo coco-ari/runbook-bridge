@@ -1,7 +1,8 @@
+import { SelectControl, SelectItem } from "@/components/ui/select"
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react"
 import { PencilSimple, Stack, Trash, Warning } from "@phosphor-icons/react"
 
-import type { AiOpsV2Api } from "@/bridge/ai-ops-v2"
+import type { AiOpsV2Api, EnvironmentType } from "@/bridge/ai-ops-v2"
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -94,6 +95,7 @@ export function EnvironmentMutationSurfaces({
   restoreFocusRef,
 }: EnvironmentMutationSurfacesProps) {
   const [name, setName] = useState("")
+  const [environmentType, setEnvironmentType] = useState<EnvironmentType>("unspecified")
   const pendingRestoreTargetRef = useRef<HTMLElement | null>(null)
   const controller = useEnvironmentMutations({ api, mayLeaveEnvironment, onCommitted })
   const busyDialogRef = useBusyDialogFocus(controller.busy !== null)
@@ -115,7 +117,8 @@ export function EnvironmentMutationSurfaces({
   useEffect(() => {
     controller.clearFeedback()
     setName(environment?.name ?? "")
-  }, [actionKey, controller.clearFeedback, environment?.name])
+    setEnvironmentType(environment?.environmentType ?? "unspecified")
+  }, [actionKey, controller.clearFeedback, environment?.name, environment?.environmentType])
 
   const resolveRestoreTarget = useCallback(() => {
     if (action?.kind === "create") {
@@ -156,7 +159,7 @@ export function EnvironmentMutationSurfaces({
 
   const createEnvironment = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (project && await controller.create(project, name)) onActionChange(null)
+    if (project && await controller.create(project, name, environmentType)) onActionChange(null)
   }
 
   const renameEnvironment = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -164,7 +167,7 @@ export function EnvironmentMutationSurfaces({
     if (
       project &&
       environment &&
-      await controller.rename(project, environment, name)
+      await controller.rename(project, environment, name, environmentType)
     ) {
       onActionChange(null)
     }
@@ -219,6 +222,13 @@ export function EnvironmentMutationSurfaces({
                 <FieldDescription id="new-environment-name-description">
                   同一项目内名称不能重复，最多可创建 100 个环境。
                 </FieldDescription>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="environment-type">环境类型</FieldLabel>
+                <SelectControl id="environment-type" aria-describedby="environment-type-description" aria-label="环境类型" value={environmentType} onValueChange={value => setEnvironmentType(value as EnvironmentType)} disabled={controller.busy !== null}>
+                  <SelectItem value="unspecified">未标注</SelectItem><SelectItem value="production">生产</SelectItem><SelectItem value="test">测试</SelectItem>
+                </SelectControl>
+                <FieldDescription id="environment-type-description">显示在工作区和数据修改处，随云配置同步。上传类型标识后，共享仓库的其他设备也需使用支持此功能的版本。</FieldDescription>
               </Field>
               <MutationError id="new-environment-name-error" message={mutationError} />
             </FieldGroup>
@@ -336,9 +346,16 @@ export function EnvironmentMutationSurfaces({
                 value={name}
               />
               <FieldDescription id="environment-settings-name-description">
-                仅修改当前项目内此环境的显示名称。
+                修改当前环境的显示名称和类型，不改变连接配置。
               </FieldDescription>
             </Field>
+            <Field>
+                <FieldLabel htmlFor="environment-type">环境类型</FieldLabel>
+                <SelectControl id="environment-type" aria-describedby="environment-type-description" aria-label="环境类型" value={environmentType} onValueChange={value => setEnvironmentType(value as EnvironmentType)} disabled={controller.busy !== null}>
+                  <SelectItem value="unspecified">未标注</SelectItem><SelectItem value="production">生产</SelectItem><SelectItem value="test">测试</SelectItem>
+                </SelectControl>
+                <FieldDescription id="environment-type-description">显示在工作区和数据修改处，随云配置同步。上传类型标识后，共享仓库的其他设备也需使用支持此功能的版本。</FieldDescription>
+              </Field>
             <MutationError id="environment-settings-name-error" message={mutationError} />
           </FieldGroup>
         </form>
@@ -347,7 +364,7 @@ export function EnvironmentMutationSurfaces({
             <Button disabled={controller.busy !== null} type="button" variant="outline">取消</Button>
           </DialogClose>
           <Button disabled={controller.busy !== null} form="rename-environment-form" type="submit">
-            {controller.busy === "rename" ? "保存中" : "保存名称"}
+            {controller.busy === "rename" ? "保存中" : "保存设置"}
           </Button>
         </DialogFooter>
       </DialogContent>

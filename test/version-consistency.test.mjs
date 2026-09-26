@@ -18,3 +18,11 @@ test('the default upgrade-regression installer name derives from package.json', 
   assert.match(source, /Setup \$\{manifest\.version\}\.exe/u);
   assert.doesNotMatch(source, /Setup 1\.0\.\d+\.exe/u);
 });
+
+
+test('settings displays the package version without a second hardcoded version', async () => {
+  const source = await fs.readFile(new URL('../renderer/v2/src/features/settings/SettingsPage.tsx', import.meta.url), 'utf8');
+  assert.match(source, /import \{ version as appVersion \} from [^\n]+package\.json/u);
+  assert.match(source, /\{appVersion\}/u);
+  assert.ok(!source.includes(manifest.version));
+});

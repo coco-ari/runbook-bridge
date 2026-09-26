@@ -22,7 +22,7 @@ test('business mutation smoke stays isolated, scoped and wired into package chec
   assert.match(source,/assert\.deepEqual\(externalRequests,\[\]\)/u);
   assert.match(source,/assert\.deepEqual\(forbiddenCalls,\[\]\)/u);
   assert.match(source,/assertSurface\(win,'\[data-testid="create-project-dialog"\]','创建项目'\)/u);
-  assert.match(source,/assertSurface\(win,'\[data-testid="environment-settings-dialog"\]','保存名称'\)/u);
+  assert.match(source,/assertSurface\(win,'\[data-testid="environment-settings-dialog"\]','保存设置'\)/u);
   assert.doesNotMatch(source,/project-settings-sheet|environment-settings-sheet/u);
   assert.match(source,/project deletion still requires the exact typed name/u);
   assert.match(source,/the last environment must remain protected from deletion/u);

@@ -4,7 +4,7 @@
 
 面向独立开发者、后端开发者和小团队的本地桌面工作台。按项目和环境组织资源，通过 MCP 为 Codex 等 Agent 提供排查工具，并保留人工终端、数据库和缓存工作区。
 
-当前代码包版本：`2.0.0-beta.2` · Windows 10/11 x64 · [MIT 开源](LICENSE)
+当前代码包版本：`2.0.0-beta.2` · Windows x64 / macOS arm64、x64 · [MIT 开源](LICENSE)
 
 [下载最新测试版](https://github.com/coco-ari/runbook-bridge/releases/tag/v2.0.0-beta.2) · [首次使用](docs/getting-started.md) · [测试版限制](docs/beta-guide.md) · [反馈问题](https://github.com/coco-ari/runbook-bridge/issues/new/choose)
 

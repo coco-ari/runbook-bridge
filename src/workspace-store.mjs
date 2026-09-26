@@ -1,3 +1,4 @@
+import { normalizeEnvironmentType, environmentTypeFields } from './environment-type.mjs';
 import { builtinPluginRegistry } from './plugins/builtins.mjs';
 import { normalizePlugin, normalizePluginCandidate, materializePluginCandidate, sanitizePluginSnapshot, normalizeId, normalizeName } from './plugin-config-model.mjs';
 import { ID_RE, assertId, assertPluginPatchScope, assertPluginNestedPatchScope, preserveNormalizationOnlyRoots, PLUGIN_METADATA_FIELDS, PLUGIN_AGENT_FIELDS } from './plugin-config-utils.mjs';
@@ -591,6 +592,7 @@ export class WorkspaceStore {
       || value.pluginOrder.some((id) => !ID_RE.test(String(id))) || new Set(value.pluginOrder).size !== value.pluginOrder.length) {
       throw new AppError('ENVIRONMENT_CONFIG_INVALID', '环境配置损坏。');
     }
+    normalizeEnvironmentType(value.environmentType);
     return value;
   }
 
@@ -605,7 +607,7 @@ export class WorkspaceStore {
       let environmentId = normalizeId(input?.environmentId ?? name, 'environment');
       while (existing.some((item) => item.environmentId === environmentId)) environmentId = `environment-${crypto.randomBytes(5).toString('hex')}`;
       const timestamp = now();
-      const environment = { schemaVersion: 1, projectId, environmentId, name, revision: 1, pluginOrder: [], createdAt: timestamp, updatedAt: timestamp };
+      const environment = { schemaVersion: 1, projectId, environmentId, name, ...environmentTypeFields(input?.environmentType), revision: 1, pluginOrder: [], createdAt: timestamp, updatedAt: timestamp };
       await fs.mkdir(this.pluginDir(projectId, environmentId), { recursive: true });
       await this.writeYaml(this.environmentPath(projectId, environmentId), environment);
       await this.atomicWrite(this.runbookPath(projectId, environmentId), String(input?.runbook ?? DEFAULT_RUNBOOK(name)));
@@ -624,7 +626,8 @@ export class WorkspaceStore {
       if (siblings.some((item) => item.environmentId !== environmentId && item.name.normalize('NFKC').toLowerCase() === nextName.normalize('NFKC').toLowerCase())) {
         throw new AppError('DUPLICATE_ENVIRONMENT_NAME', '同一项目内环境名称不能重复。');
       }
-      const next = { ...current, name: nextName, revision: current.revision + 1, updatedAt: now() };
+      const { environmentType: previousType, ...record } = current;
+      const next = { ...record, name: nextName, ...environmentTypeFields(patch.environmentType === undefined ? previousType : patch.environmentType), revision: current.revision + 1, updatedAt: now() };
       await this.writeYaml(this.environmentPath(projectId, environmentId), next);
       return next;
     });

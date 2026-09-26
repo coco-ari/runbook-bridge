@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 
-import type { AiOpsV2Api, EnvironmentRecord } from "@/bridge/ai-ops-v2"
+import type { AiOpsV2Api, EnvironmentRecord, EnvironmentType } from "@/bridge/ai-ops-v2"
 import {
   assessEnvironmentDeletion,
   environmentBelongsToProject,
@@ -50,7 +50,7 @@ export interface UseEnvironmentMutationsOptions {
 export interface EnvironmentMutationController {
   readonly busy: EnvironmentMutationKind | null
   readonly clearFeedback: () => void
-  readonly create: (project: WorkspaceProjectReadModel, name: string) => Promise<boolean>
+  readonly create: (project: WorkspaceProjectReadModel, name: string, environmentType?: EnvironmentType) => Promise<boolean>
   readonly feedback: EnvironmentMutationFeedback | null
   readonly remove: (
     project: WorkspaceProjectReadModel,
@@ -60,6 +60,7 @@ export interface EnvironmentMutationController {
     project: WorkspaceProjectReadModel,
     environment: WorkspaceEnvironmentReadModel,
     name: string,
+    environmentType?: EnvironmentType,
   ) => Promise<boolean>
   readonly reorder: (
     project: WorkspaceProjectReadModel,
@@ -152,6 +153,7 @@ export function useEnvironmentMutations({
   const create = useCallback(async (
     project: WorkspaceProjectReadModel,
     nameInput: string,
+    environmentType: EnvironmentType = "unspecified",
   ) => {
     if (project.isolated) {
       setFeedback({ kind: "error", message: "隔离项目不能新增环境。" })
@@ -174,7 +176,7 @@ export function useEnvironmentMutations({
     if (epoch === null) return false
     try {
       const result = await api.createEnvironment({
-        input: { name: name.value },
+        input: { name: name.value, environmentType },
         projectId: project.projectId,
       })
       if (!result.ok) {
@@ -208,6 +210,7 @@ export function useEnvironmentMutations({
     project: WorkspaceProjectReadModel,
     environment: WorkspaceEnvironmentReadModel,
     nameInput: string,
+    environmentType: EnvironmentType = environment.environmentType ?? "unspecified",
   ) => {
     const currentEnvironment = project.environments.find(
       (candidate) =>
@@ -228,7 +231,7 @@ export function useEnvironmentMutations({
       setFeedback({ kind: "error", message: name.message })
       return false
     }
-    if (name.value === currentEnvironment.name) {
+    if (name.value === currentEnvironment.name && environmentType === (currentEnvironment.environmentType ?? "unspecified")) {
       setFeedback(null)
       return true
     }
@@ -242,14 +245,14 @@ export function useEnvironmentMutations({
       const result = await api.updateEnvironment({
         environmentId: currentEnvironment.environmentId,
         expectedRevision: currentEnvironment.revision,
-        patch: { name: name.value },
+        patch: { name: name.value, environmentType },
         projectId: project.projectId,
       })
       if (!result.ok) {
         if (mountedRef.current && epochRef.current === epoch) {
           setFeedback({
             kind: "error",
-            message: safeEnvironmentMutationMessage(result.error, "更新环境名称失败，请重试。"),
+            message: safeEnvironmentMutationMessage(result.error, "更新环境设置失败，请重试。"),
           })
         }
         return false
@@ -267,11 +270,11 @@ export function useEnvironmentMutations({
         }
         return false
       }
-      await committed({ environment: result.data, kind: "renamed" }, "环境名称已更新。", epoch)
+      await committed({ environment: result.data, kind: "renamed" }, "环境设置已更新。", epoch)
       return true
     } catch {
       if (mountedRef.current && epochRef.current === epoch) {
-        setFeedback({ kind: "error", message: "更新环境名称失败，请重试。" })
+        setFeedback({ kind: "error", message: "更新环境设置失败，请重试。" })
       }
       return false
     } finally {

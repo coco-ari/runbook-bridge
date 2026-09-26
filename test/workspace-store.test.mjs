@@ -16,6 +16,22 @@ async function fixture(t) {
   return { root, legacyStore, store };
 }
 
+test('environment type is explicit, revision checked and backward compatible', async t => {
+  const {store} = await fixture(t);
+  const project = await store.createProject({name:'环境标识测试',environmentName:'生产名字不推断'});
+  const [initial] = await store.listEnvironments(project.projectId);
+  assert.equal(initial.environmentType,undefined);
+  const production = await store.updateEnvironment(project.projectId,initial.environmentId,{environmentType:'production'},initial.revision);
+  assert.equal(production.environmentType,'production');
+  await assert.rejects(store.updateEnvironment(project.projectId,initial.environmentId,{environmentType:'test'},initial.revision),{code:'CONFIG_REVISION_CONFLICT'});
+  const renamed = await store.updateEnvironment(project.projectId,initial.environmentId,{name:'更名'},production.revision);
+  assert.equal(renamed.environmentType,'production');
+  await assert.rejects(store.updateEnvironment(project.projectId,initial.environmentId,{environmentType:'invalid'}),{code:'INVALID_ARGUMENT'});
+  const cleared = await store.updateEnvironment(project.projectId,initial.environmentId,{environmentType:'unspecified'},renamed.revision);
+  assert.equal(Object.hasOwn(cleared,'environmentType'),false);
+  assert.equal((await store.createEnvironment(project.projectId,{name:'测试',environmentType:'test'})).environmentType,'test');
+});
+
 test('workspace creates independent environments and database-granular plugins', async (t) => {
   const { store } = await fixture(t);
   const project = await store.createProject({ name: '会员服务', environmentName: '华东正式' });

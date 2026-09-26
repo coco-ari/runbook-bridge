@@ -1,3 +1,5 @@
+import { environmentTypeFields } from './environment-type.mjs';
+import { cloudProjectFieldDiff } from './cloud-config-diff.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import ssh2 from 'ssh2';
@@ -37,11 +39,11 @@ function list(value, max) {
 function unique(values) {
   if (new Set(values).size !== values.length) throw cloudError('FORMAT_INVALID','云配置包含重复资源。');
 }
-function normalizeProject(input, vault) {
+function normalizeProject(input, vault, schemaVersion = 4) {
   object(input,['projectId','name','environments']);
   const projectId = id(input.projectId);
   const environments = list(input.environments,100).map(raw => {
-    object(raw,['environmentId','name','runbook','questions','plugins']);
+    object(raw,['environmentId','name','runbook','questions','plugins',...(schemaVersion >= 4 ? ['environmentType'] : [])]);
     const environmentId = id(raw.environmentId);
     if (typeof raw.runbook !== 'string' || Buffer.byteLength(raw.runbook) > 1024*1024) throw cloudError('FORMAT_INVALID','环境运维说明无效或过大。');
     const questions = list(raw.questions,QUICK_QUESTION_LIMIT).map(question => {
@@ -72,7 +74,7 @@ function normalizeProject(input, vault) {
       const providerId = config.transport?.kind === 'serverTunnel' ? config.transport.serverPluginInstanceId : null;
       if (providerId && !plugins.some(p => p.config.pluginInstanceId === providerId && p.config.pluginType === 'server' && p.config.tunnelProvider !== false)) throw cloudError('DEPENDENCY_INVALID','云配置的隧道依赖缺失或无效。');
     }
-    return {environmentId,name:normalizeName(raw.name),runbook:raw.runbook,questions,plugins};
+    return {environmentId,name:normalizeName(raw.name),...environmentTypeFields(raw.environmentType),runbook:raw.runbook,questions,plugins};
   });
   unique(environments.map(e => e.environmentId));
   unique(environments.map(e => e.name.normalize('NFKC').toLowerCase()));
@@ -80,9 +82,9 @@ function normalizeProject(input, vault) {
 }
 export function normalizeCloudSnapshot(value, vault) {
   if (Buffer.byteLength(JSON.stringify(value)) > CLOUD_MAX_BYTES) throw cloudError('TOO_LARGE','云配置内容过大。');
-  if (![1,2,3].includes(value?.schemaVersion)) throw cloudError('FORMAT_UNSUPPORTED','不支持此云配置版本，请更新应用。');
-  object(value,value.schemaVersion === 1 ? ['schemaVersion','projects'] : ['schemaVersion','projects','history',...(value.schemaVersion === 3 ? ['tombstones'] : [])]);
-  const projects = list(value.projects,200).map(project => normalizeProject(project,vault));
+  if (![1,2,3,4].includes(value?.schemaVersion)) throw cloudError('FORMAT_UNSUPPORTED','不支持此云配置版本，请更新应用。');
+  object(value,value.schemaVersion === 1 ? ['schemaVersion','projects'] : ['schemaVersion','projects','history',...(value.schemaVersion >= 3 ? ['tombstones'] : [])]);
+  const projects = list(value.projects,200).map(project => normalizeProject(project,vault,value.schemaVersion));
   unique(projects.map(p => p.projectId));
   if (value.schemaVersion === 1) return {schemaVersion:1,projects};
   const timestamp = value => {
@@ -95,7 +97,7 @@ export function normalizeCloudSnapshot(value, vault) {
     const deletedAt = raw.deletedAt === null ? null : timestamp(raw.deletedAt);
     const versions = list(raw.versions,CLOUD_PROJECT_VERSIONS).map(version => {
       object(version,['versionId','createdAt','project']);
-      const project = normalizeProject(version.project,vault);
+      const project = normalizeProject(version.project,vault,value.schemaVersion);
       if (project.projectId !== projectId) throw cloudError('SCOPE_MISMATCH','云版本不属于此项目。');
       return {versionId:cloudId(version.versionId),createdAt:timestamp(version.createdAt),project};
     });
@@ -114,7 +116,7 @@ export function normalizeCloudSnapshot(value, vault) {
   });
   unique(tombstones.map(record => record.projectId));
   if (projects.some(p => tombstones.some(r => r.projectId === p.projectId)) || history.some(h => h.deletedAt !== null && !tombstones.some(r => r.projectId === h.projectId && r.deletedAt === h.deletedAt))) throw cloudError('FORMAT_INVALID','项目删除记录与当前配置不一致。');
-  return {schemaVersion:3,projects,history,tombstones};
+  return {schemaVersion:value.schemaVersion,projects,history,tombstones};
 }
 
 async function privateKeyFile(file) {
@@ -158,7 +160,7 @@ export async function exportCloudProject(store,vault,projectId) {
       plugins.push({config,secrets});
     }
     const questions = await store.listQuickQuestions(projectId,environmentId);
-    environments.push({environmentId,name:environment.name,runbook:(await store.readRunbook(projectId,environmentId)).content,questions:questions.items.map(({questionId,text}) => ({questionId,text})),plugins});
+    environments.push({environmentId,name:environment.name,...environmentTypeFields(environment.environmentType),runbook:(await store.readRunbook(projectId,environmentId)).content,questions:questions.items.map(({questionId,text}) => ({questionId,text})),plugins});
   }
   return normalizeProject({projectId,name:project.name,environments},vault);
 }
@@ -203,9 +205,10 @@ export function cloudProjectDiff(before,after) {
     credentialsChanged:[...new Set([...a.keys(),...b.keys()])].some(key => snapshotDigest(a.get(key)?.secrets ?? {}) !== snapshotDigest(b.get(key)?.secrets ?? {})),
     environmentsAdded:(after?.environments ?? []).filter(e => !before?.environments.some(x => x.environmentId === e.environmentId)).length,
     environmentsRemoved:(before?.environments ?? []).filter(e => !after?.environments.some(x => x.environmentId === e.environmentId)).length,
-    metadataChanged:before?.name !== after?.name || snapshotDigest((before?.environments ?? []).map(e => ({id:e.environmentId,name:e.name}))) !== snapshotDigest((after?.environments ?? []).map(e => ({id:e.environmentId,name:e.name}))),
+    metadataChanged:before?.name !== after?.name || snapshotDigest((before?.environments ?? []).map(e => ({id:e.environmentId,name:e.name,...environmentTypeFields(e.environmentType)}))) !== snapshotDigest((after?.environments ?? []).map(e => ({id:e.environmentId,name:e.name,...environmentTypeFields(e.environmentType)}))),
     runbooksChanged:(after?.environments ?? []).filter(e => before?.environments.find(old => old.environmentId === e.environmentId)?.runbook !== e.runbook).length,
     questionsChanged:(after?.environments ?? []).filter(e => snapshotDigest(before?.environments.find(old => old.environmentId === e.environmentId)?.questions ?? []) !== snapshotDigest(e.questions)).length,
+    ...cloudProjectFieldDiff(before,after),
     contentChanged:snapshotDigest(before ?? null) !== snapshotDigest(after ?? null),
   };
 }

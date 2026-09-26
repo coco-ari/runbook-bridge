@@ -231,7 +231,17 @@ async function run() {
   assert.match(await js('document.querySelector("button[data-project-id=cloud-demo]").getAttribute("aria-label")'),/未连接.*团队仓库.*检测失败/,'悬停和无障碍提示保留云检测失败信息');
   await openSettings();
   assert.equal(await js('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("检测失败")'),true,'云配置页面继续提示检测故障');
+  assert.equal(await js('Boolean(document.querySelector("[data-testid=cloud-config-panel] [data-testid=diagnostic-details]"))'),true,'云故障可以展开诊断且不覆盖连接状态');
+  await cardAction('upload'); await idle();
+  await wait('Boolean(document.querySelector("[data-testid=cloud-operation-error]"))');
+  await clickText('清除');
+  await wait('!document.querySelector("[data-testid=cloud-operation-error]")');
+  assert.equal(await js('Boolean(document.querySelector("[data-testid=cloud-operation-error], [data-testid=cloud-config-panel] > p[role=alert]"))'),false,'清除操作反馈不会重新显示同一错误的旧副本');
+  await cardAction('upload'); await idle();
+  await wait('Boolean(document.querySelector("[data-testid=cloud-operation-error]"))');
   checkFailure = false; await clickTestId('cloud-check');
+  assert.equal(await js('Boolean(document.querySelector("[data-testid=cloud-operation-error]"))'),true,'检测刷新不会清除失败操作的诊断');
+  await clickText('清除');
   await wait('!document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("检测失败")');
   await store.updateProject(project.projectId,{name:'本地尚未上传的修改'});
   await clickTestId('cloud-check');
@@ -242,6 +252,10 @@ async function run() {
   assert.equal((await store.getProject(project.projectId)).name,'本地尚未上传的修改','打开确认不得覆盖');
   assert.equal(await js('document.querySelector("[data-testid=settings-back]").disabled'),true);
   await waitForOverlay();
+  await js('document.querySelector("[data-testid=cloud-field-diff] summary").click()');
+  assert.match(await js('document.querySelector("[data-testid=cloud-field-diff]").textContent'),/本地尚未上传的修改/);
+  assert.match(await js('document.querySelector("[data-testid=cloud-field-diff]").textContent'),/云配置演示项目/);
+  assert.doesNotMatch(await js('document.querySelector("[data-testid=cloud-field-diff]").textContent'),/synthetic-ui-only-secret/);
   await capture('-confirmation');
   await js('[...document.querySelectorAll("[role=alertdialog] button")].find(button => button.textContent === "保留本地").click()');
   await wait('!document.querySelector("[role=alertdialog]")'); await idle();

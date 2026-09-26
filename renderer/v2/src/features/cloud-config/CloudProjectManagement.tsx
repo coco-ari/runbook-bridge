@@ -1,3 +1,4 @@
+import { CloudFieldDiff } from "./CloudFieldDiff"
 import { useState } from "react"
 import { ClockCounterClockwise, DotsThree, SpinnerGap, Trash } from "@phosphor-icons/react"
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
@@ -49,7 +50,7 @@ export function useCloudProjectManagement() {
             <Button size="xs" variant="ghost" className="self-end" disabled={locked} onClick={() => { if (target) void openHistory(target) }}>刷新版本</Button>
             {history.versions.map(version => <Card size="sm" className="shrink-0" key={version.versionId} data-testid="cloud-project-version" data-version-id={version.versionId}>
               <CardHeader><CardTitle className="flex flex-wrap items-center justify-between gap-2 text-xs"><span>{new Date(version.createdAt).toLocaleString()}</span>{version.current ? <Badge variant="secondary">当前版本</Badge> : null}</CardTitle></CardHeader>
-              <CardContent className="space-y-2 text-xs"><p className="break-words [overflow-wrap:anywhere]">{version.name}</p><p className="text-muted-foreground">{version.environmentCount} 个环境 · {version.pluginCount} 个插件 · <span className="font-mono">{version.hash.slice(0, 10)}</span></p><p className="text-muted-foreground">{changeSummary(version.diff)}</p></CardContent>
+              <CardContent className="space-y-2 text-xs"><p className="break-words [overflow-wrap:anywhere]">{version.name}</p><p className="text-muted-foreground">{version.environmentCount} 个环境 · {version.pluginCount} 个插件 · <span className="font-mono">{version.hash.slice(0, 10)}</span></p><p className="text-muted-foreground">{changeSummary(version.diff)}</p><CloudFieldDiff diff={version.diff} historical /></CardContent>
               {!history.deletedAt && !version.current ? <CardFooter className="justify-end"><Button size="xs" variant="outline" disabled={locked} data-testid="cloud-restore-version" onClick={() => void prepare({ action: "prepareProjectOperation", repositoryId: history.repositoryId, projectId: history.projectId, snapshotId: history.snapshotId, operation: "restoreVersion", versionId: version.versionId })}>恢复为最新版本</Button></CardFooter> : null}
             </Card>)}
           </>}

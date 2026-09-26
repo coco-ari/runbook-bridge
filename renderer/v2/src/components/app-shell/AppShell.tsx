@@ -229,7 +229,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       }
       toast.success("环境已删除")
     } else if (event.kind === "renamed") {
-      toast.success("环境名称已更新")
+      toast.success("环境设置已更新")
     }
   }, [removePluginWorkspaces, selection.environmentId, selection.projectId, workspace])
 
@@ -975,7 +975,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
               projectName={pluginWorkMode.projectName}
               scope={pluginWorkMode.scope}
             />
-          ) : <WorkspaceDetail
+          ) : <WorkspaceDetail onOpenEnvironment={selectEnvironment}
             onOpenWorkspace={pluginWorkspace.openSelected}
             workspaceRetained={pluginWorkspace.retained}
             activeTab={detailTab}
@@ -1015,7 +1015,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
           />}
         </ResizablePanel>
       </ResizablePanelGroup>
-      <PluginWorkspaceHost api={api} state={pluginWorkspace.state} hidden={settingsOpen}
+      <PluginWorkspaceHost workspace={workspace.data} api={api} state={pluginWorkspace.state} hidden={settingsOpen}
         onBack={workspaceSessions.back} onClose={workspaceSessions.close} onDirtyChange={workspaceSessions.setDirty} />
 
       <GlobalCommand

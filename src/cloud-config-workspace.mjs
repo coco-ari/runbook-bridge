@@ -1,3 +1,4 @@
+import { environmentTypeFields } from './environment-type.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -89,7 +90,7 @@ export class CloudConfigWorkspace {
       const environmentId = environment.environmentId;
       const prefix = `environments/${environmentId}`;
       const previousEnv = old(`${prefix}/environment.yaml`);
-      yaml(`${prefix}/environment.yaml`,{schemaVersion:1,projectId,environmentId,name:environment.name,revision:(previousEnv?.revision ?? 0)+1,pluginOrder:environment.plugins.map(p => p.config.pluginInstanceId),createdAt:previousEnv?.createdAt ?? timestamp,updatedAt:timestamp});
+      yaml(`${prefix}/environment.yaml`,{schemaVersion:1,projectId,environmentId,name:environment.name,...environmentTypeFields(environment.environmentType),revision:(previousEnv?.revision ?? 0)+1,pluginOrder:environment.plugins.map(p => p.config.pluginInstanceId),createdAt:previousEnv?.createdAt ?? timestamp,updatedAt:timestamp});
       write(`${prefix}/README.md`,environment.runbook);
       const questions = {schemaVersion:1,projectId,environmentId,revision:(old(`${prefix}/quick-questions.json`)?.revision ?? 0)+1,items:environment.questions.map(q => ({...q,createdAt:timestamp,updatedAt:timestamp}))};
       this.store.validateQuickQuestionsDocument(questions,projectId,environmentId);

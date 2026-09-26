@@ -1,3 +1,4 @@
+import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { SelectControl, SelectItem } from "@/components/ui/select"
 import { ArrowRight, Copy, FileCode, FileText, FileXls, FileZip, SpinnerGap, UploadSimple, WarningCircle, X } from "@phosphor-icons/react"
@@ -53,7 +54,7 @@ export function ServerUploadDialog({ preparation, serverName, environmentName, i
   const sourcePath = preparation.sourcePath ?? preparation.path
   return <DialogContent className="server-upload-dialog sm:max-w-[780px]" showCloseButton={!busy} onInteractOutside={(event) => { if (busy) event.preventDefault() }} onEscapeKeyDown={(event) => { if (busy) event.preventDefault() }}>
     <DialogHeader className="pr-7">
-      <DialogTitle>{preparation.resume ? "继续上传" : "上传到服务器"}</DialogTitle>
+      <EnvironmentTypeBadge /><DialogTitle>{preparation.resume ? "继续上传" : "上传到服务器"}</DialogTitle>
       <DialogDescription className="server-upload-context"><span>{serverName} · {environmentName}</span><span>{identity}</span></DialogDescription>
     </DialogHeader>
     <div className="server-upload-body">

@@ -25,7 +25,7 @@ let sequence = 1;
 const runtime = () => ({ projectId, environmentId, sequence, phase: 'partial', desiredConnected: true, eligibleCount: 2,
   connectedCount: plugins.filter((entry) => entry.assessment.phase === 'connected').length, errorCount: 0, blockedCount: 0, draftCount: 0, pluginsPartial: false,
   plugins: Object.fromEntries(plugins.map((entry) => [entry.pluginInstanceId, { pluginInstanceId: entry.pluginInstanceId, phase: entry.assessment.phase, assessment: entry.assessment }])) });
-const environment = () => ({ projectId, environmentId, name: '测试环境', revision: 1, pluginCount: 2, readyPluginCount: 2, draftCount: 0, resourcePreview: plugins, resourcePreviewTruncated: false, runtime: runtime() });
+const environment = () => ({ projectId, environmentId, name: '测试环境', environmentType:'production', revision: 1, pluginCount: 2, readyPluginCount: 2, draftCount: 0, resourcePreview: plugins, resourcePreviewTruncated: false, runtime: runtime() });
 const workspace = () => [{ projectId, name: 'Redis 工作区验证', revision: 1, schemaVersion: 2, environmentCount: 1, pluginCount: 2, environments: [environment()] }];
 const writeValues = new Map();
 const writeSessions = new Map();
@@ -141,7 +141,10 @@ function mocks(redisKeySearch) {
     return ok({ snapshot: runtime() });
   });
   for (const [, channel] of fs.readFileSync(path.join(root, 'src', 'preload.cjs'), 'utf8').matchAll(/ipcRenderer\.invoke\('([^']+)'/gu)) {
-    if (!channels.has(channel)) register(channel, async () => { forbidden.push(channel); return fail('FORBIDDEN', '测试禁止此操作'); });
+    if (!channels.has(channel)) register(channel, async (_event,payload) => {
+      if (channel === 'v2:cloud-config' && ['status','check'].includes(payload?.action)) return ok({repositories:[],cloudProjects:[],checkIntervalMinutes:0});
+      forbidden.push(channel); return fail('FORBIDDEN', '测试禁止此操作');
+    });
   }
 }
 async function waitFor(win, expression, label) {
@@ -252,6 +255,7 @@ async function run() {
     await waitFor(win, 'document.querySelector(\'[data-redis-key="cache:text"]\')?.getClientRects().length > 0', 'Key 已加载');
     assert.equal(calls.filter((entry) => entry.operation === 'inspect' || entry.operation === 'read').length, 0, '列表不逐项读取元数据');
     assert.equal(await win.webContents.executeJavaScript('document.querySelector("[data-testid=redis-browser-view-toggle]").dataset.view', true), 'tree');
+    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector(".redis-workspace-header [data-environment-type=production]"))',true),true,'Redis 显示明确的生产环境标识');
     await assertCompactSearch(win);
     await require('./workspace-layout-ui.cjs')({evaluate:source=>win.webContents.executeJavaScript(source,true),until:(expression,label)=>waitFor(win,expression,label),win,root:'[data-testid=redis-workspace]'});
     assert.equal(await win.webContents.executeJavaScript('document.querySelector(\'[data-redis-folder="cache:"] .redis-tree-count\').textContent', true), String(keys.length));
@@ -278,8 +282,8 @@ async function run() {
     await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(codeSelector)}).focus()`, true);
     await win.webContents.insertText('readonly-probe');
     assert.equal(await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(codeSelector)}).textContent.includes('readonly-probe')`, true), false, '内容查看器只读');
-    await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(codeSelector)}).dispatchEvent(new KeyboardEvent('keydown',{key:'f',code:'KeyF',keyCode:70,ctrlKey:true,bubbles:true,cancelable:true}))`, true);
-    await waitFor(win, 'Boolean(document.querySelector(".redis-tab-panel:not([hidden]) .cm-search"))', 'Ctrl+F 查找 Value 而非 Key');
+    await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(codeSelector)}).dispatchEvent(new KeyboardEvent('keydown',{key:'f',code:'KeyF',keyCode:70,${process.platform === 'darwin' ? 'metaKey' : 'ctrlKey'}:true,bubbles:true,cancelable:true}))`, true);
+    await waitFor(win, 'Boolean(document.querySelector(".redis-tab-panel:not([hidden]) .cm-search"))', '平台查找快捷键作用于 Value');
     await fill(win, '.redis-tab-panel:not([hidden]) .cm-search input[name=search]', '备用平台');
     await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) .cm-search input[name=search]").dispatchEvent(new KeyboardEvent("keyup",{key:"a",bubbles:true}))', true);
     await waitFor(win, 'Boolean(document.querySelector(".redis-tab-panel:not([hidden]) .cm-searchMatch"))', '内容搜索高亮');

@@ -21,7 +21,10 @@ export interface ProjectRecord extends OpaqueData {
   readonly revision: number
 }
 
+export type EnvironmentType = "unspecified" | "production" | "test"
+
 export interface EnvironmentRecord extends OpaqueData {
+  readonly environmentType?: EnvironmentType
   readonly projectId: string
   readonly environmentId: string
   readonly name: string
@@ -255,11 +258,11 @@ export interface MysqlQueryPayload extends PluginScope {
 }
 
 export interface EnvironmentCreatePayload extends ProjectScope {
-  readonly input: Readonly<{ name: string; environmentId?: string }>
+  readonly input: Readonly<{ name: string; environmentId?: string; environmentType?: EnvironmentType }>
 }
 
 export interface EnvironmentUpdatePayload extends EnvironmentScope {
-  readonly patch: Readonly<{ name?: string }>
+  readonly patch: Readonly<{ name?: string; environmentType?: EnvironmentType }>
   readonly expectedRevision: number
 }
 

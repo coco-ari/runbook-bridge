@@ -1,3 +1,4 @@
+import { DiagnosticDetails } from "@/features/connections/DiagnosticDetails"
 import { CheckCircle, CircleNotch, WarningCircle, XCircle } from "@phosphor-icons/react"
 
 import { Badge } from "@/components/ui/badge"
@@ -73,7 +74,7 @@ export function PluginValidationProgress({
             </Button>
           </div>
         ) : null}
-        {validation.error ? <p className="font-medium text-danger">{validation.error.message}</p> : null}
+        {validation.error ? <div><p className="font-medium">{validation.error.message}</p><DiagnosticDetails error={validation.error} /></div> : null}
       </AlertDescription>
     </Alert>
   )

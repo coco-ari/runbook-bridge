@@ -278,6 +278,7 @@ function registerMockApi() {
       projectId:project.projectId,
       environmentId:number === 1 ? 'env-preview' : `env-preview-${number}`,
       name:String(payload?.input?.name ?? ''),
+      environmentType:payload?.input?.environmentType ?? 'unspecified',
       revision:1,
     };
     project.environments.push(environment);
@@ -290,6 +291,7 @@ function registerMockApi() {
       return conflict('环境配置已经变化，请刷新后重试。');
     }
     environment.name = String(payload?.patch?.name ?? environment.name);
+    environment.environmentType = payload?.patch?.environmentType ?? environment.environmentType;
     environment.revision += 1;
     return ok(environment);
   });
@@ -1337,6 +1339,7 @@ async function assertScopedMutationModal(win,testId,role) {
       count:visibleModals.length,
       focusedInside:surface.contains(document.activeElement),
       height:surface.getBoundingClientRect().height,
+      viewportHeight:window.innerHeight,
       nestedDeletion:surface.querySelector('[data-testid^="delete-"]') !== null,
     };
   })()`,true);
@@ -1368,7 +1371,10 @@ async function assertScopedMutationModal(win,testId,role) {
     }
   }
   if (role === 'dialog') {
-    assert.ok(geometry.height < 480,`${testId} must remain a compact name-edit dialog`);
+    const maxHeight = testId === 'environment-settings-dialog'
+      ? Math.min(640,geometry.viewportHeight - 32)
+      : 480;
+    assert.ok(geometry.height <= maxHeight,`${testId} must keep its settings inside a bounded dialog`);
     assert.equal(geometry.nestedDeletion,false,`${testId} must not embed deletion`);
   }
 }
@@ -1503,7 +1509,7 @@ async function assertScopedDialogOverflow(win) {
     await openEnvironmentSettings(win,environmentName);
     await assertDialogLongContent(win,'environment-settings-dialog',environmentName);
     await fill(win,'#environment-settings-name','布局验证环境');
-    await clickText(win,'保存名称','[data-testid="environment-settings-dialog"]');
+    await clickText(win,'保存设置','[data-testid="environment-settings-dialog"]');
     await waitFor(win,`document.querySelector('[data-testid="environment-mutation-error"]')?.textContent === ${JSON.stringify(longError)}`,'long environment rename error');
     await assertDialogLongContent(win,'environment-settings-dialog',longError);
     await clickText(win,'取消','[data-testid="environment-settings-dialog"]');
@@ -1528,7 +1534,7 @@ async function assertScopedDialogOverflow(win) {
 
     assert.deepEqual(mutationCalls.slice(start).map(({channel,payload}) => ({channel,payload})),[
       {channel:'v2:project-update',payload:{projectId,expectedRevision:1,patch:{name:'布局验证项目'}}},
-      {channel:'v2:environment-update',payload:{projectId,environmentId,expectedRevision:1,patch:{name:'布局验证环境'}}},
+      {channel:'v2:environment-update',payload:{projectId,environmentId,expectedRevision:1,patch:{name:'布局验证环境',environmentType:'unspecified'}}},
       {channel:'v2:project-delete',payload:{projectId}},
       {channel:'v2:environment-delete',payload:{projectId,environmentId}},
     ],'long-content cases preserve the original mutation baseline and add only four exact failed mock attempts');
@@ -1695,10 +1701,10 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
     : originalEnvironmentUpdate(payload));
   await openEnvironmentSettings(win,'重建验证环境');
   await fill(win,'#environment-settings-name','重建验证新名称');
-  await clickText(win,'保存名称','[data-testid="environment-settings-dialog"]');
+  await clickText(win,'保存设置','[data-testid="environment-settings-dialog"]');
   await waitFor(win,`document.querySelector('#environment-settings-name')?.getAttribute('aria-invalid') === 'true'`,'environment rename conflict retains form');
   assert.equal(await win.webContents.executeJavaScript(`document.querySelector('#environment-settings-name')?.value`,true),'重建验证新名称');
-  await clickText(win,'保存名称','[data-testid="environment-settings-dialog"]');
+  await clickText(win,'保存设置','[data-testid="environment-settings-dialog"]');
   await waitFor(win,`document.querySelector('[data-testid="environment-settings-dialog"]') === null`,'environment rename retry succeeds');
   ipcMain.removeHandler('v2:environment-delete');
   registerMutation('v2:environment-delete',(payload) => {
@@ -2001,7 +2007,7 @@ async function run() {
     await clickText(win,'创建环境','[data-testid="create-environment-dialog"]');
     assert.deepEqual((await waitForCall('v2:environment-create')).payload,{
       projectId:'project-alpha',
-      input:{name:'预发布环境'},
+      input:{name:'预发布环境',environmentType:'unspecified'},
     });
     await settleAnimations(win);
     await waitFor(
@@ -2013,18 +2019,20 @@ async function run() {
 
     await openEnvironmentSettings(win,'预发布环境');
     await fill(win,'#environment-settings-name','预发布验证环境');
-    await assertSurface(win,'[data-testid="environment-settings-dialog"]','保存名称');
+    await click(win,'#environment-type');
+    await clickText(win,'生产');
+    await assertSurface(win,'[data-testid="environment-settings-dialog"]','保存设置');
     await captureSurfaceEvidence(win,{
       name:'environment-settings',
       selector:'[data-testid="environment-settings-dialog"]',
       restoreFocusSelector:'#environment-settings-name',
     });
-    await clickText(win,'保存名称','[data-testid="environment-settings-dialog"]');
+    await clickText(win,'保存设置','[data-testid="environment-settings-dialog"]');
     assert.deepEqual((await waitForCall('v2:environment-update')).payload,{
       projectId:'project-alpha',
       environmentId:'env-preview',
       expectedRevision:1,
-      patch:{name:'预发布验证环境'},
+      patch:{name:'预发布验证环境',environmentType:'production'},
     });
     await settleAnimations(win);
     await waitFor(
@@ -2032,7 +2040,8 @@ async function run() {
       `document.querySelector('[data-environment-id="env-preview"]')?.textContent?.includes('预发布验证环境') === true`,
       'renamed environment in resource pane',
     );
-    await assertOneScopeSuccessToast(win,'环境名称已更新');
+    await assertOneScopeSuccessToast(win,'环境设置已更新');
+    await waitFor(win,`document.querySelector('[data-testid=detail-workspace] [data-environment-type=production]') !== null`,'production environment badge after settings save');
 
     await openScopedDelete(win,{
       actionText:'删除环境',

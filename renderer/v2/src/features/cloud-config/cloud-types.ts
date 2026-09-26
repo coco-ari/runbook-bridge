@@ -57,7 +57,7 @@ export interface CloudRow {
   readonly name: string
   readonly conflict: boolean
   readonly suggested: "local" | "cloud" | null
-  readonly diff: { readonly added: number; readonly removed: number; readonly modified: number; readonly credentialsChanged: boolean; readonly environmentsAdded: number; readonly environmentsRemoved: number; readonly contentChanged: boolean; readonly metadataChanged?: boolean; readonly runbooksChanged?: number; readonly questionsChanged?: number }
+  readonly diff: { readonly fields?: readonly { readonly scope: string; readonly field: string; readonly before: string; readonly after: string; readonly redacted: boolean }[]; readonly fieldsOmitted?: number; readonly added: number; readonly removed: number; readonly modified: number; readonly credentialsChanged: boolean; readonly environmentsAdded: number; readonly environmentsRemoved: number; readonly contentChanged: boolean; readonly metadataChanged?: boolean; readonly runbooksChanged?: number; readonly questionsChanged?: number }
   readonly warnings: readonly string[]
   readonly willDisconnect: boolean
 }
