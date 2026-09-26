@@ -23,8 +23,10 @@ async function startLoopbackFixtures() {
   const sockets = new Set();
   const servers = [];
   let redisScanPages = [];
+  let sqlFixtureRows = [];
   const counts = { sshAuth: 0, sshRejected: 0, mysqlAuth: 0, mysqlRejected: 0,
-    mysqlQueries: 0, redisAuth: 0, redisRejected: 0, redisPing: 0 };
+    mysqlQueries: 0, mysqlSqlWrites:0, mysqlSqlCommits:0, mysqlSqlRollbacks:0,
+    redisAuth: 0, redisRejected: 0, redisPing: 0 };
   const track = (socket) => {
     sockets.add(socket);
     socket.on('error', () => undefined);
@@ -72,7 +74,11 @@ async function startLoopbackFixtures() {
     const column = (name) => ({catalog:'def',schema:'',table:'',orgTable:'',name,orgName:name,
       characterSet:33,columnLength:255,columnType:253,flags:0,decimals:0});
     const database = mysql.createServer((client) => {
+      // Only this synthetic table is writable. Transactions are isolated per
+      // physical protocol connection, so a second SQL tab cannot see pending data.
+      let transactionRows = null;
       client.on('error', () => undefined);
+      client.stream.once('close', () => { transactionRows = null; });
       client.serverHandshake({protocolVersion:10,serverVersion:'8.0.0-loopback-fixture',
         connectionId:counts.mysqlAuth + 1,statusFlags:2,characterSet:33,
         capabilityFlags:0x0008820d,
@@ -92,6 +98,58 @@ async function startLoopbackFixtures() {
           client.writeTextResult([{ai_ops_health:'1'}], [column('ai_ops_health')]);
         } else if (query === 'SHOW DATABASES') {
           client.writeTextResult([{Database:'app'}, {Database:'archive'}], [column('Database')]);
+        } else if (client.clientHelloReply.database === 'app' && query === 'START TRANSACTION') {
+          if (transactionRows) client.writeError({code:1192,message:'Fixture transaction already active'});
+          else { transactionRows = structuredClone(sqlFixtureRows); client.writeOk({affectedRows:0,serverStatus:3}); }
+        } else if (client.clientHelloReply.database === 'app' && query === 'COMMIT') {
+          if (!transactionRows) client.writeError({code:1192,message:'Fixture transaction not active'});
+          else {
+            sqlFixtureRows = transactionRows; transactionRows = null; counts.mysqlSqlCommits += 1;
+            client.writeOk({affectedRows:0,serverStatus:2});
+          }
+        } else if (client.clientHelloReply.database === 'app' && query === 'ROLLBACK') {
+          transactionRows = null; counts.mysqlSqlRollbacks += 1;
+          client.writeOk({affectedRows:0,serverStatus:2});
+        } else if (client.clientHelloReply.database === 'app' && query === 'SELECT @@SESSION.sql_mode AS sqlMode') {
+          client.writeTextResult([{sqlMode:'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION'}],[column('sqlMode')]);
+        } else if (client.clientHelloReply.database === 'app' && query === "SELECT TABLE_TYPE, ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'app' AND TABLE_NAME = 'sql_fixture'") {
+          client.writeTextResult([{TABLE_TYPE:'BASE TABLE',ENGINE:'InnoDB'}],[column('TABLE_TYPE'),column('ENGINE')]);
+        } else if (client.clientHelloReply.database === 'app' && query === 'SELECT * FROM `app`.`sql_fixture` LIMIT 0') {
+          client.writeTextResult([],[column('id'),column('label')]);
+        } else if (client.clientHelloReply.database === 'app' && query.startsWith('SELECT PRIVILEGE_TYPE FROM (SELECT GRANTEE,PRIVILEGE_TYPE FROM information_schema.USER_PRIVILEGES ')
+          && query.includes("TABLE_SCHEMA = 'app' AND TABLE_NAME = 'sql_fixture'") && query.includes("PRIVILEGE_TYPE = 'TRIGGER' LIMIT 1")) {
+          client.writeTextResult([{PRIVILEGE_TYPE:'TRIGGER'}],[column('PRIVILEGE_TYPE')]);
+        } else if (client.clientHelloReply.database === 'app' && query === "SELECT EVENT_MANIPULATION FROM information_schema.TRIGGERS WHERE EVENT_OBJECT_SCHEMA = 'app' AND EVENT_OBJECT_TABLE = 'sql_fixture'") {
+          client.writeTextResult([],[column('EVENT_MANIPULATION')]);
+        } else if (client.clientHelloReply.database === 'app' && /^SELECT TYPE FROM information_schema\.INNODB_FOREIGN WHERE REF_NAME = 'app\/sql_fixture' AND \(TYPE & (?:3|12|15)\) <> 0$/u.test(query)) {
+          client.writeTextResult([],[column('TYPE')]);
+        } else if (client.clientHelloReply.database === 'app' && /^INSERT INTO sql_fixture \(id, label\) VALUES \(\d{1,2}, '[a-z0-9-]{1,64}'\)$/u.test(query)) {
+          counts.mysqlSqlWrites += 1;
+          const [, id, label] = query.match(/VALUES \((\d+), '([^']+)'\)$/u);
+          if (!transactionRows) client.writeError({code:1192,message:'Fixture write requires explicit transaction'});
+          else if (transactionRows.some(row => row.id === id)) client.writeError({code:1062,message:'Fixture duplicate identifier'});
+          else { transactionRows.push({id,label}); client.writeOk({affectedRows:1,serverStatus:3}); }
+        } else if (client.clientHelloReply.database === 'app' && /^UPDATE sql_fixture SET label = '[a-z0-9-]{1,64}' WHERE id = \d{1,2}$/u.test(query)) {
+          counts.mysqlSqlWrites += 1;
+          const [, label, id] = query.match(/SET label = '([^']+)' WHERE id = (\d+)$/u);
+          if (!transactionRows) client.writeError({code:1192,message:'Fixture write requires explicit transaction'});
+          else {
+            const row = transactionRows.find(value => value.id === id);
+            if (row) row.label = label;
+            client.writeOk({affectedRows:row ? 1 : 0,serverStatus:3});
+          }
+        } else if (client.clientHelloReply.database === 'app' && /^DELETE FROM sql_fixture WHERE id = \d{1,2}$/u.test(query)) {
+          counts.mysqlSqlWrites += 1;
+          const [, id] = query.match(/WHERE id = (\d+)$/u);
+          if (!transactionRows) client.writeError({code:1192,message:'Fixture write requires explicit transaction'});
+          else {
+            const before = transactionRows.length;
+            transactionRows = transactionRows.filter(row => row.id !== id);
+            client.writeOk({affectedRows:before - transactionRows.length,serverStatus:3});
+          }
+        } else if (client.clientHelloReply.database === 'app' && /^SELECT `id`, `label` FROM `sql_fixture` LIMIT \d{1,4}$/u.test(query)) {
+          const limit = Math.min(101,Number(query.match(/LIMIT (\d+)$/u)[1]));
+          client.writeTextResult((transactionRows ?? sqlFixtureRows).slice(0,limit),[column('id'),column('label')]);
         } else if (/^SELECT TABLE_NAME, TABLE_TYPE FROM information_schema\.TABLES WHERE TABLE_SCHEMA = /u.test(query)
           && query.includes("TABLE_SCHEMA = '" + client.clientHelloReply.database + "'")) {
           client.writeTextResult([{TABLE_NAME:'records',TABLE_TYPE:'BASE TABLE'}], [column('TABLE_NAME'),column('TABLE_TYPE')]);
@@ -271,6 +329,75 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
           assert.equal(rejected.error.code, 'HARD_POLICY_DENIED');
         }
         assert.equal(fixture.counts.mysqlQueries, beforeRejectedQuery, '被拒绝的 SQL 不得进入数据库连接');
+
+        const sqlDocument = 'packaged-sql-transaction';
+        const sqlObserver = 'packaged-sql-observer';
+        const sqlRead = 'SELECT id, label FROM sql_fixture';
+        const sqlInsert = (id, label) => `INSERT INTO sql_fixture (id, label) VALUES (${id}, '${label}')`;
+        const prepareSql = (sql, mode = 'atomic', documentId = sqlDocument) => success('mysqlSql', {...databaseScope,operation:'prepare',documentId,sql,mode});
+        const executeSql = (plan, documentId = sqlDocument) => success('mysqlSql', {...databaseScope,operation:'execute',documentId,planId:plan.plan.planId,confirmed:true});
+        const runSql = async (sql, mode = 'atomic', documentId = sqlDocument) => executeSql(await prepareSql(sql,mode,documentId),documentId);
+        const readSqlFixture = async () => {
+          const result = await runSql(sqlRead,'autocommit',sqlObserver);
+          assert.equal(result.status,'success');
+          return result.results[0].data.rows;
+        };
+
+        const manualPlan = await prepareSql(sqlInsert(1,'packaged-sql-pending'),'manual');
+        assert.equal(manualPlan.plan.requiresConfirmation,true,'生产环境写入要求明确确认');
+        assert.equal(manualPlan.plan.writeCount,1);
+        const beforeUnconfirmedWrite = fixture.counts.mysqlSqlWrites;
+        const unconfirmedSql = await invoke('mysqlSql',{...databaseScope,operation:'execute',documentId:sqlDocument,planId:manualPlan.plan.planId,confirmed:false});
+        assert.equal(unconfirmedSql.ok,false);
+        assert.equal(unconfirmedSql.error.code,'CONFIRMATION_REQUIRED');
+        assert.equal(fixture.counts.mysqlSqlWrites,beforeUnconfirmedWrite,'未确认的 SQL 不到达数据库写入');
+        const manualResult = await executeSql(manualPlan);
+        assert.equal(manualResult.status,'success');
+        assert.equal(manualResult.transaction,'active');
+        assert.equal(manualResult.results[0].transactionEffect,'pending');
+        const writesAfterManual = fixture.counts.mysqlSqlWrites;
+        assert.equal((await executeSql(manualPlan)).status,'success');
+        assert.equal(fixture.counts.mysqlSqlWrites,writesAfterManual,'重复交付不重复写入');
+        assert.equal((await readSqlFixture()).length,0,'独立标签看不到另一个标签未提交的数据');
+        const ownTransaction = await runSql(sqlRead,'manual');
+        assert.deepEqual(ownTransaction.results[0].data.rows,[{id:'1',label:'packaged-sql-pending'}]);
+        assert.equal((await success('mysqlSql',{...databaseScope,operation:'status',documentId:sqlDocument})).transaction,'active');
+        const rolledBack = await runSql('ROLLBACK','manual');
+        assert.equal(rolledBack.transaction,'none');
+        assert.equal((await readSqlFixture()).length,0,'手动回滚没有留下写入');
+
+        const atomicResult = await runSql(sqlInsert(2,'packaged-sql-two') + ';\n' + sqlInsert(3,'packaged-sql-three')
+          + ";\nUPDATE sql_fixture SET label = 'packaged-sql-updated' WHERE id = 2;\n" + sqlRead);
+        assert.equal(atomicResult.status,'success');
+        assert.equal(atomicResult.transaction,'none');
+        assert.ok(atomicResult.results.every(item => item.transactionEffect === 'committed'));
+        assert.deepEqual(await readSqlFixture(),[{id:'2',label:'packaged-sql-updated'},{id:'3',label:'packaged-sql-three'}]);
+
+        const partialResult = await runSql([sqlInsert(4,'packaged-sql-four'),sqlInsert(4,'packaged-sql-duplicate'),sqlInsert(5,'packaged-sql-skipped')].join(';'),'autocommit');
+        assert.equal(partialResult.status,'error');
+        assert.deepEqual(partialResult.results.map(item => item.status),['success','error','skipped']);
+        assert.equal(partialResult.results[0].transactionEffect,'committed');
+        assert.deepEqual((await readSqlFixture()).map(item => item.id),['2','3','4']);
+        const atomicFailure = await runSql(sqlInsert(6,'packaged-sql-rollback') + ';' + sqlInsert(6,'packaged-sql-duplicate'));
+        assert.equal(atomicFailure.status,'error');
+        assert.equal(atomicFailure.results[0].transactionEffect,'rolledBack');
+        assert.deepEqual((await readSqlFixture()).map(item => item.id),['2','3','4']);
+
+        const queriesBeforeDdl = fixture.counts.mysqlQueries;
+        const ddlRejected = await invoke('mysqlSql',{...databaseScope,operation:'prepare',documentId:sqlDocument,mode:'atomic',sql:'DROP TABLE sql_fixture'});
+        assert.equal(ddlRejected.ok,false);
+        assert.equal(ddlRejected.error.code,'HARD_POLICY_DENIED');
+        assert.equal(fixture.counts.mysqlQueries,queriesBeforeDdl,'DDL 在进入数据库前被拒绝');
+
+        await runSql(sqlInsert(7,'packaged-sql-release'),'manual');
+        const releaseSql = await success('mysqlSql',{...databaseScope,operation:'release',documentId:sqlDocument});
+        assert.equal(releaseSql.status,'idle');
+        assert.deepEqual((await readSqlFixture()).map(item => item.id),['2','3','4'],'释放标签会放弃未提交事务');
+        await success('mysqlSql',{...databaseScope,operation:'release',documentId:sqlObserver});
+        const afterSqlReads = await success('mysqlQueryReadonly',{...databaseScope,sql:'SELECT id, label FROM records LIMIT 2'});
+        assert.equal(afterSqlReads.rowCount,2,'独立事务不影响主连接和既有只读查询');
+        assert.ok(fixture.counts.mysqlSqlCommits >= 2 && fixture.counts.mysqlSqlRollbacks >= 3);
+
         await success('disconnectPlugin', databaseScope);
         const beforeDisconnectedQuery = fixture.counts.mysqlQueries;
         const disconnected = await invoke('mysqlListTables', databaseScope);

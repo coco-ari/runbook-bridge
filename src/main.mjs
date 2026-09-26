@@ -48,12 +48,17 @@ let mainWindow;
 let v2;
 const SHUTDOWN_WATCHDOG_MS = 15_000;
 const transferExitGuard = createTransferExitGuard({
-  summary: () => v2?.serverWorkspaceFiles?.exitSummary() ?? {active:0, resumable:0},
-  confirm: async ({active, resumable}) => {
+  summary: () => {
+    const transfers = v2?.serverWorkspaceFiles?.exitSummary() ?? {active:0, resumable:0};
+    const sql = v2?.v2Service?.mysqlSql?.exitSummary().active ?? 0;
+    return {...transfers, active:transfers.active + sql, transfers:transfers.active, sql};
+  },
+  confirm: async ({transfers, resumable, sql}) => {
     const options = {
-      type:'warning', title:'退出客户端', message:'还有未结束的文件传输',
-      detail:`${active} 项正在传输或等待结束，${resumable} 项已暂停或等待续传。\n退出将终止传输并清除续传信息，重新打开客户端后需要重新传输。`,
-      buttons:['留在客户端', '终止传输并退出'], defaultId:0, cancelId:0, noLink:true,
+      type:'warning', title:'退出客户端', message:sql ? '还有未结束的 SQL 执行或事务' : '还有未结束的文件传输',
+      detail:[sql ? `${sql} 个 SQL 标签正在执行、有未提交事务或结果尚未确认。退出将关闭这些连接，未提交事务会回滚；已提交或结果不确定的写入不会被撤销。` : '',
+        transfers || resumable ? `${transfers} 项正在传输或等待结束，${resumable} 项已暂停或等待续传。退出将终止传输并清除续传信息。` : ''].filter(Boolean).join('\n'),
+      buttons:['留在客户端', sql ? '结束会话并退出' : '终止传输并退出'], defaultId:0, cancelId:0, noLink:true,
     };
     const result = mainWindow && !mainWindow.isDestroyed() ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
     return result.response === 1;
@@ -217,6 +222,7 @@ if (process.argv.includes('--mcp')) {
           mutationCoordinator,
           credentialUseResolver,
           validationRuntime,
+          assertScopeIdle: scope => v2Service.mysqlSql.assertScopeIdle(scope),
         });
         const broadcast = (channel, payload) => {
           for (const window of BrowserWindow.getAllWindows()) {
@@ -285,7 +291,7 @@ if (process.argv.includes('--mcp')) {
       v2?.pluginProbeManager?.invalidateAll?.();
       v2?.pluginEditSessionManager?.invalidateAll?.({allowSaving:true});
       const watchdog = setTimeout(() => app.quit(), SHUTDOWN_WATCHDOG_MS);
-      Promise.all([v2?.connectionManager?.closeAll(), brokerServer?.stop()])
+      Promise.all([v2?.v2Service?.mysqlSql?.closeAll(), v2?.connectionManager?.closeAll(), brokerServer?.stop()])
         .catch(() => undefined)
         .finally(() => {
           clearTimeout(watchdog);

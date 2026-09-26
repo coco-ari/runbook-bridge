@@ -831,3 +831,25 @@ tr[data-row-state="update"] .mysql-inline-cell[data-dirty] { background:color-mi
 
 .mysql-save-operation { width:96px; flex-shrink:0; }
 .mysql-inline-actions [data-operation-spinner] { display:block; }
+
+/* SQL 执行区沿用工作区的紧凑边框和工具栏，不因事务状态增减按钮。 */
+.mysql-editor-toolbar { gap:6px; }
+.mysql-sql-run-group { display:flex; flex-shrink:0; }
+.mysql-sql-run-group > button { border-top-right-radius:0; border-bottom-right-radius:0; }
+.mysql-sql-run-group > [data-slot="dropdown-menu-trigger"] { border-left:1px solid color-mix(in srgb, var(--primary-foreground) 25%, transparent); border-radius:0 var(--radius-md) var(--radius-md) 0; width:24px; }
+.mysql-editor-toolbar .mysql-sql-mode { min-width:104px; font-size:var(--text-xs); }
+.mysql-sql-transaction-message { display:flex; flex-shrink:0; align-items:center; flex-wrap:wrap; gap:7px; border-bottom:1px solid var(--border); padding:8px 12px; background:color-mix(in srgb, var(--warning) 8%, var(--background)); font-size:var(--text-xs); }
+.mysql-sql-transaction-message > svg { width:16px; height:16px; flex-shrink:0; }
+.mysql-sql-transaction-message > button { margin-left:auto; }
+.mysql-sql-transaction-message p { margin-top:3px; color:var(--muted-foreground); }
+.mysql-sql-result-list { display:flex; flex-shrink:0; flex-direction:column; max-height:128px; overflow:auto; border-bottom:1px solid var(--border); background:var(--background); }
+.mysql-sql-result-item { display:flex; align-items:center; flex-wrap:wrap; gap:12px; min-height:32px; padding:5px 12px; text-align:left; font-size:var(--text-xs); border-bottom:1px solid color-mix(in srgb, var(--border) 50%, transparent); }
+.mysql-sql-result-item[aria-pressed="true"] { background:var(--accent); }
+.mysql-sql-result-item:focus-visible { outline:2px solid var(--ring); outline-offset:-2px; }
+.mysql-sql-result-item > svg { width:14px; height:14px; flex-shrink:0; }
+.mysql-sql-result-item > span { color:var(--muted-foreground); }
+.mysql-sql-result-item > strong { font-weight:500; }
+.mysql-sql-progress { display:flex; flex-shrink:0; align-items:center; gap:6px; padding:6px 12px; color:var(--muted-foreground); font-size:var(--text-xs); border-bottom:1px solid var(--border); }
+.mysql-sql-result-error { padding:12px; font-size:var(--text-sm); border-bottom:1px solid var(--border); }
+.mysql-sql-result-error > strong { color:var(--destructive); font-weight:500; }
+.mysql-sql-execution-summary { padding:16px; font-size:var(--text-sm); line-height:1.8; overflow:auto; }

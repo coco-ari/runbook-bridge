@@ -9,6 +9,7 @@ export function registerMysqlEditIpc(ipcMain, services) {
     if(state)state.active=false;
     owners.delete(owner);
     services.v2Service?.mysqlEditor?.closeOwner(owner);
+    void services.v2Service?.mysqlSql?.closeOwner(owner).catch(() => undefined);
   };
   const ownerFor=event=>{
     const sender=event?.sender;
@@ -26,6 +27,15 @@ export function registerMysqlEditIpc(ipcMain, services) {
     if(!owners.has(owner))owners.set(owner,{active:true});
     return owner;
   };
+  ipcMain.handle('v2:mysql-sql', async (event, payload) => {
+    try {
+      const owner = ownerFor(event), state = owners.get(owner);
+      const assertOwner = () => {
+        if (!state.active || owners.get(owner) !== state || event.sender.isDestroyed?.()) throw new AppError('WORKSPACE_ACCESS_DENIED', 'SQL 窗口已关闭或重新加载。');
+      };
+      return {ok:true, data:await services.v2Service.invokeDesktopMysqlSql(owner, payload, assertOwner)};
+    } catch (error) { return {ok:false, error:toPublicError(error)}; }
+  });
   ipcMain.handle('v2:mysql-export-save',async(event,payload)=>{
     try {
       const owner=ownerFor(event),state=owners.get(owner);

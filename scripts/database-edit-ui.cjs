@@ -261,7 +261,7 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   await stage(3,'label','未保存的第三行');
   await click(win,'[data-testid=mysql-table-close][data-table-name=orders]');
   await waitFor(win,'document.querySelector("[data-testid=mysql-edit-discard-dialog]")','关闭标签保护');
-  await button('保留修改');
+  await button('返回并保留');
   await waitFor(win,'!document.querySelector("[data-testid=mysql-edit-discard-dialog]")','保留草稿后关闭提示');
   assert.match(await current(cell(3,'label')),/未保存/u);
   await click(win,testId('mysql-sql-tab'));

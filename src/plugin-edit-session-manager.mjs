@@ -87,13 +87,14 @@ export class PluginEditSessionManager {
     mutationCoordinator,
     credentialUseResolver,
     validationRuntime,
+    assertScopeIdle = () => {},
     now = Date.now,
     prepareTtlMs = 60_000,
     sessionTtlMs = 30 * 60_000,
     drainTimeoutMs = 10_000,
   } = {}) {
     Object.assign(this,{
-      workspaceStore,connectionManager,mutationCoordinator,credentialUseResolver,validationRuntime,now,
+      workspaceStore,connectionManager,mutationCoordinator,credentialUseResolver,validationRuntime,assertScopeIdle,now,
     });
     this.prepareTtlMs = Math.max(1_000,Number(prepareTtlMs) || 60_000);
     this.sessionTtlMs = Math.max(10_000,Number(sessionTtlMs) || 30 * 60_000);
@@ -192,6 +193,9 @@ export class PluginEditSessionManager {
           preview:this.publicPreview(current),
         });
       }
+      // A drained request can leave a manual SQL transaction open. Check after
+      // draining and while the edit fence still prevents new SQL operations.
+      this.assertScopeIdle({projectId,environmentId});
       const disconnected = await this.connectionManager.disconnectForConfigurationEdit(
         projectId,environmentId,current.affectedIds,{ownerId:editSessionId},
       );

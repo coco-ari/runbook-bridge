@@ -17,6 +17,8 @@ const ACTIONS = {
   'docker.list':'列出容器', 'docker.inspect':'查看容器详情', 'docker.logs':'读取容器日志', 'docker.stats':'查看容器资源',
   'mysql.describe':'查看数据库结构', 'mysql.tables':'列出数据表', 'mysql.table':'查看表结构',
   'mysql.rows.write':'保存数据表行更改',
+  'mysql.sql.read':'执行 SQL 查询', 'mysql.sql.write':'执行 SQL 写入',
+  'mysql.sql.begin':'开始 SQL 事务', 'mysql.sql.commit':'提交 SQL 事务', 'mysql.sql.rollback':'回滚 SQL 事务',
   'redis.create':'新增 Redis Key', 'redis.update':'修改 Redis 值', 'redis.delete':'删除 Redis Key',
   'mysql.update':'修改数据表', 'mysql.select':'执行只读查询', 'mysql.preview':'预览数据表', 'mysql.explain':'分析查询计划', 'mysql.search':'搜索数据库结构',
   'redis.scan':'扫描 Redis 键', 'redis.read':'读取 Redis 数据', 'redis.ttl':'查看 Redis 有效期', 'redis.type':'查看 Redis 类型',
@@ -77,7 +79,8 @@ export function auditAction(entry) {
 }
 
 export function auditCategory(action) {
-  if (['mysql.update','mysql.rows.write','redis.create','redis.update','redis.delete'].includes(action)) return 'change';
+  if (['mysql.update','mysql.rows.write','mysql.sql.write','mysql.sql.commit','mysql.sql.rollback','redis.create','redis.update','redis.delete'].includes(action)) return 'change';
+  if (action === 'mysql.sql.begin') return 'session';
   if (/^(fs\.(?:upload|write|move|delete|mkdir)|service\.(?:control|start|stop|restart|reload)|shell\.execute|execute)/u.test(action)) return 'change';
   if (/runbook|plugin-added|plugin-.*updated|plugin-deleted|config-imported|config-uploaded|credential|host-key/u.test(action)) return 'configuration';
   if (/connect|connection-plan/u.test(action)) return 'connection';
@@ -141,6 +144,7 @@ function legacyTarget(entry) {
 export function auditErrorSummary(code) {
   if (!code) return '';
   if (code === 'MYSQL_EDIT_OUTCOME_UNKNOWN') return '保存结果不确定，请重新查询核实，勿重复提交。';
+  if (code === 'MYSQL_SQL_OUTCOME_UNKNOWN') return 'SQL 执行或提交结果待核实，请重新查询，勿重复执行。';
   if (code === 'MYSQL_EDIT_CONFLICT') return '数据已被修改或删除，本批修改未保存。请重新加载并核对。';
   if (code === 'SERVICE_CONTROL_FAILED') return '服务执行失败，请检查服务状态和日志。';
   if (/CONFIRMATION/u.test(code)) return '确认请求已失效或与当前操作不匹配，请重新发起。';

@@ -10,6 +10,7 @@ import { pluginWithRunbookSources, resourceHintsFromRunbook } from './runbook-so
 import { normalizePlugin } from './plugin-config-model.mjs';
 import { isolateNewPluginIdentity } from './plugin-creation-identity.mjs';
 import { DesktopMysqlEditor, prepareMysqlEditRequest } from './desktop-mysql-editor.mjs';
+import { DesktopMysqlSql, prepareMysqlSqlRequest } from './desktop-mysql-sql.mjs';
 import { prepareDesktopMysqlOperation } from './desktop-mysql-operation.mjs';
 import { RUNTIME_INFO } from './package-metadata.mjs';
 import { MYSQL_READ_CAPABILITIES } from './mysql-policy.mjs';
@@ -98,6 +99,7 @@ export class V2Service {
   constructor({ workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, operationGate = null, serverOperations, credentialVault, mutationCoordinator = null, workspaceChanged = null }) {
     Object.assign(this, { workspaceStore, connectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault, mutationCoordinator, workspaceChanged });
     this.mysqlEditor = new DesktopMysqlEditor(pluginManager?.runtimes?.mysql, workspaceStore);
+    this.mysqlSql = new DesktopMysqlSql(pluginManager?.runtimes?.mysql, workspaceStore);
     this.redisEditor = new DesktopRedisEditor(pluginManager?.runtimes?.redis, workspaceStore);
     this.redisWorkspaceManager = new RedisWorkspaceManager(pluginManager?.runtimes?.redis);
     this.operationGate = operationGate ?? new OperationGate(confirmationManager);
@@ -381,6 +383,33 @@ export class V2Service {
     };
     return this.mutationCoordinator
       ? this.mutationCoordinator.runEnvironmentOperation(scope.projectId,scope.environmentId,execute)
+      : execute();
+  }
+
+  async invokeDesktopMysqlSql(owner, payload, assertOwner = () => {}) {
+    const scope = prepareMysqlSqlRequest(payload);
+    assertOwner();
+    // Cleanup and observation remain available after disconnection/config edits.
+    // They only address an exact owner + project + environment + plugin + tab.
+    if (payload.operation === 'status') return this.mysqlSql.status(owner, scope, payload.documentId);
+    if (payload.operation === 'stop') return this.mysqlSql.stop(owner, scope, payload);
+    if (payload.operation === 'release') return this.mysqlSql.release(owner, scope, payload.documentId);
+    const execute = async () => {
+      assertOwner();
+      this.connectionManager.assertConfigurationStable?.(scope.projectId, scope.environmentId);
+      const plugin = await this.workspaceStore.getPlugin(scope.projectId, scope.environmentId, scope.pluginInstanceId);
+      if (plugin.pluginType !== 'mysql') throw new AppError('PLUGIN_TYPE_MISMATCH', '目标不是 MySQL 插件。');
+      if (['projectId', 'environmentId', 'pluginInstanceId'].some(field => scope[field] !== plugin[field])) throw new AppError('SCOPE_MISMATCH', 'SQL 目标不属于当前作用域。');
+      assertPluginConfigurationReady(plugin);
+      this.assertPluginConnected(scope, plugin);
+      const environment = await this.workspaceStore.getEnvironment(scope.projectId, scope.environmentId);
+      assertOwner();
+      return payload.operation === 'prepare'
+        ? this.mysqlSql.prepare(owner, plugin, environment, payload, assertOwner)
+        : this.mysqlSql.execute(owner, plugin, environment, payload, assertOwner);
+    };
+    return this.mutationCoordinator
+      ? this.mutationCoordinator.runEnvironmentOperation(scope.projectId, scope.environmentId, execute)
       : execute();
   }
 

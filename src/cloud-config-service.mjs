@@ -9,7 +9,9 @@ import { appendCloudVersion, pruneCloudHistory, projectSummary, cloudVersionSumm
 const emptyState = () => ({schemaVersion:2,repositories:[],activeRepositoryId:null,mappings:[],detachedMappings:[],checkIntervalMinutes:15});
 const projectIdPattern = /^[a-z0-9][a-z0-9-]{1,62}$/;
 const newProjectId = () => `project-${crypto.randomUUID()}`;
-const publicFailure = error => ({code:error?.code?.startsWith('CLOUD_') ? error.code : 'CLOUD_IMPORT_FAILED',message:'项目未完成导入，请检查连接、配置及本机安全存储后重新预览。'});
+const publicFailure = error => error?.code === 'MYSQL_SQL_TRANSACTION_ACTIVE'
+  ? {code:error.code,message:'项目仍有 SQL 正在执行、未提交事务或待核实结果。请回到 SQL 标签处理并关闭后，再更新云配置。'}
+  : {code:error?.code?.startsWith('CLOUD_') ? error.code : 'CLOUD_IMPORT_FAILED',message:'项目未完成导入，请检查连接、配置及本机安全存储后重新预览。'};
 async function deadline(promise,ms = 10_000) {
   let timer;
   try { return await Promise.race([promise,new Promise((_,reject) => { timer = setTimeout(() => reject(cloudError('PROJECT_BUSY','项目仍有操作正在运行，请结束后重试。')),ms); })]); }
@@ -510,6 +512,9 @@ export class CloudConfigService {
   }
   async quiesce(projectId,before) {
     if (this.serverWorkspaceFiles?.activeProjectTransfers?.(projectId)) throw cloudError('PROJECT_BUSY','项目仍有活动传输。');
+    // withProject has drained active requests and holds the project fence, but
+    // a completed manual SQL request may still own an uncommitted transaction.
+    this.v2Service?.mysqlSql?.assertScopeIdle({projectId});
     if (before.files['workspace.yaml']) {
       const project = await this.store.getProject(projectId);
       for (const environmentId of project.environmentOrder) {

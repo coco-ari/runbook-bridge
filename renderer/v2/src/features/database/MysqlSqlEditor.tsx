@@ -1,12 +1,15 @@
 import { shortcutLabel } from "@/lib/platform"
 import { copyMysqlText } from "./mysql-clipboard"
-import { Copy, Play } from "@phosphor-icons/react"
+import { ArrowCounterClockwise, CaretDown, Check, Copy, Play, Stop } from "@phosphor-icons/react"
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu"
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select"
+import { selectMysqlScript, splitMysqlScript } from "../../../../../src/mysql-script-splitter.mjs"
 
-import type { MysqlTableDescription, MysqlTableSummary } from "@/bridge/ai-ops-v2"
+import type { MysqlSqlMode, MysqlSqlTransaction, MysqlTableDescription, MysqlTableSummary } from "@/bridge/ai-ops-v2"
 import { MYSQL_TABLE_DRAG_TYPE, mysqlCompletionContext, mysqlSqlDiagnostic, quoteMysqlIdentifier, type MysqlSqlDiagnostic } from "./mysql-sql-assist"
 
 interface MysqlSqlEditorProps {
@@ -18,12 +21,19 @@ interface MysqlSqlEditorProps {
   readonly loading: boolean
   readonly collapsed: boolean
   readonly onChange: (value: string) => void
-  readonly onRun: () => void
+  readonly mode: MysqlSqlMode
+  readonly transaction: MysqlSqlTransaction
+  readonly uncertain: boolean
+  readonly connected: boolean
+  readonly onModeChange: (mode: MysqlSqlMode) => void
+  readonly onStop: () => void
+  readonly onTransaction: (sql: "COMMIT" | "ROLLBACK") => void
+  readonly onRun: (sql: string, lineOffset: number) => void
 }
 
 function highlightedSql(source: string): ReactNode[] {
   const tokens: ReactNode[] = []
-  const pattern = /(--[^\n]*|\/\*[\s\S]*?\*\/|'(?:''|\\.|[^'\\])*'|"(?:""|\\.|[^"\\])*"|`(?:``|[^`])*`|\b(?:SELECT|FROM|WHERE|ORDER|BY|DESC|ASC|LIMIT|AS|AND|OR|IS|NOT|NULL|JOIN|LEFT|RIGHT|INNER|ON|GROUP|HAVING|EXPLAIN|COUNT|SUM|AVG|MIN|MAX|DISTINCT|IN|LIKE|BETWEEN|OFFSET|CASE|WHEN|THEN|ELSE|END)\b|\b\d+(?:\.\d+)?\b)/gi
+  const pattern = /(--[^\n]*|\/\*[\s\S]*?\*\/|'(?:''|\\.|[^'\\])*'|"(?:""|\\.|[^"\\])*"|`(?:``|[^`])*`|\b(?:SELECT|INSERT|INTO|VALUES|UPDATE|SET|DELETE|SHOW|DESCRIBE|DESC|BEGIN|START|TRANSACTION|COMMIT|ROLLBACK|FROM|WHERE|ORDER|BY|DESC|ASC|LIMIT|AS|AND|OR|IS|NOT|NULL|JOIN|LEFT|RIGHT|INNER|ON|GROUP|HAVING|EXPLAIN|COUNT|SUM|AVG|MIN|MAX|DISTINCT|IN|LIKE|BETWEEN|OFFSET|CASE|WHEN|THEN|ELSE|END)\b|\b\d+(?:\.\d+)?\b)/gi
   let offset = 0
   for (const match of source.matchAll(pattern)) {
     tokens.push(source.slice(offset, match.index))
@@ -36,11 +46,12 @@ function highlightedSql(source: string): ReactNode[] {
   return tokens
 }
 
-export function MysqlSqlEditor({ active = true, value, loading, collapsed, onChange, onRun, tables, getSchema, onTableDrop }: MysqlSqlEditorProps) {
+export function MysqlSqlEditor({ active = true, value, loading, collapsed, onChange, onRun, tables, getSchema, onTableDrop, mode, transaction, uncertain, connected, onModeChange, onStop, onTransaction }: MysqlSqlEditorProps) {
   const uniqueId = useId()
   const editorRef = useRef<HTMLTextAreaElement>(null)
   const highlightRef = useRef<HTMLPreElement>(null)
   const numbersRef = useRef<HTMLDivElement>(null)
+  const [runMenuOpen, setRunMenuOpen] = useState(false)
   const [cursor, setCursor] = useState({ line: 1, column: 1 })
   const [caret, setCaret] = useState(0)
   const [focused, setFocused] = useState(false)
@@ -104,6 +115,25 @@ export function MysqlSqlEditor({ active = true, value, loading, collapsed, onCha
     setCursor({ line: before.length, column: (before.at(-1)?.length ?? 0) + 1 })
   }
 
+  function run(kind: "current" | "selection" | "all" = "current") {
+    setRunMenuOpen(false)
+    if (loading || uncertain || !connected) return
+    const editor = editorRef.current
+    const start = editor?.selectionStart ?? 0, end = editor?.selectionEnd ?? start
+    try {
+      const range = kind === "current" && start !== end ? "selection" : kind
+      const sql = selectMysqlScript(value, start, end, range)
+      if (!sql.trim()) { toast.info(kind === "selection" ? "请先选中要执行的 SQL。" : "光标处没有可执行语句。"); return }
+      let sourceStart = 0
+      if (range === "selection") sourceStart = start + value.slice(start, end).length - value.slice(start, end).trimStart().length
+      else if (range === "current") {
+        const statements = splitMysqlScript(value)
+        sourceStart = (statements.find(item => start >= item.start && start <= item.end) ?? statements.find(item => item.start > start) ?? statements.at(-1))?.start ?? 0
+      }
+      onRun(sql, value.slice(0, sourceStart).split(/\r\n|\r|\n/).length - 1)
+    } catch (error) { toast.error(error instanceof Error ? error.message : "SQL 片段不完整，请检查引号、注释和分号。") }
+  }
+
   async function copySql() {
     try {
       await copyMysqlText(value)
@@ -116,11 +146,18 @@ export function MysqlSqlEditor({ active = true, value, loading, collapsed, onCha
   return (
     <section aria-label="SQL 编辑器" className={`mysql-sql-editor-panel ${collapsed ? "is-collapsed" : ""}`} data-testid={active ? "mysql-query-editor-panel" : undefined}>
       <div className="mysql-editor-toolbar">
-        <Button data-testid={active ? "mysql-query-run" : undefined} disabled={loading || !value.trim()} onClick={onRun} size="sm" type="button">
-          <Play aria-hidden="true" weight="fill" />{loading ? "查询中…" : "执行查询"}<kbd className="ml-2 hidden font-mono text-xs opacity-65 sm:inline">{shortcutLabel("↵")}</kbd>
-        </Button>
+        <div className="mysql-sql-run-group">
+          <Button data-testid={active ? "mysql-query-run" : undefined} disabled={loading || uncertain || !connected || !value.trim()} onClick={() => run()} size="sm" type="button" title={`执行选中内容或光标所在语句 · ${shortcutLabel("↵")}`}><Play aria-hidden="true" weight="fill" />{loading ? "执行中…" : "执行"}</Button>
+          <DropdownMenu open={runMenuOpen} onOpenChange={setRunMenuOpen}><DropdownMenuTrigger asChild><Button aria-label="选择 SQL 执行范围" data-testid={active ? "mysql-query-run-menu" : undefined} disabled={loading || uncertain || !connected || !value.trim()} size="icon-sm" type="button"><CaretDown /></Button></DropdownMenuTrigger><DropdownMenuContent className="min-w-48"><DropdownMenuItem data-testid="mysql-query-run-current" onSelect={() => run("current")}>执行当前语句 / 选中内容</DropdownMenuItem><DropdownMenuItem data-testid="mysql-query-run-selection" onSelect={() => run("selection")}>执行选中内容</DropdownMenuItem><DropdownMenuItem data-testid="mysql-query-run-all" onSelect={() => run("all")}>执行整个脚本</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+        </div>
+        <Button aria-label="停止 SQL 执行" data-testid={active ? "mysql-query-stop" : undefined} disabled={!loading} onClick={onStop} size="icon-sm" title="停止执行；已经提交的语句不会撤销" type="button" variant="outline"><Stop aria-hidden="true" weight="fill" /></Button>
+        <Select value={mode} onValueChange={value => onModeChange(value as MysqlSqlMode)} disabled={loading || uncertain || transaction !== "none"}>
+          <SelectTrigger aria-label="SQL 事务模式" className="mysql-sql-mode" data-testid={active ? "mysql-query-mode" : undefined} size="sm"><SelectValue>{{ atomic: "整批事务", autocommit: "逐条提交", manual: "手动事务" }[mode]}</SelectValue></SelectTrigger><SelectContent><SelectItem value="atomic">整批事务 · 全部成功后提交</SelectItem><SelectItem value="autocommit">逐条提交 · 成功一条生效一条</SelectItem><SelectItem value="manual">手动事务 · 自行提交或回滚</SelectItem></SelectContent>
+        </Select>
+        <Button data-testid={active ? "mysql-query-commit" : undefined} disabled={loading || uncertain || !connected || transaction !== "active"} onClick={() => onTransaction("COMMIT")} size="sm" title="提交当前 SQL 标签的事务" type="button" variant="outline"><Check />提交</Button>
+        <Button data-testid={active ? "mysql-query-rollback" : undefined} disabled={loading || uncertain || !connected || transaction !== "active"} onClick={() => onTransaction("ROLLBACK")} size="sm" title="回滚当前 SQL 标签尚未提交的更改" type="button" variant="outline"><ArrowCounterClockwise />回滚</Button>
         <Button aria-label="复制 SQL" data-testid={active ? "mysql-query-copy" : undefined} disabled={!value} onClick={() => void copySql()} size="icon-sm" title="复制 SQL" type="button" variant="ghost"><Copy aria-hidden="true" /></Button>
-        <p className="mysql-editor-hint" id={`${uniqueId}-hint`}>支持单条 SELECT · Ctrl / ⌘ + Enter 执行</p>
+        <p className="sr-only" id={`${uniqueId}-hint`}>支持查询、增删改和批量脚本。Ctrl / ⌘ + Enter 执行当前或选中语句，Shift + Ctrl / ⌘ + Enter 执行全部。{mode === "atomic" ? "整批成功后提交，失败回滚。" : mode === "manual" ? "写入后需手动提交或回滚。" : "每条成功立即提交，遇错停止。"}</p>
         <span className="mysql-editor-dialect">MySQL</span>
       </div>
       <div className="mysql-editor-code" onDragOver={(event) => { if (event.dataTransfer.types.includes(MYSQL_TABLE_DRAG_TYPE)) { event.preventDefault(); event.dataTransfer.dropEffect = "copy" } }} onDrop={(event) => { if (event.dataTransfer.types.includes(MYSQL_TABLE_DRAG_TYPE)) { event.preventDefault(); if (!loading) onTableDrop(event.dataTransfer.getData(MYSQL_TABLE_DRAG_TYPE)) } }}>
@@ -154,7 +191,7 @@ export function MysqlSqlEditor({ active = true, value, loading, collapsed, onCha
                 else setChoiceIndex(index => (index + (event.key === "ArrowDown" ? 1 : -1) + choices.length) % choices.length)
                 return
               }
-              if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); onRun() }
+              if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); run(event.shiftKey ? "all" : "current") }
             }}
             onScroll={(event) => {
               setDismissed(completionKey)

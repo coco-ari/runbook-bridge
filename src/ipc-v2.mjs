@@ -148,11 +148,17 @@ export function registerV2Ipc(ipcMain, services) {
     return ownerId;
   };
   const assertProjectAvailable = (projectId) => mutationCoordinator.assertProjectAvailable(projectId);
+  // A Server disconnect can also break MySQL tunnel sessions, so deliberately
+  // inspect the whole environment rather than just the clicked plugin.
+  const assertSqlScopeIdle = ({projectId,environmentId} = {}) => services.v2Service?.mysqlSql?.assertScopeIdle?.({
+    projectId,...(environmentId ? {environmentId} : {}),
+  });
   const requestConnectionIntent = (payload) => {
     if (!payload || !['connect','disconnect','retry','cancel'].includes(payload.intent)) {
       throw new AppError('CONNECTION_INTENT_INVALID','连接意图无效。');
     }
     assertProjectAvailable(payload.projectId);
+    if (payload.intent === 'disconnect') assertSqlScopeIdle(payload);
     if (typeof connectionManager.requestConnectionIntent === 'function') {
       return connectionManager.requestConnectionIntent(payload);
     }
@@ -203,7 +209,11 @@ export function registerV2Ipc(ipcMain, services) {
     ...services, mutationCoordinator,
   });
   const {preparePluginUpdate, commitPreparedPlugin, commitAgentPluginUpdate, commitConnectionPluginUpdate,
-    withConfigurationMutation, invalidateServerWorkspace, recordPluginChange, restoreRuntimeWarning} = pluginConfigurationService;
+    withConfigurationMutation:withPluginConfigurationMutation, invalidateServerWorkspace, recordPluginChange, restoreRuntimeWarning} = pluginConfigurationService;
+  const withConfigurationMutation = (projectId,environmentId,...args) => {
+    assertSqlScopeIdle({projectId,environmentId});
+    return withPluginConfigurationMutation(projectId,environmentId,...args);
+  };
 
   ipcMain.on('v2:network-changed', () => connectionManager.networkChanged('renderer-network-change').catch(() => undefined));
 
@@ -219,11 +229,10 @@ export function registerV2Ipc(ipcMain, services) {
     }
     return pluginProbeManager;
   };
-  handlePluginWithEvent('preparePluginConnectionEdit',(event,payload) => (
-    requirePluginEditSessionManager().preparePluginConnectionEdit({
-      ...payload,ownerId:rendererOwner(event),
-    })
-  ));
+  handlePluginWithEvent('preparePluginConnectionEdit',(event,payload) => {
+    assertSqlScopeIdle(payload);
+    return requirePluginEditSessionManager().preparePluginConnectionEdit({...payload,ownerId:rendererOwner(event)});
+  });
   handlePluginWithEvent('beginPluginConnectionEdit',(event,payload) => (
     requirePluginEditSessionManager().beginPluginConnectionEdit({
       ...payload,ownerId:rendererOwner(event),
@@ -318,6 +327,7 @@ export function registerV2Ipc(ipcMain, services) {
     return value;
   });
   handle('project-delete', async ({ projectId }) => {
+    assertSqlScopeIdle({projectId});
     mutationCoordinator.beginProjectDelete(projectId);
     try {
       let environments = await store.listEnvironments(projectId);
@@ -348,6 +358,7 @@ export function registerV2Ipc(ipcMain, services) {
       // has drained earlier work. A normal configuration mutation would
       // reject its own project fence; retain only the recovery preflight.
       assertRecoveryAvailable(environments);
+      assertSqlScopeIdle({projectId});
       pluginEditSessionManager?.invalidateProject?.(projectId);
       if (typeof connectionManager.disconnect === 'function') {
         await Promise.all(environments.map((environment) => connectionManager.disconnect(projectId, environment.environmentId, 'project-delete-cleanup')));
@@ -428,12 +439,14 @@ export function registerV2Ipc(ipcMain, services) {
     return store.createEnvironment(projectId, input);
   });
   handle('environment-update', ({ projectId, environmentId, patch, expectedRevision }) => enqueuePluginMutation(projectId, environmentId, async () => {
+    assertSqlScopeIdle({projectId,environmentId});
     const value = await store.updateEnvironment(projectId, environmentId, patch, expectedRevision);
     contextManager.invalidateEnvironment(projectId, environmentId);
     return value;
   }));
   handle('environment-delete', async ({ projectId, environmentId }) => {
     assertProjectAvailable(projectId);
+    assertSqlScopeIdle({projectId,environmentId});
     const immediate = connectionManager.snapshot(projectId,environmentId);
     if (immediate.desiredConnected || immediate.phase !== 'disconnected') {
       throw new AppError('ENVIRONMENT_CONNECTED', '请先断开环境后再删除。');
@@ -603,11 +616,12 @@ export function registerV2Ipc(ipcMain, services) {
       editSummary:{state:'editing',editSessionId},
     });
   });
-  handlePlugin('createPlugin', pluginConfigurationService.createPlugin);
+  handlePlugin('createPlugin', payload => { assertSqlScopeIdle(payload); return pluginConfigurationService.createPlugin(payload); });
   handlePlugin('updatePluginMetadata', (payload) => {
     assertExpectedPluginRevision(payload?.expectedRevision);
     assertCredentialFreeUpdate(payload,'插件基本信息');
     return enqueuePluginMutation(payload.projectId,payload.environmentId,async () => {
+      assertSqlScopeIdle(payload);
       const prepared = await preparePluginUpdate(payload,'metadata');
       return commitPreparedPlugin(prepared,payload);
     });
@@ -616,6 +630,7 @@ export function registerV2Ipc(ipcMain, services) {
     assertExpectedPluginRevision(payload?.expectedRevision);
     assertCredentialFreeUpdate(payload,'Agent 配置');
     return enqueuePluginMutation(payload.projectId,payload.environmentId,async () => {
+      assertSqlScopeIdle(payload);
       const prepared = await preparePluginUpdate(payload,'agent-policy-scope');
       return commitAgentPluginUpdate(prepared,payload);
     });
@@ -623,6 +638,7 @@ export function registerV2Ipc(ipcMain, services) {
   handlePlugin('updatePluginConnection', (payload) => {
     assertExpectedPluginRevision(payload?.expectedRevision);
     return enqueuePluginMutation(payload.projectId,payload.environmentId,async () => {
+      assertSqlScopeIdle(payload);
       const prepared = await preparePluginUpdate(payload,'connection');
       if (prepared.change.kind === 'none') return prepared.before;
       return commitConnectionPluginUpdate(prepared,payload);
@@ -632,6 +648,7 @@ export function registerV2Ipc(ipcMain, services) {
   // classifies the patch, then delegates to the narrow semantic path.
   handlePlugin('updatePlugin', (payload) => enqueuePluginMutation(
     payload.projectId,payload.environmentId,async () => {
+      assertSqlScopeIdle(payload);
       const prepared = await preparePluginUpdate(payload);
       if (prepared.change.kind === 'none') return prepared.before;
       if (prepared.change.kind === 'metadata') return commitPreparedPlugin(prepared,payload);
@@ -642,6 +659,7 @@ export function registerV2Ipc(ipcMain, services) {
     },
   ));
   handlePlugin('deletePlugin', async ({ projectId, environmentId, pluginInstanceId }) => {
+    assertSqlScopeIdle({projectId,environmentId});
     // Reject impossible deletes before discarding the user's edit session.
     // Recheck inside the mutation below because dependencies may change while
     // this initial read is in flight.

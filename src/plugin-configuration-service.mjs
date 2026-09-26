@@ -31,14 +31,22 @@ function credentialMutationFromPayload(payload = {}) {
 export function createPluginConfigurationService(services) {
   const {workspaceStore:store, connectionManager, credentialVault, configTransactionJournal,
     contextManager, confirmationManager, pluginEditSessionManager, mutationCoordinator} = services;
+  const assertScopeIdle = services.assertScopeIdle
+    ?? (scope => services.v2Service?.mysqlSql?.assertScopeIdle(scope));
   const enqueuePluginMutation = (projectId, environmentId, operation, ownerId = null) => (
-    mutationCoordinator.enqueueEnvironmentMutation(projectId, environmentId, operation, {ownerId})
+    mutationCoordinator.enqueueEnvironmentMutation(projectId, environmentId, () => {
+      // Existing SQL may finish its request with an uncommitted transaction
+      // while this configuration mutation is waiting in the queue.
+      assertScopeIdle({projectId,environmentId});
+      return operation();
+    }, {ownerId})
   );
   const requirePluginEditSessionManager = () => {
     if (!pluginEditSessionManager) throw new AppError('PLUGIN_EDIT_SESSION_UNAVAILABLE', '插件连接配置编辑服务不可用。');
     return pluginEditSessionManager;
   };
   const withConfigurationMutation = async (projectId, environmentId, changedPluginInstanceId, operation, ownerId = null) => {
+    assertScopeIdle({projectId,environmentId});
     const token = connectionManager.beginConfigurationMutation?.(
       projectId, environmentId, changedPluginInstanceId, {ownerId},
     ) ?? null;
@@ -158,6 +166,7 @@ export function createPluginConfigurationService(services) {
   };
   const commitPreparedPlugin = async (prepared, payload) => {
     if (prepared.change.kind === 'none') return prepared.before;
+    assertScopeIdle({projectId:payload.projectId,environmentId:payload.environmentId});
     if (['session-affecting', 'dependency-affecting'].includes(prepared.change.kind)) invalidateServerWorkspace(payload);
     const plugin = prepared.after && typeof store.commitPluginSnapshot === 'function'
       ? await store.commitPluginSnapshot(prepared.after,prepared.before.revision)

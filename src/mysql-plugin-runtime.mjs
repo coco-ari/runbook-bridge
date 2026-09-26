@@ -158,6 +158,7 @@ export class MysqlPluginRuntime extends EventEmitter {
     this.client = client;
     this.sessions = new Map();
     this.connectAttempts = new Map();
+    this.sqlConnections = new Set();
     this.readScheduler = new BoundedReadScheduler({ maxConcurrent:4, maxQueued:32, queueTimeoutMs });
     this.metadataCache = new BoundedReadCache({ now, ttlMs:metadataTtlMs });
     this.sessionIds = new WeakMap();
@@ -180,10 +181,133 @@ export class MysqlPluginRuntime extends EventEmitter {
     return session;
   }
 
+  closeSqlConnections(plugin = null, expectedParentSession = null, error = new AppError('MYSQL_SQL_SESSION_STALE', '数据库连接已变化，SQL 会话已关闭，请重新执行。')) {
+    for (const entry of [...this.sqlConnections]) {
+      if (plugin && entry.resource !== key(plugin)) continue;
+      if (expectedParentSession && entry.parent !== expectedParentSession) continue;
+      entry.stop(error, true);
+    }
+  }
+
+  async openSqlConnection(plugin, expectedParentSession, { signal = null } = {}) {
+    if (plugin.pluginType !== 'mysql' || plugin.configState !== 'ready') throw new AppError('PLUGIN_CONFIG_INCOMPLETE', 'MySQL 插件配置不完整。');
+    const resource = key(plugin);
+    const revision = plugin.revision;
+    const parent = this.require(plugin);
+    const stale = () => new AppError('MYSQL_SQL_SESSION_STALE', '数据库连接或配置已变化，请重新打开 SQL 会话。');
+    if (parent !== expectedParentSession || parent.bindingHash !== revision) throw stale();
+    if (signal?.aborted) throw new AppError('MYSQL_SQL_CANCELLED', 'SQL 会话连接已取消。');
+    try { guardMysqlConnection(parent.connection).assertOpen(); }
+    catch (error) { throw mysqlError(error, 'MySQL 主连接已经不可用。'); }
+
+    let connection;
+    let stream;
+    let guard;
+    let closed = false;
+    let closeError;
+    let rejectInterrupted;
+    const interrupted = new Promise((_, reject) => { rejectInterrupted = reject; });
+    // 连接完成后仍允许取消；此时不再有等待中的 Promise.race。
+    void interrupted.catch(() => undefined);
+    const destroyStream = (value) => {
+      if (!value) return;
+      // 开路由迟于取消完成时，驱动尚未安装监听，也要接住销毁后的错误。
+      value.on?.('error', () => undefined);
+      try { value.destroy?.(); } catch { /* 已关闭的隧道流也视为清理完成。 */ }
+    };
+    const sqlConnectionError = (error) => {
+      const mapped = mysqlError(error, 'SQL 会话连接已经中断。');
+      if (mapped.code === 'ROUTE_UNAVAILABLE') return new AppError(mapped.code, 'SQL 会话连接已中断，请核实执行结果后重新运行。');
+      if (mapped.code === 'DATABASE_QUERY_TIMEOUT') return new AppError(mapped.code, 'SQL 会话操作超时，连接已关闭；请核实执行结果。');
+      return mapped;
+    };
+    const child = {
+      connection:null,
+      onLost:null,
+      assertActive:() => {
+        if (closed) throw closeError;
+        try {
+          if (key(plugin) !== resource || plugin.revision !== revision || parent.bindingHash !== revision
+            || parent.closing || this.require(plugin) !== parent) throw stale();
+          guardMysqlConnection(parent.connection).assertOpen();
+          if (stream?.destroyed) throw new AppError('ROUTE_UNAVAILABLE', 'SQL 会话连接已中断。');
+          guard?.assertOpen();
+        } catch (error) {
+          const mapped = error.code === 'PLUGIN_NOT_CONNECTED' ? stale() : sqlConnectionError(error);
+          stop(mapped, true);
+          throw mapped;
+        }
+      },
+      close:() => stop(new AppError('MYSQL_SQL_SESSION_CLOSED', 'SQL 会话已关闭。'), false),
+    };
+    const stop = (error, notify) => {
+      if (closed) return;
+      closed = true;
+      closeError = error;
+      signal?.removeEventListener('abort', abort);
+      this.sqlConnections.delete(entry);
+      destroyMysqlConnection(connection);
+      destroyStream(stream);
+      rejectInterrupted(error);
+      // 用户关闭不报告断线；父会话结束和意外断线让事务管理器及时废弃状态。
+      if (notify) {
+        try { child.onLost?.(error); } catch { /* 回调失败不能阻止其余连接的释放。 */ }
+      }
+    };
+    const abort = () => stop(new AppError('MYSQL_SQL_CANCELLED', 'SQL 会话连接已取消。'), true);
+    const entry = { resource, parent, stop };
+    // 在读取凭据之前登记，窗口关闭、父连接断开也能取消尚未完成的建连。
+    this.sqlConnections.add(entry);
+    signal?.addEventListener('abort', abort, { once:true });
+    const waitStep = (operation, disposeLate = () => undefined, acquired = () => undefined) => Promise.race([
+      Promise.resolve(operation).then((value) => {
+        if (closed) {
+          disposeLate(value);
+          throw closeError;
+        }
+        // 在同一微任务内登记句柄，避免取消恰好发生在 resolve 与 await 续体之间。
+        acquired(value);
+        return value;
+      }),
+      interrupted,
+    ]);
+    try {
+      const secrets = await waitStep(this.credentialVault.load(plugin));
+      child.assertActive();
+      if (!secrets?.password) throw new AppError('CREDENTIAL_UNAVAILABLE', 'MySQL 密码尚未保存。');
+      // 每个 SQL 标签拥有独立的物理流，不注册/替换插件主路由及其 generation。
+      const lost = (error) => stop(sqlConnectionError(error), true);
+      await waitStep(this.routeManager.openTarget(plugin), destroyStream, (value) => {
+        stream = value;
+        stream.on?.('error', lost);
+        stream.on?.('close', () => lost({code:'PROTOCOL_CONNECTION_LOST'}));
+      });
+      child.assertActive();
+      await waitStep(this.client.createConnection(mysqlConnectionOptions(plugin, secrets, {stream})), destroyMysqlConnection, (value) => {
+        connection = value;
+        child.connection = connection;
+        guard = guardMysqlConnection(connection);
+        guard.onLost = lost;
+      });
+      child.assertActive();
+      const [rows] = await waitStep(connection.query({sql:'SELECT DATABASE() AS ai_ops_database', timeout:plugin.limits.timeoutMs}));
+      child.assertActive();
+      if (String(rows?.[0]?.ai_ops_database ?? '') !== plugin.target.database) {
+        throw new AppError('MYSQL_DATABASE_ACCESS_DENIED', 'SQL 会话未进入插件固定数据库，已关闭连接。');
+      }
+      return child;
+    } catch (error) {
+      const mapped = closeError ?? mysqlConnectError(error, plugin, 'SQL 会话连接初始化失败。');
+      stop(mapped, false);
+      throw mapped;
+    }
+  }
+
   async invalidateSession(plugin, session, error) {
     if (!session || session.closing || this.sessions.get(key(plugin)) !== session) return;
     session.closing = true;
     this.sessions.delete(key(plugin));
+    this.closeSqlConnections(plugin, session);
     if (this.connectAttempts.get(key(plugin)) === session.attemptToken) this.connectAttempts.delete(key(plugin));
     destroyMysqlConnection(session.connection);
     // 先发布失效，再等待旧路由清理，避免迟到通知覆盖新连接状态。
@@ -304,6 +428,7 @@ export class MysqlPluginRuntime extends EventEmitter {
       if (managed) {
         this.sessions.delete(resource);
         managed.closing = true;
+        this.closeSqlConnections(plugin, managed);
         destroyMysqlConnection(managed.connection);
         void this.routeManager.closeRelay(plugin, managed.routeGeneration).catch(() => undefined);
       }
@@ -418,6 +543,7 @@ export class MysqlPluginRuntime extends EventEmitter {
     if (preserveAttemptToken === null) this.connectAttempts.delete(key(plugin));
     const session = this.sessions.get(key(plugin));
     if (session) session.closing = true;
+    this.closeSqlConnections(plugin, session);
     try {
       await endMysqlConnection(session?.connection);
     } finally {
@@ -433,6 +559,7 @@ export class MysqlPluginRuntime extends EventEmitter {
     this.sessions.delete(key(plugin));
     if (attemptToken === null || this.connectAttempts.get(key(plugin)) === attemptToken) this.connectAttempts.delete(key(plugin));
     if (session) session.closing = true;
+    this.closeSqlConnections(plugin, session);
     destroyMysqlConnection(session?.connection);
     if (session?.routeGeneration !== undefined) await this.routeManager.closeRelay(plugin, session.routeGeneration).catch(() => undefined);
     return { connected:false, forced:true };
@@ -549,6 +676,8 @@ export class MysqlPluginRuntime extends EventEmitter {
 
   async closeAll() {
     this.metadataCache.clear();
+    this.connectAttempts.clear();
+    this.closeSqlConnections();
     const entries = [...this.sessions.entries()];
     this.sessions.clear();
     await Promise.all(entries.map(async ([, session]) => { session.closing = true; await endMysqlConnection(session.connection); }));

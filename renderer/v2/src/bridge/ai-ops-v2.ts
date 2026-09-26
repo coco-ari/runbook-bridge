@@ -236,6 +236,45 @@ export interface MysqlQueryResult {
   readonly limitsApplied: Readonly<{ maxRows: number; maxBytes: number; timeoutMs: number }>
 }
 
+export type MysqlSqlMode = "atomic" | "autocommit" | "manual"
+export type MysqlSqlTransaction = "none" | "active" | "unknown"
+export interface MysqlSqlResult {
+  readonly index: number
+  readonly line: number
+  readonly kind: string
+  readonly status: "success" | "error" | "skipped"
+  readonly durationMs: number
+  readonly data?: MysqlQueryResult
+  readonly affectedRows?: number
+  readonly warningCount?: number
+  readonly error?: PublicError
+  readonly transactionEffect: "none" | "committed" | "pending" | "rolledBack" | "unknown"
+}
+export interface MysqlSqlPlan {
+  readonly planId: string
+  readonly requiresConfirmation: boolean
+  readonly dangerous: boolean
+  readonly statementCount: number
+  readonly writeCount: number
+  readonly statements: readonly Readonly<{ index: number; line: number; kind: string; tables: readonly string[]; dangerous: boolean }>[]
+}
+export interface MysqlSqlState {
+  readonly documentId: string
+  readonly mode: MysqlSqlMode
+  readonly transaction: MysqlSqlTransaction
+  readonly status: "idle" | "prepared" | "running" | "success" | "error" | "cancelled" | "unknown"
+  readonly results: readonly MysqlSqlResult[]
+  readonly plan?: MysqlSqlPlan
+  readonly error?: PublicError
+  readonly message?: string
+}
+export type MysqlSqlRequest = Readonly<{ documentId: string }> & (
+  | Readonly<{ operation: "prepare"; sql: string; mode: MysqlSqlMode }>
+  | Readonly<{ operation: "execute"; planId: string; confirmed?: boolean }>
+  | Readonly<{ operation: "status" | "release" }>
+  | Readonly<{ operation: "stop"; planId: string }>
+)
+
 export interface MysqlTableListPayload extends PluginScope {
   readonly cursor?: string
   readonly limit?: number
@@ -886,6 +925,7 @@ export interface AiOpsV2Api {
   mysqlEditCommit(payload: PluginScope & {editId: string; planId: string}): Promise<IpcResult<MysqlEditStatus>>
   mysqlEditStatus(payload: PluginScope & {editId: string; planId: string}): Promise<IpcResult<MysqlEditStatus>>
   mysqlEditRelease(payload: PluginScope & {editId: string}): Promise<IpcResult<{released: boolean}>>
+  mysqlSql(payload: PluginScope & MysqlSqlRequest): Promise<IpcResult<MysqlSqlState>>
   mysqlQueryReadonly(payload: MysqlQueryPayload): Promise<IpcResult<MysqlQueryResult>>
   mysqlPreviewTable(payload: MysqlPreviewPayload): Promise<IpcResult<MysqlQueryResult>>
   listAudit(payload: AuditListPayload): Promise<IpcResult<AuditPage>>
@@ -999,6 +1039,7 @@ export const AI_OPS_V2_API_NAMES = [
   "mysqlEditCommit",
   "mysqlEditStatus",
   "mysqlEditRelease",
+  "mysqlSql",
   "mysqlQueryReadonly",
   "mysqlPreviewTable",
   "listAudit",

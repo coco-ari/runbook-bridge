@@ -61,11 +61,14 @@ test('SQL 生成保留标识符边界，补全支持表名和常用别名', () =
   for (const sql of ["SELECT 'records.", 'SELECT 1 -- records.', 'SELECT record_view.', 'SELECT unknown.']) assert.equal(mysqlCompletionContext(sql,sql.length,tables),null);
 });
 
-test('基础语法诊断区分有效查询、不完整 SQL 和写入语句', async () => {
+test('基础语法诊断支持查询、写入和批量，并保留不完整或越界 SQL 提示', async () => {
   assert.equal((await mysqlSqlDiagnostic('SELECT id FROM records LIMIT 20')).kind,'valid');
   assert.equal((await mysqlSqlDiagnostic('SELECT\nFROM')).kind,'error');
-  assert.equal((await mysqlSqlDiagnostic('DELETE FROM records')).kind,'error');
-  assert.equal((await mysqlSqlDiagnostic('SELECT 1; SELECT 2')).kind,'error');
+  assert.equal((await mysqlSqlDiagnostic('DELETE FROM records')).kind,'valid');
+  assert.equal((await mysqlSqlDiagnostic('SELECT 1; SELECT 2')).kind,'valid');
+  for (const sql of ['INSERT INTO records(id) VALUES(1)', "UPDATE records SET label='ok' WHERE id=1", 'SHOW TABLES', 'DESCRIBE records', 'BEGIN; SELECT 1; COMMIT']) assert.equal((await mysqlSqlDiagnostic(sql)).kind,'valid');
+  for (const sql of ['DROP TABLE records', 'GRANT ALL ON records TO account', 'SET GLOBAL max_connections=20']) assert.equal((await mysqlSqlDiagnostic(sql)).kind,'error');
+  assert.equal((await mysqlSqlDiagnostic('SELECT 1;\nSELECT\nFROM')).line,3);
   assert.equal(await mysqlSqlDiagnostic('   '),null);
 });
 

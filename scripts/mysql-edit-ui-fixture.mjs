@@ -3,6 +3,7 @@ import os from 'node:os';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import sqlUiFixture from './database-sql-ui.cjs';
 
 // UI 测试仅使用隔离夹具；显式配置测试环境变量时才连接授权的临时 MySQL。
 export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plugin,moduleRoot}) {
@@ -87,6 +88,7 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
     const channel='v2:mysql-edit-'+operation;ipcMain.removeHandler(channel);registeredChannels.add(channel);
   }
   ipcMain.removeHandler('v2:mysql-export-save');registeredChannels.add('v2:mysql-export-save');
+  ipcMain.removeHandler('v2:mysql-sql');registeredChannels.add('v2:mysql-sql');
   registerMysqlEditIpc(ipcMain,services);
   const handler=(channel,action)=>{ipcMain.removeHandler(channel);ipcMain.handle(channel,async(_event,payload)=>({ok:true,data:await action(payload)}));};
   handler('v2:mysql-list-tables',()=>({tables:[{name:'orders',type:'BASE TABLE',queryable:true}],nextCursor:null,truncated:false}));
@@ -96,11 +98,13 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
     editor.closeOwner('fixture-read');
     return {rows:snapshot.rows.map(row=>row.values),columns:snapshot.columns.map(column=>({name:column.name,table:'orders',type:253})),rowCount:snapshot.rows.length,bytes:2000,truncated:false,durationMs:3,limitsApplied:plugin.limits};
   };
-  handler('v2:mysql-query-readonly',payload=>read(payload.sql));
+  const sqlFixture=sqlUiFixture.createSqlFixture({moduleRoot,read:async payload=>({ok:true,data:await read(payload.sql)})});
+  ipcMain.removeHandler('v2:mysql-sql');registeredChannels.add('v2:mysql-sql');
+  ipcMain.handle('v2:mysql-sql',async(_event,payload)=>{assert.deepEqual(Object.fromEntries(Object.keys(scope).map(key=>[key,payload[key]])),scope);return sqlFixture.handle(payload);});
   ipcMain.removeHandler('v2:mysql-preview-table');
   ipcMain.handle('v2:mysql-preview-table',async(_event,payload)=>{if(network.delays.preview)await new Promise(resolve=>setTimeout(resolve,network.delays.preview));if(network.failPreview){network.failPreview=false;return {ok:false,error:{code:'MYSQL_READ_FAILED',message:'模拟刷新失败'}};}return {ok:true,data:await read('SELECT * FROM orders ORDER BY id LIMIT '+(payload.limit??20)+' OFFSET '+(payload.offset??0))};});
   return {
-    editor,audits,writes,network,live:Boolean(live),
+    editor,audits,writes,network,sqlFixture,live:Boolean(live),
     readExport:()=>fs.readFile(exportPath,"utf8"),
     read:async()=>live?(await live.admin.query({sql:'SELECT id,label,optional,amount,state FROM orders ORDER BY id',bigNumberStrings:true}))[0].map(row=>({...row})):structuredClone(rows),
     external:async(id,label)=>{if(live)await live.admin.query('UPDATE orders SET label=? WHERE id=?',[label,id]);else rows.find(row=>row.id===id).label=label;},

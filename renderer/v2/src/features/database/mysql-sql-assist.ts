@@ -1,4 +1,5 @@
 import type { MysqlTableSummary } from "@/bridge/ai-ops-v2"
+import { splitMysqlScript } from "../../../../../src/mysql-script-splitter.mjs"
 
 export const MYSQL_TABLE_DRAG_TYPE = "application/x-runbook-mysql-table"
 export const MYSQL_BROWSE_PAGE_SIZE = 20
@@ -53,17 +54,28 @@ export interface MysqlSqlDiagnostic { readonly kind: "valid" | "error"; readonly
 let parserPromise: Promise<InstanceType<typeof import("node-sql-parser/build/mysql.js").Parser>> | null = null
 export async function mysqlSqlDiagnostic(sql: string): Promise<MysqlSqlDiagnostic | null> {
   if (!sql.trim()) return null
-  if (new TextEncoder().encode(sql).length > 65536) return { kind: "error", message: "SQL 超过 64 KB，请缩小查询。" }
+  if (new TextEncoder().encode(sql).length > 262144) return { kind: "error", message: "SQL 超过 256 KiB，请缩小脚本。" }
+  let statements: ReturnType<typeof splitMysqlScript>
+  try { statements = splitMysqlScript(sql) }
+  catch (error) { return { kind: "error", message: error instanceof Error ? error.message : "SQL 片段不完整。" } }
+  if (!statements.length) return null
   parserPromise ??= import("node-sql-parser/build/mysql.js").then(module => new (module.Parser ?? module.default.Parser)())
   const parser = await parserPromise
-  try {
-    const ast = parser.astify(sql, { database: "MySQL" })
-    if (Array.isArray(ast) || ast.type !== "select") return { kind: "error", message: "仅支持单条 SELECT 查询。" }
-    return { kind: "valid", message: "基础语法通过" }
-  } catch (error) {
-    const position = (error as { location?: { start?: { line?: number; column?: number } } }).location?.start
-    return { kind: "error", message: position?.line ? `第 ${position.line} 行、第 ${position.column ?? 1} 列附近语法不完整或有误。` : "SQL 语法不完整或有误。", ...(position?.line ? { line: position.line, column: position.column ?? 1 } : {}) }
+  for (const statement of statements) {
+    const first = sqlTokens(statement.sql).find(token => !token.ignored)?.name.toUpperCase()
+    if (!["SELECT", "EXPLAIN", "SHOW", "DESCRIBE", "DESC", "INSERT", "UPDATE", "DELETE", "BEGIN", "START", "COMMIT", "ROLLBACK"].includes(first ?? ""))
+      return { kind: "error", line: statement.line, message: `第 ${statement.line} 行：首版支持查询、增删改与事务，不支持结构、账号或服务器设置。` }
+    // 元数据与事务指令由主进程的限定语法校验，避免前端解析器误报 MySQL 方言。
+    if (!["SELECT", "INSERT", "UPDATE", "DELETE"].includes(first ?? "")) continue
+    try { parser.astify(statement.sql, { database: "MySQL" }) }
+    catch (error) {
+      const position = (error as { location?: { start?: { line?: number; column?: number } } }).location?.start
+      const line = sql.slice(0, statement.start).split(/\r\n|\r|\n/).length + (position?.line ?? 1) - 1
+      return { kind: "error", message: `第 ${line} 行、第 ${position?.column ?? 1} 列附近语法不完整或有误。`, line, column: position?.column ?? 1 }
+    }
   }
+  return { kind: "valid", message: `${statements.length > 1 ? `${statements.length} 条语句 · ` : ""}基础语法通过，执行时校验权限与范围` }
+
 }
 
 export function compareMysqlCells(a: unknown, b: unknown, numeric: boolean): number {

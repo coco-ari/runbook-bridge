@@ -12,7 +12,7 @@
 
 - [服务器工作区](server-workspace-design.md) · [终端重连](terminal-auto-reconnect.md)
 - [文件上传下载](desktop-file-transfers.md) · [上传续传](upload-resume-feasibility.md)
-- [MySQL 数据编辑](mysql-data-editing.md) · [Redis 工作区](redis-workspace-design.md)
+- [MySQL 数据编辑](mysql-data-editing.md) · [SQL 事务与批量执行](mysql-sql-execution.md) · [Redis 工作区](redis-workspace-design.md)
 - [Docker 工作区](docker-workspace-design.md)
 - [MCP 日志读取与排障](mcp-log-reading.md)
 - [操作记录](audit-history.md) · [云配置](cloud-config.md)

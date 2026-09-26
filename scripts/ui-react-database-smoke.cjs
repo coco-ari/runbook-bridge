@@ -129,7 +129,7 @@ function registerDatabase(channel,handler) {
     assert.equal(payload.projectId,PROJECT_ID,'数据库请求必须保留项目范围。');
     assert.equal(payload.environmentId,ENVIRONMENT_ID,'数据库请求必须保留环境范围。');
     assert.ok([PRIMARY_ID,OTHER_ID].includes(payload.pluginInstanceId),'离线插件不得发送数据库请求。');
-    if (state.holdNext?.channel === channel && state.holdNext.pluginInstanceId === payload.pluginInstanceId) {
+    if (channel !== 'v2:mysql-sql' && state.holdNext?.channel === channel && state.holdNext.pluginInstanceId === payload.pluginInstanceId) {
       const hold = state.holdNext;
       state.holdNext = null;
       return new Promise((resolve) => {
@@ -144,6 +144,28 @@ function registerDatabase(channel,handler) {
     return structuredClone(await handler(payload));
   });
 }
+
+function readQuery({pluginInstanceId,sql}) {
+    if (sql === 'SELECT sort_probe FROM orders') return ok(queryResult([{id:10,label:'ten'},{id:2,label:'two'},{id:1,label:'one'}]));
+    if (sql === SHOWCASE_SQL) return ok({
+      ...queryResult(Array.from({length:24},(_,index) => ({
+        order_no:`DEMO-20260912-${String(index+1).padStart(4,'0')}`,customer_name:`演示客户 ${String(index+1).padStart(2,'0')}`,
+        total_amount:(128+index*37.5).toFixed(2),status:'已完成',created_at:`2026-09-12 09:${String(index*2).padStart(2,'0')}:00`,
+      }))),
+      columns:['order_no','customer_name','total_amount','status','created_at'].map((name) => ({name,table:'orders',type:253})),
+    });
+    if (sql.includes('fixture_failure')) return failed('模拟只读 SQL 查询失败。');
+    if (sql.includes('duplicate_columns')) return ok({
+      ...queryResult([{id:1,label:'不得误展示的重名列值',optional:null}]),
+      columns:[{name:'id',table:'orders',type:3},{name:'id',table:'archived_orders',type:3}],
+    });
+    if (sql.includes('audit_warning')) return ok({...queryResult([{id:1,label:'带审计提示的结果',optional:null}]),auditWarning:true});
+    if (sql.includes('1 = 0')) return ok(queryResult([]));
+    if (pluginInstanceId === OTHER_ID) return ok(queryResult([{id:301,label:'仅属于报表范围',optional:null}]));
+    return ok(queryResult(Array.from({length:105},(_,index) => ({
+      id:index+1,label:index === 0 ? MARKUP : `模拟订单 ${index+1}`,optional:index === 0 ? null : '',
+    })),{truncated:true}));
+  }
 
 function registerMockApi() {
   registerRead('v2:project-list',() => workspace().map(({environments:_,...record}) => record));
@@ -180,27 +202,9 @@ function registerMockApi() {
   registerDatabase('v2:mysql-preview-table',(payload) => state.failPreview
     ? failed('模拟数据预览失败。')
     : state.browseFixture ? ok(browseFixture(payload)) : ok(queryResult([{id:1,label:MARKUP,optional:null},{id:2,label:'已完成订单',optional:''}],{truncated:true,maxRows:100})));
-  registerDatabase('v2:mysql-query-readonly',({pluginInstanceId,sql}) => {
-    if (sql === 'SELECT sort_probe FROM orders') return ok(queryResult([{id:10,label:'ten'},{id:2,label:'two'},{id:1,label:'one'}]));
-    if (sql === SHOWCASE_SQL) return ok({
-      ...queryResult(Array.from({length:24},(_,index) => ({
-        order_no:`DEMO-20260912-${String(index+1).padStart(4,'0')}`,customer_name:`演示客户 ${String(index+1).padStart(2,'0')}`,
-        total_amount:(128+index*37.5).toFixed(2),status:'已完成',created_at:`2026-09-12 09:${String(index*2).padStart(2,'0')}:00`,
-      }))),
-      columns:['order_no','customer_name','total_amount','status','created_at'].map((name) => ({name,table:'orders',type:253})),
-    });
-    if (sql.includes('fixture_failure')) return failed('模拟只读 SQL 查询失败。');
-    if (sql.includes('duplicate_columns')) return ok({
-      ...queryResult([{id:1,label:'不得误展示的重名列值',optional:null}]),
-      columns:[{name:'id',table:'orders',type:3},{name:'id',table:'archived_orders',type:3}],
-    });
-    if (sql.includes('audit_warning')) return ok({...queryResult([{id:1,label:'带审计提示的结果',optional:null}]),auditWarning:true});
-    if (sql.includes('1 = 0')) return ok(queryResult([]));
-    if (pluginInstanceId === OTHER_ID) return ok(queryResult([{id:301,label:'仅属于报表范围',optional:null}]));
-    return ok(queryResult(Array.from({length:105},(_,index) => ({
-      id:index+1,label:index === 0 ? MARKUP : `模拟订单 ${index+1}`,optional:index === 0 ? null : '',
-    })),{truncated:true}));
-  });
+  const sqlFixture = require('./database-sql-ui.cjs').createSqlFixture({state,read:readQuery,moduleRoot:runtimeRoot});
+  state.sqlFixture = sqlFixture;
+  registerDatabase('v2:mysql-sql',payload => sqlFixture.handle(payload));
   register('v2:connection-intent',async (event,payload) => {
     assert.equal(state.allowDisconnect,true,'仅显式断开测试允许连接操作');
     assert.deepEqual(payload,{...scope(PRIMARY_ID),intent:'disconnect',source:'legacy-plugin'});
@@ -250,6 +254,8 @@ async function click(win,selector) {
   await waitFor(win,`document.querySelector(${JSON.stringify(selector)})?.getClientRects().length > 0`,selector);
   const isTab = await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(selector)}).getAttribute('role') === 'tab'`,true);
   if (isTab) {
+    if (process.platform === 'darwin') app.focus({steal:true});
+    win.focus();
     win.webContents.focus();
     await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(selector)}).focus()`,true);
     win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});
@@ -282,6 +288,8 @@ async function fill(win,selector,value) {
 async function activateDetailTab(win,tab) {
   const selector = `[data-detail-tab="${tab}"]`;
   await waitFor(win,`document.querySelector(${JSON.stringify(selector)}) !== null`,`${tab} 详情页签`);
+  if (process.platform === 'darwin') app.focus({steal:true});
+  win.focus();
   win.webContents.focus();
   await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(selector)}).focus()`,true);
   win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});
@@ -335,6 +343,8 @@ async function assertFullWindow(win) {
 
 async function dragDivider(win,id,dx,dy) {
   const selector = `[role="separator"][id$="-${id.replace('mysql-','')}"]`;
+  if (process.platform === 'darwin') app.focus({steal:true});
+  win.focus();
   win.webContents.focus();
   await waitFor(win,'document.hasFocus()','分隔条拖动前的真实焦点');
   await captureFrame(win);
@@ -344,6 +354,7 @@ async function dragDivider(win,id,dx,dy) {
     return bounds ? {x:Math.round(bounds.left+bounds.width/2),y:Math.round(bounds.top+bounds.height/2)} : null;
   })()`,true);
   assert.ok(point,`分隔条必须可见：${id}`);
+  await win.webContents.executeJavaScript(`window.__mysqlDragEvents=[];for(const type of ['pointerdown','pointermove','mousedown','mousemove'])document.addEventListener(type,event=>window.__mysqlDragEvents.push({type,x:event.clientX,y:event.clientY,target:event.target?.outerHTML?.slice(0,220)}),{once:true,capture:true})`,true);
   win.webContents.sendInputEvent({type:'mouseMove',...point});
   win.webContents.sendInputEvent({type:'mouseDown',...point,button:'left',clickCount:1});
   await captureFrame(win);
@@ -360,6 +371,8 @@ async function elementSize(win,id,dimension) {
 }
 
 async function pressBodyShortcut(win,keyCode) {
+  if (process.platform === 'darwin') app.focus({steal:true});
+  win.focus();
   win.webContents.focus();
   await win.webContents.executeJavaScript('document.activeElement?.blur()',true);
   await waitFor(win,'document.activeElement === document.body','快捷键测试焦点位于 body');
@@ -380,6 +393,8 @@ async function assertBackgroundShortcutsRestored(win) {
   await pressBodyShortcut(win,'K');
   await waitFor(win,`document.querySelector('${testId('global-command')}')?.getClientRects().length > 0`,'返回详情后恢复全局快捷键');
   await win.webContents.capturePage();
+  if (process.platform === 'darwin') app.focus({steal:true});
+  win.focus();
   win.webContents.focus();
   await waitFor(win,`document.querySelector('${testId('global-command')}')?.contains(document.activeElement)`,'全局命令已取得输入焦点');
   win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});
@@ -391,7 +406,7 @@ async function assertResizableWorkspace(win) {
   const sidebarWidth=await elementSize(win,'mysql-table-sidebar','width');
   await dragDivider(win,'mysql-sidebar-resizer',80,0);
   const sidebarAfter=await elementSize(win,'mysql-table-sidebar','width');
-  assert.ok(sidebarAfter > sidebarWidth+40,`侧栏宽度必须响应真实鼠标拖动：${sidebarWidth} → ${sidebarAfter}`);
+  assert.ok(sidebarAfter > sidebarWidth+40,`侧栏宽度必须响应真实鼠标拖动：${sidebarWidth} → ${sidebarAfter}; ${JSON.stringify(await win.webContents.executeJavaScript('window.__mysqlDragEvents',true))}`);
   await dragDivider(win,'mysql-sidebar-resizer',-80,0);
   const editorHeight=await elementSize(win,'mysql-query-editor-panel','height');
   await dragDivider(win,'mysql-editor-resizer',0,60);
@@ -479,7 +494,7 @@ async function assertQueryDocuments(win,originalSql) {
   await textContains(win,'mysql-query-result','模拟订单 100');
   await click(win,testId('mysql-sql-document-tab'));
   const secondId = await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-document-tab')}').dataset.queryId`,true);
-  const hold = {channel:'v2:mysql-query-readonly',pluginInstanceId:PRIMARY_ID,result:queryResult([{id:701,label:'仅属于第二个 SQL 标签',optional:null}])};
+  const hold = {channel:'v2:mysql-sql',pluginInstanceId:PRIMARY_ID,result:queryResult([{id:701,label:'仅属于第二个 SQL 标签',optional:null}])};
   state.holdNext = hold;
   await fill(win,testId('mysql-sql-editor'),'SELECT delayed_document FROM orders');
   await click(win,testId('mysql-query-run'));
@@ -493,11 +508,14 @@ async function assertQueryDocuments(win,originalSql) {
   await click(win,`${testId('mysql-query-close')}[data-query-id="${secondId}"]`);
   await click(win,testId('mysql-query-new'));
   const thirdId = await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-document-tab')}').dataset.queryId`,true);
-  const closedHold = {channel:'v2:mysql-query-readonly',pluginInstanceId:PRIMARY_ID,result:queryResult([{id:702,label:'已关闭标签的迟到结果',optional:null}])};
+  const closedHold = {channel:'v2:mysql-sql',pluginInstanceId:PRIMARY_ID,result:queryResult([{id:702,label:'已关闭标签的迟到结果',optional:null}])};
   state.holdNext = closedHold;
   await fill(win,testId('mysql-sql-editor'),'SELECT closed_document FROM orders');
   await click(win,testId('mysql-query-run'));
   await waitUntil(() => Boolean(closedHold.release),'关闭标签前挂起请求');
+  await click(win,`${testId('mysql-query-close')}[data-query-id="${thirdId}"]`);
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-document-tab')}[data-query-id="${thirdId}"]') !== null`,true),true,'正在执行的标签先停止再关闭');
+  await click(win,testId('mysql-query-stop'));
   await click(win,`${testId('mysql-query-close')}[data-query-id="${thirdId}"]`);
   closedHold.release();
   await wait(100);
@@ -570,7 +588,7 @@ async function screenshot(win,name) {
     await waitFor(win,`document.documentElement.dataset.theme === '${theme}'`,'截图主题切换');
     await win.webContents.capturePage();
     await wait(name === 'workspace-entry' ? 1000 : 350);
-    for (const [width,height] of [[1600,1000],[1400,900],...(process.argv.includes('--mysql-edit') ? [[960,640]] : [])]) {
+    for (const [width,height] of [[1600,1000],[1400,900],...((process.argv.includes('--mysql-edit') || name.startsWith('sql-')) ? [[960,640]] : [])]) {
       await setExactViewport(win,width,height);
       if (await isVisible(win,'mysql-full-window-workspace')) await assertFullWindow(win);
       const frame = (await captureFrame(win)).toPNG();
@@ -626,8 +644,20 @@ async function run() {
     if (editingFixture) {
       await require('./database-edit-ui.cjs')({win,fixture:editingFixture,click,fill,waitFor,testId,screenshot,selectPlugin,PRIMARY_ID,plugins,state,runtime});
       await assertNoPersistence(win);
+      assert.deepEqual(forbiddenCalls,[],'数据库编辑 UI 不得调用未知或未授权通道。');
       assert.deepEqual(rendererErrors,[]);
       assert.deepEqual(externalRequests,[]);
+      return;
+    }
+    if (process.argv.includes('--sql-only')) {
+      await selectPlugin(win,PRIMARY_ID);
+      await click(win,testId('mysql-sql-tab'));
+      await require('./database-sql-ui.cjs').assertSqlExecutionUi({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID,setExactViewport,returnToDetails,openDatabaseWorkspace});
+      await assertNoPersistence(win);
+      assert.deepEqual(forbiddenCalls,[]);
+      assert.deepEqual(rendererErrors,[]);
+      assert.deepEqual(externalRequests,[]);
+      process.stdout.write('SQL 脚本 UI smoke 通过：批量结果、生产确认、手动事务、停止、释放和待核实状态。\n');
       return;
     }
     await selectPluginDetails(win,OFFLINE_ID);
@@ -720,7 +750,7 @@ async function run() {
     await textContains(win,'mysql-preview-result','已完成订单');
 
     await click(win,testId('mysql-sql-tab'));
-    await textContains(win,'mysql-database-workspace','支持单条 SELECT');
+    await textContains(win,'mysql-database-workspace','支持 SELECT、SHOW、DESCRIBE、EXPLAIN');
     await fill(win,testId('mysql-sql-editor'),'');
     const emptySqlCalls = databaseCalls.length;
     await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-query-run')}').click()`,true);
@@ -732,7 +762,8 @@ async function run() {
     await textContains(win,'mysql-query-result','模拟订单 100');
     await assertTextOnly(win,'mysql-query-result');
     await waitFor(win,`document.querySelector('${testId('mysql-query-truncated')}') !== null`,'查询截断提示');
-    assert.deepEqual(databaseCalls.at(-1),{channel:'v2:mysql-query-readonly',payload:{...scope(PRIMARY_ID),sql}});
+    assert.deepEqual(state.sqlFixture.executions.at(-1),{...scope(PRIMARY_ID),sql});
+    assert.equal(databaseCalls.at(-1).payload.operation,'execute');
     await screenshot(win,'query');
     await click(win,testId('mysql-query-copy'));
     assert.equal(await win.webContents.executeJavaScript('window.__databaseClipboardWrites.at(-1)',true),sql,'复制 SQL 必须保留编辑器文本。');
@@ -752,6 +783,8 @@ async function run() {
     await assertNoPersistence(win);
 
     await fill(win,testId('mysql-sql-editor'),'SELECT * FROM orders WHERE 1 = 0');
+    if (process.platform === 'darwin') app.focus({steal:true});
+    win.focus();
     win.webContents.focus();
     await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').focus()`,true);
     win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter',modifiers:[process.platform === 'darwin' ? 'meta' : 'control']});
@@ -769,10 +802,10 @@ async function run() {
     await textContains(win,'mysql-query-result','带审计提示的结果');
     await fill(win,testId('mysql-sql-editor'),'SELECT fixture_failure FROM orders');
     await click(win,testId('mysql-query-run'));
-    await textContains(win,'mysql-query-error','模拟只读 SQL 查询失败');
+    await textContains(win,'mysql-query-statement-error','模拟只读 SQL 查询失败');
     await screenshot(win,'query-error');
 
-    const queryHold = {channel:'v2:mysql-query-readonly',pluginInstanceId:PRIMARY_ID,result:queryResult([{id:999,label:LATE_MARKER,optional:null}])};
+    const queryHold = {channel:'v2:mysql-sql',pluginInstanceId:PRIMARY_ID,result:queryResult([{id:999,label:LATE_MARKER,optional:null}])};
     state.holdNext = queryHold;
     await fill(win,testId('mysql-sql-editor'),'SELECT delayed_scope_result FROM orders');
     await click(win,testId('mysql-query-run'));
@@ -860,12 +893,13 @@ async function run() {
     await textContains(win,'mysql-query-result','演示客户 24');
     await screenshot(win,'workspace');
     await assertSqlAssistanceAndBrowse({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID});
+    await require('./database-sql-ui.cjs').assertSqlExecutionUi({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID,setExactViewport,returnToDetails,openDatabaseWorkspace});
     await require('./database-tabs-ui.cjs')({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID,clipboard,openRowDetail});
     await assertNoPersistence(win);
-    assert.deepEqual(forbiddenCalls,[],'只读数据库工作区不得调用配置变更通道。');
+    assert.deepEqual(forbiddenCalls,[],'数据库工作区不得调用未授权通道。');
     assert.deepEqual(externalRequests,[],'数据库 UI 测试不得发起外部网络请求。');
     assert.deepEqual(rendererErrors,[],'Renderer 不应产生错误。');
-    process.stdout.write(`数据库 UI smoke 通过（${databaseCalls.length} 次限定范围的模拟只读请求）。\n`);
+    process.stdout.write(`数据库 UI smoke 通过（${databaseCalls.length} 次限定范围的模拟数据库请求）。\n`);
   } catch (error) {
     await screenshot(win,'failure').catch(() => undefined);
     throw error;

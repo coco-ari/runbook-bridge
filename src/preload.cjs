@@ -131,6 +131,7 @@ contextBridge.exposeInMainWorld('aiOps', {
     mysqlEditStatus: (payload) => ipcRenderer.invoke('v2:mysql-edit-status', payload),
     mysqlEditRelease: (payload) => ipcRenderer.invoke('v2:mysql-edit-release', payload),
     mysqlQueryReadonly: (payload) => ipcRenderer.invoke('v2:mysql-query-readonly', payload),
+    mysqlSql: (payload) => ipcRenderer.invoke('v2:mysql-sql', payload),
     listAudit: (payload) => ipcRenderer.invoke('v2:audit-list', payload),
     clearAudit: (payload) => ipcRenderer.invoke('v2:audit-clear', payload),
     listConfirmations: () => ipcRenderer.invoke('v2:confirmation-list'),

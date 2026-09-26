@@ -12,7 +12,7 @@
 
 - **结合多个资源排障**：让 Agent 检查同一环境的日志、服务状态、MySQL 数据和 Redis 缓存，减少手工粘贴上下文。
 - **按项目管理云配置**：关联多个云仓库，按项目更新、上传、查看历史、恢复版本和删除，支持 30 天误删恢复。工作台用统一状态图标提示更新，定时检测只刷新状态。[云配置使用与部署](docs/cloud-config.md)
-- **保留人工操作入口**：SSH 终端、文件上传下载、Docker 容器浏览、MySQL 表格编辑和 Redis String/JSON 编辑。
+- **保留人工操作入口**：SSH 终端、文件上传下载、Docker 容器浏览、MySQL 表格编辑与 [SQL 事务/批量执行](docs/mysql-sql-execution.md)，以及 Redis String/JSON 编辑。
 - **控制 Agent 的操作范围**：首次连接由你发起；MySQL/Redis 的 Agent 接口保持只读；Agent 服务控制、文件变更和 Shell 操作需要确认。
 
 例如，在已连接的测试环境中提问：
