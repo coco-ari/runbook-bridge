@@ -36,6 +36,8 @@ async function fill(id,value) {
 async function assertLayout() {
   const layout = await window.webContents.executeJavaScript('(() => { const panel=document.querySelector("[data-testid=cloud-config-panel]"), page=document.querySelector("[data-testid=settings-main]"); return {overflow:panel.scrollWidth>panel.clientWidth || page.scrollWidth>page.clientWidth || document.documentElement.scrollWidth>innerWidth,inside:panel.getBoundingClientRect().left>=0 && panel.getBoundingClientRect().right<=innerWidth}; })()');
   assert.deepEqual(layout,{overflow:false,inside:true},'云配置及长项目名不得产生水平溢出');
+  const cardRows = await window.webContents.executeJavaScript('([...document.querySelectorAll("[data-testid=cloud-project-card]")].every(card => { const status=card.querySelector("[data-slot=badge]").getBoundingClientRect(), update=card.querySelector("[data-testid=cloud-project-update]").getBoundingClientRect(), upload=card.querySelector("[data-testid=cloud-project-upload]").getBoundingClientRect(); return Math.abs((status.top+status.bottom-update.top-update.bottom)/2)<2 && Math.abs(update.top-upload.top)<2 && status.right<=update.left && upload.right<=card.getBoundingClientRect().right; }))');
+  assert.equal(cardRows,true,'卡片的同步状态、更新、上传保持同排且不互相遮挡');
 }
 async function capture(suffix='') {
   const destination = process.env.RUNBOOK_BRIDGE_CLOUD_SCREENSHOT || (process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR ? path.join(process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR, 'cloud-config.png') : null);
@@ -131,8 +133,11 @@ async function run() {
   await wait('!document.querySelector("[data-testid=settings-page]")');
   await js('document.querySelector("[data-project-id=cloud-demo] button,button[data-project-id=cloud-demo]").click()');
   await wait('Boolean(document.querySelector("[data-testid=cloud-project-upload]"))');
+  const mixedOrder = await js('[...document.querySelectorAll("#project-list button[data-project-id]")].map(button=>button.dataset.projectId)');
   await clickTestId('cloud-project-upload');
   await wait('Boolean(document.querySelector("button[data-project-id=cloud-demo] [data-cloud-status=synced]"))');
+  assert.deepEqual(await js('[...document.querySelectorAll("#project-list button[data-project-id]")].map(button=>button.dataset.projectId)'),mixedOrder,'上传关联云仓库后保留统一列表顺序');
+  assert.equal(await js('Boolean(document.querySelector("#project-list [data-sidebar=group-label]"))'),false,'项目列表不再显示仓库分组标题');
   const owner = `renderer:${window.webContents.id}`;
   const cloudProjectId = service.state.repositories.find(r=>r.repositoryId===repositoryId).catalog[0].projectId;
   // Seed the long-list fixture through the service; the UI intentionally has no bulk upload.
@@ -143,6 +148,7 @@ async function run() {
   await wait(`document.querySelectorAll('[data-testid=cloud-project-card]').length === ${projectCount}`);
   assert.equal(await js('document.querySelector("[data-testid=cloud-project-toolbar]").textContent.includes("上传")'),false,'仓库不提供批量上传');
   assert.equal(await js('[...document.querySelectorAll("[data-testid=cloud-project-card]")].every(card => card.querySelector("[data-testid=cloud-project-update]") && card.querySelector("[data-testid=cloud-project-upload]") && card.querySelector("[role=switch]"))'),true);
+  assert.equal(await js('[...document.querySelectorAll("[data-testid=cloud-project-card]")].some(card => card.textContent.includes("团队仓库"))'),false,'项目卡片不重复显示当前仓库名称');
   await fill('cloud-project-search','Alpha');
   await wait('document.querySelectorAll("[data-testid=cloud-project-card]").length === 1');
   await fill('cloud-project-search','');
