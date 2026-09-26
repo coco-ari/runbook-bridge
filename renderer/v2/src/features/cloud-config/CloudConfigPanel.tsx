@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { ArrowClockwise, ClockCounterClockwise, Copy, DownloadSimple, LinkBreak, Plus, SpinnerGap, WarningCircle } from "@phosphor-icons/react"
+import { ArrowClockwise, Copy, DownloadSimple, LinkBreak, Plus, SpinnerGap, WarningCircle } from "@phosphor-icons/react"
 import type { AiOpsV2Api } from "@/bridge/ai-ops-v2"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -10,12 +10,13 @@ import { SelectControl, SelectItem } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { useCloudConfig } from "./CloudConfigProvider"
 import { CloudProjectActions, CloudProjectIcon, cloudStatusLabels } from "./CloudProjectActions"
-import type { CloudConfigData } from "./cloud-types"
+import { CloudProjectMenu, useCloudProjectManagement } from "./CloudProjectManagement"
 
 const randomPassword = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, "0")).join("")
 
 export function CloudConfigPanel({ onBusyChange }: { api: AiOpsV2Api; onChanged: () => void; onBusyChange: (busy: boolean) => void }) {
   const cloud = useCloudConfig()
+  const management = useCloudProjectManagement()
   const repositories = cloud.data.repositories ?? []
   const [repositoryId, setRepositoryId] = useState("")
   const repository = repositories.find(repo => repo.repositoryId === repositoryId) ?? repositories[0]
@@ -29,12 +30,15 @@ export function CloudConfigPanel({ onBusyChange }: { api: AiOpsV2Api; onChanged:
   const [remember, setRemember] = useState(true)
   const [showPassword, setShowPassword] = useState(false)
   const [query, setQuery] = useState("")
-  const [history, setHistory] = useState<CloudConfigData | null>(null)
-  const [snapshotId, setSnapshotId] = useState("")
+  const [filter, setFilter] = useState("all")
+  const [repositoryName, setRepositoryName] = useState("")
   const projects = (cloud.data.cloudProjects ?? []).filter(p => p.repositoryId === repository?.repositoryId)
-  const visible = projects.filter(p => p.name.normalize("NFKC").toLowerCase().includes(query.normalize("NFKC").toLowerCase().trim()))
-  useEffect(() => { onBusyChange(cloud.busy); return () => onBusyChange(false) }, [cloud.busy, onBusyChange])
-  const changeRepository = (id: string) => { setRepositoryId(id); setQuery(""); setHistory(null); setSnapshotId("") }
+  const matchesSearch = (name: string) => name.normalize("NFKC").toLowerCase().includes(query.normalize("NFKC").toLowerCase().trim())
+  const visible = projects.filter(p => matchesSearch(p.name) && (filter === "all" || filter === "visible" && p.visible || filter === "hidden" && !p.visible || filter === "behind" && p.syncStatus === "behind"))
+  const deleted = (cloud.data.deletedCloudProjects ?? []).filter(p => p.repositoryId === repository?.repositoryId && matchesSearch(p.name))
+  useEffect(() => { onBusyChange(cloud.busy || management.open); return () => onBusyChange(false) }, [cloud.busy, management.open, onBusyChange])
+  useEffect(() => { setRepositoryName(repository?.name ?? "") }, [repository?.repositoryId, repository?.name])
+  const changeRepository = (id: string) => { setRepositoryId(id); setQuery(""); setFilter("all") }
   const beginBind = (existing = false) => {
     setView("projects"); setAdding(true); setCreating(false); setName(existing ? repository?.name ?? "" : ""); setUrl(existing ? repository?.url ?? "" : "")
     setPassword(""); setAdminToken(""); setShowPassword(false)
@@ -74,32 +78,33 @@ export function CloudConfigPanel({ onBusyChange }: { api: AiOpsV2Api; onChanged:
       {view === "projects" ? <>
         <div className="flex shrink-0 flex-wrap items-center gap-2" data-testid="cloud-project-toolbar">
           <Input id="cloud-project-search" aria-label="搜索项目" placeholder="搜索项目" className="h-8 min-w-28 flex-1 text-xs" value={query} onChange={event => setQuery(event.target.value)} />
+          <SelectControl value={filter} onValueChange={setFilter} size="sm" aria-label="筛选云项目"><SelectItem value="all">全部项目</SelectItem><SelectItem value="visible">已显示</SelectItem><SelectItem value="hidden">已隐藏</SelectItem><SelectItem value="behind">有更新</SelectItem><SelectItem value="deleted">已删除</SelectItem></SelectControl>
           <Button size="xs" variant="ghost" disabled={cloud.busy || !projects.length} onClick={() => showAll(true)}>全部显示</Button><Button size="xs" variant="ghost" disabled={cloud.busy || !projects.length} onClick={() => showAll(false)}>全部隐藏</Button>
           <Button size="xs" variant="outline" disabled={cloud.busy || cloud.checking} data-testid="cloud-check" onClick={() => void cloud.check(repository?.repositoryId)}><ArrowClockwise className={cloud.checking ? "animate-spin" : undefined} />检测更新</Button>
           <Button size="xs" disabled={cloud.busy || !repository?.unlocked} data-testid="cloud-update-all" onClick={() => { if (repository) void cloud.run({ action: "sync", repositoryId: repository.repositoryId, direction: "download" }) }}><DownloadSimple />更新整个仓库</Button>
         </div>
         <p className="shrink-0 text-xs text-muted-foreground">{projects.length} 个项目 · {projects.filter(p => p.visible).length} 个显示{cloud.checking ? " · 正在检测…" : repository?.checkedAt ? ` · 检测于 ${new Date(repository.checkedAt).toLocaleTimeString()}` : " · 尚未检测"}</p>
         <div className="min-h-0 flex-1 overflow-y-auto p-0.5" data-testid="cloud-project-list">
-          <div className="grid grid-cols-1 gap-3 @xl/cloud-config:grid-cols-2 @4xl/cloud-config:grid-cols-3">{visible.map(project => <Card key={project.projectId} size="sm" className="gap-2" role="article" aria-label={project.name} data-testid="cloud-project-card" data-project-id={project.projectId}>
-            <CardHeader><CardTitle className="flex min-w-0 items-start gap-2"><CloudProjectIcon status={project.syncStatus} /><span className="line-clamp-2 min-w-0 break-words [overflow-wrap:anywhere]" title={project.name}>{project.name}</span></CardTitle><CardAction><Switch aria-label={`显示${project.name}`} checked={project.visible} disabled={cloud.busy} onCheckedChange={show => void cloud.run({ action: "visibility", repositoryId: project.repositoryId, projectIds: [project.projectId], visible: show })} /></CardAction></CardHeader>
+          {filter === "deleted" ? <><p className="mb-3 text-xs text-muted-foreground">云端删除的项目保留 30 天，本地副本不受影响。</p><div className="grid grid-cols-1 gap-3 @xl/cloud-config:grid-cols-2 @4xl/cloud-config:grid-cols-3">{deleted.map(project => <Card key={project.projectId} size="sm" data-testid="cloud-deleted-project" data-project-id={project.projectId}><CardHeader><CardTitle className="break-words [overflow-wrap:anywhere]">{project.name}</CardTitle></CardHeader><CardContent><p className="text-xs text-muted-foreground">{project.environmentCount} 个环境 · {project.pluginCount} 个插件<br />可恢复至 {new Date(Date.parse(project.deletedAt) + 30 * 86400_000).toLocaleDateString()}</p></CardContent><CardFooter className="flex-wrap justify-end gap-2"><Button size="xs" variant="ghost" disabled={cloud.busy || !repository?.unlocked} onClick={() => void management.openHistory(project)}>版本记录</Button><Button size="xs" variant="outline" disabled={cloud.busy || !repository?.unlocked} data-testid="cloud-restore-project" onClick={() => { if (repository?.snapshotId) void management.prepare({ action: "prepareProjectOperation", repositoryId: project.repositoryId, projectId: project.projectId, snapshotId: repository.snapshotId, operation: "restore" }) }}>恢复项目</Button></CardFooter></Card>)}</div>{!deleted.length ? <p className="p-8 text-center text-xs text-muted-foreground">{query ? "没有匹配的项目" : "暂无可恢复的已删除项目"}</p> : null}</> : <div className="grid grid-cols-1 gap-3 @xl/cloud-config:grid-cols-2 @4xl/cloud-config:grid-cols-3">{visible.map(project => <Card key={project.projectId} size="sm" className="gap-2" role="article" aria-label={project.name} data-testid="cloud-project-card" data-project-id={project.projectId}>
+            <CardHeader><CardTitle className="flex min-w-0 items-start gap-2"><CloudProjectIcon status={project.syncStatus} /><span className="line-clamp-2 min-w-0 break-words [overflow-wrap:anywhere]" title={project.name}>{project.name}</span></CardTitle><CardAction className="flex items-center gap-1"><Switch aria-label={`显示${project.name}`} checked={project.visible} disabled={cloud.busy} onCheckedChange={show => void cloud.run({ action: "visibility", repositoryId: project.repositoryId, projectIds: [project.projectId], visible: show })} /><CloudProjectMenu name={project.name} disabled={cloud.busy || !repository?.unlocked} onHistory={() => void management.openHistory(project)} onDelete={() => { if (repository?.snapshotId) void management.prepare({ action: "prepareProjectOperation", repositoryId: project.repositoryId, projectId: project.projectId, snapshotId: repository.snapshotId, operation: "delete" }) }} /></CardAction></CardHeader>
             <CardContent className="flex-1"><p className="text-xs text-muted-foreground">{project.environmentCount} 个环境 · {project.pluginCount} 个插件</p></CardContent>
             <CardFooter className="flex-wrap justify-between gap-2 py-2"><Badge variant={project.syncStatus === "modified" ? "warning" : project.syncStatus === "behind" ? "info" : "outline"}>{cloudStatusLabels[project.syncStatus]}</Badge><CloudProjectActions linked={project} elsewhere={false} /></CardFooter>
-          </Card>)}</div>
-          {!visible.length ? <p className="p-8 text-center text-xs text-muted-foreground">{query ? "没有匹配的项目" : repository?.error ? "项目读取失败，请重新检测" : cloud.checking || !repository?.checkedAt ? "等待读取仓库项目" : "云仓库暂无项目，可从工作台项目详情上传"}</p> : null}
+          </Card>)}</div>}
+          {filter !== "deleted" && !visible.length ? <p className="p-8 text-center text-xs text-muted-foreground">{query || filter !== "all" ? "没有匹配的项目" : repository?.error ? "项目读取失败，请重新检测" : cloud.checking || !repository?.checkedAt ? "等待读取仓库项目" : "云仓库暂无项目，可从工作台项目详情上传"}</p> : null}
         </div>
       </> : view === "repository" ? <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-0.5">
         <Card size="sm"><CardHeader><CardTitle>仓库设置</CardTitle></CardHeader><CardContent className="space-y-4">
+          <form className="flex flex-wrap items-end gap-2" onSubmit={event => { event.preventDefault(); if (repository) void cloud.run({ action: "renameRepository", repositoryId: repository.repositoryId, name: repositoryName }) }}><label className="grid min-w-0 flex-1 gap-2 text-xs">仓库名称<Input id="cloud-repository-name" value={repositoryName} maxLength={80} disabled={cloud.busy} onChange={event => setRepositoryName(event.target.value)} /></label><Button type="submit" size="sm" variant="outline" disabled={cloud.busy || !repositoryName.trim() || repositoryName.trim() === repository?.name}>保存名称</Button></form>
+          <p className="text-xs text-muted-foreground">此名称用于本机区分仓库，不影响其他设备。</p>
           <label className="grid gap-2 text-xs">仓库链接<Input id="cloud-url" readOnly value={repository?.url ?? ""} /></label>
           <div className="flex flex-wrap items-center gap-2"><Button size="xs" variant="outline" onClick={() => void navigator.clipboard.writeText(repository?.url ?? "")}><Copy />复制链接</Button><Badge variant="outline">{repository?.remembered ? "已在本机记住" : "仅本次会话"}</Badge></div>
           <label className="flex flex-wrap items-center gap-3 text-xs">定时检测<SelectControl value={String(cloud.data.checkIntervalMinutes ?? 15)} onValueChange={value => void cloud.run({ action: "preferences", checkIntervalMinutes: Number(value) })} disabled={cloud.busy} size="sm" aria-label="定时检测间隔">{[0,5,15,30,60].map(value => <SelectItem key={value} value={String(value)}>{value ? `每 ${value} 分钟` : "关闭"}</SelectItem>)}</SelectControl></label>
           <p className="text-xs text-muted-foreground">定时检测只更新图标状态。点击“更新”后才写入本机配置。</p>
           <Button size="xs" variant="ghost" className="text-destructive" disabled={cloud.busy} onClick={() => { if (repository) void cloud.run({ action: "unbind", repositoryId: repository.repositoryId }) }}><LinkBreak />解除绑定</Button><p className="text-xs text-muted-foreground">解除绑定后，已下载项目保留在本地仓库。</p>
         </CardContent></Card>
-        <Card size="sm"><CardHeader><CardTitle>历史版本</CardTitle></CardHeader><CardContent className="space-y-3"><Button size="xs" variant="outline" disabled={cloud.busy || !repository?.unlocked} onClick={async () => { if (repository) setHistory(await cloud.run({ action: "catalog", repositoryId: repository.repositoryId })) }}><ClockCounterClockwise />查看版本</Button>
-          {history ? <SelectControl value={snapshotId} placeholder="选择历史版本" size="sm" aria-label="历史版本" disabled={cloud.busy} onValueChange={async value => { setSnapshotId(value); if (repository) { const next = await cloud.run({ action: "catalog", repositoryId: repository.repositoryId, snapshotId: value }); if (next) setHistory(next) } }}>{history.versions?.map(version => <SelectItem key={version.snapshotId} value={version.snapshotId}>{new Date(version.createdAt).toLocaleString()}</SelectItem>)}</SelectControl> : null}
-          {snapshotId ? history?.projects?.map(project => <div className="flex items-center justify-between gap-2" key={project.projectId}><span className="min-w-0 break-words text-xs">{project.name}</span><Button size="xs" variant="outline" disabled={cloud.busy} onClick={() => { if (repository) void cloud.run({ action: "prepare", repositoryId: repository.repositoryId, direction: "download", projectIds: [project.projectId], snapshotId }) }}>恢复此版本</Button></div>) : null}
-        </CardContent></Card>
+
       </div> : <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-0.5">{cloud.data.backups?.map(backup => <Card key={backup.backupId} size="sm"><CardContent className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-medium">{backup.name}</p><p className="text-xs text-muted-foreground">{new Date(backup.createdAt).toLocaleString()}</p></div><Button size="xs" variant="outline" disabled={cloud.busy} onClick={() => void cloud.run({ action: "prepareRestore", backupId: backup.backupId })}>恢复备份</Button></CardContent></Card>)}{!cloud.data.backups?.length ? <p className="p-8 text-center text-xs text-muted-foreground">暂无本机备份，覆盖项目配置前会自动保存。</p> : null}</div>}
     </>}
+    {management.overlays}
   </div>
 }

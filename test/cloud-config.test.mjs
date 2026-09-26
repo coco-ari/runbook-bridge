@@ -76,6 +76,165 @@ async function download(device,id,snapshotId = null) {
   const plan = await device.call('prepare',{direction:'download',projectIds:[id],snapshotId});
   return device.call('confirm',{planId:plan.planId,choices:Object.fromEntries(plan.rows.map(row => [row.rowId,'cloud']))});
 }
+async function projectOperation(device,repositoryId,projectId,operation,versionId) {
+  const {snapshotId} = await device.service.remote('test-owner',null,repositoryId);
+  return (await device.call('prepareProjectOperation',{repositoryId,projectId,operation,snapshotId,...(versionId ? {versionId} : {})})).projectOperation;
+}
+
+test('项目历史独立保留、重复上传去重、旧版本发布不覆盖本地或其他项目',async t => {
+  const remote = await cloud(t,2), a = await device(t,remote.client), b = await device(t,remote.client);
+  const p = await project(a), other = await project(a,'other-project');
+  const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  const repositoryId = created.repositoryId;
+  await upload(a,p.projectId);
+  await a.store.updateProject(p.projectId,{name:'第二版'}); await upload(a,p.projectId); await upload(a,p.projectId);
+  for (let i=0;i<22;i++) { await a.store.updateProject(other.projectId,{name:`其他项目版本 ${i}`}); await upload(a,other.projectId); }
+  const history = (await a.call('projectHistory',{repositoryId,projectId:p.projectId})).projectHistory;
+  assert.equal(history.versions.length,2);
+  assert.equal((await a.call('projectHistory',{repositoryId,projectId:other.projectId})).projectHistory.versions.length,20);
+  assert.equal(history.versions[0].current,true);
+  assert.equal(history.versions[1].current,false);
+  assert.ok(!JSON.stringify(history).includes('synthetic-ssh-secret'));
+  const otherBefore = snapshotDigest((await a.service.remote('test-owner',null,repositoryId)).payload.projects.find(p => p.projectId === other.projectId));
+  const localBefore = snapshotDigest(await exportCloudProject(a.store,a.vault,p.projectId));
+  const restore = await projectOperation(a,repositoryId,p.projectId,'restoreVersion',history.versions[1].versionId);
+  assert.equal((await a.call('confirmProjectOperation',{planId:restore.planId})).results[0].status,'cloud-restored');
+  const current = await a.service.remote('test-owner',null,repositoryId);
+  assert.equal(current.payload.projects.find(v => v.projectId === p.projectId).name,'合成测试项目');
+  assert.equal(snapshotDigest(current.payload.projects.find(v => v.projectId === other.projectId)),otherBefore);
+  assert.equal(snapshotDigest(await exportCloudProject(a.store,a.vault,p.projectId)),localBefore);
+  assert.equal((await a.call('projectHistory',{repositoryId,projectId:p.projectId})).projectHistory.versions.length,3);
+  await b.call('bind',{url:created.url,password:PASSWORD});
+  assert.equal((await b.call('projectHistory',{repositoryId:b.service.state.activeRepositoryId,projectId:p.projectId})).projectHistory.versions.length,3);
+  assert.equal((await b.store.listProjects()).length,0);
+  await a.call('check',{repositoryId});
+  assert.equal((await a.call('status')).cloudProjects.find(v => v.projectId === p.projectId).syncStatus,'behind');
+});
+
+test('云端删除可跨设备恢复且保留本地，确认绑定仓库版本、窗口、动作并只能用一次',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), b = await device(t,remote.client);
+  const p = await project(a), other = await project(a,'other-project');
+  const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  const repositoryId = created.repositoryId;
+  await upload(a,p.projectId); await upload(a,other.projectId);
+  const before = snapshotDigest(await exportCloudProject(a.store,a.vault,p.projectId));
+  let plan = await projectOperation(a,repositoryId,p.projectId,'delete');
+  await assert.rejects(a.service.invoke('other-window','confirmProjectOperation',{planId:plan.planId}),{code:'CLOUD_PLAN_EXPIRED'});
+  await assert.rejects(a.call('confirm',{planId:plan.planId,choices:{}}),{code:'CLOUD_PLAN_EXPIRED'});
+  await a.call('confirmProjectOperation',{planId:plan.planId});
+  await assert.rejects(a.call('confirmProjectOperation',{planId:plan.planId}),{code:'CLOUD_PLAN_EXPIRED'});
+  assert.equal(snapshotDigest(await exportCloudProject(a.store,a.vault,p.projectId)),before);
+  assert.equal((await a.call('status')).cloudProjects.length,1);
+  assert.equal((await a.call('status')).deletedCloudProjects[0].projectId,p.projectId);
+  await b.call('bind',{url:created.url,password:PASSWORD});
+  const bRepo = b.service.state.activeRepositoryId;
+  await b.call('check',{repositoryId:bRepo});
+  assert.equal((await b.call('status')).deletedCloudProjects.length,1);
+  const restore = await projectOperation(b,bRepo,p.projectId,'restore');
+  await b.call('confirmProjectOperation',{planId:restore.planId});
+  assert.equal((await b.call('status')).deletedCloudProjects.length,0);
+  assert.equal((await b.store.listProjects()).length,0);
+  await a.call('check',{repositoryId});
+  assert.equal((await a.call('status')).cloudProjects.find(v => v.projectId === p.projectId).localId,p.projectId);
+  plan = await projectOperation(a,repositoryId,p.projectId,'delete');
+  await b.call('sync',{repositoryId:bRepo,direction:'download',projectId:other.projectId});
+  const localId = (await b.call('status')).cloudProjects.find(v => v.projectId === other.projectId).localId;
+  await b.store.updateProject(localId,{name:'其他设备刚刚修改'});
+  await b.call('sync',{repositoryId:bRepo,direction:'upload',projectId:localId});
+  await assert.rejects(a.call('confirmProjectOperation',{planId:plan.planId}),{code:'CLOUD_CONFLICT'});
+  assert.equal((await a.service.remote('test-owner',null,repositoryId)).payload.projects.length,2);
+  plan = await projectOperation(a,repositoryId,p.projectId,'delete');
+  a.service.plans.get(plan.planId).expiresAt = 0;
+  await assert.rejects(a.call('confirmProjectOperation',{planId:plan.planId}),{code:'CLOUD_PLAN_EXPIRED'});
+  plan = await projectOperation(a,repositoryId,p.projectId,'delete');
+  a.service.closeOwner('test-owner');
+  await assert.rejects(a.call('confirmProjectOperation',{planId:plan.planId}),{code:'CLOUD_PLAN_EXPIRED'});
+});
+
+test('旧快照迁移已有历史；30 天过期只在写入时清理，检测不写云端或本地',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client);
+  const p = await project(a);
+  const {repositoryId} = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  const session = a.service.session('test-owner',repositoryId);
+  let parentId = null;
+  for (const name of ['旧仓库第一版','旧仓库第二版']) {
+    const project = {...await exportCloudProject(a.store,a.vault,p.projectId),name};
+    const envelope = encryptCloudSnapshot({schemaVersion:1,projects:[project]},session.metadata,session.keys.encryption,parentId);
+    await remote.client.call(session,'snapshots',{method:'POST',body:envelope,parentId}); parentId = envelope.snapshotId;
+  }
+  assert.equal((await a.call('projectHistory',{repositoryId,projectId:p.projectId})).projectHistory.versions.length,2);
+  // This local project was already linked by the legacy client.
+  await a.service.saveState({...a.service.state,mappings:[{repositoryId,remoteId:p.projectId,localId:p.projectId,remoteDigest:snapshotDigest({...await exportCloudProject(a.store,a.vault,p.projectId),name:'旧仓库第二版'}),localDigest:null}]});
+  await upload(a,p.projectId);
+  assert.equal((await a.call('projectHistory',{repositoryId,projectId:p.projectId})).projectHistory.versions.length,3);
+  const plan = await projectOperation(a,repositoryId,p.projectId,'delete');
+  await a.call('confirmProjectOperation',{planId:plan.planId});
+  let current = await a.service.remote('test-owner',null,repositoryId);
+  const expired = structuredClone(current.payload);
+  expired.history[0].deletedAt = new Date(Date.now()-31*86400_000).toISOString();
+  const envelope = encryptCloudSnapshot(expired,session.metadata,session.keys.encryption,current.snapshotId);
+  await remote.client.call(session,'snapshots',{method:'POST',body:envelope,parentId:current.snapshotId});
+  await a.call('check',{repositoryId});
+  assert.equal((await a.call('status')).deletedCloudProjects.length,0);
+  assert.equal((await remote.client.call(session,'head')).snapshotId,envelope.snapshotId);
+  await assert.rejects(projectOperation(a,repositoryId,p.projectId,'restore'),{code:'CLOUD_NOT_FOUND'});
+  const other = await project(a,'other-project'); await upload(a,other.projectId);
+  current = await a.service.remote('test-owner',null,repositoryId);
+  assert.equal(current.payload.history.some(r => r.projectId === p.projectId),false);
+  assert.equal((await a.store.getProject(p.projectId)).name,'合成测试项目');
+});
+
+test('云历史验证拒绝错配内容，仓库改名只修改本机名称且新 IPC 不接受额外参数',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), p = await project(a);
+  const {repositoryId} = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  await upload(a,p.projectId);
+  const current = await a.service.remote('test-owner',null,repositoryId);
+  await a.call('renameRepository',{repositoryId,name:'  新的仓库名称  '});
+  assert.equal((await a.call('status')).repositories[0].name,'新的仓库名称');
+  assert.equal((await a.service.remote('test-owner',null,repositoryId)).snapshotId,current.snapshotId);
+  for (const name of ['',42,'x'.repeat(81),'name\u0000']) await assert.rejects(a.call('renameRepository',{repositoryId,name}),{code:'CLOUD_INVALID_ARGUMENT'});
+  for (const mutate of [p => p.history[0].versions[0].project.name = '被篡改的版本',p => p.history[0].projectId = 'wrong-project',p => p.history[0].deletedAt = 'invalid',p => p.history.push(p.history[0])]) {
+    const invalid = structuredClone(current.payload); mutate(invalid);
+    assert.throws(() => normalizeCloudSnapshot(invalid,a.vault));
+  }
+  const sender = {id:1,mainFrame:{},once(){},on(){}}, handlers = new Map();
+  registerCloudConfigIpc({handle:(name,fn) => handlers.set(name,fn)},{isWorkspaceRenderer:() => true,cloudConfigService:{invoke:async () => ({safe:true}),closeOwner(){}}});
+  const event = {sender,senderFrame:sender.mainFrame}, call = handlers.get('v2:cloud-config');
+  assert.equal((await call(event,{action:'confirmProjectOperation',planId:'test',projectId:p.projectId})).error.code,'CLOUD_INVALID_ARGUMENT');
+  assert.equal((await call(event,{action:'projectHistory',repositoryId,projectId:p.projectId})).ok,true);
+});
+
+test('上传期间关闭窗口不会用已清零密钥写入，删除条件提交保留最后一刻的并发写入',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), p = await project(a);
+  const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  const repositoryId = created.repositoryId;
+  await upload(a,p.projectId);
+  const current = await a.service.remote('test-owner',null,repositoryId);
+  const pending = await a.call('prepare',{direction:'upload',projectIds:[p.projectId]});
+  const call = remote.client.call.bind(remote.client);
+  remote.client.call = async (session,route,options) => {
+    const result = await call(session,route,options);
+    if (route === 'head') a.service.closeOwner('test-owner');
+    return result;
+  };
+  await assert.rejects(a.call('confirm',{planId:pending.planId,choices:{[p.projectId]:'local'}}),{code:'CLOUD_SESSION_EXPIRED'});
+  remote.client.call = call;
+  await a.call('bind',{url:created.url,password:PASSWORD});
+  assert.equal((await a.service.remote('test-owner',null,repositoryId)).snapshotId,current.snapshotId);
+  const plan = await projectOperation(a,repositoryId,p.projectId,'delete');
+  let concurrent;
+  remote.client.call = async (session,route,options) => {
+    if (route === 'snapshots' && options?.method === 'POST' && !concurrent) {
+      concurrent = encryptCloudSnapshot(current.payload,session.metadata,session.keys.encryption,current.snapshotId);
+      await call(session,'snapshots',{method:'POST',body:concurrent,parentId:current.snapshotId});
+    }
+    return call(session,route,options);
+  };
+  await assert.rejects(a.call('confirmProjectOperation',{planId:plan.planId}),{code:'CLOUD_CONFLICT'});
+  const result = await a.service.remote('test-owner',null,repositoryId);
+  assert.equal(result.snapshotId,concurrent.snapshotId);
+  assert.equal(result.payload.projects.length,1);
+});
 
 test('恢复预览区分配置文件类型，并提示删除插件中的凭据变化',() => {
   const before = {files:{'workspace.yaml':'same','environments/env-test/environment.yaml':'same','environments/env-test/plugins/server-test.yaml':'old','environments/env-test/plugins/remove-test.yaml':'removed','environments/env-test/README.md':'old'},entries:{primary:{},backup:{}}};

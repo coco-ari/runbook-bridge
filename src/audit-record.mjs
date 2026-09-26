@@ -29,6 +29,7 @@ const ACTIONS = {
   'environment-connect-cancelled':'取消环境连接', 'connection-plan-completed':'连接环境', 'connection-plan-resumed':'继续连接环境',
   'runbook-updated':'更新运维说明', 'server-host-key-trusted':'信任服务器主机密钥',
   'legacy-credential-migrated':'迁移旧版凭据', 'cloud-config-imported':'导入云端配置', 'cloud-config-uploaded':'上传云端配置',
+  'cloud-project-deleted':'删除云端项目', 'cloud-project-restored':'恢复云端项目版本',
   'execute':'执行服务器命令', 'execute-approved':'执行服务器命令', 'execute-blocked':'执行服务器命令',
   'policy-denied':'操作被策略拦截', 'log-search':'搜索服务器日志', 'log-search-page':'读取日志搜索结果', 'mysql-query':'执行只读查询',
 };

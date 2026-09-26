@@ -21,6 +21,37 @@ export interface CloudLinkedProject extends CloudProject {
 }
 export interface CloudBackup { readonly backupId: string; readonly projectId: string; readonly name: string; readonly createdAt: string }
 export interface CloudVersion { readonly snapshotId: string; readonly createdAt: string; readonly bytes: number }
+export interface CloudDeletedProject extends CloudProject {
+  readonly repositoryId: string
+  readonly deletedAt: string
+  readonly environmentCount: number
+  readonly pluginCount: number
+}
+export interface CloudProjectVersion extends CloudProject {
+  readonly versionId: string
+  readonly createdAt: string
+  readonly hash: string
+  readonly current: boolean
+  readonly environmentCount: number
+  readonly pluginCount: number
+  readonly diff: CloudRow["diff"]
+}
+export interface CloudProjectHistory extends CloudProject {
+  readonly repositoryId: string
+  readonly snapshotId: string
+  readonly deletedAt: string | null
+  readonly versions: readonly CloudProjectVersion[]
+}
+export interface CloudProjectOperation extends CloudProject {
+  readonly planId: string
+  readonly repositoryId: string
+  readonly repositoryName: string
+  readonly operation: "delete" | "restore" | "restoreVersion"
+  readonly versionId: string
+  readonly versionName: string
+  readonly createdAt: string
+  readonly expiresAt: number
+}
 export interface CloudRow {
   readonly rowId: string
   readonly name: string
@@ -34,6 +65,9 @@ export interface CloudConfigData {
   readonly repositoryId?: string
   readonly repositories?: readonly CloudRepository[]
   readonly cloudProjects?: readonly CloudLinkedProject[]
+  readonly deletedCloudProjects?: readonly CloudDeletedProject[]
+  readonly projectHistory?: CloudProjectHistory
+  readonly projectOperation?: CloudProjectOperation
   readonly checkIntervalMinutes?: number
   readonly url?: string
   readonly unlocked?: boolean
@@ -61,3 +95,7 @@ export type CloudConfigRequest =
   | { action: "visibility"; repositoryId: string; projectIds: string[]; visible: boolean }
   | { action: "preferences"; checkIntervalMinutes: number }
   | { action: "sync"; repositoryId: string; direction: "upload" | "download"; projectId?: string }
+  | { action: "renameRepository"; repositoryId: string; name: string }
+  | { action: "projectHistory"; repositoryId: string; projectId: string }
+  | { action: "prepareProjectOperation"; repositoryId: string; projectId: string; operation: "delete" | "restore" | "restoreVersion"; snapshotId: string; versionId?: string }
+  | { action: "confirmProjectOperation"; planId: string }

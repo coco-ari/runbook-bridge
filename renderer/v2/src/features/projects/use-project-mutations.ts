@@ -36,6 +36,7 @@ export interface ProjectMutationController {
   readonly remove: (
     project: WorkspaceProjectReadModel,
     confirmation: string,
+    beforeDelete?: () => Promise<boolean>,
   ) => Promise<boolean>
   readonly rename: (project: WorkspaceProjectReadModel, name: string) => Promise<boolean>
 }
@@ -224,6 +225,7 @@ export function useProjectMutations({
   const remove = useCallback(async (
     project: WorkspaceProjectReadModel,
     confirmation: string,
+    beforeDelete?: () => Promise<boolean>,
   ) => {
     if (project.isolated) {
       setFeedback({ kind: "error", message: "隔离项目不能从此界面删除。" })
@@ -244,6 +246,8 @@ export function useProjectMutations({
         }
         return false
       }
+      if (!mountedRef.current || epochRef.current !== epoch) return false
+      if (beforeDelete && !(await beforeDelete())) return false
       if (!mountedRef.current || epochRef.current !== epoch) return false
       const result = await api.deleteProject({ projectId: project.projectId })
       if (!result.ok) {

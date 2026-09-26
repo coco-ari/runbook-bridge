@@ -4,7 +4,11 @@ import ssh2 from 'ssh2';
 import { sanitizePluginSnapshot, normalizePlugin, normalizeName } from './plugin-config-model.mjs';
 import { getPluginConnectionAdapter } from './plugin-connection-adapters.mjs';
 import { normalizeQuickQuestionText, containsQuickQuestionCredential, QUICK_QUESTION_LIMIT } from './quick-questions.mjs';
-import { CLOUD_MAX_BYTES, cloudError } from './cloud-config-crypto.mjs';
+import { CLOUD_MAX_BYTES, cloudError, cloudId } from './cloud-config-crypto.mjs';
+
+export const CLOUD_PROJECT_VERSIONS = 20;
+export const CLOUD_TRASH_DAYS = 30;
+export const cloudTrashAvailable = (record, now = Date.now()) => record.deletedAt !== null && Date.parse(record.deletedAt)+CLOUD_TRASH_DAYS*86400_000 > now;
 
 const ID = /^[a-z0-9][a-z0-9-]{1,62}$/;
 const CONFIG_KEYS = new Set(['pluginType','pluginInstanceId','displayName','description','tags','displayOrder','target','auth','uplink','transport','tls','tunnelProvider','sources','actions','policy','limits','patterns','mode','cluster']);
@@ -76,11 +80,34 @@ function normalizeProject(input, vault) {
 }
 export function normalizeCloudSnapshot(value, vault) {
   if (Buffer.byteLength(JSON.stringify(value)) > CLOUD_MAX_BYTES) throw cloudError('TOO_LARGE','云配置内容过大。');
-  object(value,['schemaVersion','projects']);
-  if (value.schemaVersion !== 1) throw cloudError('FORMAT_UNSUPPORTED','不支持此云配置版本。');
+  if (![1,2].includes(value?.schemaVersion)) throw cloudError('FORMAT_UNSUPPORTED','不支持此云配置版本，请更新应用。');
+  object(value,value.schemaVersion === 1 ? ['schemaVersion','projects'] : ['schemaVersion','projects','history']);
   const projects = list(value.projects,200).map(project => normalizeProject(project,vault));
   unique(projects.map(p => p.projectId));
-  return {schemaVersion:1,projects};
+  if (value.schemaVersion === 1) return {schemaVersion:1,projects};
+  const timestamp = value => {
+    if (typeof value !== 'string' || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) throw cloudError('FORMAT_INVALID','云版本时间无效。');
+    return value;
+  };
+  const history = list(value.history,400).map(raw => {
+    object(raw,['projectId','deletedAt','versions']);
+    const projectId = id(raw.projectId);
+    const deletedAt = raw.deletedAt === null ? null : timestamp(raw.deletedAt);
+    const versions = list(raw.versions,CLOUD_PROJECT_VERSIONS).map(version => {
+      object(version,['versionId','createdAt','project']);
+      const project = normalizeProject(version.project,vault);
+      if (project.projectId !== projectId) throw cloudError('SCOPE_MISMATCH','云版本不属于此项目。');
+      return {versionId:cloudId(version.versionId),createdAt:timestamp(version.createdAt),project};
+    });
+    if (!versions.length) throw cloudError('FORMAT_INVALID','项目版本记录不能为空。');
+    unique(versions.map(v => v.versionId));
+    const current = projects.find(p => p.projectId === projectId);
+    if (deletedAt === null ? !current || snapshotDigest(current) !== snapshotDigest(versions.at(-1).project) : Boolean(current)) throw cloudError('FORMAT_INVALID','项目版本记录与当前配置不一致。');
+    return {projectId,deletedAt,versions};
+  });
+  unique(history.map(record => record.projectId));
+  if (projects.some(project => !history.some(record => record.projectId === project.projectId))) throw cloudError('FORMAT_INVALID','项目缺少版本记录。');
+  return {schemaVersion:2,projects,history};
 }
 
 async function privateKeyFile(file) {

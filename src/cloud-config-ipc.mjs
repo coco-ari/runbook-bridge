@@ -5,6 +5,8 @@ const ACTIONS = {
   status:[],bind:['url','password','remember','name'],create:['serviceUrl','adminToken','password','remember','name'],unbind:['repositoryId'],
   catalog:['snapshotId','repositoryId'],prepare:['direction','projectIds','snapshotId','repositoryId'],confirm:['planId','choices'],prepareRestore:['backupId'],
   check:['repositoryId'],visibility:['repositoryId','projectIds','visible'],preferences:['checkIntervalMinutes'],sync:['repositoryId','direction','projectId'],
+  renameRepository:['repositoryId','name'],projectHistory:['repositoryId','projectId'],
+  prepareProjectOperation:['repositoryId','projectId','operation','snapshotId','versionId'],confirmProjectOperation:['planId'],
 };
 export function registerCloudConfigIpc(ipcMain,services) {
   const installed = new WeakSet();

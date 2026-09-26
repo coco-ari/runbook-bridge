@@ -13,6 +13,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import { useCloudConfig } from "@/features/cloud-config/CloudConfigProvider"
 import {
   Dialog,
   DialogClose,
@@ -77,6 +79,10 @@ export function ProjectMutationSurfaces({
   onCommitted,
   restoreFocusRef,
 }: ProjectMutationSurfacesProps) {
+  const cloud = useCloudConfig()
+  const [deleteCloud, setDeleteCloud] = useState(false)
+  const [cloudDeleteError, setCloudDeleteError] = useState("")
+  const [cloudDeleted, setCloudDeleted] = useState(false)
   const [environmentName, setEnvironmentName] = useState("")
   const [name, setName] = useState("")
   const [typedConfirmation, setTypedConfirmation] = useState("")
@@ -85,6 +91,8 @@ export function ProjectMutationSurfaces({
   const busyDialogRef = useBusyDialogFocus(controller.busy !== null)
   const mutationError = controller.feedback?.kind === "error" ? controller.feedback.message : null
   const project = action && action.kind !== "create" ? action.project : null
+  const linked = cloud.data.cloudProjects?.find(p => p.localId === project?.projectId)
+  const repository = cloud.data.repositories?.find(r => r.repositoryId === linked?.repositoryId)
   const actionKey = action && action.kind !== "create"
     ? `${action.kind}:${action.project.projectId}:${action.project.revision}`
     : action?.kind ?? "closed"
@@ -94,6 +102,7 @@ export function ProjectMutationSurfaces({
     setEnvironmentName("")
     setName(project?.name ?? "")
     setTypedConfirmation("")
+    setDeleteCloud(false); setCloudDeleteError(""); setCloudDeleted(false)
   }, [actionKey, controller.clearFeedback, project?.name])
 
   const resolveRestoreTarget = useCallback(() => {
@@ -145,7 +154,18 @@ export function ProjectMutationSurfaces({
 
   const deleteProject = async () => {
     if (action?.kind !== "delete" || !project || controller.busy !== null) return
-    if (await controller.remove(project, typedConfirmation)) {
+    setCloudDeleteError("")
+    const beforeDelete = deleteCloud ? async () => {
+      if (!linked || !repository?.snapshotId || !repository.unlocked) { setCloudDeleteError("请先在云配置中解锁并检测此项目所属仓库。"); return false }
+      const preview = await cloud.run({ action: "prepareProjectOperation", repositoryId: linked.repositoryId, projectId: linked.projectId, snapshotId: repository.snapshotId, operation: "delete" })
+      if (!preview?.projectOperation) { setCloudDeleteError("云端删除准备失败，本地项目保留。请重新检测后再试。"); return false }
+      const result = await cloud.run({ action: "confirmProjectOperation", planId: preview.projectOperation.planId })
+      if (!result) { setCloudDeleteError("未能确认云端删除结果，本地项目保留。请重新检测后再试。"); return false }
+      setCloudDeleted(true); setDeleteCloud(false)
+      return true
+    } : undefined
+    if (await controller.remove(project, typedConfirmation, beforeDelete)) {
+      await cloud.refresh()
       onActionChange(null)
     }
   }
@@ -247,6 +267,9 @@ export function ProjectMutationSurfaces({
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {linked && !project.isolated ? <label className="flex items-start gap-2 text-xs"><Checkbox data-testid="delete-project-cloud" checked={deleteCloud} disabled={controller.busy !== null || cloud.busy || !repository?.unlocked} onCheckedChange={value => setDeleteCloud(value === true)} /><span className="min-w-0 break-words [overflow-wrap:anywhere]">同时删除“{repository?.name}”中的云端项目“{linked.name}”<span className="mt-1 block text-muted-foreground">{repository?.unlocked ? "不勾选时只删除本地副本，云端仍可下载。云端删除后可在 30 天内恢复。" : "请先在云配置中解锁仓库。"}</span></span></label> : null}
+          {cloudDeleted ? <p role="status" className="text-xs text-warning">云端项目已删除。{mutationError ? "本地删除未完成，请处理下方问题后重试本地删除。" : "正在删除本地项目…"}</p> : null}
+          {cloudDeleteError ? <p role="alert" className="text-xs text-destructive">{cloudDeleteError}</p> : null}
           <Field data-invalid={Boolean(typedConfirmation) && !confirmationMatches || undefined}>
             <FieldLabel htmlFor="delete-project-confirmation">输入项目完整名称以确认</FieldLabel>
             <Input

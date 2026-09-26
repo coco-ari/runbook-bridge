@@ -161,7 +161,7 @@ test('project mutations use compact Radix Dialogs and standalone typed delete wi
   assert.match(surface,/onInteractOutside=\{preventDismissWhileBusy\}/u);
   assert.match(surface,/showCloseButton=\{controller\.busy === null\}/u);
   assert.match(surface,/<AlertDialogCancel disabled=\{controller\.busy !== null\}/u);
-  assert.match(surface,/if \(await controller\.remove\(project, typedConfirmation\)\) \{\s+onActionChange\(null\)/u);
+  assert.match(surface,/if \(await controller\.remove\(project, typedConfirmation, beforeDelete\)\) \{\s+await cloud\.refresh\(\)\s+onActionChange\(null\)/u);
   assert.match(surface,/本机加密凭据仍保留/u);
   assert.match(surface,/<DialogFooter>[\s\S]*?form="rename-project-form"/u);
   const settings = surface.slice(surface.indexOf('data-testid="project-settings-dialog"'));

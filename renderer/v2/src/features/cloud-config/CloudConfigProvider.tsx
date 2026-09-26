@@ -7,7 +7,7 @@ import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFoo
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import type { CloudConfigData, CloudConfigRequest, CloudRow } from "./cloud-types"
 
-function changeSummary(diff: CloudRow["diff"]): string {
+export function changeSummary(diff: CloudRow["diff"]): string {
   const changes: string[] = []
   if (diff.added || diff.modified || diff.removed) changes.push(`插件：新增 ${diff.added}、修改 ${diff.modified}、删除 ${diff.removed}`)
   if (diff.environmentsAdded || diff.environmentsRemoved) changes.push(`环境：新增 ${diff.environmentsAdded}、删除 ${diff.environmentsRemoved}`)
@@ -103,6 +103,8 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
         const failed = result.results.filter(row => row.status === "failed")
         const completed = result.results.filter(row => row.status === "imported" || row.status === "uploaded")
         if (failed.length) toast.error(`${failed.length} 个项目未完成同步`, { description: failed.map(row => row.error?.message).join("；") })
+        else if (result.results.some(row => row.status === "cloud-deleted")) toast.success("云端项目已移入已删除，可在 30 天内恢复")
+        else if (result.results.some(row => row.status === "cloud-restored")) toast.success("已发布新的云端版本，点击更新可同步到本机")
         else if (completed.length) toast.success(`已完成 ${completed.length} 个项目${request.action === "sync" && request.direction === "upload" ? "上传" : "更新"}`)
         else if (!result.planId) toast.info("项目配置已是最新")
         if (result.syncStateWarning || result.results.some(row => row.syncStateWarning || row.cleanupPending)) toast.warning("配置已写入，请重新检测同步状态；事务清理未完成时请重启应用。")

@@ -3,7 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { CloudConfigClient } from './cloud-config-client.mjs';
 import { cloudError, cloudHash, cloudId, deriveCloudKeys, newCloudMeta, encryptCloudSnapshot, decryptCloudSnapshot } from './cloud-config-crypto.mjs';
-import { exportCloudProject, normalizeCloudSnapshot, snapshotDigest, cloudProjectWarnings, cloudProjectDiff, cloudBackupDiff } from './cloud-config-snapshot.mjs';
+import { exportCloudProject, normalizeCloudSnapshot, snapshotDigest, cloudProjectWarnings, cloudProjectDiff, cloudBackupDiff, cloudTrashAvailable } from './cloud-config-snapshot.mjs';
+import { appendCloudVersion, pruneCloudHistory, projectSummary, cloudVersionSummaries } from './cloud-config-history.mjs';
 
 const emptyState = () => ({schemaVersion:2,repositories:[],activeRepositoryId:null,mappings:[],checkIntervalMinutes:15});
 const projectIdPattern = /^[a-z0-9][a-z0-9-]{1,62}$/;
@@ -24,6 +25,7 @@ export class CloudConfigService {
     this.stateFile = path.join(workspace.directory,'state.enc.json');
     this.sessions = new Map();
     this.snapshots = new Map();
+    this.histories = new Map();
     this.epochs = new Map();
     this.plans = new Map();
     this.queue = Promise.resolve();
@@ -59,6 +61,7 @@ export class CloudConfigService {
     for (const session of this.sessions.get(owner)?.values() ?? []) session.keys.encryption.fill(0);
     this.sessions.delete(owner);
     this.snapshots.clear();
+    this.histories.clear();
     for (const [id,plan] of this.plans) if (plan.owner === owner) this.plans.delete(id);
   }
   repository(repositoryId = this.state.activeRepositoryId) {
@@ -108,7 +111,8 @@ export class CloudConfigService {
     }
     const active = repositories.find(repo => repo.repositoryId === this.state.activeRepositoryId);
     return {repositoryId:active?.repositoryId,url:active?.url ?? '',unlocked:active?.unlocked ?? false,remembered:active?.remembered ?? false,
-      repositories,cloudProjects,checkIntervalMinutes:this.state.checkIntervalMinutes,projects:localProjects.map(p => ({projectId:p.projectId,name:p.name})),backups:await this.workspace.listBackups()};
+      repositories,cloudProjects,deletedCloudProjects:this.state.repositories.flatMap(repo => (repo.deletedProjects ?? []).filter(p => cloudTrashAvailable(p)).map(p => ({...p,repositoryId:repo.repositoryId}))),
+      checkIntervalMinutes:this.state.checkIntervalMinutes,projects:localProjects.map(p => ({projectId:p.projectId,name:p.name})),backups:await this.workspace.listBackups()};
   }
   async bind(owner,{url,password,remember = false,name},epoch) {
     const remote = await this.client.metadata(url);
@@ -131,6 +135,7 @@ export class CloudConfigService {
       this.sessions.get(owner).set(repositoryId,session);
       for (const [id,plan] of this.plans) if (plan.repositoryId === repositoryId) this.plans.delete(id);
       this.snapshots.delete(repositoryId);
+      this.histories.delete(repositoryId);
       return this.status(owner);
     } catch (error) { keys.encryption.fill(0); throw error; }
   }
@@ -153,6 +158,7 @@ export class CloudConfigService {
     for (const sessions of this.sessions.values()) { sessions.get(repo.repositoryId)?.keys.encryption.fill(0); sessions.delete(repo.repositoryId); }
     for (const [id,plan] of this.plans) if (plan.repositoryId === repo.repositoryId) this.plans.delete(id);
     this.snapshots.delete(repo.repositoryId);
+    this.histories.delete(repo.repositoryId);
     return this.status(owner);
   }
   async remote(owner,snapshotId = null,repositoryId) {
@@ -185,7 +191,94 @@ export class CloudConfigService {
       return {projectId:project.projectId,name:project.name,digest,environmentCount:project.environments.length,
         pluginCount:project.environments.reduce((sum,env) => sum+env.plugins.length,0)};
     });
-    await this.saveRepository({...repo,catalog,hashes,snapshotId:remote.snapshotId,checkedAt:new Date().toISOString(),error:null});
+    for (const record of remote.payload.history ?? []) {
+      hashes[record.projectId] = [...new Set([...(hashes[record.projectId] ?? []),...record.versions.map(v => snapshotDigest(v.project))])].slice(-256);
+    }
+    const deletedProjects = (remote.payload.history ?? []).filter(record => cloudTrashAvailable(record)).map(record => ({...projectSummary(record.versions.at(-1).project),deletedAt:record.deletedAt}));
+    await this.saveRepository({...repo,catalog,hashes,deletedProjects,snapshotId:remote.snapshotId,checkedAt:new Date().toISOString(),error:null});
+  }
+  async renameRepository(owner,{repositoryId,name}) {
+    if (typeof repositoryId !== 'string' || typeof name !== 'string' || !name.normalize('NFKC').trim() || name.normalize('NFKC').trim().length > 80 || /[\u0000-\u001f\u007f]/.test(name)) throw cloudError('INVALID_ARGUMENT','仓库名称应为 1 到 80 个字符，且不能包含控制字符。');
+    await this.saveRepository({...this.repository(repositoryId),name:name.normalize('NFKC').trim()});
+    return this.status(owner);
+  }
+  async projectArchive(owner,repositoryId,remote) {
+    if (remote.payload.schemaVersion === 2) return remote.payload;
+    const cached = this.histories.get(repositoryId);
+    if (cached?.snapshotId === remote.snapshotId) return cached.payload;
+    let payload = {schemaVersion:2,projects:[],history:[]};
+    if (remote.snapshotId) {
+      const {versions} = await this.client.call(remote.session,'versions');
+      if (!Array.isArray(versions) || versions.length > 100) throw cloudError('FORMAT_INVALID','云版本列表无效。');
+      if (versions[0]?.snapshotId !== remote.snapshotId) throw cloudError('CONFLICT','云仓库已变化，请重新检测后操作。');
+      const activeIds = new Set(remote.payload.projects.map(p => p.projectId));
+      // Only legacy active projects are migrated; there was no trash in schema 1.
+      for (const version of [...versions].reverse()) {
+        const snapshotId = cloudId(version.snapshotId);
+        const snapshot = snapshotId === remote.snapshotId ? remote : await this.remote(owner,snapshotId,repositoryId);
+        for (const project of snapshot.payload.projects.filter(p => activeIds.has(p.projectId))) {
+          payload = appendCloudVersion(payload,project,{versionId:snapshotId,createdAt:version.createdAt});
+        }
+      }
+      // Keep the current project ordering, even if a historical snapshot differs.
+      payload.projects = remote.payload.projects;
+    }
+    payload = normalizeCloudSnapshot(payload,this.vault);
+    this.histories.set(repositoryId,{snapshotId:remote.snapshotId,payload});
+    return payload;
+  }
+  async projectHistory(owner,{repositoryId,projectId}) {
+    if (typeof repositoryId !== 'string' || typeof projectId !== 'string' || !projectIdPattern.test(projectId)) throw cloudError('INVALID_ARGUMENT','请选择仓库中的单个项目。');
+    const remote = await this.remote(owner,null,repositoryId);
+    const payload = await this.projectArchive(owner,repositoryId,remote);
+    const record = payload.history.find(r => r.projectId === projectId && (r.deletedAt === null || cloudTrashAvailable(r)));
+    if (!record) throw cloudError('NOT_FOUND','项目不存在或已超过恢复期限。');
+    await this.rememberRemote(repositoryId,remote);
+    return {projectHistory:{repositoryId,projectId,snapshotId:remote.snapshotId,name:record.versions.at(-1).project.name,deletedAt:record.deletedAt,versions:cloudVersionSummaries(record)}};
+  }
+  async prepareProjectOperation(owner,{repositoryId,projectId,operation,snapshotId,versionId}) {
+    if (typeof repositoryId !== 'string' || typeof projectId !== 'string' || !projectIdPattern.test(projectId) || !['delete','restore','restoreVersion'].includes(operation) || (operation !== 'restoreVersion' && versionId !== undefined)) throw cloudError('INVALID_ARGUMENT','云项目操作范围无效。');
+    cloudId(snapshotId);
+    if (operation === 'restoreVersion') cloudId(versionId);
+    const epoch = this.epochs.get(owner) ?? 0;
+    const remote = await this.remote(owner,null,repositoryId);
+    if (remote.snapshotId !== snapshotId) throw cloudError('CONFLICT','云仓库已变化，请重新检测或打开版本记录后操作。');
+    const archive = await this.projectArchive(owner,repositoryId,remote);
+    const record = archive.history.find(r => r.projectId === projectId);
+    if (!record || (operation === 'restore' ? !cloudTrashAvailable(record) : record.deletedAt !== null)) throw cloudError('NOT_FOUND','项目不存在或已超过恢复期限。');
+    const version = operation === 'restoreVersion' ? record.versions.find(v => v.versionId === versionId) : record.versions.at(-1);
+    if (!version) throw cloudError('NOT_FOUND','所选项目版本已不存在，请重新打开版本记录。');
+    if ((this.epochs.get(owner) ?? 0) !== epoch || this.session(owner,repositoryId) !== remote.session) throw cloudError('SESSION_EXPIRED','云配置会话已关闭。');
+    const plan = this.rememberPlan(owner,{direction:'project-operation',repositoryId,remote,archive,operation,projectId,version,rows:[]});
+    return {projectOperation:{planId:plan.planId,repositoryId,repositoryName:this.repository(repositoryId).name,...projectSummary(record.versions.at(-1).project),operation,
+      versionId:version.versionId,versionName:version.project.name,createdAt:version.createdAt,expiresAt:plan.expiresAt}};
+  }
+  async confirmProjectOperation(owner,{planId}) {
+    const plan = this.plans.get(planId);
+    if (!plan || plan.direction !== 'project-operation' || plan.owner !== owner || plan.expiresAt < Date.now()) throw cloudError('PLAN_EXPIRED','确认已失效，请重新操作。');
+    this.plans.delete(planId);
+    const epoch = this.epochs.get(owner) ?? 0;
+    const session = this.session(owner,plan.repositoryId);
+    if (session !== plan.remote.session) throw cloudError('PLAN_EXPIRED','仓库会话已变化，请重新操作。');
+    const head = await this.client.call(session,'head');
+    if (head.snapshotId !== plan.remote.snapshotId) throw cloudError('CONFLICT','云仓库已变化，请重新检测后确认。');
+    let payload = pruneCloudHistory(plan.archive);
+    if (!payload.history.some(r => r.projectId === plan.projectId)) throw cloudError('NOT_FOUND','项目已超过恢复期限。');
+    if (plan.operation === 'delete') {
+      payload = {...payload,projects:payload.projects.filter(p => p.projectId !== plan.projectId),history:payload.history.map(r => r.projectId === plan.projectId ? {...r,deletedAt:new Date().toISOString()} : r)};
+    } else payload = appendCloudVersion(payload,plan.version.project,{force:true});
+    payload = normalizeCloudSnapshot(payload,this.vault);
+    const envelope = encryptCloudSnapshot(payload,session.metadata,session.keys.encryption,head.snapshotId);
+    if ((this.epochs.get(owner) ?? 0) !== epoch || this.session(owner,plan.repositoryId) !== session) throw cloudError('SESSION_EXPIRED','云配置会话已关闭。');
+    await this.client.call(session,'snapshots',{method:'POST',body:envelope,parentId:head.snapshotId});
+    const remote = {session,headId:envelope.snapshotId,snapshotId:envelope.snapshotId,payload};
+    this.snapshots.set(plan.repositoryId,remote);
+    this.histories.delete(plan.repositoryId);
+    let syncStateWarning = false;
+    try { await this.rememberRemote(plan.repositoryId,remote); } catch { syncStateWarning = true; }
+    const mapping = this.state.mappings.find(m => m.repositoryId === plan.repositoryId && m.remoteId === plan.projectId);
+    if (mapping) await this.store.appendAudit(mapping.localId,{type:`cloud-project-${plan.operation === 'delete' ? 'deleted' : 'restored'}`,actor:'user',result:'success'}).catch(() => undefined);
+    return {snapshotId:envelope.snapshotId,syncStateWarning,results:[{projectId:plan.projectId,status:plan.operation === 'delete' ? 'cloud-deleted' : 'cloud-restored'}]};
   }
   async knownHistory(owner,repositoryId,remoteId,digest) {
     const repo = this.repository(repositoryId);
@@ -199,7 +292,7 @@ export class CloudConfigService {
       const envelope = await this.client.call(session,`snapshots/${id}`);
       if (envelope.snapshotId !== id) throw cloudError('SCOPE_MISMATCH','历史版本与下载内容不一致。');
       const snapshot = normalizeCloudSnapshot(decryptCloudSnapshot(envelope,session.metadata,session.keys.encryption),this.vault);
-      for (const p of snapshot.projects) hashes[p.projectId] = [...new Set([...(hashes[p.projectId] ?? []),snapshotDigest(p)])].slice(-256);
+      for (const p of [...snapshot.projects,...(snapshot.history ?? []).flatMap(record => record.versions.map(v => v.project))]) hashes[p.projectId] = [...new Set([...(hashes[p.projectId] ?? []),snapshotDigest(p)])].slice(-256);
       if ((hashes[remoteId] ?? []).includes(digest)) break;
     }
     await this.saveRepository({...this.repository(repositoryId),hashes});
@@ -356,7 +449,7 @@ export class CloudConfigService {
   }
   async confirm(owner,{planId,choices}) {
     const plan = this.plans.get(planId);
-    if (!plan || plan.owner !== owner || plan.expiresAt < Date.now()) throw cloudError('PLAN_EXPIRED','预览已失效，请重新预览。');
+    if (!plan || !['upload','download','restore'].includes(plan.direction) || plan.owner !== owner || plan.expiresAt < Date.now()) throw cloudError('PLAN_EXPIRED','预览已失效，请重新预览。');
     if (!choices || typeof choices !== 'object' || Array.isArray(choices) || Object.keys(choices).length !== plan.rows.length || plan.rows.some(row => !['local','cloud'].includes(choices[row.rowId]))) throw cloudError('INVALID_ARGUMENT','请为每个项目选择保留本地或采用云端。');
     this.plans.delete(planId);
     if (plan.direction !== 'restore' && this.session(owner,plan.repositoryId) !== plan.remote.session) throw cloudError('PLAN_EXPIRED','仓库会话已变化，请重新操作。');
@@ -399,6 +492,7 @@ export class CloudConfigService {
     return {results};
   }
   async confirmUpload(owner,plan,choices) {
+    const epoch = this.epochs.get(owner) ?? 0;
     const session = this.session(owner,plan.repositoryId);
     if (session !== plan.remote.session) throw cloudError('PLAN_EXPIRED','仓库已重新绑定，请重新预览。');
     const selected = plan.rows.filter(row => choices[row.rowId] === 'local');
@@ -415,13 +509,13 @@ export class CloudConfigService {
           if (plan.overwrite && attempt < 2) continue;
           throw cloudError('CONFLICT','云端持续变化，请重试上传。');
         }
-        const projects = [...remote.payload.projects];
+        payload = pruneCloudHistory(await this.projectArchive(owner,plan.repositoryId,remote));
         for (const row of selected) {
           await this.assertCurrent(row);
-          const index = projects.findIndex(p => p.projectId === row.remoteId);
-          if (index < 0) projects.push(row.candidate); else projects[index] = row.candidate;
+          payload = appendCloudVersion(payload,row.candidate);
         }
-        payload = normalizeCloudSnapshot({schemaVersion:1,projects},this.vault);
+        payload = normalizeCloudSnapshot(payload,this.vault);
+        if ((this.epochs.get(owner) ?? 0) !== epoch || this.session(owner,plan.repositoryId) !== session) throw cloudError('SESSION_EXPIRED','云配置会话已关闭。');
         envelope = encryptCloudSnapshot(payload,session.metadata,session.keys.encryption,head.snapshotId);
         try { await this.client.call(session,'snapshots',{method:'POST',body:envelope,parentId:head.snapshotId}); break; }
         catch (error) { if (!plan.overwrite || error.code !== 'CLOUD_CONFLICT' || attempt === 2) throw error; }
@@ -437,6 +531,7 @@ export class CloudConfigService {
       let syncStateWarning = false;
       const remote = {session,headId:envelope.snapshotId,snapshotId:envelope.snapshotId,payload};
       this.snapshots.set(plan.repositoryId,remote);
+      this.histories.delete(plan.repositoryId);
       try { await this.saveState({...this.state,mappings}); await this.rememberRemote(plan.repositoryId,remote); } catch { syncStateWarning = true; }
       return {snapshotId:envelope.snapshotId,syncStateWarning,results:plan.rows.map(row => ({projectId:row.localId,status:choices[row.rowId] === 'local' ? 'uploaded' : 'skipped'}))};
     };
