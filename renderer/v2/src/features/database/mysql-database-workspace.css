@@ -853,3 +853,26 @@ tr[data-row-state="update"] .mysql-inline-cell[data-dirty] { background:color-mi
 .mysql-sql-result-error { padding:12px; font-size:var(--text-sm); border-bottom:1px solid var(--border); }
 .mysql-sql-result-error > strong { color:var(--destructive); font-weight:500; }
 .mysql-sql-execution-summary { padding:16px; font-size:var(--text-sm); line-height:1.8; overflow:auto; }
+
+.mysql-transaction-summary { flex-shrink:0; border-bottom:1px solid var(--border); border-left:3px solid transparent; background:color-mix(in srgb, var(--warning) 6%, var(--background)); font-size:var(--text-xs); }
+.mysql-transaction-summary[data-idle-state="soon"], .mysql-transaction-summary[data-idle-state="confirming"] { border-left-color:var(--warning); background:color-mix(in srgb, var(--warning) 13%, var(--background)); }
+.mysql-transaction-summary-toggle { display:grid; grid-template-columns:auto minmax(0,1fr) auto 14px; align-items:center; gap:6px 12px; padding:8px 10px; list-style:none; cursor:pointer; }
+.mysql-transaction-summary-toggle::-webkit-details-marker { display:none; }
+.mysql-transaction-summary-toggle:focus-visible { outline:2px solid var(--ring); outline-offset:-2px; }
+.mysql-transaction-summary-heading { display:flex; align-items:center; gap:7px; white-space:nowrap; }
+.mysql-transaction-summary-counts { min-width:0; line-height:1.6; }
+.mysql-transaction-summary-time { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:3px 10px; color:var(--muted-foreground); font-variant-numeric:tabular-nums; }
+.mysql-transaction-summary[data-idle-state="soon"] .mysql-transaction-summary-time > span, .mysql-transaction-summary[data-idle-state="confirming"] .mysql-transaction-summary-time > span { color:var(--warning); font-weight:600; }
+.mysql-transaction-summary-chevron { width:14px; height:14px; grid-column:4; grid-row:1; }
+.mysql-transaction-summary[open] .mysql-transaction-summary-chevron { transform:rotate(180deg); }
+.mysql-transaction-summary-body { padding:0 12px 9px; }
+.mysql-transaction-summary-description { margin:0 0 7px; line-height:1.6; color:var(--muted-foreground); }
+.mysql-transaction-summary-entries { max-height:156px; overflow:auto; margin:0 0 6px; padding:0; list-style:none; border:1px solid var(--border); border-radius:var(--radius-md); background:var(--background); }
+.mysql-transaction-summary-entries li { display:grid; grid-template-columns:32px 72px minmax(0,1fr) auto; gap:10px; align-items:center; padding:6px 9px; border-bottom:1px solid var(--border); }
+.mysql-transaction-summary-entries li:last-child { border-bottom:0; }
+.mysql-transaction-summary-entries strong { font-weight:500; }
+.mysql-transaction-summary-tables { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mysql-transaction-summary-empty { padding:6px 0; color:var(--muted-foreground); }
+@media (max-width:1100px) {
+  .mysql-transaction-summary-time { grid-column:1 / 4; justify-content:flex-start; }
+}

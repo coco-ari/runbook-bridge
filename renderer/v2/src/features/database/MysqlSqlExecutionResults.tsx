@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react"
 import { ArrowClockwise, CheckCircle, WarningCircle } from "@phosphor-icons/react"
 import type { MysqlSqlResult, MysqlSqlState } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
+import { MysqlTransactionSummaryPanel } from "./MysqlTransactionSummary"
 import { DiagnosticDetails } from "@/features/connections/DiagnosticDetails"
 
 const effects = { none: "", committed: "已提交", pending: "未提交", rolledBack: "已回滚", unknown: "结果待核实" } as const
@@ -16,8 +17,9 @@ export function MysqlSqlExecutionResults({ state, lineOffset, loading, onCheck, 
   const result = (selected?.planId === state.plan?.planId ? state.results.find(item => item.index === selected?.index) : null) ?? state.results.find(item => item.status === "error") ?? state.results[0]
   const uncertain = state.status === "unknown" || state.transaction === "unknown"
   return <>
-    {state.transaction === "active" ? <div className="mysql-sql-transaction-message" data-testid="mysql-query-transaction-active" role="status"><span className="size-2 shrink-0 rounded-full bg-warning" /><strong>事务未提交</strong><span>当前标签独立持有事务。完成后请提交或回滚。</span></div> : null}
+    {state.transaction === "active" && !uncertain ? <div data-testid="mysql-query-transaction-active" className="shrink-0">{state.transactionSummary ? <MysqlTransactionSummaryPanel key={state.transactionSummary.id} summary={state.transactionSummary} busy={loading} transaction={state.transaction} mode={state.mode} /> : <div className="mysql-sql-transaction-message" role="status"><span className="size-2 shrink-0 rounded-full bg-warning" /><strong>事务未提交</strong><span>当前标签独立持有事务。完成后请提交或回滚。</span></div>}</div> : null}
     {uncertain ? <div className="mysql-sql-transaction-message is-warning" data-testid="mysql-query-uncertain" role="alert"><WarningCircle /><div><strong>执行结果待核实</strong><p>服务器可能已经完成写入。请核对状态和数据，勿重复执行。</p></div><Button size="sm" variant="outline" disabled={loading} onClick={onCheck}>核对状态</Button></div> : null}
+    {uncertain && state.transactionSummary ? <MysqlTransactionSummaryPanel key={state.transactionSummary.id} summary={state.transactionSummary} busy={loading} transaction="unknown" mode={state.mode} /> : null}
     {state.message && (state.status === "cancelled" || state.status === "error" || state.message.includes("操作记录")) ? <p className="mysql-sql-progress" role="status">{state.message}</p> : null}
     {state.results.length ? <div aria-label="SQL 执行结果列表" className="mysql-sql-result-list" data-testid="mysql-query-statements">
       {state.results.map(item => <button aria-pressed={item.index === result?.index} className="mysql-sql-result-item" data-testid="mysql-query-statement-result" data-statement-index={item.index} key={item.index} onClick={() => setSelected({ planId: state.plan?.planId, index: item.index })} type="button">

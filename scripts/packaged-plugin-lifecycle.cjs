@@ -355,16 +355,50 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
         assert.equal(manualResult.status,'success');
         assert.equal(manualResult.transaction,'active');
         assert.equal(manualResult.results[0].transactionEffect,'pending');
+        const manualSummary=manualResult.transactionSummary;
+        assert.ok(manualSummary?.id,'手动事务提供稳定摘要标识');
+        assert.equal(manualSummary.statementCount,1);
+        assert.equal(manualSummary.writeCount,1);
+        assert.equal(manualSummary.affectedRows,1);
+        assert.equal(manualSummary.idleTimeoutMs,300_000);
+        assert.ok(manualSummary.startedAt<=manualSummary.serverNow);
+        assert.ok(manualSummary.idleExpiresAt>manualSummary.serverNow);
+        assert.ok(manualSummary.idleExpiresAt<=manualSummary.serverNow+manualSummary.idleTimeoutMs);
+        assert.deepEqual(manualSummary.entries.map(({sequence,kind,tables,affectedRows})=>({sequence,kind,tables,affectedRows})),[
+          {sequence:1,kind:'insert',tables:['sql_fixture'],affectedRows:1},
+        ]);
+        assert.equal(manualSummary.omittedCount,0);
+        assert.ok(!JSON.stringify(manualSummary).includes('packaged-sql-pending'),'事务摘要不携带业务值或 SQL 正文');
         const writesAfterManual = fixture.counts.mysqlSqlWrites;
-        assert.equal((await executeSql(manualPlan)).status,'success');
+        const replayedManual=await executeSql(manualPlan);
+        assert.equal(replayedManual.status,'success');
+        assert.equal(replayedManual.transactionSummary.statementCount,1,'重复交付不重复累计事务摘要');
         assert.equal(fixture.counts.mysqlSqlWrites,writesAfterManual,'重复交付不重复写入');
         assert.equal((await readSqlFixture()).length,0,'独立标签看不到另一个标签未提交的数据');
         const ownTransaction = await runSql(sqlRead,'manual');
         assert.deepEqual(ownTransaction.results[0].data.rows,[{id:'1',label:'packaged-sql-pending'}]);
-        assert.equal((await success('mysqlSql',{...databaseScope,operation:'status',documentId:sqlDocument})).transaction,'active');
+        assert.equal(ownTransaction.transactionSummary.id,manualSummary.id,'跨次执行沿用同一手动事务');
+        assert.equal(ownTransaction.transactionSummary.statementCount,2);
+        assert.equal(ownTransaction.transactionSummary.writeCount,1);
+        assert.equal(ownTransaction.transactionSummary.affectedRows,1);
+        assert.deepEqual(ownTransaction.transactionSummary.entries.map(entry=>entry.kind),['insert','select']);
+        const manualStatus=await success('mysqlSql',{...databaseScope,operation:'status',documentId:sqlDocument});
+        assert.equal(manualStatus.transaction,'active');
+        assert.equal(manualStatus.transactionSummary.idleExpiresAt,ownTransaction.transactionSummary.idleExpiresAt,'状态轮询不能延长空闲期限');
+        const observedStatus=await success('mysqlSql',{...databaseScope,operation:'status',documentId:sqlObserver});
+        assert.equal(observedStatus.transactionSummary,undefined,'其他标签不会继承手动事务摘要');
         const rolledBack = await runSql('ROLLBACK','manual');
         assert.equal(rolledBack.transaction,'none');
+        assert.equal(rolledBack.transactionSummary,undefined,'回滚结束后移除事务摘要');
         assert.equal((await readSqlFixture()).length,0,'手动回滚没有留下写入');
+
+        const readOnlyTransaction=await runSql(sqlRead,'manual');
+        assert.notEqual(readOnlyTransaction.transactionSummary.id,manualSummary.id,'下一事务建立新摘要');
+        assert.equal(readOnlyTransaction.transactionSummary.statementCount,1);
+        assert.equal(readOnlyTransaction.transactionSummary.writeCount,0);
+        assert.equal(readOnlyTransaction.transactionSummary.affectedRows,0);
+        const readOnlyCommitted=await runSql('COMMIT','manual');
+        assert.equal(readOnlyCommitted.transactionSummary,undefined,'提交结束后移除查询事务摘要');
 
         const atomicResult = await runSql(sqlInsert(2,'packaged-sql-two') + ';\n' + sqlInsert(3,'packaged-sql-three')
           + ";\nUPDATE sql_fixture SET label = 'packaged-sql-updated' WHERE id = 2;\n" + sqlRead);

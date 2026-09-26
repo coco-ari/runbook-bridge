@@ -30,15 +30,23 @@
 
 写入只接受严格 SQL 模式下的 InnoDB 基础表。事务内获取元数据锁并复查表类型；需要能确认直接授予的 TRIGGER 权限以完整核对触发器。UPDATE / DELETE 还需要读取 `information_schema.INNODB_FOREIGN` 的 PROCESS 元数据权限，以排除相关入向级联外键。角色间接授予的 TRIGGER 权限暂不作为可见性证明。相关触发器、级联写入、非事务引擎或无法核实的元数据都会被拒绝，并说明原因。不要仅为使用该功能扩大生产账号权限，可以由数据库管理员评估或继续采用已有表格编辑入口。
 
+执行受阻时，结果区的诊断详情区分元数据不可见、实际读写权限不足、表不可见、非基础表、非事务引擎、相关触发器或级联外键，以及严格模式未启用，并给出对应的核对建议。无法读取元数据不等于已经发现触发器或级联关系；提示也不会把账号权限不足描述为连接失败。本版沿用现有执行条件，不自动授予权限、不提供授权 SQL，也不扩大语法支持范围。
+
+诊断原因由后端固定枚举传递，界面使用对应的固定说明；展示和复制诊断时不包含数据库驱动返回的 SQL、参数、账号或地址。无论诊断原因如何，当前事务的回滚或待核实状态仍单独展示。
+
 ## 结果与生命周期
 
 结果明确区分已提交、未提交、已回滚和待核实。整批模式下，前面的语句执行成功但随后被回滚时，不会显示为已保存；逐条提交模式保留先前成功提交的结果。手动事务及批量结果使用只读结果表格，防止用户误把独立的表格编辑保存当作当前 SQL 事务的一部分；单条 SELECT 且没有活动事务时仍可使用原有表格编辑功能。
+
+活动事务的状态条可以展开，查看本事务跨多次执行的成功操作摘要，包括操作类型、表名及影响行次；后续查询不会清除之前的待提交写入。总数累计整个事务，仅显示最近 100 条操作、每条最多 20 个表名，截断时明确提示。影响行次是各条语句影响行数的累计，同一行被反复修改会重复计数。仅查询的事务明确显示没有写入；BEGIN / COMMIT / ROLLBACK 不计入操作总数。提交或回滚后清除摘要，新事务重新计数，各 SQL 标签独立。
+
+状态条同时显示事务持续时间和距离空闲自动回滚的剩余时间，少于 60 秒时加强提醒。执行过程中暂停空闲计时；准备或完成执行会更新后端空闲时间，查看状态和切换标签不会延期。倒计时依据后端快照和客户端单调时钟推进，归零只显示「正在确认事务状态」，收到后端确认后才显示已回滚。连接中断、提交结果待核实时保留已有成功操作摘要并停止显示回滚倒计时，避免误判最终结果。
 
 停止只关闭当前 SQL 标签的连接，不断开整个插件或其他标签。写入/提交期间断线或停止，若无法确认结果，显示待核实并禁止直接重试；已提交的语句不能通过停止撤销。使用新的查询标签核实后，再关闭原标签。
 
 关闭含活动事务或待核实结果的标签、关闭工作区、主动断开及应用退出均有保护。退出或释放连接会回滚尚未提交的数据库事务，但不能撤销已提交的写入。网络异常、进程崩溃仍可能中断连接，应用不会把缺少提交应答误报为成功或已回滚。
 
-SQL 与结果仅保留在内存，操作记录保存用户、目标数据库、语句数量、影响行数、事务模式、结果、错误代码及 SQL 指纹，不保存 SQL 正文、参数或返回行。桌面新增 `mysqlSql` 一个 preload API（prepare / execute / status / stop / release），仅受信桌面主框架可用，按窗口、项目、环境、插件、配置版本和标签绑定。Agent/MCP 仍仅允许固定数据库的单条只读 SELECT / EXPLAIN SELECT；当前为 111 个桌面 API、40 个 MCP 工具。
+SQL 与结果仅保留在内存，事务摘要也只保留在当前会话内存，不保存 SQL 正文或值，不构成持久历史。操作记录保存用户、目标数据库、语句数量、影响行数、事务模式、结果、错误代码及 SQL 指纹，不保存 SQL 正文、参数或返回行。桌面新增 `mysqlSql` 一个 preload API（prepare / execute / status / stop / release），仅受信桌面主框架可用，按窗口、项目、环境、插件、配置版本和标签绑定；状态结果的可选 `transactionSummary` 提供事务 ID、累计数量、有限操作摘要及后端时钟与空闲期限。Agent/MCP 仍仅允许固定数据库的单条只读 SELECT / EXPLAIN SELECT；当前为 111 个桌面 API、40 个 MCP 工具。
 
 ## 设计参考
 
@@ -52,7 +60,7 @@ SQL 与结果仅保留在内存，操作记录保存用户、目标数据库、�
 普通测试使用合成数据、内存夹具及本机回环 MySQL 协议服务，不连接真实基础设施。
 
 ```sh
-node --test test/mysql-sql-script-policy.test.mjs test/mysql-sql-connections.test.mjs test/mysql-sql-execution.test.mjs test/mysql-sql-ipc.test.mjs
+node --test test/mysql-sql-script-policy.test.mjs test/mysql-sql-connections.test.mjs test/mysql-sql-execution.test.mjs test/mysql-sql-ipc.test.mjs test/mysql-sql-diagnostics.test.mjs test/renderer-mysql-transaction-summary.test.mjs test/renderer-diagnostic-model.test.mjs
 corepack pnpm run check
 corepack pnpm test
 corepack pnpm run test:ui
@@ -60,4 +68,4 @@ corepack pnpm run test:ui:database
 corepack pnpm run test:ui:mysql-edit
 ```
 
-打包后继续运行 `scripts/verify-package.mjs`、`scripts/packaged-mcp-smoke.mjs`、`scripts/packaged-ui-smoke.cjs`；正式包探针覆盖真实 preload、隔离连接、生产确认、事务提交/回滚及 MCP 只读边界。
+打包后继续运行 `scripts/verify-package.mjs`、`scripts/packaged-mcp-smoke.mjs`、`scripts/packaged-ui-smoke.cjs`；正式包探针覆盖真实 preload、隔离连接、生产确认、事务提交/回滚、跨请求摘要及 MCP 只读边界。数据库 UI 回归覆盖摘要展开、多标签隔离、倒计时、待核实状态和权限诊断。

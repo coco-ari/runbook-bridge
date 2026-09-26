@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 
 import type { AiOpsV2Api, MysqlQueryResult, MysqlSqlMode, MysqlSqlState, PluginScope, PublicError } from "@/bridge/ai-ops-v2"
+import { withMysqlTransactionSummary } from "./mysql-transaction-summary-model"
 import { useMysqlEditingGuard } from "./MysqlEditingContext"
 
 export const MYSQL_MAX_QUERY_DOCUMENTS = 6
@@ -78,8 +79,13 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
         void api.mysqlSql({ projectId, environmentId, pluginInstanceId, documentId: document.documentId, operation: "status" }).then(response => {
           if (!active.current || !response.ok) return
           const previous = find(document.id)?.execution
-          // 空闲回滚或断连需要立即更新；相同状态不重建结果表，不打断滚动和选择。
-          if (previous && !tickets.current.get(document.id)?.busy && previous.plan?.planId === response.data.plan?.planId && (previous.status !== response.data.status || previous.transaction !== response.data.transaction || previous.message !== response.data.message || previous.error?.code !== response.data.error?.code)) applyState(document.id, response.data)
+          if (!previous || tickets.current.get(document.id)?.busy || previous.plan?.planId !== response.data.plan?.planId) return
+          // 状态变化更新结果；仅摘要/校时变化保留结果引用和revision，避免重置滚动和选择。
+          if (previous.status !== response.data.status || previous.transaction !== response.data.transaction || previous.message !== response.data.message || previous.error?.code !== response.data.error?.code) applyState(document.id, response.data)
+          else if (response.data.transactionSummary || previous.transactionSummary) update(document.id, current => {
+            if (!current.execution) return current
+            return { ...current, execution: withMysqlTransactionSummary(current.execution, response.data.transactionSummary) }
+          })
         }).catch(() => {}).finally(() => reading.delete(document.id))
       }
     }, 2500)

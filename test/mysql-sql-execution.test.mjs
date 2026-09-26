@@ -142,6 +142,132 @@ test('整批事务仅在所有语句成功后提交，并逐条返回提交状�
   assert.deepEqual(f.requests.filter(request => ['START TRANSACTION','COMMIT','ROLLBACK'].includes(request.sql)).map(request => request.sql),['START TRANSACTION','COMMIT']);
 });
 
+test('手动事务摘要跨请求累计写入与查询，轮询不推迟闲置期限，也不保存数据值', async t => {
+  const f = fixture(t);
+  const first = await f.run(insert(1),'manual');
+  const original = first.transactionSummary;
+  assert.equal(original.startedAt,1000);
+  assert.equal(original.idleTimeoutMs,300000);
+  assert.equal(original.idleExpiresAt,301000);
+  assert.equal(original.statementCount,1);
+  assert.equal(original.writeCount,1);
+  assert.equal(original.affectedRows,1);
+  f.advance(60000);
+  const polled = f.executor.status(owner,plugin,'sql-a').transactionSummary;
+  assert.equal(polled.idleExpiresAt,original.idleExpiresAt);
+  assert.equal(polled.serverNow,61000);
+  const ownRead = await f.run(select,'manual');
+  const summary = ownRead.transactionSummary;
+  assert.equal(summary.id,original.id);
+  assert.equal(summary.startedAt,original.startedAt);
+  assert.equal(summary.idleExpiresAt,361000);
+  assert.equal(summary.statementCount,2);
+  assert.equal(summary.writeCount,1);
+  assert.equal(summary.affectedRows,1);
+  assert.deepEqual(summary.entries.map(row => [row.sequence,row.kind,row.tables,row.affectedRows]),[[1,'insert',['items'],1],[2,'select',['items'],undefined]]);
+  assert.equal(summary.omittedCount,0);
+  assert.doesNotMatch(JSON.stringify(summary),/synthetic-private|INSERT INTO|SELECT id|label/u);
+  summary.entries[0].tables.push('mutated');
+  assert.deepEqual(f.executor.status(owner,plugin,'sql-a').transactionSummary.entries[0].tables,['items']);
+  const repeated = await f.executor.execute(owner,plugin,environment,{documentId:'sql-a',planId:ownRead.plan.planId,confirmed:true});
+  assert.equal(repeated.transactionSummary.statementCount,2,'重复交付不重复累计');
+});
+
+test('只读事务与空事务的写入计数为零，标签之间的摘要互相隔离', async t => {
+  const f = fixture(t);
+  const empty = await f.run('BEGIN','manual');
+  assert.equal(empty.transactionSummary.statementCount,0);
+  assert.equal(empty.transactionSummary.writeCount,0);
+  const read = await f.run(select,'manual');
+  assert.equal(read.transactionSummary.statementCount,1);
+  assert.equal(read.transactionSummary.writeCount,0);
+  assert.equal(read.transactionSummary.affectedRows,0);
+  const other = await f.run(insert(2),'manual','sql-b');
+  assert.notEqual(other.transactionSummary.id,read.transactionSummary.id);
+  assert.equal(other.transactionSummary.writeCount,1);
+  assert.equal(f.executor.status(owner,plugin,'sql-a').transactionSummary.writeCount,0);
+});
+
+test('事务摘要最多保留最近一百条，计数仍覆盖整个事务，同一行重复修改累计为行次', async t => {
+  const f = fixture(t,{initialRows:[{id:1,label:'original'}]});
+  await f.run(Array.from({length:100},() => update).join(';'),'manual');
+  const result = await f.run(update + ';' + select,'manual');
+  assert.equal(result.transactionSummary.statementCount,102);
+  assert.equal(result.transactionSummary.writeCount,101);
+  assert.equal(result.transactionSummary.affectedRows,101);
+  assert.equal(result.transactionSummary.entries.length,100);
+  assert.equal(result.transactionSummary.entries[0].sequence,3);
+  assert.equal(result.transactionSummary.omittedCount,2);
+  assert.equal(result.transactionSummary.entries.at(-1).kind,'select');
+});
+
+test('提交、回滚和执行失败后清空待提交摘要，再次开启事务使用新摘要', async t => {
+  const f = fixture(t);
+  const first = await f.run(insert(1),'manual');
+  assert.equal((await f.run('COMMIT','manual')).transactionSummary,undefined);
+  const second = await f.run(insert(2),'manual');
+  assert.notEqual(second.transactionSummary.id,first.transactionSummary.id);
+  assert.equal(second.transactionSummary.writeCount,1);
+  assert.equal((await f.run('ROLLBACK','manual')).transactionSummary,undefined);
+  await f.run(insert(3),'manual');
+  const failed = await f.run(insert(1),'manual');
+  assert.equal(failed.status,'error');
+  assert.equal(failed.transactionSummary,undefined);
+  assert.equal((await f.run(select,'atomic')).transactionSummary,undefined);
+  assert.equal((await f.run(select,'autocommit')).transactionSummary,undefined);
+});
+
+test('执行期间暂停闲置倒计时，完成后按后端时间重新开始', async t => {
+  const entered = deferred(), gate = deferred(); let hold = false;
+  const f = fixture(t,{beforeQuery:async request => {
+    if (hold && request.sql.startsWith('SELECT `id`')) { entered.resolve(); await gate.promise; }
+  }});
+  await f.run(insert(1),'manual');
+  f.advance(299000); hold = true;
+  const executing = f.run(select,'manual');
+  await entered.promise;
+  const busy = f.executor.status(owner,plugin,'sql-a');
+  assert.equal(busy.status,'running');
+  assert.equal(busy.transactionSummary.idleExpiresAt,null);
+  assert.equal(busy.transactionSummary.writeCount,1);
+  f.advance(120000); gate.resolve();
+  const complete = await executing;
+  assert.equal(complete.transactionSummary.idleExpiresAt,720000);
+  assert.equal(complete.transactionSummary.statementCount,2);
+});
+
+test('空闲自动回滚清空摘要，待确认的新计划不被当作已执行操作', async t => {
+  t.mock.timers.enable({apis:['setInterval']});
+  const f = fixture(t);
+  await f.run(insert(1),'manual');
+  const prepared = f.prepare(insert(2),'manual');
+  assert.equal(prepared.transactionSummary.writeCount,1);
+  f.advance(300001); t.mock.timers.tick(1000); await nextTurn();
+  const expired = f.executor.status(owner,plugin,'sql-a');
+  assert.equal(expired.status,'cancelled');
+  assert.equal(expired.transactionSummary,undefined);
+  assert.deepEqual(f.rows(),[]);
+});
+
+test('断线或提交应答丢失保留待核实摘要，但不再提供回滚倒计时', async t => {
+  const f = fixture(t);
+  const first = await f.run(insert(1),'manual');
+  f.children[0].lose();
+  const lost = f.executor.status(owner,plugin,'sql-a');
+  assert.equal(lost.transaction,'unknown');
+  assert.equal(lost.transactionSummary.id,first.transactionSummary.id);
+  assert.equal(lost.transactionSummary.writeCount,1);
+  assert.equal(lost.transactionSummary.idleExpiresAt,null);
+  const g = fixture(t,{afterCommit:async (_request,child) => child.lose()});
+  await g.run(insert(1),'manual');
+  const uncertain = await g.run('COMMIT','manual');
+  assert.equal(uncertain.status,'unknown');
+  assert.equal(uncertain.transactionSummary.writeCount,1);
+  assert.equal(uncertain.transactionSummary.idleExpiresAt,null);
+  assert.equal(g.rows().length,1,'实际已提交也不能把没有应答的摘要当成已回滚');
+  assert.equal((await g.executor.release(owner,plugin,'sql-a')).transactionSummary,undefined);
+});
+
 test('整批后续语句失败回滚前面的修改，未执行的语句标记跳过', async t => {
   const f = fixture(t);
   const result = await f.run([insert(1),insert(1),insert(2)].join(';'));
@@ -302,25 +428,45 @@ test('审计只保存指纹和操作统计，不包含 SQL、参数、结果行�
   assert.equal(f.audits[1].affectedRows,1);
 });
 
-for (const [name,configuration] of [
-  ['非事务存储引擎',{engine:'MyISAM'}],
-  ['非基础表',{tableRows:[{TABLE_TYPE:'VIEW',ENGINE:null}]}],
-  ['不可见表',{tableRows:[]}],
-  ['缺少触发器可见权限',{grants:[]}],
-  ['触发器权限查询失败',{grantsError:true}],
-  ['相关触发器',{triggers:[{EVENT_MANIPULATION:'INSERT'}]}],
-  ['非严格 SQL 模式',{sqlMode:'NO_ENGINE_SUBSTITUTION'}],
+for (const [name,configuration,reason] of [
+  ['非事务存储引擎',{engine:'MyISAM'},'non_transactional'],
+  ['非基础表',{tableRows:[{TABLE_TYPE:'VIEW',ENGINE:null}]},'table_type'],
+  ['不可见表',{tableRows:[]},'table_unavailable'],
+  ['缺少触发器可见权限',{grants:[]},'trigger_visibility'],
+  ['触发器权限查询失败',{grantsError:true},'trigger_visibility'],
+  ['相关触发器',{triggers:[{EVENT_MANIPULATION:'INSERT'}]},'trigger_side_effect'],
+  ['非严格 SQL 模式',{sqlMode:'NO_ENGINE_SUBSTITUTION'},'strict_mode'],
 ]) {
   test(`${name} 在业务写入前拒绝并回滚`, async t => {
     const f = fixture(t,configuration);
     const result = await f.run(insert(1));
     assert.equal(result.status,'error');
     assert.equal(result.error.code,'MYSQL_SQL_WRITE_UNSAFE');
+    assert.deepEqual(result.error.details,{reason});
     assert.equal(f.requests.some(request => /^INSERT /u.test(request.sql)),false);
     assert.deepEqual(f.rows(),[]);
     assert.doesNotMatch(JSON.stringify(result.error),/synthetic-private/u);
   });
 }
+
+test('实际语句拒绝按读写操作诊断，预检读取拒绝不误报为写入权限不足', async t => {
+  for (const [sql,match,reason] of [
+    [insert(1),/^INSERT /u,'write_privilege'],
+    [select,/^SELECT `id`/u,'select_privilege'],
+    [insert(1),/ LIMIT 0$/u,'select_privilege'],
+  ]) {
+    const f = fixture(t,{beforeQuery:request => {
+      if (match.test(request.sql)) throw Object.assign(new Error('synthetic-private-permission-error'),{code:'ER_TABLEACCESS_DENIED_ERROR',sql:request.sql});
+    }});
+    const result = await f.run(sql,'manual');
+    assert.equal(result.status,'error');
+    assert.equal(result.transaction,'none');
+    assert.equal(result.transactionSummary,undefined);
+    assert.equal(result.error.code,'MYSQL_SQL_WRITE_UNSAFE');
+    assert.deepEqual(result.error.details,{reason});
+    assert.doesNotMatch(JSON.stringify(result.error),/synthetic-private|INSERT INTO|SELECT `/u);
+  }
+});
 
 for (const [name,configuration] of [['入向级联外键',{cascades:[{TYPE:1}]}],['级联元数据不可见',{cascadeError:true}]]) {
   test(`${name} 阻止 UPDATE 和 DELETE，避免未审查副作用`, async t => {
@@ -498,6 +644,10 @@ test('写入进行中断线不承诺回滚成功，计划结果为 unknown 且�
   assert.equal(result.transaction,'unknown');
   assert.equal(result.results[0].transactionEffect,'unknown');
   assert.equal(result.error.code,'MYSQL_SQL_OUTCOME_UNKNOWN');
+  assert.equal(result.transactionSummary.statementCount,0,'未收到成功应答的写入不能计为已确认，但计数为零也不能证明未写入');
+  assert.equal(result.transactionSummary.writeCount,0);
+  assert.deepEqual(result.transactionSummary.entries,[]);
+  assert.equal(result.transactionSummary.idleExpiresAt,null);
   const count = f.requests.length;
   assert.equal((await f.execute(plan)).status,'unknown');
   assert.equal(f.requests.length,count);

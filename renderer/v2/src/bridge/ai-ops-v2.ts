@@ -258,12 +258,33 @@ export interface MysqlSqlPlan {
   readonly writeCount: number
   readonly statements: readonly Readonly<{ index: number; line: number; kind: string; tables: readonly string[]; dangerous: boolean }>[]
 }
+export interface MysqlTransactionEntry {
+  readonly sequence: number
+  readonly kind: string
+  readonly tables: readonly string[]
+  readonly tableCount?: number
+  readonly affectedRows?: number
+  readonly executedAt: number
+}
+export interface MysqlTransactionSummary {
+  readonly id: string
+  readonly startedAt: number
+  readonly serverNow: number
+  readonly idleTimeoutMs: number
+  readonly idleExpiresAt: number | null
+  readonly statementCount: number
+  readonly writeCount: number
+  readonly affectedRows: number
+  readonly entries: readonly MysqlTransactionEntry[]
+  readonly omittedCount: number
+}
 export interface MysqlSqlState {
   readonly documentId: string
   readonly mode: MysqlSqlMode
   readonly transaction: MysqlSqlTransaction
   readonly status: "idle" | "prepared" | "running" | "success" | "error" | "cancelled" | "unknown"
   readonly results: readonly MysqlSqlResult[]
+  readonly transactionSummary?: MysqlTransactionSummary
   readonly plan?: MysqlSqlPlan
   readonly error?: PublicError
   readonly message?: string

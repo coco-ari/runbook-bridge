@@ -1,17 +1,17 @@
 import crypto from 'node:crypto';
-import { AppError, toPublicError } from './errors.mjs';
+import { AppError } from './errors.mjs';
 import { prepareMysqlSqlScript, mysqlSqlRequest } from './desktop-mysql-sql-policy.mjs';
 import { assertMysqlSqlTables } from './mysql-sql-write-policy.mjs';
 import { capRows } from './mysql-results.mjs';
-import { mysqlRuntimeInternals } from './mysql-plugin-runtime.mjs';
+import { mysqlSqlPublicError, mysqlSqlUnsafeError } from './mysql-sql-diagnostics.mjs';
 
 const SCOPE = ['projectId', 'environmentId', 'pluginInstanceId'];
 const MODES = ['atomic', 'autocommit', 'manual'];
 const FIELDS = {prepare:['sql','mode'], execute:['planId','confirmed'], status:[], stop:['planId'], release:[]};
 const fail = (code, message) => new AppError(code, message);
 const binding = plugin => JSON.stringify([...SCOPE.map(key => plugin[key]), plugin.revision, plugin.target.database]);
-const publicError = error => toPublicError(mysqlRuntimeInternals.mysqlError(error, 'SQL 执行失败，请检查语法、字段约束或数据库账号权限。'));
-const LIMIT = {statements:100, bytes:4 * 1024 * 1024, idle:5 * 60_000, plan:2 * 60_000, sessions:24};
+const publicError = (error, operation) => mysqlSqlPublicError(error, 'SQL 执行失败，请检查语法、字段约束或数据库账号权限。', {operation});
+const LIMIT = {statements:100, bytes:4 * 1024 * 1024, idle:5 * 60_000, plan:2 * 60_000, sessions:24, transactionEntries:100};
 
 export function prepareMysqlSqlRequest(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Object.hasOwn(FIELDS, payload.operation)) throw fail('INVALID_ARGUMENT', 'SQL 操作请求无效。');
@@ -30,6 +30,10 @@ export class DesktopMysqlSql {
   key(owner, scope, documentId) { return JSON.stringify([owner, ...SCOPE.map(key => scope[key]), documentId]); }
   snapshot(s) {
     return {documentId:s.documentId, mode:s.mode, transaction:s.transaction, status:s.status, results:structuredClone(s.results),
+      ...(s.transactionInfo && ['active','unknown'].includes(s.transaction) ? {transactionSummary:{...structuredClone(s.transactionInfo),
+        serverNow:this.now(), idleTimeoutMs:LIMIT.idle,
+        idleExpiresAt:s.transaction === 'active' && !s.busy ? s.touched + LIMIT.idle : null,
+        omittedCount:s.transactionInfo.statementCount - s.transactionInfo.entries.length}} : {}),
       ...(s.plan ? {plan:{planId:s.plan.id, requiresConfirmation:s.plan.requiresConfirmation, dangerous:s.plan.dangerous, statementCount:s.plan.items.length,
         writeCount:s.plan.items.filter(item => item.write).length, statements:s.plan.items.map((item, index) => ({index:index + 1, line:item.line, kind:item.kind, tables:item.tables, dangerous:item.dangerous}))}} : {}),
       ...(s.error ? {error:s.error} : {}), ...(s.message ? {message:s.message} : {})};
@@ -97,18 +101,29 @@ export class DesktopMysqlSql {
   async begin(s) {
     if (s.transaction === 'active') throw fail('MYSQL_SQL_TRANSACTION_ACTIVE', '当前事务尚未结束，请先提交或回滚。');
     await this.query(s, 'START TRANSACTION'); s.transaction = 'active';
+    s.transactionInfo = {id:crypto.randomUUID(), startedAt:this.now(), statementCount:0, writeCount:0, affectedRows:0, entries:[]};
+  }
+  recordTransaction(s, item, row) {
+    const info = s.transactionInfo;
+    if (s.transaction !== 'active' || !info) return;
+    info.statementCount += 1;
+    if (item.write) { info.writeCount += 1; info.affectedRows += row.affectedRows; }
+    // This is a bounded in-memory summary, never a SQL/value history or audit payload.
+    info.entries.push({sequence:info.statementCount, kind:item.kind, tables:item.tables.slice(0,20), tableCount:item.tables.length, executedAt:this.now(),
+      ...(item.write ? {affectedRows:row.affectedRows} : {})});
+    if (info.entries.length > LIMIT.transactionEntries) info.entries.shift();
   }
   effects(s, effect) { for (const row of s.results) if (row.transactionEffect === 'pending') row.transactionEffect = effect; }
   async commit(s) {
     if (s.transaction !== 'active') throw fail('MYSQL_SQL_NO_TRANSACTION', '当前没有可提交的事务。');
     s.committing = true;
-    try { await this.query(s, 'COMMIT'); s.transaction = 'none'; this.effects(s, 'committed'); }
+    try { await this.query(s, 'COMMIT'); s.transaction = 'none'; s.transactionInfo = null; this.effects(s, 'committed'); }
     catch { this.lost(s, fail('MYSQL_SQL_OUTCOME_UNKNOWN', '提交结果不确定。')); throw fail('MYSQL_SQL_OUTCOME_UNKNOWN', '提交结果不确定，请重新查询核实，勿重复提交。'); }
     finally { s.committing = false; }
   }
   async rollback(s) {
     if (s.transaction !== 'active') return;
-    await this.query(s, 'ROLLBACK'); s.transaction = 'none'; this.effects(s, 'rolledBack');
+    await this.query(s, 'ROLLBACK'); s.transaction = 'none'; s.transactionInfo = null; this.effects(s, 'rolledBack');
   }
   controls(s, items, mode) {
     let active = s.transaction === 'active';
@@ -164,7 +179,7 @@ export class DesktopMysqlSql {
       const q = (sql, values) => this.query(s, sql, values);
       if (plan.items.some(item => item.write)) {
         const [[mode]] = await q('SELECT @@SESSION.sql_mode AS sqlMode');
-        if (!/(?:^|,)STRICT_(?:TRANS|ALL)_TABLES(?:,|$)/u.test(mode.sqlMode ?? '')) throw fail('MYSQL_SQL_WRITE_UNSAFE', '当前会话未启用严格 SQL 模式，暂不执行写入。');
+        if (!/(?:^|,)STRICT_(?:TRANS|ALL)_TABLES(?:,|$)/u.test(mode.sqlMode ?? '')) throw mysqlSqlUnsafeError('strict_mode');
       }
       if (s.mode === 'atomic') { await this.begin(s); await assertMysqlSqlTables(q, plugin.target.database, plan.items); }
       for (let index = 0; index < plan.items.length; index++) {
@@ -195,6 +210,7 @@ export class DesktopMysqlSql {
               fingerprint:crypto.createHash('sha256').update(item.sql).digest('hex'), limitsApplied:{maxRows, maxBytes, timeoutMs:Math.min(plugin.limits.timeoutMs, 30_000)}};
             if (s.transaction === 'active') row.transactionEffect = 'pending';
           }
+          this.recordTransaction(s, item, row);
           if (s.mode === 'autocommit' && item.write) { await this.commit(s); row.transactionEffect = 'committed'; }
         }
         row.durationMs = this.now() - started; s.results.push(row);
@@ -210,7 +226,7 @@ export class DesktopMysqlSql {
       if (!uncertain && s.transaction === 'active') {
         try { await this.rollback(s); rolledBack = true; } catch (rollbackError) { this.lost(s, rollbackError); uncertain = true; }
       }
-      s.error = uncertain ? {code:'MYSQL_SQL_OUTCOME_UNKNOWN', message:'执行或提交期间连接中断，结果尚未确认。请在新查询标签核实，不要重复执行。'} : publicError(error);
+      s.error = uncertain ? {code:'MYSQL_SQL_OUTCOME_UNKNOWN', message:'执行或提交期间连接中断，结果尚未确认。请在新查询标签核实，不要重复执行。'} : publicError(error, current >= 0 ? plan.items[current]?.write ? 'write' : 'read' : undefined);
       s.status = uncertain ? 'unknown' : s.cancelled ? 'cancelled' : 'error';
       s.message = uncertain ? s.error.message : s.mode === 'autocommit' ? '已停止，之前成功提交的语句保持生效。' : rolledBack ? '已停止；当前未提交事务已回滚。' : '已停止，请查看各条语句的执行及提交状态。';
       const index = Math.max(0, current), item = plan.items[index];

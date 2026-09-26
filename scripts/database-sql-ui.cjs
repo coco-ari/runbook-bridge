@@ -9,7 +9,15 @@ function createSqlFixture({state = {},read,moduleRoot = path.resolve(__dirname,'
   const sessions = new Map(), executions = [], calls = [];
   const policy = import(pathToFileURL(path.join(moduleRoot,'src','desktop-mysql-sql-policy.mjs')).href);
   const key = p => JSON.stringify([p.projectId,p.environmentId,p.pluginInstanceId,p.documentId]);
+  const idleTimeoutMs=300_000;
+  const beginTransaction=s=>{
+    s.transaction='active';
+    s.transactionSummary??={id:crypto.randomUUID(),startedAt:Date.now(),idleTimeoutMs,idleExpiresAt:Date.now()+idleTimeoutMs,statementCount:0,writeCount:0,affectedRows:0,entries:[],omittedCount:0};
+  };
+  const finishTransaction=s=>{s.transaction='none';delete s.transactionSummary;};
+  const touch=s=>{if(s.transactionSummary)s.transactionSummary.idleExpiresAt=Date.now()+idleTimeoutMs;};
   const snapshot = s => structuredClone({documentId:s.documentId,mode:s.mode,transaction:s.transaction,status:s.status,results:s.results,
+    ...(['active','unknown'].includes(s.transaction)&&s.transactionSummary?{transactionSummary:{...s.transactionSummary,serverNow:Date.now(),idleExpiresAt:s.status==='running'||s.transaction==='unknown'?null:s.transactionSummary.idleExpiresAt}}:{}),
     ...(s.plan?{plan:s.plan}:{}),...(s.error?{error:s.error}:{}),...(s.message?{message:s.message}:{})});
   const response = s => ({ok:true,data:snapshot(s)});
   const failure = (code,message) => ({ok:false,error:{code,message}});
@@ -36,6 +44,7 @@ function createSqlFixture({state = {},read,moduleRoot = path.resolve(__dirname,'
       sessions.set(id,s);
       const writeCount=items.filter(item=>item.write).length;
       s.items=items;s.sql=payload.sql;s.used=false;s.cancelled=false;s.mode=payload.mode;s.status='prepared';s.error=null;s.message=null;
+      touch(s);
       s.plan={planId:crypto.randomUUID(),requiresConfirmation:writeCount>0,dangerous:items.some(item=>item.dangerous),statementCount:items.length,writeCount,
         statements:items.map((item,index)=>({index:index+1,line:item.line,kind:item.kind,tables:item.tables,dangerous:item.dangerous}))};
       return response(s);
@@ -44,7 +53,7 @@ function createSqlFixture({state = {},read,moduleRoot = path.resolve(__dirname,'
     if(payload.operation==='status') return response(s);
     if(payload.operation==='stop') {
       assert.equal(payload.planId,s.plan.planId);
-      s.cancelled=true;s.status='cancelled';s.transaction='none';s.message='执行已停止，当前未提交事务已回滚。';
+      s.cancelled=true;s.status='cancelled';finishTransaction(s);s.message='执行已停止，当前未提交事务已回滚。';
       s.results=s.items.map((item,index)=>({index:index+1,line:item.line,kind:item.kind,status:'skipped',durationMs:0,transactionEffect:'none'}));
       s.releasePending?.();return response(s);
     }
@@ -53,6 +62,7 @@ function createSqlFixture({state = {},read,moduleRoot = path.resolve(__dirname,'
     if(s.used) return response(s);
     if(s.plan.requiresConfirmation && payload.confirmed!==true) return failure('CONFIRMATION_REQUIRED','请确认生产环境写入。');
     s.used=true;s.status='running';s.results=[];
+    if(s.mode==='manual'&&s.items.some(item=>!['begin','commit','rollback'].includes(item.kind)))beginTransaction(s);
     const scope=Object.fromEntries(['projectId','environmentId','pluginInstanceId'].map(name=>[name,payload[name]]));
     executions.push({...scope,sql:s.sql});
     if(state.holdNext?.channel==='v2:mysql-sql' && state.holdNext.pluginInstanceId===payload.pluginInstanceId) {
@@ -62,27 +72,32 @@ function createSqlFixture({state = {},read,moduleRoot = path.resolve(__dirname,'
       if(s.cancelled || !sessions.has(id)) return response(s);
       s.heldResult=hold.result;
     }
+    if(state.sqlNextError){
+      s.error=state.sqlNextError;state.sqlNextError=null;s.status='error';finishTransaction(s);
+      s.results=[{index:1,line:1,kind:s.items[0].kind,status:'error',durationMs:12,error:s.error,transactionEffect:'none'}];
+      return response(s);
+    }
     if(state.sqlUnknownNext) {
       state.sqlUnknownNext=false;s.status='unknown';s.transaction='unknown';
       s.error={code:'MYSQL_SQL_OUTCOME_UNKNOWN',message:'模拟提交回复丢失，执行结果尚未确认，请先核实。'};
       s.results=[{index:1,line:1,kind:s.items[0].kind,status:'error',durationMs:12,error:s.error,transactionEffect:'unknown'}];
       return response(s);
     }
-    if(s.mode==='atomic')s.transaction='active';
+    if(s.mode==='atomic')beginTransaction(s);
     for(const [index,item] of s.items.entries()) {
       const result={index:index+1,line:item.line,kind:item.kind,status:'success',durationMs:12,transactionEffect:'none'};
-      if(item.kind==='begin') s.transaction='active';
+      if(item.kind==='begin') beginTransaction(s);
       else if(['commit','rollback'].includes(item.kind)) {
         assert.equal(s.transaction,'active','提交或回滚仅用于活动事务');
-        s.transaction='none';
+        finishTransaction(s);
       } else {
-        if(s.mode==='manual')s.transaction='active';
+        if(s.mode==='manual')beginTransaction(s);
         if(item.write) result.affectedRows=1;
         else {
           const readResult=s.heldResult?{ok:true,data:s.heldResult}:await read({...scope,sql:item.sql});
           s.heldResult=null;
           if(!readResult.ok) {
-            result.status='error';result.error=readResult.error;s.error=readResult.error;s.status='error';s.transaction='none';s.results.push(result);
+            result.status='error';result.error=readResult.error;s.error=readResult.error;s.status='error';finishTransaction(s);s.results.push(result);
             for(const previous of s.results)if(previous.transactionEffect==='pending')previous.transactionEffect='rolledBack';
             for(const [offset,rest] of s.items.slice(index+1).entries())s.results.push({index:index+offset+2,line:rest.line,kind:rest.kind,status:'skipped',durationMs:0,transactionEffect:'none'});
             return response(s);
@@ -90,10 +105,17 @@ function createSqlFixture({state = {},read,moduleRoot = path.resolve(__dirname,'
           result.data=readResult.data;
         }
         result.transactionEffect=s.mode!=='autocommit'?'pending':item.write?'committed':'none';
+        if(s.transactionSummary){
+          const summary=s.transactionSummary;
+          summary.statementCount++;summary.writeCount+=item.write?1:0;summary.affectedRows+=result.affectedRows??0;
+          summary.entries.push({sequence:summary.statementCount,kind:item.kind,tables:item.tables,...(item.write?{affectedRows:result.affectedRows}:{}),executedAt:Date.now()});
+          if(summary.entries.length>100){summary.entries.shift();summary.omittedCount++;}
+        }
       }
       s.results.push(result);
     }
-    if(s.mode==='atomic'){s.transaction='none';for(const result of s.results)if(result.transactionEffect==='pending')result.transactionEffect='committed';}
+    if(s.mode==='atomic'){finishTransaction(s);for(const result of s.results)if(result.transactionEffect==='pending')result.transactionEffect='committed';}
+    touch(s);
     s.status='success';s.message=s.transaction==='active'?'事务尚未提交。':'执行完成。';
     return response(s);
   }
@@ -202,7 +224,14 @@ async function assertSqlExecutionUi({win,fill,click,waitFor,textContains,testId,
   await click(win,testId('mysql-edit-discard-confirm'));
   await waitFor(win,`!document.querySelector('[data-query-id="${unknownId}"][role=tab]')`,'结果未知标签释放后关闭');
   await click(win,testId('mysql-sql-tab'));
+  await assertTransactionSummaryUi({win,fill,click,waitFor,testId,screenshot,state,PRIMARY_ID,setExactViewport});
 
+  // 完整数据库回归可能保留拖表生成的查询；先关闭这些已结束的查询再建立竞态场景。
+  const existing=await evaluate("[...document.querySelectorAll('[data-query-id][role=tab]')].map(e=>e.dataset.queryId)");
+  for(const extraId of existing.slice(1)) {
+    await click(win,`[data-testid=mysql-query-close][data-query-id="${extraId}"]`);
+    await waitFor(win,`!document.querySelector('[data-query-id="${extraId}"][role=tab]')`,'关闭前序用例留下的查询');
+  }
   // 主进程释放延迟时，连续关闭最后两个标签不能把工作区清成零标签。
   const remaining=await evaluate("[...document.querySelectorAll('[data-query-id][role=tab]')].map(e=>e.dataset.queryId)");
   assert.equal(remaining.length,1,'并发关闭用例从一个 SQL 标签开始');
@@ -220,6 +249,95 @@ async function assertSqlExecutionUi({win,fill,click,waitFor,textContains,testId,
   await waitFor(win,"document.querySelectorAll('[data-query-id][role=tab]').length === 1",'并发关闭后保留最后一个 SQL 标签');
   assert.equal(await evaluate("document.querySelector('[data-query-id][role=tab][aria-selected=true]')?.dataset.queryId"),remaining[0],'当前选择必须仍指向保留的 SQL 标签');
   assert.ok(await evaluate("document.querySelector('[data-testid=mysql-sql-editor]') !== null"),'最后一个 SQL 编辑器继续可用');
+}
+
+async function assertTransactionSummaryUi({win,fill,click,waitFor,testId,screenshot,state,PRIMARY_ID,setExactViewport}) {
+  const evaluate=source=>win.webContents.executeJavaScript(source,true);
+  const active='[data-query-document]:not([hidden]) ';
+  const fixture=state.sqlFixture;
+  const currentId=()=>evaluate("document.querySelector('[data-testid=mysql-sql-document-tab][aria-selected=true]').dataset.queryId");
+  const setManual=async()=>{await click(win,testId('mysql-query-mode'));await evaluate("[...document.querySelectorAll('[role=option]')].find(e=>e.textContent.includes('手动事务')).click()");};
+  const latestSession=()=>{const documentId=fixture.calls.filter(call=>call.operation==='prepare').at(-1).documentId;return [...fixture.sessions.values()].find(session=>session.documentId===documentId);};
+  const counts=async(expected)=>{
+    await waitFor(win,`(() => {const e=document.querySelector('${active}[data-testid=mysql-query-transaction-counts]');return e&&Number(e.dataset.statementCount)===${expected[0]}&&Number(e.dataset.writeCount)===${expected[1]}&&Number(e.dataset.affectedRows)===${expected[2]}})()`,'事务累计数量 '+expected.join('/'));
+  };
+  const idle=async value=>waitFor(win,`document.querySelector('${active}[data-testid=mysql-query-transaction-summary]')?.dataset.idleState === '${value}'`,'事务闲置状态 '+value);
+  await click(win,testId('mysql-query-new'));const id=await currentId();await setManual();
+  await fill(win,testId('mysql-sql-editor'),'SELECT * FROM orders WHERE 1 = 0');await click(win,testId('mysql-query-run'));
+  await counts([1,0,0]);
+  assert.match(await evaluate(`document.querySelector('${active}[data-testid=mysql-query-transaction-active]').textContent`),/查询|无写入|未发生写入/u,'查询事务不得误报已有数据修改');
+  const s=latestSession(),summaryId=s.transactionSummary.id;
+  await fill(win,testId('mysql-sql-editor'),"UPDATE orders SET label='summary-secret-business-value' WHERE id=1");
+  await click(win,testId('mysql-query-run'));await click(win,testId('mysql-query-confirm-execute'));
+  await counts([2,1,1]);assert.equal(s.transactionSummary.id,summaryId,'跨请求沿用原事务');
+  await click(win,active+testId('mysql-query-transaction-toggle'));
+  await waitFor(win,`document.querySelectorAll('${active}[data-testid=mysql-query-transaction-entry]').length === 2`,'展开跨请求事务清单');
+  const summaryText=await evaluate(`document.querySelector('${active}[data-testid=mysql-query-transaction-summary]').textContent`);
+  assert.match(summaryText,/SELECT/u);assert.match(summaryText,/UPDATE/u);assert.match(summaryText,/orders/u);
+  assert.ok(!summaryText.includes('summary-secret-business-value'),'摘要清单不包含 SQL 正文或业务值');
+  await click(win,testId('mysql-sql-tab'));
+  assert.equal(await evaluate(`document.querySelector('${active}[data-testid=mysql-query-transaction-summary]')`),null,'其他 SQL 标签不能看到本事务摘要');
+  await click(win,`[data-testid=mysql-sql-document-tab][data-query-id="${id}"]`);await counts([2,1,1]);
+  const held={channel:'v2:mysql-sql',pluginInstanceId:PRIMARY_ID,result:null};state.holdNext=held;
+  await fill(win,testId('mysql-sql-editor'),'SELECT * FROM orders WHERE 1 = 0');await click(win,testId('mysql-query-run'));
+  try {await idle('paused');assert.equal(s.transactionSummary.statementCount,2,'执行中不提前累计成功语句');}
+  finally {held.release?.();}
+  await counts([3,1,1]);
+  s.transactionSummary.startedAt=Date.now()-255_000;
+  s.transactionSummary.idleExpiresAt=Date.now()+45_000;const expires=s.transactionSummary.idleExpiresAt;
+  await idle('soon');assert.equal(s.transactionSummary.idleExpiresAt,expires,'正常状态轮询不延长截止时间');
+  const original=win.getContentSize();await setExactViewport(win,960,640);
+  const geometry=await evaluate(`(() => {const e=document.querySelector('${active}[data-testid=mysql-query-transaction-summary]'),r=e.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,overflow:document.documentElement.scrollWidth>innerWidth}})()`);
+  assert.ok(geometry.left>=0&&geometry.right<=960&&!geometry.overflow,'960宽事务摘要不得横向溢出');
+  await screenshot(win,'sql-transaction-summary');await setExactViewport(win,...original);
+  s.transactionSummary.idleExpiresAt=Date.now()-1000;
+  const beforeExpiry=fixture.executions.length;await idle('confirming');
+  await new Promise(resolve=>setTimeout(resolve,1200));
+  assert.equal(s.transaction,'active','倒计时到零不会在界面或fixture中自动宣布回滚');
+  assert.equal(fixture.executions.length,beforeExpiry,'本地倒计时不能发送提交或回滚');
+  assert.ok(await evaluate(`document.querySelector('${active}[data-testid=mysql-query-transaction-active]') !== null`));
+  s.transaction='none';s.status='cancelled';delete s.transactionSummary;s.message='SQL 会话闲置超过 5 分钟，未提交事务已回滚，连接已释放。';
+  for(const result of s.results)if(result.transactionEffect==='pending')result.transactionEffect='rolledBack';
+  await waitFor(win,`!document.querySelector('${active}[data-testid=mysql-query-transaction-active]')`,'服务端确认后清除事务摘要');
+  await waitFor(win,"document.body.textContent.includes('SQL 会话闲置超过 5 分钟')",'显示服务端闲置回滚结果');
+
+  await click(win,testId('mysql-query-run'));await counts([1,0,0]);
+  state.sqlUnknownNext=true;await fill(win,testId('mysql-sql-editor'),"UPDATE orders SET label='uncertain-summary' WHERE id=1");
+  await click(win,testId('mysql-query-run'));await click(win,testId('mysql-query-confirm-execute'));
+  await idle('unknown');
+  assert.doesNotMatch(await evaluate(`document.querySelector('${active}[data-testid=mysql-query-transaction-summary]').textContent`),/未发生写入|尚未执行|没有待提交的数据更改/u,'未知结果只能描述已确认成功的操作，不能宣称没有写入');
+  assert.equal(await evaluate(`document.querySelector('${active}[data-testid=mysql-query-transaction-time]')`),null,'未知结果不展示无法确认的倒计时');
+  await new Promise(resolve=>setTimeout(resolve,1200));
+  assert.equal(await evaluate(`document.querySelector('${active}[data-testid=mysql-query-transaction-time]')`),null,'未知结果持续暂停计时，不假装知道剩余空闲时间');
+  assert.equal(s.transactionSummary.statementCount,1,'不确定的写入不能计为成功写入');
+  await click(win,`[data-testid=mysql-query-close][data-query-id="${id}"]`);await click(win,testId('mysql-edit-discard-confirm'));
+  await waitFor(win,`!document.querySelector('[data-query-id="${id}"][role=tab]')`,'释放摘要未知状态标签');
+
+  await click(win,testId('mysql-query-new'));const zeroUnknownId=await currentId();await setManual();state.sqlUnknownNext=true;
+  await fill(win,testId('mysql-sql-editor'),"UPDATE orders SET label='unknown-before-first-ack' WHERE id=1");
+  await click(win,testId('mysql-query-run'));await click(win,testId('mysql-query-confirm-execute'));
+  await idle('unknown');await counts([0,0,0]);
+  assert.equal(await evaluate(`document.querySelectorAll('${active}[data-testid=mysql-query-transaction-entry]').length`),0);
+  assert.doesNotMatch(await evaluate(`document.querySelector('${active}[data-testid=mysql-query-transaction-summary]').textContent`),/未发生写入|尚未执行|没有待提交的数据更改/u,'首条写入结果未知且零摘要，不能误报没有执行或写入');
+  await click(win,active+testId('mysql-query-transaction-toggle'));
+  await screenshot(win,'sql-transaction-unknown-empty');
+  await click(win,`[data-testid=mysql-query-close][data-query-id="${zeroUnknownId}"]`);await click(win,testId('mysql-edit-discard-confirm'));
+  await waitFor(win,`!document.querySelector('[data-query-id="${zeroUnknownId}"][role=tab]')`,'释放尚无成功应答的未知事务标签');
+
+  await click(win,testId('mysql-query-new'));const permissionId=await currentId();
+  state.sqlNextError={code:'MYSQL_SQL_WRITE_UNSAFE',message:'无法确认目标表的触发器元数据可见性，已停止本次写入检查。',details:{reason:'trigger_visibility',driverMessage:'fixture-private-driver-user-and-host'}};
+  await fill(win,testId('mysql-sql-editor'),"UPDATE orders SET label='permission-fixture' WHERE id=1");
+  await click(win,testId('mysql-query-run'));await click(win,testId('mysql-query-confirm-execute'));
+  await waitFor(win,`document.querySelector('${active}[data-testid=diagnostic-details]')?.textContent.includes('TRIGGER')`,'结构化权限建议');
+  await click(win,active+'[data-testid=diagnostic-details] summary');
+  const details=await evaluate(`document.querySelector('${active}[data-testid=diagnostic-details]').textContent`);
+  assert.match(details,/直接|角色/u);assert.ok(!details.includes('fixture-private-driver-user-and-host'));
+  await evaluate(`[...document.querySelectorAll('${active}[data-testid=diagnostic-details] button')].find(e=>e.textContent.includes('复制诊断')).click()`);
+  await waitFor(win,`document.querySelector('${active}[data-testid=diagnostic-details]')?.textContent.includes('已复制')`,'复制安全权限诊断');
+  const copied=await evaluate('window.__databaseClipboardWrites.at(-1)');
+  assert.match(copied,/TRIGGER/u);assert.ok(!copied.includes('fixture-private-driver-user-and-host'));
+  await screenshot(win,'sql-permission-guidance');
+  await click(win,`[data-testid=mysql-query-close][data-query-id="${permissionId}"]`);await click(win,testId('mysql-sql-tab'));
 }
 
 module.exports={createSqlFixture,assertSqlExecutionUi};
