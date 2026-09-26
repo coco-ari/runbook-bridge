@@ -222,6 +222,15 @@ async function run() {
   checkFailure = true; await clickTestId('cloud-check');
   await wait('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("检测失败")');
   assert.equal(await js('document.querySelectorAll("[data-testid=cloud-project-card]").length'),projectCount,'离线保留缓存项目');
+  await clickTestId('settings-back');
+  await wait('!document.querySelector("[data-testid=settings-page]")');
+  await wait(`document.querySelectorAll('#project-list [data-cloud-status=error]').length === ${projectCount}`);
+  assert.equal(await js('document.querySelectorAll("#project-list [data-cloud-status=error] [data-status=disconnected]").length'),projectCount,'云检测失败时未连接项目仍显示灰色圆圈');
+  assert.equal(await js('Boolean(document.querySelector("#project-list [data-cloud-notice=error]"))'),false,'云仓库故障不得显示为项目连接错误');
+  assert.equal(await singleStatus(),true,'检测失败后仍只保留单个状态位');
+  assert.match(await js('document.querySelector("button[data-project-id=cloud-demo]").getAttribute("aria-label")'),/未连接.*团队仓库.*检测失败/,'悬停和无障碍提示保留云检测失败信息');
+  await openSettings();
+  assert.equal(await js('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("检测失败")'),true,'云配置页面继续提示检测故障');
   checkFailure = false; await clickTestId('cloud-check');
   await wait('!document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("检测失败")');
   await store.updateProject(project.projectId,{name:'本地尚未上传的修改'});

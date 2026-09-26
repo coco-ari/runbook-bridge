@@ -100,13 +100,13 @@ function normalizeProjectQuery(value: string): string {
 
 function ProjectListStatus({ project, linked, hasActions = true }: { project: WorkspaceProjectReadModel; linked?: CloudLinkedProject | undefined; hasActions?: boolean }) {
   const syncStatus = linked?.syncStatus
+  // Cloud check failures belong in the tooltip/settings, not the connection indicator.
   const NoticeIcon = syncStatus === "behind" || syncStatus === "remote" ? DownloadSimple
     : syncStatus === "modified" ? PencilSimple
-    : syncStatus === "error" ? WarningCircle
     : syncStatus === "locked" ? LockKey : null
   const showNotice = NoticeIcon && !project.isolated && (project.status === "connected" || project.status === "disconnected")
   return <span aria-hidden="true" className={cn("grid size-3 shrink-0 place-items-center", hasActions && "group-hover/menu-item:opacity-0 group-focus-within/menu-item:opacity-0 group-has-[[data-sidebar=menu-action][aria-expanded=true]]/menu-item:opacity-0")} data-project-compact-status data-project-status-badge data-cloud-status={syncStatus}>
-    {showNotice ? <NoticeIcon data-cloud-notice={syncStatus} className={cn("size-3", syncStatus === "behind" ? "text-primary" : syncStatus === "modified" ? "text-warning" : syncStatus === "error" ? "text-destructive" : "text-muted-foreground")} /> : project.status === "disconnected" ? (
+    {showNotice ? <NoticeIcon data-cloud-notice={syncStatus} className={cn("size-3", syncStatus === "behind" ? "text-primary" : syncStatus === "modified" ? "text-warning" : "text-muted-foreground")} /> : project.status === "disconnected" ? (
       <span className="grid size-3 place-items-center" data-status="disconnected" title={statusLabel(project.status)}>
         <span className="size-[7px] rounded-full border border-muted-foreground" />
       </span>
