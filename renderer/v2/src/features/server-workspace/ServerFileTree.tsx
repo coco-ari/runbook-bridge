@@ -42,13 +42,14 @@ interface ServerFileTreeProps {
   readonly pathDrag: WorkspacePathDrag
   readonly invalidatedPath: Readonly<{ path: string; id: number }> | null
   readonly locateFile?: Readonly<{ path: string; id: number }> | null
+  readonly activeFilePath: string | null
   readonly terminalSessionId: string | null
   readonly terminalLabel?: string
   readonly refreshEpoch: number
   readonly refreshPaths: readonly string[]
 }
 
-export function ServerFileTree({ api, scope, connected, serverLabel, visible, path, onPath, onPreview, onUpload, onUploadFiles, onPasteFiles, uploadBlocked, onDownload, downloadBusy, pathDrag, refreshEpoch, refreshPaths, invalidatedPath, locateFile, terminalSessionId, terminalLabel }: ServerFileTreeProps) {
+export function ServerFileTree({ api, scope, connected, serverLabel, visible, path, onPath, onPreview, onUpload, onUploadFiles, onPasteFiles, uploadBlocked, onDownload, downloadBusy, pathDrag, refreshEpoch, refreshPaths, invalidatedPath, locateFile, activeFilePath, terminalSessionId, terminalLabel }: ServerFileTreeProps) {
   const [dropTarget, setDropTarget] = useState<string | null>(null)
   const canReceiveFiles = connected && visible && !uploadBlocked
   const pasteShortcut = /Mac/iu.test(navigator.platform) ? "⌘V" : "Ctrl+V"
@@ -110,6 +111,7 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
   const [selected, setSelected] = useState("/")
   const [reveal, setReveal] = useState<Readonly<{ path: string; id: number; expectDirectory?: boolean; terminalSessionId?: string }> | null>(null)
   const [revealError, setRevealError] = useState("")
+  const [pendingFileLocation, setPendingFileLocation] = useState<string | null>(null)
   const revealSequenceRef = useRef(0)
   const revealLoadedRef = useRef(new Set<string>())
   const revealOriginRef = useRef<{ directories: Record<string, DirectoryState>; expanded: ReadonlySet<string>; scrollTop: number; requestSequence: number } | null>(null)
@@ -141,6 +143,7 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
   useEffect(() => { if (editingPath) { pathInputRef.current?.focus(); pathInputRef.current?.select() } }, [editingPath])
 
   const cancelPendingReveal = () => {
+    setPendingFileLocation(null)
     const origin = revealOriginRef.current
     if (origin) {
       const cancelled = new Set<string>()
@@ -369,11 +372,19 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
     } else if (previewFile && serverEntryType(entry) === "file") onPreview(entry)
   }
 
-  useEffect(() => {
-    if (!locateFile || !connected) return
-    revealPath(locateFile.path)
-    void load(parentRemotePath(locateFile.path))
-  }, [locateFile])
+  const locateWorkspaceFile = (target: string) => {
+    if (!connected) return
+    if (filter || (!showHidden && target.split("/").some(part => part.startsWith(".")))) {
+      revealSequenceRef.current += 1
+      cancelPendingReveal()
+      setRevealError("")
+      setPendingFileLocation(target)
+      return
+    }
+    revealPath(target)
+    void load(parentRemotePath(target))
+  }
+  useEffect(() => { if (locateFile) locateWorkspaceFile(locateFile.path) }, [locateFile])
 
   const beginPathEditing = () => {
     revealSequenceRef.current += 1
@@ -669,6 +680,10 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
   useLayoutEffect(() => {
     const element = scrollRef.current
     if (!element || !reveal || !connected || !visible || (reveal.terminalSessionId && reveal.terminalSessionId !== terminalSessionId)) return
+    // 文件入口同时刷新所在目录，等新列表确认目标，避免高亮已被删除的缓存项。
+    const parent = parentRemotePath(reveal.path)
+    if (directories[parent]?.loading || requestsRef.current.has(parent)) return
+    if (directories[parent]?.error) { failReveal(directories[parent]!.error!); return }
     const index = treeRows.findIndex((row) => row.kind === "entry" && row.entry.path === reveal.path)
     if (index < 0) return
     const row = treeRows[index]!
@@ -754,7 +769,7 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
         <DirectoryBookmarks key={directoryBookmarksKey(scope)} scope={scope} path={path} connected={connected} visible={visible} onNavigate={target => revealPath(target, true)} />
         <Button size="icon-sm" variant="ghost" hidden={details} aria-label="收起所有目录" title="收起所有目录" onClick={() => { revealSequenceRef.current += 1; cancelPendingReveal(); cancelQueuedDirectoryReads(); setExpanded(new Set()); if (scrollRef.current) scrollRef.current.scrollTop = 0 }}><CaretUpDown /></Button>
         <Button size="icon-sm" variant="ghost" aria-label="显示隐藏文件" title={showHidden ? "隐藏点文件" : "显示隐藏文件"} aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}>{showHidden ? <Eye /> : <EyeSlash />}</Button>
-        <Button size="icon-sm" variant="ghost" aria-label="定位终端当前目录" title={terminalLabel ? "定位 " + terminalLabel + " 的工作目录" : "定位当前终端的工作目录"} disabled={!connected || !terminalSessionId || locatingTerminal} onClick={() => { void locateTerminalDirectory() }}>{locatingTerminal ? <SpinnerGap className="animate-spin" /> : <Crosshair />}</Button>
+        <Button size="icon-sm" variant="ghost" aria-label={activeFilePath ? "定位当前文件" : "定位终端当前目录"} title={activeFilePath ? "在目录树中定位：" + activeFilePath : terminalLabel ? "定位 " + terminalLabel + " 的工作目录" : "定位当前终端的工作目录"} disabled={!connected || (!activeFilePath && (!terminalSessionId || locatingTerminal))} onClick={() => { if (activeFilePath) locateWorkspaceFile(activeFilePath); else void locateTerminalDirectory() }}>{!activeFilePath && locatingTerminal ? <SpinnerGap className="animate-spin" /> : <Crosshair />}</Button>
         <WorkspaceIconButton action="refresh" label="刷新目录" disabled={!connected || refreshing} busy={refreshing} onClick={() => { void refreshVisibleDirectories() }} />
         <Button size="icon-sm" variant="ghost" title={`上传文件，也可选择目录后按 ${pasteShortcut} 或拖入本地文件`} aria-label="上传文件" disabled={!canReceiveFiles} onClick={onUpload}><UploadSimple /></Button>
       </div>
@@ -775,6 +790,12 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
     {details ? <><div className="server-file-filter"><Input aria-label="筛选当前目录已加载项" placeholder="筛选已加载的文件名…" maxLength={128} value={filter} onChange={event => { setFilter(event.target.value); if (scrollRef.current) scrollRef.current.scrollTop = 0 }} /><span>{directories[path]?.page?.entries.length ?? 0} 项已加载</span></div>
       <div className="server-file-columns">{([['name', '名称'], ['size', '大小'], ['mtime', '修改时间']] as const).map(([field, label]) => <button type="button" key={field} aria-label={`按${label}排序`} aria-pressed={sort === field} onClick={() => { setSort(field); setDescending(sort === field ? !descending : false); if (scrollRef.current) scrollRef.current.scrollTop = 0 }}>{label}{sort === field ? descending ? " ↓" : " ↑" : ""}</button>)}<span /></div></> : null}
     {revealError ? <div className="px-3 py-2 text-xs text-danger" role="status">{revealError}</div> : null}
+    {pendingFileLocation ? <div className="px-3 py-2 text-xs text-muted-foreground" role="status">
+      <p>目标可能被筛选或隐藏设置遮挡。定位时将清除名称筛选，并按需显示隐藏文件。</p>
+      <p className="truncate font-mono" title={pendingFileLocation}>{pendingFileLocation}</p>
+      <Button size="sm" variant="ghost" disabled={!connected} onClick={() => { revealPath(pendingFileLocation); void load(parentRemotePath(pendingFileLocation)) }}>显示并定位</Button>
+      <Button size="sm" variant="ghost" onClick={() => setPendingFileLocation(null)}>取消</Button>
+    </div> : null}
     <ServerFileMenu api={api} scope={scope} serverLabel={serverLabel} connected={connected} visible={visible} downloadBusy={downloadBusy} onDownload={onDownload}
       resolveTarget={element => {
         const rowElement = element.closest<HTMLElement>("[data-tree-index]")

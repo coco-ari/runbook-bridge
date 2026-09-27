@@ -5,12 +5,14 @@ import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { changedRange, textFormat } from "./file-editor-model"
 import { RemoteTextCode } from "./RemoteTextCode"
+import { ServerFilePath } from "./ServerFilePath"
 import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
 import { formatTransferBytes, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
 
-export function ServerFileEditor({ api, scope, path, connected, targetLabel, onState, onExit, onSaved }: {
+export function ServerFileEditor({ api, scope, path, connected, targetLabel, onState, onExit, onSaved, onLocate }: {
   api: AiOpsV2Api; scope: PluginScope; path: string; connected: boolean; targetLabel: string
   onState: (path: string, dirty: boolean, busy: boolean) => void; onExit: () => void; onSaved: (path: string) => void
+  onLocate: (path: string) => void
 }) {
   const [edit, setEdit] = useState<ServerFileEditState | null>(null)
   const [draft, setDraft] = useState("")
@@ -110,7 +112,7 @@ export function ServerFileEditor({ api, scope, path, connected, targetLabel, onS
   const beforeRange = useMemo(() => difference ? { start: difference.start, end: difference.oldEnd, kind: "before" as const } : undefined, [difference])
   const afterRange = useMemo(() => difference ? { start: difference.start, end: difference.newEnd, kind: "after" as const } : undefined, [difference])
   return <div className="server-file-editor" data-testid="server-file-editor">
-    <div className="server-workspace-toolbar server-edit-toolbar"><span className="truncate font-mono text-xs" title={path}>{path}</span><div className="flex shrink-0 items-center gap-1">
+    <div className="server-workspace-toolbar server-edit-toolbar"><ServerFilePath path={path} connected={connected} onLocate={onLocate} /><div className="flex shrink-0 items-center gap-1">
       <Button size="sm" disabled={!connected || busy || !dirty || Boolean(plan) || edit?.status === "unknown"} onClick={prepare} title="Ctrl / ⌘ + S"><FloppyDisk />检查并保存</Button>
       <Button size="sm" variant="ghost" disabled={busy || Boolean(plan)} onClick={() => exitOrReload("exit")}>结束编辑</Button>
     </div></div>

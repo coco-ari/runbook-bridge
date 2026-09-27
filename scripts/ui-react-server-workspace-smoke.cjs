@@ -37,7 +37,7 @@ const directoryLifecycle = directoryScenario ? require(directoryScenario).create
 const directoryState = { requests: [], delay: 0, fail: false };
 const previewReads = [];
 const productivityLog = { content:null, mtime:1, reads:[] };
-const fileEditProbe = {content:'\uFEFF# 示例配置\r\nport = 8080\r\n',writes:0,unknown:false,audits:[]};
+const fileEditProbe = {content:'\uFEFF# 示例配置\r\nport = 8080\r\n',writes:0,reads:0,unknown:false,audits:[]};
 const downloadReveals = [];
 const downloadRetries = [];
 const dockerState = { reads:[], cancels:[], delay:0, missing:false };
@@ -704,7 +704,7 @@ async function run() {
   if (process.env.RUNBOOK_BRIDGE_FILE_EDITOR_SMOKE === '1') {
     const {textHash,sameTextSnapshot}=await import('../src/server-text-edit.mjs');
     const current=()=>({content:fileEditProbe.content,size:Buffer.byteLength(fileEditProbe.content),sha256:textHash(fileEditProbe.content),mtime:1,mode:0o100640,uid:1,gid:1});
-    workspaceFiles.serverRuntime.readWorkspaceText=async()=>current();
+    workspaceFiles.serverRuntime.readWorkspaceText=async()=>{fileEditProbe.reads++;return current();};
     workspaceFiles.workspaceStore.appendAudit=async(_projectId,audit)=>fileEditProbe.audits.push(audit);
     workspaceFiles.serverRuntime.writeWorkspaceText=async(_plugin,args,options)=>{
       await wait(200);await options.beforeCommit();
@@ -986,7 +986,7 @@ async function run() {
   }
   if (process.env.RUNBOOK_BRIDGE_FILE_EDITOR_SMOKE === '1') {
     releaseRootMetadata();
-    await require('./workspace-file-editor-ui.cjs')({evaluate,click,doubleClick,clickText,until,wait,win,setViewport,snapshot,nativeTheme,errors,probe:fileEditProbe,publishRecovery});
+    await require('./workspace-file-editor-ui.cjs')({evaluate,click,doubleClick,clickText,until,wait,win,setViewport,snapshot,nativeTheme,errors,probe:fileEditProbe,publishRecovery,previewReads,opened,closed,terminalSessions,removedPaths,directoryState});
     completed=true;
     process.stdout.write(JSON.stringify({ok:true,fileEditor:true,saves:fileEditProbe.writes})+'\n');
     return;
@@ -1250,6 +1250,7 @@ async function run() {
   await wait(400);
   assert.equal(await evaluate("document.querySelector('[role=tab][title=\"/srv/example.log\"]') !== null"), false, '关闭加载中的文件不会被迟到响应重新打开');
   previewDelay = 0;
+  await click('[role=tab][title="终端 1"]');
   await key('c', 67, true);
   assert.ok(writes.some((item) => item.data === '\x03'), 'Ctrl+C送到交互会话');
   const pasted = 'cat <<EOF\r\n  第一行\r\n\r\n第二行\r\nEOF';
@@ -1305,7 +1306,9 @@ async function run() {
   await assertWorkspaceCoexistence();
   await click('[data-testid="plugin-open-workspace"]');
   assert.equal(opened.length, 1, '返回重开保留同一终端');
-  assert.ok(await evaluate(`document.querySelector('.server-preview-tab-panel:not([hidden]) .server-preview-content')?.textContent.includes('server_name')`), '返回保留预览');
+  await click('[role=tab][title="/srv/example.conf"]');
+  assert.ok(await evaluate(`document.querySelector('.server-preview-tab-panel:not([hidden]) .server-preview-content')?.textContent.includes('server_name')`), '返回后切换文件仍保留预览');
+  await click('[role=tab][title="终端 1"]');
   uploadSelection = ['cancelled-large.bin'];
   reviewHeld = true; reviewReadDelay = 700;
   await clickText('上传文件');
@@ -1433,7 +1436,7 @@ async function run() {
   await nativePaste('late-paste-must-not-arrive', true);
   const firstTerminal = opened[0];
   await click('[aria-label="新增终端"]');
-  await until("document.querySelectorAll('[aria-label=终端标签] [role=tab]').length === 2", '新增终端标签');
+  await until("document.querySelectorAll('.server-terminal-tab-panel').length === 2", '新增终端标签');
   await wait(200);
   const secondTerminal = opened.at(-1);
   await wait(500);

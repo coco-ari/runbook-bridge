@@ -61,13 +61,13 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose, onDirtyC
   const [activeDocker, setActiveDocker] = useState<string | null>(null)
   const [dockerTabError, setDockerTabError] = useState("")
   const [activeTerminalLabel, setActiveTerminalLabel] = useState("")
+  const [activeFilePath, setActiveFilePath] = useState<string | null>(null)
   const dockerTarget = JSON.stringify([scope, entry.plugin.target, entry.plugin.auth, entry.plugin.uplink])
   const dockerBinding = dockerTarget + ":" + entry.plugin.revision + ":" + connected
   const [path, setPath] = useState("/")
   const [activeTerminalSessionId, setActiveTerminalSessionId] = useState<string | null>(null)
   const [maximized, setMaximized] = useState(false)
   const [previewRequest, setPreviewRequest] = useState<Readonly<{ file: ServerDirectoryEntry; id: number }> | null>(null)
-  const [previewOpen, setPreviewOpen] = useState(false)
   const [fileEditing, setFileEditing] = useState({ dirty: false, busy: false })
   useEffect(() => { onDirtyChange?.(fileEditing.dirty || fileEditing.busy) }, [fileEditing.dirty, fileEditing.busy, onDirtyChange])
   const pathDrag = useMemo(() => createWorkspacePathDrag(), [scope])
@@ -106,13 +106,15 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose, onDirtyC
   const downloadPickerRef = useRef(false)
   const visibleRef = useRef(visible)
   const treePanelRef = usePanelRef()
-  const previewPanelRef = usePanelRef()
-  const expandEditor = useCallback(() => { previewPanelRef.current?.resize("60%") }, [previewPanelRef])
   const refreshEditedFile = useCallback((savedPath: string) => { setRefreshPaths([parentRemotePath(savedPath)]); setRefreshEpoch(value => value + 1) }, [])
+  const locateFile = useCallback((path: string) => {
+    if (connected) setFileLocation(previous => ({ path, id: (previous?.id ?? 0) + 1 }))
+  }, [connected])
   const selectResource = (next:ServerResource) => {
     setResource(next)
     setMaximized(false)
     treePanelRef.current?.expand()
+    if (next === "files" && activeFilePath) locateFile(activeFilePath)
   }
   const openContainer = (container:DockerContainer) => {
     if (!dockerTabs.some(item => item.id === container.id)) {
@@ -189,11 +191,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose, onDirtyC
   useEffect(() => {
     if (maximized) treePanelRef.current?.collapse()
     else treePanelRef.current?.expand()
-    if (previewOpen && !maximized) {
-      previewPanelRef.current?.expand()
-      previewPanelRef.current?.resize("40%")
-    } else previewPanelRef.current?.collapse()
-  }, [maximized, previewOpen, previewPanelRef, treePanelRef])
+  }, [maximized, treePanelRef])
 
   const openPreview = useCallback((file: ServerDirectoryEntry) => {
     if (!connected || serverEntryType(file) !== "file") return
@@ -400,15 +398,15 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose, onDirtyC
       <ServerResourceRail active={resource} onSelect={selectResource} />
       <ResizablePanelGroup orientation="horizontal" id={`${panelId}-panels`}>
         <ResizablePanel id={`${panelId}-files`} defaultSize="320px" minSize="240px" maxSize="50%" collapsible collapsedSize={0} panelRef={treePanelRef}>
-          <div className="server-resource-panel" hidden={resource !== "files"}><ServerFileTree serverLabel={`${entry.projectName} / ${entry.environmentName} / ${entry.plugin.displayName} · ${sshIdentity}`} terminalLabel={activeTerminalLabel} terminalSessionId={activeTerminalSessionId} api={api} scope={scope} connected={connected} visible={visible && resource === "files"} path={path} onPath={setPath} onPreview={(file) => { void openPreview(file) }} onUpload={() => { void pickUpload() }} onUploadFiles={(target, files) => { void pickUpload(target, files) }} onPasteFiles={target => { void pickUpload(target, undefined, true) }} uploadBlocked={uploadPreparing || Boolean(preparation) || uploadConfirming || Boolean(resumingJobId)} onDownload={file => { void downloadFile(file) }} downloadBusy={downloadPicking} pathDrag={pathDrag} refreshEpoch={refreshEpoch} refreshPaths={refreshPaths} invalidatedPath={invalidatedPath} locateFile={fileLocation} /></div>
+          <div className="server-resource-panel" hidden={resource !== "files"}><ServerFileTree serverLabel={`${entry.projectName} / ${entry.environmentName} / ${entry.plugin.displayName} · ${sshIdentity}`} terminalLabel={activeTerminalLabel} activeFilePath={activeFilePath} terminalSessionId={activeFilePath ? null : activeTerminalSessionId} api={api} scope={scope} connected={connected} visible={visible && resource === "files"} path={path} onPath={setPath} onPreview={(file) => { void openPreview(file) }} onUpload={() => { void pickUpload() }} onUploadFiles={(target, files) => { void pickUpload(target, files) }} onPasteFiles={target => { void pickUpload(target, undefined, true) }} uploadBlocked={uploadPreparing || Boolean(preparation) || uploadConfirming || Boolean(resumingJobId)} onDownload={file => { void downloadFile(file) }} downloadBusy={downloadPicking} pathDrag={pathDrag} refreshEpoch={refreshEpoch} refreshPaths={refreshPaths} invalidatedPath={invalidatedPath} locateFile={fileLocation} /></div>
           <div className="server-resource-panel" hidden={resource !== "docker"}><ServerDockerTree api={api} scope={scope} connected={connected} visible={visible && resource === "docker"} binding={dockerBinding} onOpen={openContainer} selected={activeDocker} /></div>
         </ResizablePanel>
         <ResizableHandle className={maximized ? "hidden" : ""} aria-label="调整文件树宽度" />
         <ResizablePanel id={`${panelId}-console`} minSize="280px">
-          <ServerTerminalTabs onActiveSessionChange={setActiveTerminalSessionId} onActiveTerminalLabel={setActiveTerminalLabel} api={api} scope={scope} visible={visible} connected={connected} connection={terminalState} maximized={maximized} onMaximize={() => setMaximized(value => !value)} layoutControls={`${panelId}-files`} pathDrag={pathDrag}
-            dockerTabs={dockerTabs} activeDocker={activeDocker} onDockerSelect={setActiveDocker} onDockerClose={closeContainer} binding={dockerBinding}
-            previewOpen={previewOpen} previewPanelRef={previewPanelRef}
-            preview={<ServerFilePreviews api={api} scope={scope} connected={connected} visible={visible && !maximized && activeDocker === null} request={previewRequest} onOpenChange={setPreviewOpen} onStale={invalidatePreviewPath} targetLabel={`${entry.projectName} / ${entry.environmentName} / ${entry.plugin.displayName} · ${sshIdentity}`} onEditState={setFileEditing} onSaved={refreshEditedFile} onEditOpen={expandEditor} />} />
+          <ServerFilePreviews api={api} scope={scope} connected={connected} visible={visible} request={previewRequest} onStale={invalidatePreviewPath} targetLabel={`${entry.projectName} / ${entry.environmentName} / ${entry.plugin.displayName} · ${sshIdentity}`} onEditState={setFileEditing} onSaved={refreshEditedFile} onLocate={locateFile}>
+            {files => <ServerTerminalTabs onActiveSessionChange={setActiveTerminalSessionId} onActiveTerminalLabel={setActiveTerminalLabel} onActiveFileChange={setActiveFilePath} api={api} scope={scope} visible={visible} connected={connected} connection={terminalState} maximized={maximized} onMaximize={() => setMaximized(value => !value)} layoutControls={`${panelId}-files`} pathDrag={pathDrag}
+              dockerTabs={dockerTabs} activeDocker={activeDocker} onDockerSelect={setActiveDocker} onDockerClose={closeContainer} binding={dockerBinding} files={files} />}
+          </ServerFilePreviews>
         </ResizablePanel>
       </ResizablePanelGroup>
     </div>
