@@ -38,12 +38,14 @@ export interface ServerTerminalProps {
   readonly api: AiOpsV2Api
   readonly scope: PluginScope
   readonly visible: boolean
+  readonly focused?: boolean
   readonly connected: boolean
   readonly connection: TerminalConnection
   readonly pathDrag: WorkspacePathDrag
 }
 
-export function ServerTerminal({ tabId, api, scope, visible, connected, connection, pathDrag, onSessionChange }: ServerTerminalProps) {
+export function ServerTerminal({ tabId, api, scope, visible, focused = true, connected, connection, pathDrag, onSessionChange }: ServerTerminalProps) {
+  const focusedRef = useRef(focused)
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
@@ -85,7 +87,8 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
   const { theme } = useTheme()
   const themeRef = useRef(theme)
   themeRef.current = theme
-  if (visibleRef.current !== visible) interactionEpochRef.current += 1
+  if (visibleRef.current !== visible || focusedRef.current !== focused) interactionEpochRef.current += 1
+  focusedRef.current = focused
   visibleRef.current = visible
   connectedRef.current = connected
   connectionRef.current = connection
@@ -213,7 +216,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
       resize()
       setReconnected(automatic)
       // 自动恢复不改变焦点；手动打开也不抢走等待期间用户移到其他控件的焦点。
-      if (!automatic && connectedRef.current && visibleRef.current && document.activeElement === focusAtStart) terminal.focus()
+      if (!automatic && connectedRef.current && visibleRef.current && focusedRef.current && document.activeElement === focusAtStart) terminal.focus()
       window.clearTimeout(stableTimerRef.current)
       stableTimerRef.current = window.setTimeout(() => {
         if (generation === generationRef.current && sessionRef.current === session.sessionId) recoveryAttemptsRef.current = 0
@@ -418,14 +421,15 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
   }, [resize, theme, visible])
 
   useEffect(() => {
-    if (!visible) return
+    if (!visible || !focused) return
     const focusAtStart = document.activeElement
+    if (containerRef.current?.closest(".server-terminal-tab-panel")?.contains(focusAtStart)) return
     // 显示终端后可恢复输入焦点，但不能覆盖用户随后打开的菜单、搜索框或弹窗。
     const frame = requestAnimationFrame(() => {
       if (document.activeElement === focusAtStart || document.activeElement === document.body) terminalRef.current?.focus()
     })
     return () => cancelAnimationFrame(frame)
-  }, [visible])
+  }, [visible, focused])
 
   const acceptsPathDrop = visible && connected && status === "open" && !paste && !colorHelp
   useEffect(() => { if (!acceptsPathDrop) setPathDragOver(false) }, [acceptsPathDrop])
@@ -445,7 +449,7 @@ export function ServerTerminal({ tabId, api, scope, visible, connected, connecti
   const colorCommand = `${directoryColorCommand}; ${PASTE_COLORS_COMMAND}`
   const lines = paste.replace(/\r\n?/gu, "\n").split("\n")
   return (
-    <section className="server-terminal-pane" aria-label="交互式 SSH 终端" data-testid="server-terminal" onKeyDownCapture={event => {
+    <section className="server-terminal-pane" data-session-status={status} aria-label="交互式 SSH 终端" data-testid="server-terminal" onKeyDownCapture={event => {
       const modifier = isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey
       if (!visible || !searchEngine || !modifier || event.altKey || event.shiftKey || event.nativeEvent.isComposing || event.key.toLowerCase() !== "f") return
       // 仅处理当前终端面板内的快捷键，兼容断线与搜索框聚焦，不拦截弹窗输入。

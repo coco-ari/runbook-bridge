@@ -4,7 +4,9 @@
 >
 > 状态：已采用。
 >
-> 范围：桌面 Server 插件详情中的人工终端、目录浏览、只读预览和文件上传；不增加 MCP 工具。
+> 范围：桌面 Server 插件详情中的人工终端、目录浏览、预览、远程文本编辑和文件传输；不增加 MCP 工具。
+
+远程文本编辑接入现有文件预览标签：完整 UTF-8 文本、1 MiB 上限、保存前后对照、哈希冲突检查、原子替换及会话内上一版本恢复。入口、限制和接口契约详见 [桌面文件编辑与传输](desktop-file-transfers.md#远程文本编辑)。
 
 ## 入口与交互
 
@@ -130,7 +132,7 @@ Tabby 当前主分支的 SSH 已采用 `russh`，不能据此认为本项目需�
 corepack pnpm run test:ui:server-workspace
 ```
 
-该命令构建正式 Renderer，再运行 `scripts/ui-react-server-workspace-smoke.cjs`，使用真实 Electron/xterm 渲染与 mock IPC 验证详情入口、目录预览、连续输入、多行粘贴、中文超限粘贴、返回保留、上传目标固定、完整路径复制、文件重新检查失败重试、移除文件后覆盖重选、多文件与长路径布局、上传后文件定位、目录链接展开、文件链接预览、循环链接停止、链接上传的实际目标提示、多文件切换与关闭竞态、多终端输入与后台输出隔离、ANSI 分类颜色、新终端自动配色开关及手动配色命令不自动回车、缓存导航零重复请求、视口外目录定位与高亮、同级及展开状态保留、文件及父目录删除恢复、权限失败不清缓存、虚拟列表及窄窗口布局。`corepack pnpm run test:ui:all` 已串联该专项和其他桌面 UI smoke。本次工作区专项 UI、`corepack pnpm run test:ui`、`corepack pnpm run dist` 均已通过；正式安装包的 `verify-package.mjs`、`packaged-mcp-smoke.mjs` 和 `packaged-ui-smoke.cjs` 也已通过，当时覆盖 90 个桌面 preload API 与 40 个 MCP 工具；当前桌面接口为 111 个，实际包覆盖以 `packaged-ui-smoke.cjs` 和 `packaged-mcp-smoke.mjs` 的本次输出为准。
+该命令构建正式 Renderer，再运行 `scripts/ui-react-server-workspace-smoke.cjs`，使用真实 Electron/xterm 渲染与 mock IPC 验证详情入口、目录预览、连续输入、多行粘贴、中文超限粘贴、返回保留、上传目标固定、完整路径复制、文件重新检查失败重试、移除文件后覆盖重选、多文件与长路径布局、上传后文件定位、目录链接展开、文件链接预览、循环链接停止、链接上传的实际目标提示、多文件切换与关闭竞态、多终端输入与后台输出隔离、ANSI 分类颜色、新终端自动配色开关及手动配色命令不自动回车、缓存导航零重复请求、视口外目录定位与高亮、同级及展开状态保留、文件及父目录删除恢复、权限失败不清缓存、虚拟列表及窄窗口布局。`corepack pnpm run test:ui:all` 已串联该专项和其他桌面 UI smoke。本次工作区专项 UI、`corepack pnpm run test:ui`、`corepack pnpm run dist` 均已通过；正式安装包的 `verify-package.mjs`、`packaged-mcp-smoke.mjs` 和 `packaged-ui-smoke.cjs` 也已通过，当时覆盖 90 个桌面 preload API 与 40 个 MCP 工具；当前桌面接口为 113 个，实际包覆盖以 `packaged-ui-smoke.cjs` 和 `packaged-mcp-smoke.mjs` 的本次输出为准。
 
 后续修改至少保持以下回归：
 
@@ -160,7 +162,7 @@ corepack pnpm run test:ui:server-workspace
 
 上传进度按 SSH2 的服务器确认写入量统计，显示最近约五秒的速度与预计剩余时间；检查源文件、最终校验及完成阶段不显示传输估算。五秒无新增确认时显示等待服务器响应。上传连续 90 秒没有确认进展会中止；总时限按文件大小和 16 KiB/s 的保守速率估算，加两分钟开销，至少十分钟、最多十二小时。取消、源文件内容校验、目标状态复核和提交前作用域检查继续生效。
 
-当前 preload 接口数量为 97，包含 Docker 读取、传输和文件菜单接口；MCP 共 40 个工具。新增 36px 图标资源栏、混合内容标签和 Docker 只读功能，详见 [Docker 工作区设计](docker-workspace-design.md)。上文 84/36 的验证记录对应此前版本。
+当前 preload 接口数量为 113，包含 Docker 读取、传输和文件菜单接口；MCP 共 40 个工具。36px 图标资源栏、混合内容标签和 Docker 只读功能，详见 [Docker 工作区设计](docker-workspace-design.md)。上文 84/36 的验证记录对应此前版本。
 
 应用运行期间的续传已接入桌面上传，重新连接后手动确认继续；MCP 上传不提供恢复接口。性能证据与未覆盖范围见 [上传续传与速度优化](upload-resume-feasibility.md)。
 
@@ -183,3 +185,9 @@ corepack pnpm run test:ui:server-workspace
 - 采集复用已有 ssh2 连接，以无 PTY 的独立短命令通道运行；不通过人工终端输入，不重新认证。每台服务器的系统与磁盘各共用一组采样，每类指标仅允许一个在途请求；两类使用独立通道与返回结果，内存读取完成即可显示，慢磁盘不会阻塞 CPU 首显或更新，迟到磁盘响应也不会覆盖系统新值。每个通道超时最多 3 秒并覆盖通道建立阶段，输出与错误合计最多 64 KiB；超时只关闭采集通道。磁盘失败不清空 CPU 和内存，主 SSH 连接与传输通道继续由原生命周期管理。
 - 新增桌面只读 API serverWorkspaceMetrics / serverWorkspaceStopMetrics，读取接口仅接受项目、环境、插件作用域及可选 kind（system 或 disks，默认 system），响应增加 retryAfterMs 表示本类指标距离下次采样的剩余毫秒数；停止接口仅接受作用域。沿用 Renderer 来源校验、已连接 Server 校验及固定命令策略，不接收命令、路径或远程脚本，不改变现有 MCP 工具、上下文或确认机制。后台固定读取 Linux CPU/内存计数和本地 df 用量，不开放任意 /proc 文件读取。
 - 开始采集前必须成功记录作用域审计；审计只记录开始、停止及状态变化，不记录指标、挂载路径或命令输出。指标仅在内存缓存，退出后清除。
+
+## 双终端与阅读布局
+
+终端栏提供单终端、左右分屏、上下分屏。首次分屏只有一个终端时创建第二个独立会话；之后切换布局复用原会话。每次仅向获得焦点的终端发送输入，标题显示当前输入位置；分隔条支持拖动、方向键调整和双击复位。终端标签支持双击 / F2 重命名、拖拽 / Alt+左右键排序，名称和布局保留在当前工作区内存。选择其他标签会替换当前输入的窗格，关闭标签只关闭对应会话。最多仍为每窗口 8 个终端，不提供广播输入或服务端 tmux 会话恢复。
+
+文件详情列表、只读日志跟随、下载重试和本地位置见 [桌面文件传输](desktop-file-transfers.md#ssh-阅读与下载恢复)。专项 UI 验证：`RUNBOOK_BRIDGE_PRODUCTIVITY_SMOKE=1 corepack pnpm run test:ui:server-workspace`（使用隔离模拟数据）。

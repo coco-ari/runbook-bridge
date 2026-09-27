@@ -36,6 +36,10 @@ const directoryScenario = mixedReadPressure ? './server-mixed-read-pressure-ui.c
 const directoryLifecycle = directoryScenario ? require(directoryScenario).createHarness() : null;
 const directoryState = { requests: [], delay: 0, fail: false };
 const previewReads = [];
+const productivityLog = { content:null, mtime:1, reads:[] };
+const fileEditProbe = {content:'\uFEFF# 示例配置\r\nport = 8080\r\n',writes:0,unknown:false,audits:[]};
+const downloadReveals = [];
+const downloadRetries = [];
 const dockerState = { reads:[], cancels:[], delay:0, missing:false };
 const dockerContainers = Array.from({length:7}, (_,index) => ({
   id:(index+1).toString(16).padStart(64,'0'), name:index === 0 ? 'fixture-api' : 'fixture-' + (index+1),
@@ -140,6 +144,7 @@ function canonicalFixturePath(value) {
   return value;
 }
 function fixtureStat(value) {
+  if (value === '/srv/example.log' && productivityLog.content !== null) return {type:'file',canonicalPath:value,size:Buffer.byteLength(productivityLog.content),mtime:productivityLog.mtime,mode:0o100644};
   if ([...removedPaths].some(item => value === item || value.startsWith(item + '/'))) throw Object.assign(new Error('服务器路径不存在。'), { code: 'SOURCE_NOT_FOUND' });
   if (value === '/missing-link') return { type: 'symlink', canonicalPath: null };
   if (fileActionEntries.has(value)) return {type:fileActionEntries.get(value),canonicalPath:value};
@@ -213,7 +218,10 @@ function register() {
   handle('environment-status', () => runtime());
   handle('plugin-list', () => plugins);
   handle('mysql-list-tables', input => { assert.deepEqual(input, { ...mysqlScope, limit: 100 }); mysqlCalls.push(input); return { tables: [{ name: 'records', type: 'BASE TABLE', queryable: true }], nextCursor: null, truncated: false }; });
-  handle('mysql-query-readonly', input => { assert.equal(input.projectId, mysqlScope.projectId); assert.equal(input.environmentId, mysqlScope.environmentId); assert.equal(input.pluginInstanceId, mysqlScope.pluginInstanceId); assert.equal(input.sql, 'SELECT 1 AS integration_probe'); mysqlCalls.push(input); return { rows: [{ integration_probe: 1 }], rowCount: 1, bytes: 25, truncated: false, columns: [{ name: 'integration_probe', table: null, type: 3 }], durationMs: 1, fingerprint: 'integration-fixture', limitsApplied: mysqlPlugin.limits }; });
+  const readCoexistenceQuery = input => { assert.equal(input.projectId, mysqlScope.projectId); assert.equal(input.environmentId, mysqlScope.environmentId); assert.equal(input.pluginInstanceId, mysqlScope.pluginInstanceId); assert.equal(input.sql, 'SELECT 1 AS integration_probe'); mysqlCalls.push(input); return { rows: [{ integration_probe: 1 }], rowCount: 1, bytes: 25, truncated: false, columns: [{ name: 'integration_probe', table: null, type: 3 }], durationMs: 1, fingerprint: 'integration-fixture', limitsApplied: mysqlPlugin.limits }; };
+  handle('mysql-query-readonly', readCoexistenceQuery);
+  const sqlCoexistence = require('./database-sql-ui.cjs').createSqlFixture({read:async input => ok(readCoexistenceQuery(input))});
+  ipcMain.handle('v2:mysql-sql', (_event,input) => sqlCoexistence.handle(input));
   handle('confirmation-list', () => []);
   handle('audit-list', () => ({ entries: [], nextCursor: null }));
   handle('plugin-assess', () => plugin.assessment);
@@ -336,8 +344,19 @@ function register() {
     return page;
   });
   handle('server-workspace-cancel-directory-read', input => { scoped(input); return directoryLifecycle ? directoryLifecycle.cancel?.(input) ?? { cancelled:false } : workspaceFiles.cancelDirectoryRead('renderer:1', input); });
-  workspaceFiles.serverOperations.readFile = async (_plugin, input) => { previewReads.push(input.path); if (previewDelay) await wait(previewDelay); return { path: input.path, content: '# 示例配置\nsource = ' + input.path + '\nserver_name = demo\nport = 8080\n' + (input.path.endsWith('.log') ? '日志示例\n'.repeat(200) : ''), size: 52, startByte: 0, endByte: 52, mtime: 1, truncated: false, nextCursor: null }; };
+  workspaceFiles.serverOperations.readFile = async (_plugin, input) => {
+    if (input.path === '/srv/example.log' && productivityLog.content !== null) {
+      productivityLog.reads.push({...input});
+      const body=Buffer.from(productivityLog.content);
+      let startByte=input.tail?Math.max(0,body.length-input.maxBytes):Number(input.cursor??0);
+      while(startByte<body.length && (body[startByte]&0xc0)===0x80) startByte++;
+      let endByte=Math.min(body.length,startByte+(input.maxBytes??262144));
+      while(endByte<body.length && (body[endByte]&0xc0)===0x80) endByte--;
+      return {path:input.path,content:body.subarray(startByte,endByte).toString(),size:body.length,startByte,endByte,mtime:productivityLog.mtime,nextCursor:endByte<body.length?String(endByte):null,truncated:endByte<body.length};
+    }
+    previewReads.push(input.path); if (previewDelay) await wait(previewDelay); return { path: input.path, content: '# 示例配置\nsource = ' + input.path + '\nserver_name = demo\nport = 8080\n' + (input.path.endsWith('.log') ? '日志示例\n'.repeat(200) : ''), size: 52, startByte: 0, endByte: 52, mtime: 1, truncated: false, nextCursor: null }; };
   handle('server-workspace-read-file', (input) => { scoped(input); if (mixedReadPressure) return directoryLifecycle.preview(input); if (previewFailure) throw Object.assign(new Error('没有文件读取权限。'), { code: previewFailure }); return workspaceFiles.readFile('renderer:1', input); });
+  handle('server-workspace-edit-file', input => { scoped(input); return workspaceFiles.editFile('renderer:1', input); });
   handle('server-workspace-prepare-upload-resume', async input => {
     scoped(input);
     const job=uploads.find(item=>item.jobId===input.jobId);
@@ -419,11 +438,12 @@ function register() {
     return {removedIds};
   });
   handle('server-workspace-download', input => {
-    scoped(input);assert.equal(input.path,'/srv/release.tar');
+    scoped(input); if(input.retryOf) { assert.ok(uploads.some(job=>job.jobId===input.retryOf&&['error','cancelled'].includes(job.status))); downloadRetries.push(input.retryOf); } else assert.equal(input.path,'/srv/release.tar');
     if (downloadFailure) throw Object.assign(new Error('本地保存位置空间不足，请选择其他磁盘。'), {code:'DOWNLOAD_DISK_FULL'});
-    const job={jobId:transferResponseProbe?'response-download-'+(++responseDownloadId):'download-job',name:'release.tar',path:input.path,localPath:'D:/下载/release.tar',direction:'download',bytes:transferResponseProbe?1024:400000,transferred:0,status:'running'};
+    const job={jobId:transferResponseProbe||input.retryOf?'response-download-'+(++responseDownloadId):'download-job',name:'release.tar',path:input.path??uploads.find(job=>job.jobId===input.retryOf).path,localPath:'D:/下载/release.tar',direction:'download',bytes:transferResponseProbe?1024:400000,transferred:0,status:'running'};
     uploads.push(job);return job;
   });
+  handle('server-workspace-reveal-download', input => {scoped(input);assert.ok(uploads.some(job=>job.jobId===input.jobId&&job.direction==='download'&&job.status==='completed'));downloadReveals.push(input.jobId);return {};});
   handle('server-workspace-cancel-upload', (input) => {
     scoped(input);
     const job = uploads.find(item => item.jobId === input.jobId);
@@ -475,6 +495,7 @@ async function nativePaste(text, shortcut = false) {
   await wait(100);
 }
 async function setViewport(width, height) {
+  if (win.isVisible()) { app.focus({steal:true}); win.focus(); win.webContents.focus(); }
   win.setContentSize(width, height);
   await until(`innerWidth === ${width} && innerHeight === ${height}`, '固定内容区尺寸');
   await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true });
@@ -501,7 +522,7 @@ async function assertFileSidebarLayout() {
         unusedBottom: sidebar.getBoundingClientRect().bottom - sidebar.querySelector('.server-tree-scroll').getBoundingClientRect().bottom,
       };
     })()`);
-    assert.equal(layout.buttons.length, 6, '目录工具栏包含定位当前终端按钮');
+    assert.equal(layout.buttons.length, 7, '目录工具栏包含视图切换与定位当前终端按钮');
     assert.ok(layout.buttons.every(button => button.inside && Math.abs(button.centerY - layout.buttons[0].centerY) <= 1), zoom + ' 倍缩放下按钮保持单行且完整可见：' + JSON.stringify(layout));
     assert.ok(Math.abs(layout.height - 36) <= 1, zoom + ' 倍缩放下工具栏不增加空白行');
     assert.ok(Math.abs(layout.unusedBottom) <= 1, '文件列表使用底部释放的空间');
@@ -680,6 +701,18 @@ async function run() {
   if (!mixedReadPressure && process.env.RUNBOOK_BRIDGE_LIVE_TERMINAL_UI_PROBE !== '1') savedClipboard = { text: clipboard.readText(), html: clipboard.readHTML(), rtf: clipboard.readRTF(), image: clipboard.readImage() };
   const { ServerWorkspaceFiles } = await import('../src/server-workspace-files.mjs');
   workspaceFiles = new ServerWorkspaceFiles({ workspaceStore: { getPlugin: async () => plugin }, serverRuntime: { status: () => ({ connected, generation: 1 }), statRemotePath: async (_plugin, target) => fixtureStat(target) }, serverOperations: {} });
+  if (process.env.RUNBOOK_BRIDGE_FILE_EDITOR_SMOKE === '1') {
+    const {textHash,sameTextSnapshot}=await import('../src/server-text-edit.mjs');
+    const current=()=>({content:fileEditProbe.content,size:Buffer.byteLength(fileEditProbe.content),sha256:textHash(fileEditProbe.content),mtime:1,mode:0o100640,uid:1,gid:1});
+    workspaceFiles.serverRuntime.readWorkspaceText=async()=>current();
+    workspaceFiles.workspaceStore.appendAudit=async(_projectId,audit)=>fileEditProbe.audits.push(audit);
+    workspaceFiles.serverRuntime.writeWorkspaceText=async(_plugin,args,options)=>{
+      await wait(200);await options.beforeCommit();
+      if(!sameTextSnapshot(args.expected,current())) throw Object.assign(new Error('远端文件已被修改，草稿已保留。'),{code:'FILE_EDIT_CONFLICT'});
+      options.onCommitting();fileEditProbe.content=args.content;fileEditProbe.writes++;
+      if(fileEditProbe.unknown) throw Object.assign(new Error('fixture timeout'),{code:'SFTP_OPERATION_TIMEOUT'});
+    };
+  }
   if (process.env.RUNBOOK_BRIDGE_LIVE_DIRECTORY_PROBE === '1') {
     assert.ok(visibleResponseProbe, '真实目录专项使用可见窗口');
     const {openLiveDirectoryProbe}=await import('./server-live-directory-ui.mjs');
@@ -942,6 +975,20 @@ async function run() {
     await require('./workspace-metrics-ui.cjs')({evaluate,click,clickText,until,wait,win,setViewport,snapshot,metricsState,writes,errors});
     completed=true;
     process.stdout.write(JSON.stringify({ok:true,metrics:true,reads:metricsState.reads})+'\n');
+    return;
+  }
+  if (process.env.RUNBOOK_BRIDGE_PRODUCTIVITY_SMOKE === '1') {
+    releaseRootMetadata();
+    await require('./workspace-productivity-ui.cjs')({evaluate,click,doubleClick,clickText,until,wait,win,setViewport,snapshot,nativeTheme,opened,closed,writes,terminalSessions,errors,log:productivityLog,downloadReveals,downloadRetries,setJobs:jobs=>{uploads=jobs;},publishRecovery});
+    completed=true;
+    process.stdout.write(JSON.stringify({ok:true,productivity:true,terminalSessions:opened.length})+'\n');
+    return;
+  }
+  if (process.env.RUNBOOK_BRIDGE_FILE_EDITOR_SMOKE === '1') {
+    releaseRootMetadata();
+    await require('./workspace-file-editor-ui.cjs')({evaluate,click,doubleClick,clickText,until,wait,win,setViewport,snapshot,nativeTheme,errors,probe:fileEditProbe,publishRecovery});
+    completed=true;
+    process.stdout.write(JSON.stringify({ok:true,fileEditor:true,saves:fileEditProbe.writes})+'\n');
     return;
   }
   if (process.env.RUNBOOK_BRIDGE_FILE_INTERACTION_SMOKE === '1') {
@@ -1279,6 +1326,7 @@ async function run() {
   await click('[role="dialog"] [role="checkbox"]');
   await clickText('开始上传 1 个文件');
   assert.equal(uploads[0].path, '/srv/release.tar', '确认锁定目录');
+  if (await evaluate("document.querySelector('.server-upload-tray-header button').getAttribute('aria-expanded')==='false'")) await click('.server-upload-tray-header button');
   await until("document.querySelector('[data-testid=upload-speed]')?.textContent.includes('/s')", '显示上传速度');
   assert.ok(await evaluate("document.querySelector('[data-testid=upload-speed]').textContent.includes('剩余约 12 秒')"), '显示剩余时间');
   await snapshot('upload-speed-estimate.png');

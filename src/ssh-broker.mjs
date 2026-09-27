@@ -2,6 +2,7 @@ import { DEFAULT_TERMINAL_COLORS, probeTerminalShell } from './server-terminal-s
 import { readTerminalDirectoryChannel } from './server-terminal-directory.mjs';
 import { metricsCommand, readMetricsChannel } from './server-metrics-reader.mjs';
 import crypto from 'node:crypto';
+import { readEditableText, replaceEditableText } from './server-text-edit.mjs';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -1552,6 +1553,19 @@ export class SshBroker {
       }
     }, { ...uploadTimeouts(before.size), signal });
     return { localPath:source, remotePath:target, bytes:before.size, sha256 };
+  }
+
+  readWorkspaceText(projectId, remotePath, options = {}) {
+    return this.withInternalSftp(projectId, (sftp, _session, lifecycle) => readEditableText(sftp, remotePath, lifecycle.signal), { ...options, timeoutMs: 30000 });
+  }
+
+  writeWorkspaceText(projectId, args, options = {}) {
+    return this.withInternalSftp(projectId, (sftp, session, lifecycle) => replaceEditableText(sftp, args, {
+      ...options, signal: lifecycle.signal, beforeCommit: async () => {
+        await options.beforeCommit?.();
+        if (this.requireSession(projectId) !== session) throw new AppError('WORKSPACE_CHANGED', '服务器连接已变化。');
+      },
+    }), { signal: options.signal, timeoutMs: 60000 });
   }
 
   async writeRemoteFileApproved(projectId, remotePath, content, precondition) {

@@ -669,7 +669,30 @@ export interface ServerDirectoryPage {
   readonly truncated: boolean
 }
 
+export interface ServerFileEditState {
+  readonly editId: string
+  readonly path: string
+  readonly content: string
+  readonly bytes: number
+  readonly mtime: number
+  readonly mode: number
+  readonly status: "ready" | "unknown"
+  readonly canRestore: boolean
+  readonly message?: string
+}
+export interface ServerFileEditPlan { readonly planId: string; readonly before: string; readonly content: string; readonly expiresAt: number }
+export type ServerFileEditRequest =
+  | { operation: "open"; path: string }
+  | { operation: "prepare"; editId: string; content: string }
+  | { operation: "commit"; editId: string; planId: string }
+  | { operation: "verify" | "restore" | "close" | "cancel"; editId: string }
+  | { operation: "dirty"; editId: string; dirty: boolean; sequence: number }
+export interface ServerFileEditResult { readonly edit?: ServerFileEditState; readonly plan?: ServerFileEditPlan; readonly restoreContent?: string }
+
 export interface ServerFilePreview {
+  readonly followToken?: string
+  readonly reset?: boolean
+  readonly resetReason?: "changed" | "limit"
   readonly canonicalPath?: string
   readonly path: string
   readonly content: string
@@ -874,10 +897,12 @@ export interface AiOpsV2Api {
   serverWorkspacePrepareFileAction(payload: PluginScope & ({ kind: "mkdir" | "rename"; path: string; name: string } | { kind: "delete"; path: string })): Promise<IpcResult<ServerFileActionPreparation>>
   serverWorkspaceConfirmFileAction(payload: PluginScope & { operationId: string }): Promise<IpcResult<ServerFileActionResult>>
   serverWorkspaceCancelFileAction(payload: PluginScope & { operationId: string }): Promise<IpcResult<OpaqueData>>
-  serverWorkspaceReadFile(payload: PluginScope & { path: string }): Promise<IpcResult<ServerFilePreview>>
+  serverWorkspaceReadFile(payload: PluginScope & { path: string; tail?: boolean; cursor?: string; followToken?: string }): Promise<IpcResult<ServerFilePreview>>
+  serverWorkspaceEditFile(payload: PluginScope & ServerFileEditRequest): Promise<IpcResult<ServerFileEditResult>>
   serverWorkspacePauseUpload(payload: PluginScope & { jobId: string }): Promise<IpcResult<ServerUploadJob>>
   serverWorkspaceClearTransfers(payload: PluginScope & { jobId?: string }): Promise<IpcResult<{ removedIds: readonly string[] }>>
-  serverWorkspaceDownload(payload: PluginScope & { path: string }): Promise<IpcResult<ServerUploadJob | null>>
+  serverWorkspaceDownload(payload: PluginScope & ({ path: string; retryOf?: never } | { retryOf: string; path?: never })): Promise<IpcResult<ServerUploadJob | null>>
+  serverWorkspaceRevealDownload(payload: PluginScope & { jobId: string }): Promise<IpcResult<Record<string, never>>>
   serverWorkspacePrepareUploadResume(payload: PluginScope & { jobId: string }): Promise<IpcResult<ServerUploadReview>>
   serverWorkspacePasteUpload(payload: PluginScope & { path: string }): Promise<IpcResult<ServerUploadReview>>
   serverWorkspacePickUpload(payload: PluginScope & { path: string }): Promise<IpcResult<ServerUploadReview | null>>
@@ -989,9 +1014,11 @@ export const AI_OPS_V2_API_NAMES = [
   "serverWorkspaceConfirmFileAction",
   "serverWorkspaceCancelFileAction",
   "serverWorkspaceReadFile",
+  "serverWorkspaceEditFile",
   "serverWorkspacePauseUpload",
   "serverWorkspaceClearTransfers",
   "serverWorkspaceDownload",
+  "serverWorkspaceRevealDownload",
   "serverWorkspacePrepareUploadResume",
   "serverWorkspacePickUpload",
   "serverWorkspaceImportUpload",

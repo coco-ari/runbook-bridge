@@ -34,6 +34,30 @@ function harness({ now } = {}) {
 }
 const local = (name) => path.resolve('test-upload-' + name + '.txt');
 
+test('日志读取沿用连接校验，最小化暂停增量读取且 IPC 拒绝混用参数', async t => {
+  const h = harness(); t.after(() => h.files.dispose());
+  let reads = 0, changeRevision = false;
+  h.runtime.statRemotePath = async (_plugin,target) => ({type:'file',canonicalPath:target,size:7,mtime:1});
+  h.operations.readFile = async (_plugin,input) => {
+    reads++; if (changeRevision) h.plugin.revision++;
+    const startByte = Number(input.cursor ?? 0);
+    return {path:input.path,content:'fixture'.slice(startByte),size:7,startByte,endByte:7,mtime:1,nextCursor:null,truncated:false};
+  };
+  const first = await h.files.readFile(owner,{...scope,path:'/fixture.txt',tail:true});
+  assert.ok(first.followToken);
+  const handlers = new Map(), sender = new EventEmitter();
+  sender.id=1;sender.mainFrame={};sender.isDestroyed=() => false;sender.getOwnerBrowserWindow=() => ({isMinimized:() => true});
+  registerServerWorkspaceIpc({handle:(name,fn) => handlers.set(name,fn)},{serverWorkspaceFiles:h.files,isWorkspaceRenderer:() => true});
+  const invoke = payload => handlers.get('v2:server-workspace-read-file')({sender,senderFrame:sender.mainFrame},{...scope,path:'/fixture.txt',...payload});
+  assert.equal((await invoke({followToken:first.followToken})).error.code,'WORKSPACE_READ_PAUSED');
+  assert.equal(reads,1,'后台暂停不读取远端');
+  assert.equal((await invoke({cursor:'1',tail:true})).error.code,'INVALID_ARGUMENT');
+  assert.equal((await invoke({maxBytes:1000000})).error.code,'INVALID_ARGUMENT');
+  assert.equal((await invoke({tail:true})).ok,true);
+  changeRevision=true;
+  await assert.rejects(h.files.readFile(owner,{...scope,path:'/fixture.txt',tail:true}),{code:'WORKSPACE_CHANGED'});
+});
+
 test('上传确认固定路径和窗口，拒绝改写、跨窗口和重复消费', async (t) => {
   const h = harness(); t.after(() => h.files.dispose());
   const prep = await h.files.prepareUpload(owner, { ...scope, path: '/srv/example' }, [local('new')]);

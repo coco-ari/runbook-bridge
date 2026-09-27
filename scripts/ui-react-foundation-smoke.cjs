@@ -1351,6 +1351,13 @@ async function assertCompactProjectRail(win,theme) {
       `compact project rail viewport ${width}x${height}`);
     await captureRenderedFrame(win);
     await assertRendererKeyboardFocus(win);
+    // Resizing can move a footer button under the stationary native pointer.
+    // Compare the neutral appearance only after hover has left both add actions.
+    win.webContents.sendInputEvent({type:'mouseMove',x:width-24,y:8});
+    await waitFor(win,`['add-project-footer','add-environment-footer'].every((id) => {
+      const button = document.querySelector('[data-testid="' + id + '"]');
+      return button && !button.matches(':hover') && getComputedStyle(button).backgroundColor === 'rgba(0, 0, 0, 0)';
+    })`,'neutral navigation actions after viewport resize');
     await rememberStableRail();
     await assertStableRail('expanded baseline');
     if (width === 960) await assertProjectMenuStatusHandoff(false);
@@ -3574,7 +3581,7 @@ async function assertSecurity(win) {
     styleAttributeProbe.remove();
     return result;
   })()`,true);
-  assert.equal(snapshot.apiNames.length,111);
+  assert.equal(snapshot.apiNames.length,113);
   assert.equal(snapshot.hasRequire,false);
   assert.equal(snapshot.hasProcess,false);
   assert.equal(snapshot.inlineStyleAttributeWidth,'13px');

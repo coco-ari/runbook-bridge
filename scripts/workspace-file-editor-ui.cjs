@@ -1,0 +1,66 @@
+const assert = require('node:assert/strict');
+
+module.exports = async function({evaluate,click,doubleClick,clickText,until,wait,win,setViewport,snapshot,nativeTheme,errors,probe,publishRecovery}) {
+  const selector='.server-file-editor [aria-label="远程文件内容"]';
+  const has=text=>`document.querySelector('.server-file-editor')?.textContent.includes(${JSON.stringify(text)})`;
+  const fill=async text=>{
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);win.webContents.focus();
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'A',modifiers:[process.platform==='darwin'?'meta':'control']});
+    win.webContents.sendInputEvent({type:'keyUp',keyCode:'A',modifiers:[process.platform==='darwin'?'meta':'control']});
+    await win.webContents.insertText(text);await wait(100);
+  };
+  await click('[role=treeitem][title="/srv"]');
+  await until("document.querySelector('[role=treeitem][title=\"/srv/example.conf\"]')",'配置文件');
+  await doubleClick('[role=treeitem][title="/srv/example.conf"]');
+  await until("document.querySelector('[aria-label=文件内容]')",'文件预览');await clickText('编辑');
+  await until(`document.querySelector(${JSON.stringify(selector)})`,'完整文本编辑');
+  assert.ok(await evaluate(has('UTF-8 BOM · CRLF')));
+  await fill('# 示例配置\r\nport = 9090\r\n');
+  await until(has('未保存'),'草稿变更');
+  await click('[data-testid="server-workspace-back"]');
+  await click('[data-testid="plugin-open-workspace"]');
+  await until(`document.querySelector(${JSON.stringify(selector)})?.textContent.includes('9090')`,'返回保留草稿');
+  await clickText('结束编辑');await until("document.querySelector('[role=dialog]')?.textContent.includes('放弃当前文件草稿')",'关闭确认');
+  await clickText('保留草稿');assert.equal(probe.writes,0);
+  await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);win.webContents.focus();
+  win.webContents.sendInputEvent({type:'keyDown',keyCode:'S',modifiers:[process.platform==='darwin'?'meta':'control']});
+  win.webContents.sendInputEvent({type:'keyUp',keyCode:'S',modifiers:[process.platform==='darwin'?'meta':'control']});
+  await until("document.querySelector('.server-edit-comparison')",'快捷键打开保存对照');
+  assert.ok(await evaluate("document.querySelector('.server-edit-review [data-testid=environment-type-badge]')?.textContent.includes('测试环境')"));
+  assert.ok(await evaluate("document.querySelector('[aria-label=保存前文件内容]')?.textContent.includes('8080')"));
+  assert.ok(await evaluate("document.querySelector('[aria-label=保存后文件内容]')?.textContent.includes('9090')"));
+  await clickText('返回编辑');assert.equal(probe.writes,0);
+  for(const theme of ['dark','light']) {
+    nativeTheme.themeSource=theme;await setViewport(960,640);await wait(180);
+    await clickText('检查并保存');await until("document.querySelector('.server-edit-comparison')",'窄窗口对照');
+    const layout=await evaluate("(() => {const d=document.querySelector('.server-edit-review'),r=d.getBoundingClientRect();return {width:r.width,x:r.x,right:r.right,overflow:d.scrollWidth>d.clientWidth+2,highlight:Boolean(d.querySelector('.server-edit-diff-after'))}})()");
+    assert.ok(layout.x>=0&&layout.right<=961&&!layout.overflow&&layout.highlight,JSON.stringify(layout));
+    await snapshot('file-editor-review-'+theme+'.png');await clickText('返回编辑');
+  }
+  await clickText('检查并保存');await until("document.querySelector('.server-edit-comparison')",'确认保存');await clickText('确认保存');
+  await until(has('已保存。'),'成功');assert.equal(probe.writes,1);assert.equal(probe.content,'\uFEFF# 示例配置\r\nport = 9090\r\n');
+  await clickText('恢复上次版本');await until(has('未保存'),'恢复到草稿');assert.equal(probe.writes,1);
+  assert.ok(await evaluate(`document.querySelector(${JSON.stringify(selector)}).textContent.includes('8080')`));
+  publishRecovery(false,'waiting');await until(has('连接已断开'),'断线保留');
+  assert.ok(await evaluate("[...document.querySelectorAll('.server-file-editor button')].find(b=>b.textContent==='检查并保存').disabled"));
+  publishRecovery(true);await until("![...document.querySelectorAll('.server-file-editor button')].find(b=>b.textContent==='检查并保存').disabled",'重连');
+  probe.content='\uFEFF# 示例配置\r\nport = 7070\r\n';
+  await clickText('检查并保存');await until(has('远端文件已被修改'),'冲突保护');assert.equal(probe.writes,1);
+  assert.ok(await evaluate(`document.querySelector(${JSON.stringify(selector)}).textContent.includes('8080')`));
+  await clickText('重新读取');await clickText('放弃并重新读取');
+  await until(`document.querySelector(${JSON.stringify(selector)})?.textContent.includes('7070')`,'读取新基线');
+  await fill('# 示例配置\r\nport = 6060\r\n');probe.unknown=true;
+  await clickText('检查并保存');await until("document.querySelector('.server-edit-comparison')",'中断保存对照');await clickText('确认保存');
+  await until(has('保存结果待核实'),'结果待核实');assert.equal(probe.writes,2);
+  assert.ok(await evaluate("[...document.querySelectorAll('.server-file-editor button')].find(b=>b.textContent==='检查并保存').disabled"));
+  await clickText('检查保存结果');await until(has('已保存。'),'核实成功');assert.equal(probe.writes,2);
+  await fill('draft that must not be written');
+  assert.equal(await evaluate(has('已保存。')),false,'继续编辑后不保留旧的保存成功提示');
+  await click('[aria-label="文件标签"] [aria-label^="关闭"]');
+  await until("document.querySelector('[role=dialog]')?.textContent.includes('放弃草稿并关闭文件')",'标签关闭确认');
+  await clickText('保留草稿');
+  await snapshot('file-editor-draft-light.png');
+  await clickText('结束编辑');await clickText('放弃并结束编辑');
+  await until("!document.querySelector('.server-file-editor')",'结束编辑');
+  assert.equal(probe.writes,2);assert.equal(errors.length,0,errors.join('\n'));
+};

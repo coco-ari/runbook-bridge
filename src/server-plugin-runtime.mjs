@@ -351,6 +351,14 @@ export class ServerPluginRuntime extends EventEmitter {
     return this.broker.writeRemoteFileApproved(this.key(plugin), remotePath, content, precondition);
   }
 
+  readWorkspaceText(plugin, remotePath, options) {
+    return this.boundedRead(plugin, () => this.broker.readWorkspaceText(this.key(plugin), remotePath, options));
+  }
+
+  writeWorkspaceText(plugin, args, options) {
+    return this.broker.writeWorkspaceText(this.key(plugin), args, options);
+  }
+
   mutateWorkspacePath(plugin, args, options) {
     return this.broker.mutateWorkspacePathApproved(this.key(plugin), args, options);
   }

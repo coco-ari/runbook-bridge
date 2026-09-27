@@ -8,6 +8,8 @@ import { ServerUploadReviews } from './server-upload-reviews.mjs';
 import { ServerUploadProgress } from './server-upload-progress.mjs';
 import { ServerWorkspaceActions } from './server-workspace-actions.mjs';
 import { ServerWorkspaceDirectoryCache } from './server-workspace-directory-cache.mjs';
+import { ServerWorkspaceLogReader } from './server-workspace-log-reader.mjs';
+import { ServerWorkspaceEditor } from './server-workspace-editor.mjs';
 
 const PREPARATION_TTL = 5 * 60 * 1000;
 const ACTIVE = new Set(['queued', 'running', 'verifying', 'pausing']);
@@ -37,6 +39,8 @@ export class ServerWorkspaceFiles {
   constructor({ workspaceStore, serverRuntime, serverOperations, now = Date.now }) {
     Object.assign(this, { workspaceStore, serverRuntime, serverOperations, now });
     this.directoryCache = new ServerWorkspaceDirectoryCache(this);
+    this.logReader = new ServerWorkspaceLogReader(serverOperations);
+    this.editor = new ServerWorkspaceEditor(this);
     this.directoryRequests = new Map();
     this.actions = new ServerWorkspaceActions(this);
     this.preparations = new Map();
@@ -177,10 +181,13 @@ export class ServerWorkspaceFiles {
 
   readFile(ownerId, payload) {
     const selectedPath = remotePath(payload.path);
-    return this.read(ownerId, payload, (plugin) => this.withPathReader(plugin, async (stat, reader) => {
+    this.logReader.options(payload);
+    return this.read(ownerId, payload, (plugin, binding) => this.withPathReader(plugin, async (stat, reader) => {
       const resolved = await this.resolvePath(plugin, selectedPath, 'file', stat);
       // 预览复用已经占用的读取会话，避免多个预览互相等待嵌套的读取名额。
-      const result = await this.serverOperations.readFile(plugin, { path: resolved.canonicalPath, maxBytes: 262_144 }, { reader });
+      const result = payload.tail !== undefined || payload.cursor !== undefined || payload.followToken !== undefined
+        ? await this.logReader.read(plugin, {...payload, path:selectedPath}, ownerId, binding, resolved, reader)
+        : await this.serverOperations.readFile(plugin, { path: resolved.canonicalPath, maxBytes: 262_144 }, { reader });
       const after = await this.resolvePath(plugin, selectedPath, 'file', stat);
       if (after.canonicalPath !== resolved.canonicalPath) throw new AppError('WORKSPACE_PATH_CHANGED', '文件链接目标已变化，请重新打开。');
       return { ...result, path: selectedPath, canonicalPath: resolved.canonicalPath };
@@ -404,8 +411,10 @@ export class ServerWorkspaceFiles {
   }
 
   activeProjectTransfers(projectId) {
-    return [...this.jobs.values()].some(job => job.scope?.projectId === projectId && (job.inFlight || ACTIVE.has(job.status)));
+    return this.editor.activeProject(projectId) || [...this.jobs.values()].some(job => job.scope?.projectId === projectId && (job.inFlight || ACTIVE.has(job.status)));
   }
+
+  editFile(ownerId, payload) { return this.editor.run(ownerId, payload); }
 
   exitSummary() {
     let active = 0;
@@ -477,6 +486,7 @@ export class ServerWorkspaceFiles {
   }
 
   interruptScope(scope) {
+    this.editor.invalidate(scope);
     for (const record of this.directoryRequests.values()) if (includesScope(record.scope, scope)) record.controller.abort();
     this.actions.clear(item => includesScope(item.scope, scope));
     this.uploadReviews.clear(item => includesScope(item.scope, scope));
@@ -486,6 +496,7 @@ export class ServerWorkspaceFiles {
   }
 
   closeScope(scope, reason = '服务器配置或连接已经变化。') {
+    this.editor.invalidate(scope);
     for (const record of this.directoryRequests.values()) if (includesScope(record.scope, scope)) record.controller.abort();
     this.actions.clear(item => includesScope(item.scope, scope));
     this.uploadReviews.clear(item => includesScope(item.scope, scope));
@@ -495,6 +506,7 @@ export class ServerWorkspaceFiles {
   }
 
   closeOwner(ownerId) {
+    this.editor.invalidate({}, {ownerId, remove:true});
     for (const record of this.directoryRequests.values()) if (record.ownerId === ownerId) record.controller.abort();
     this.actions.clear(item => item.ownerId === ownerId);
     this.uploadReviews.clear(item => item.ownerId === ownerId);
@@ -508,6 +520,7 @@ export class ServerWorkspaceFiles {
   }
 
   dispose() {
+    this.editor.invalidate({}, {remove:true});
     for (const record of this.directoryRequests.values()) record.controller.abort();
     this.actions.clear(() => true);
     this.uploadReviews.clear(() => true);

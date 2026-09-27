@@ -4,6 +4,9 @@ import { ArrowUp, Crosshair, DownloadSimple, CaretDown, CaretRight, CaretUpDown,
 import type { AiOpsV2Api, PluginScope, ServerDirectoryEntry, ServerDirectoryPage } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { ListBullets, TreeStructure } from "@phosphor-icons/react"
+import { fileListEntries, type FileListSort } from "./file-list-model"
+import { formatTransferBytes } from "./workspace-model"
 import { ServerFileMenu } from "./ServerFileMenu"
 import { DirectoryBookmarks } from "./DirectoryBookmarks"
 import { directoryBookmarksKey } from "./directory-bookmarks"
@@ -99,6 +102,11 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
   const [directories, setDirectories] = useState<Record<string, DirectoryState>>({})
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set(["/"]))
   const [showHidden, setShowHidden] = useState(false)
+  const [details, setDetails] = useState(false)
+  const [filter, setFilter] = useState("")
+  const [sort, setSort] = useState<FileListSort>("name")
+  const [descending, setDescending] = useState(false)
+  const detailFocus = useRef<string | null>(null)
   const [selected, setSelected] = useState("/")
   const [reveal, setReveal] = useState<Readonly<{ path: string; id: number; expectDirectory?: boolean; terminalSessionId?: string }> | null>(null)
   const [revealError, setRevealError] = useState("")
@@ -344,6 +352,11 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
     setSelected(entry.path)
     if (serverEntryType(entry) === "directory") {
       onPath(entry.path)
+      if (details) {
+        setExpanded(current => new Set([...current, entry.path]))
+        if (needsDirectoryRead(directories[entry.path]) && !requestsRef.current.has(entry.path)) void load(entry.path)
+        return
+      }
       if (expanded.has(entry.path)) cancelQueuedDirectoryReads(entry.path)
       setExpanded((current) => {
         const next = new Set(current)
@@ -373,6 +386,7 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
 
   const revealPath = (target: string, expectDirectory = false, sourceSessionId?: string) => {
     if (!connected) return
+    setFilter("")
     revealSequenceRef.current += 1
     cancelPendingReveal()
     let ancestors: string[]
@@ -471,7 +485,7 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
     if (connected && ["directory", "file"].includes(serverEntryType(entry))) toggle(entry, pending.previewFile)
   }, [directories, connected, selected])
 
-  const rows = useMemo(() => {
+  const treeRows = useMemo(() => {
     const result: TreeRow[] = []
     const visited = new Set<string>()
     const append = (directory: string, depth: number, ancestors = new Set<string>()) => {
@@ -501,7 +515,36 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
     return result
   }, [directories, expanded, root, showHidden])
 
-  visibleDirectoriesRef.current = useMemo(() => new Set([root, ...rows.flatMap(row => row.kind === "entry" && !row.cycle && serverEntryType(row.entry) === "directory" && expanded.has(row.entry.path) ? [row.entry.path] : [])]), [root, rows, expanded])
+  const rows = useMemo(() => {
+    if (!details) return treeRows
+    const state = directories[path]
+    const entries = fileListEntries(state?.page?.entries ?? [], filter, sort, descending, showHidden)
+    const ancestors = new Set(workspaceLocationAncestors(path).map(parent => directories[parent]?.page?.canonicalPath ?? parent)).add(state?.page?.canonicalPath ?? path)
+    const result: TreeRow[] = entries.map(entry => ({kind: "entry", entry, depth: 0, cycle: serverEntryType(entry) === "directory" && Boolean(entry.linkTarget && ancestors.has(entry.linkTarget))}))
+    if (state?.history?.length) result.unshift({kind: "previous", directory: path, depth: 0})
+    if (state?.loading) result.push({kind: "loading", directory: path, depth: 0})
+    else if (state?.error) result.push({kind: "error", directory: path, depth: 0, message: state.error})
+    else if (!state?.page) result.push({kind: "more", directory: path, depth: 0, message: "读取目录"})
+    else if (!entries.length) result.push({kind: "empty", directory: path, depth: 0, message: filter ? "已加载条目中没有匹配项" : "当前目录没有可见条目"})
+    if (state?.page?.nextCursor) result.push({kind: state.page.entries.length >= 2000 ? "limit" : "more", directory: path, depth: 0})
+    else if (state?.page?.truncated) result.push({kind: "limit", directory: path, depth: 0, message: "目录条目达到读取上限"})
+    return result
+  }, [details, treeRows, directories, path, filter, sort, descending, showHidden])
+
+  useEffect(() => {
+    setFilter("")
+    if (details && scrollRef.current) scrollRef.current.scrollTop = 0
+    if (details && visible && connected && !directoriesRef.current[path]?.page && !requestsRef.current.has(path)) void load(path)
+  }, [details, path, visible, connected, load])
+  useLayoutEffect(() => {
+    if (!details || !detailFocus.current) return
+    const index = rows.findIndex(row => row.kind === "entry" && row.entry.path === detailFocus.current)
+    if (index < 0) return
+    detailFocus.current = null
+    focusRow(index)
+  }, [details, rows])
+
+  visibleDirectoriesRef.current = useMemo(() => details && !reveal ? new Set([path]) : new Set([root, ...treeRows.flatMap(row => row.kind === "entry" && !row.cycle && serverEntryType(row.entry) === "directory" && expanded.has(row.entry.path) ? [row.entry.path] : [])]), [root, treeRows, expanded, details, path, reveal])
   const refreshTargetsRef = visibleDirectoriesRef
 
   useEffect(() => {
@@ -588,7 +631,7 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
   }, [visible, connected, refreshResumeEpoch])
 
   useEffect(() => {
-    if (!reveal || !connected || !visible || (reveal.terminalSessionId && reveal.terminalSessionId !== terminalSessionId) || rows.some((row) => row.kind === "entry" && row.entry.path === reveal.path)) return
+    if (!reveal || !connected || !visible || (reveal.terminalSessionId && reveal.terminalSessionId !== terminalSessionId) || treeRows.some((row) => row.kind === "entry" && row.entry.path === reveal.path)) return
     const chain: string[] = []
     for (let current = parentRemotePath(reveal.path); ; current = parentRemotePath(current)) {
       chain.unshift(current)
@@ -621,14 +664,14 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
       failReveal("当前目录列表中未找到该项，请刷新后重试。")
       return
     }
-  }, [reveal, connected, visible, terminalSessionId, directories, root, rows, load])
+  }, [reveal, connected, visible, terminalSessionId, directories, root, treeRows, load])
 
   useLayoutEffect(() => {
     const element = scrollRef.current
     if (!element || !reveal || !connected || !visible || (reveal.terminalSessionId && reveal.terminalSessionId !== terminalSessionId)) return
-    const index = rows.findIndex((row) => row.kind === "entry" && row.entry.path === reveal.path)
+    const index = treeRows.findIndex((row) => row.kind === "entry" && row.entry.path === reveal.path)
     if (index < 0) return
-    const row = rows[index]!
+    const row = treeRows[index]!
     if (row.kind !== "entry") return
     if (row.entry.type === "symlink" && !row.entry.linkTargetType) {
       const message = directories[parentRemotePath(reveal.path)]?.metadataError
@@ -646,6 +689,12 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
       setExpanded(current => new Set([...current, reveal.path]))
       if (needsDirectoryRead(directories[reveal.path]) && !requestsRef.current.has(reveal.path)) void load(reveal.path)
     }
+    if (details) {
+      detailFocus.current = isDirectory ? null : reveal.path
+      element.scrollTop = 0
+      setReveal(null); revealOriginRef.current = null
+      return
+    }
     // 先滚动虚拟列表，再将焦点交给挂载后的目标行，保留目录上下文。
     element.scrollTop = Math.max(0, index * rowHeight - Math.min(rowHeight * 3, element.clientHeight / 4))
     setViewport({ scrollTop: element.scrollTop, height: element.clientHeight })
@@ -655,7 +704,7 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
     }))
     setReveal(null)
     revealOriginRef.current = null
-  }, [reveal, connected, visible, terminalSessionId, rows, rowHeight, directories, load])
+  }, [reveal, connected, visible, terminalSessionId, treeRows, rowHeight, directories, load, details])
 
   useLayoutEffect(() => {
     const element = scrollRef.current
@@ -678,7 +727,7 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
     requestAnimationFrame(() => requestAnimationFrame(() => element.querySelector<HTMLButtonElement>(`[data-tree-index="${index}"]`)?.focus()))
   }
 
-  return <section className="server-file-tree" aria-label="服务器目录树" onKeyDownCapture={event => {
+  return <section className="server-file-tree" data-view={details ? "details" : "tree"} aria-label="服务器目录树" onKeyDownCapture={event => {
     if (!useNativeFileClipboard || !event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== "v") return
     if (!(event.target instanceof Element) || !event.currentTarget.contains(event.target) || !event.target.closest(".server-tree-scroll")) return
     const target = uploadTarget(event.target)
@@ -700,9 +749,10 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
     }
   }}>
     <div className="server-file-toolbar">
+      <Button className="server-file-view-toggle" size="icon-sm" variant="ghost" aria-label={details ? "切换到目录树" : "切换到详情列表"} title={details ? "目录树" : "详情列表"} onClick={() => { cancelPendingReveal(); setDetails(value => !value) }}>{details ? <TreeStructure /> : <ListBullets />}</Button>
       <div className="server-file-actions">
         <DirectoryBookmarks key={directoryBookmarksKey(scope)} scope={scope} path={path} connected={connected} visible={visible} onNavigate={target => revealPath(target, true)} />
-        <Button size="icon-sm" variant="ghost" aria-label="收起所有目录" title="收起所有目录" onClick={() => { revealSequenceRef.current += 1; cancelPendingReveal(); cancelQueuedDirectoryReads(); setExpanded(new Set()); if (scrollRef.current) scrollRef.current.scrollTop = 0 }}><CaretUpDown /></Button>
+        <Button size="icon-sm" variant="ghost" hidden={details} aria-label="收起所有目录" title="收起所有目录" onClick={() => { revealSequenceRef.current += 1; cancelPendingReveal(); cancelQueuedDirectoryReads(); setExpanded(new Set()); if (scrollRef.current) scrollRef.current.scrollTop = 0 }}><CaretUpDown /></Button>
         <Button size="icon-sm" variant="ghost" aria-label="显示隐藏文件" title={showHidden ? "隐藏点文件" : "显示隐藏文件"} aria-pressed={showHidden} onClick={() => setShowHidden((value) => !value)}>{showHidden ? <Eye /> : <EyeSlash />}</Button>
         <Button size="icon-sm" variant="ghost" aria-label="定位终端当前目录" title={terminalLabel ? "定位 " + terminalLabel + " 的工作目录" : "定位当前终端的工作目录"} disabled={!connected || !terminalSessionId || locatingTerminal} onClick={() => { void locateTerminalDirectory() }}>{locatingTerminal ? <SpinnerGap className="animate-spin" /> : <Crosshair />}</Button>
         <WorkspaceIconButton action="refresh" label="刷新目录" disabled={!connected || refreshing} busy={refreshing} onClick={() => { void refreshVisibleDirectories() }} />
@@ -722,6 +772,8 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
         <Button size="icon-sm" variant="ghost" aria-label="编辑目录路径" title="输入路径" disabled={!connected} onClick={() => { beginPathEditing() }}><PencilSimple /></Button>
       </>}
     </div>
+    {details ? <><div className="server-file-filter"><Input aria-label="筛选当前目录已加载项" placeholder="筛选已加载的文件名…" maxLength={128} value={filter} onChange={event => { setFilter(event.target.value); if (scrollRef.current) scrollRef.current.scrollTop = 0 }} /><span>{directories[path]?.page?.entries.length ?? 0} 项已加载</span></div>
+      <div className="server-file-columns">{([['name', '名称'], ['size', '大小'], ['mtime', '修改时间']] as const).map(([field, label]) => <button type="button" key={field} aria-label={`按${label}排序`} aria-pressed={sort === field} onClick={() => { setSort(field); setDescending(sort === field ? !descending : false); if (scrollRef.current) scrollRef.current.scrollTop = 0 }}>{label}{sort === field ? descending ? " ↓" : " ↑" : ""}</button>)}<span /></div></> : null}
     {revealError ? <div className="px-3 py-2 text-xs text-danger" role="status">{revealError}</div> : null}
     <ServerFileMenu api={api} scope={scope} serverLabel={serverLabel} connected={connected} visible={visible} downloadBusy={downloadBusy} onDownload={onDownload}
       resolveTarget={element => {
@@ -777,7 +829,7 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
           const metadataError = directories[parentRemotePath(entry.path)]?.metadataError
           const targetType = serverEntryType(entry)
           const isDirectory = targetType === "directory"
-          const open = expanded.has(entry.path)
+          const open = !details && expanded.has(entry.path)
           const supported = !row.cycle && (isDirectory || targetType === "file")
           const activate = (previewFile: boolean) => {
             if (!connected) return
@@ -791,7 +843,7 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
               setDirectories(current => ({ ...current, [directory]: { ...current[directory]!, metadataError: undefined } }))
             } else if (supported) toggle(entry, previewFile)
           }
-          return <div key={`entry:${entry.path}`} data-tree-index={index} data-upload-path={supported ? isDirectory ? entry.path : parentRemotePath(entry.path) : ""} data-upload-over={dropTarget === entry.path && isDirectory || undefined} tabIndex={0} className={"server-tree-row" + (entry.type === "symlink" ? " server-tree-link" : "")} role="treeitem" aria-level={row.depth + 1} aria-selected={selected === entry.path} {...(isDirectory ? { "aria-expanded": open } : {})} aria-disabled={(!supported && !pending) || !connected} style={style} title={entry.type === "symlink" ? `${entry.path}${entry.linkTarget ? " → " + entry.linkTarget : ""}${row.cycle ? "（循环链接）" : pending ? metadataError ? "（链接信息读取失败，点击重试）" : "（正在读取链接信息）" : supported ? "" : "（目标不可用或不支持打开）"}` : entry.path} draggable={connected && (supported || pending) && canDragWorkspacePath(entry.path)} onDragStart={event => {
+          return <div key={`entry:${entry.path}`} data-tree-index={index} data-upload-path={supported ? isDirectory ? entry.path : parentRemotePath(entry.path) : ""} data-upload-over={dropTarget === entry.path && isDirectory || undefined} tabIndex={0} className={"server-tree-row" + (entry.type === "symlink" ? " server-tree-link" : "")} role="treeitem" aria-level={row.depth + 1} aria-selected={selected === entry.path} {...(isDirectory && !details ? { "aria-expanded": open } : {})} aria-disabled={(!supported && !pending) || !connected} style={style} title={entry.type === "symlink" ? `${entry.path}${entry.linkTarget ? " → " + entry.linkTarget : ""}${row.cycle ? "（循环链接）" : pending ? metadataError ? "（链接信息读取失败，点击重试）" : "（正在读取链接信息）" : supported ? "" : "（目标不可用或不支持打开）"}` : entry.path} draggable={connected && (supported || pending) && canDragWorkspacePath(entry.path)} onDragStart={event => {
             if (!connected || !(supported || pending) || (event.target as Element).closest("button") || !pathDrag.begin(event.dataTransfer, entry.path)) { event.preventDefault(); return }
             pendingOpenRef.current = null
             revealSequenceRef.current += 1
@@ -808,6 +860,7 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
             if (event.target !== event.currentTarget) return
             if ((event.key === "Enter" || event.key === " ") && (supported || pending) && connected) { event.preventDefault(); activate(event.key === "Enter"); return }
             if (event.key === "ArrowRight" && isDirectory && !open && supported && connected) { event.preventDefault(); toggle(entry) }
+            if (details && event.key === "ArrowLeft") { event.preventDefault(); revealPath(parentRemotePath(path), true); return }
             if (event.key === "ArrowLeft" && isDirectory && open && supported && connected) { event.preventDefault(); toggle(entry) }
             if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return
             event.preventDefault()
@@ -816,10 +869,12 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
             while (next >= 0 && next < rows.length && rows[next]?.kind !== "entry") next += direction
             focusRow(next)
           }}>
-            <span className="server-tree-chevron">{isDirectory ? open ? <CaretDown size={12} weight="fill" /> : <CaretRight size={12} weight="fill" /> : null}</span>
+            <span hidden={details} className="server-tree-chevron">{isDirectory ? open ? <CaretDown size={12} weight="fill" /> : <CaretRight size={12} weight="fill" /> : null}</span>
             <span className="server-tree-icon">{isDirectory ? open ? <FolderOpen className="server-icon-folder" size={16} weight="fill" /> : <FolderSimple className="server-icon-folder" size={16} weight="fill" /> : (entry.type === "symlink" && targetType !== "file") ? <Link className="server-icon-link" size={16} weight="bold" /> : /\.(zip|tar|gz|tgz|jar|7z)$/iu.test(entry.name) ? <FileZip className="server-icon-archive" size={16} weight="duotone" /> : /\.(conf|json|yml|yaml|xml|sh|js|ts|html|css)$/iu.test(entry.name) ? <FileCode className="server-icon-code" size={16} weight="duotone" /> : /\.(txt|log|md)$/iu.test(entry.name) ? <FileText className="server-icon-file" size={16} weight="duotone" /> : <File className="server-icon-file" size={16} weight="duotone" />}{entry.type === "symlink" && supported ? <Link className="server-tree-link-badge" size={11} weight="bold" /> : null}</span>
             <span className="server-tree-name">{entry.name}</span>
-            {entry.type === "symlink" ? <span className="server-tree-link-target" title={entry.linkTarget ?? (pending ? metadataError ?? "正在读取链接信息" : "链接目标无法解析")}>→ {entry.linkTarget ?? (pending ? metadataError ? "点击重试" : "读取中…" : "目标不可用")}{row.cycle ? " · 循环链接" : targetType === "special" ? " · 特殊文件" : ""}</span> : null}
+            {entry.type === "symlink" && !details ? <span className="server-tree-link-target" title={entry.linkTarget ?? (pending ? metadataError ?? "正在读取链接信息" : "链接目标无法解析")}>→ {entry.linkTarget ?? (pending ? metadataError ? "点击重试" : "读取中…" : "目标不可用")}{row.cycle ? " · 循环链接" : targetType === "special" ? " · 特殊文件" : ""}</span> : null}
+            {details ? <><span className="server-file-size">{entry.size == null || isDirectory ? "--" : formatTransferBytes(entry.size)}</span><time className="server-file-mtime" title={entry.mtime == null ? "" : new Date(entry.mtime * 1000).toLocaleString()}>{entry.mtime == null ? "--" : new Date(entry.mtime * 1000).toLocaleString(undefined, {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false})}</time></> : null}
+            {details && entry.type !== "file" ? <span className="server-file-action-spacer" /> : null}
             {entry.type === "file" ? <Button className="server-tree-download" size="icon-sm" variant="ghost" disabled={!connected || downloadBusy} aria-label={`下载 ${entry.name}`} title="下载文件" onClick={event => { event.stopPropagation(); onDownload(entry) }}><DownloadSimple size={15} /></Button> : null}
           </div>
         })}

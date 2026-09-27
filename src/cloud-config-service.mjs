@@ -482,7 +482,7 @@ export class CloudConfigService {
     const coordinator = this.mutationCoordinator;
     coordinator.assertProjectAvailable(projectId);
     for (const fence of coordinator.environmentFences.values()) if (fence.projectId === projectId) throw cloudError('PROJECT_BUSY','项目存在活动编辑或连接计划，请结束后重试。');
-    if (this.serverWorkspaceFiles?.activeProjectTransfers?.(projectId)) throw cloudError('PROJECT_BUSY','项目存在活动传输，请完成或取消后重试。');
+    if (this.serverWorkspaceFiles?.activeProjectTransfers?.(projectId)) throw cloudError('PROJECT_BUSY','项目存在活动文件操作或未保存草稿，请完成或关闭后重试。');
     coordinator.cloudProjects.add(projectId);
     try {
       await deadline(coordinator.waitProjectActivity(projectId));
@@ -511,7 +511,7 @@ export class CloudConfigService {
     if (mappings.length !== this.state.mappings.length) await this.saveState({...this.state,mappings});
   }
   async quiesce(projectId,before) {
-    if (this.serverWorkspaceFiles?.activeProjectTransfers?.(projectId)) throw cloudError('PROJECT_BUSY','项目仍有活动传输。');
+    if (this.serverWorkspaceFiles?.activeProjectTransfers?.(projectId)) throw cloudError('PROJECT_BUSY','项目仍有活动文件操作或未保存草稿。');
     // withProject has drained active requests and holds the project fence, but
     // a completed manual SQL request may still own an uncommitted transaction.
     this.v2Service?.mysqlSql?.assertScopeIdle({projectId});

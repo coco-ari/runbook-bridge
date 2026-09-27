@@ -758,7 +758,7 @@ async function main() {
     assert.equal(inspection.noPageOverflow, true);
     assert.equal(inspection.overviewOk, true);
     assert.equal(inspection.projectCount, 0);
-    assert.equal(inspection.apiCount, 111);
+    assert.equal(inspection.apiCount, 113);
     const sqlExportContract = await running.cdp.evaluate("(async () => window.aiOps.v2.mysqlExportSave({fileName:'../blocked.sql',sql:'SELECT 1;'}))()");
     assert.equal(sqlExportContract.ok, false);
     assert.equal(sqlExportContract.error.code, 'INVALID_ARGUMENT');
@@ -803,6 +803,10 @@ async function main() {
     assert.equal(await running.cdp.evaluate('Boolean(document.querySelector("[role=dialog],[data-slot=dialog-overlay]"))'),false,'云配置在页面内操作');
     await running.cdp.evaluate('document.querySelector("[data-testid=settings-back]").click()');
     await waitForThemeUi(running.cdp,'!document.querySelector("[data-testid=settings-page]")','返回工作台');
+    const editorContract = await running.cdp.evaluate("(async () => { const scope={projectId:'edit-probe',environmentId:'probe',pluginInstanceId:'probe'};return {open:await window.aiOps.v2.serverWorkspaceEditFile({...scope,operation:'open',path:'/fixture.conf'}),invalid:await window.aiOps.v2.serverWorkspaceEditFile({...scope,operation:'commit',editId:'missing',planId:'missing',content:'forged'}),missing:await window.aiOps.v2.serverWorkspaceEditFile({...scope,operation:'verify',editId:'missing'})}; })()");
+    assert.ok(['PROJECT_NOT_FOUND','ENVIRONMENT_NOT_FOUND','PLUGIN_NOT_FOUND'].includes(editorContract.open.error.code));
+    assert.equal(editorContract.invalid.error.code,'INVALID_ARGUMENT');
+    assert.equal(editorContract.missing.error.code,'FILE_EDIT_EXPIRED');
     const metricsContract = await running.cdp.evaluate("(async () => { const scope = {projectId:'metrics-probe',environmentId:'probe',pluginInstanceId:'probe'}; return {read:await window.aiOps.v2.serverWorkspaceMetrics(scope),invalid:await window.aiOps.v2.serverWorkspaceMetrics({...scope,command:'arbitrary'}),invalidKind:await window.aiOps.v2.serverWorkspaceMetrics({...scope,kind:'arbitrary'}),disks:await window.aiOps.v2.serverWorkspaceMetrics({...scope,kind:'disks'}),stop:await window.aiOps.v2.serverWorkspaceStopMetrics(scope)}; })()");
     assert.equal(metricsContract.read.ok, false);
     assert.ok(['PROJECT_NOT_FOUND','ENVIRONMENT_NOT_FOUND','PLUGIN_NOT_FOUND'].includes(metricsContract.read.error.code));
@@ -837,7 +841,10 @@ async function main() {
     assert.equal(uploadContract.valid.ok, false);
     assert.equal(uploadContract.valid.error.code, 'UPLOAD_CONFIRMATION_INVALID');
     assert.equal(uploadContract.invalid.error.code, 'INVALID_ARGUMENT');
-    const transferContract = await running.cdp.evaluate("(async () => { const scope={projectId:'transfer-probe',environmentId:'probe',pluginInstanceId:'probe'}; return {pause:await window.aiOps.v2.serverWorkspacePauseUpload({...scope,jobId:'missing'}),clear:await window.aiOps.v2.serverWorkspaceClearTransfers(scope),download:await window.aiOps.v2.serverWorkspaceDownload({...scope,path:'/file'}),invalidDownload:await window.aiOps.v2.serverWorkspaceDownload({...scope,path:'/file',localPath:'arbitrary'}),invalidClear:await window.aiOps.v2.serverWorkspaceClearTransfers({...scope,path:'/file'})}; })()");
+    const transferContract = await running.cdp.evaluate("(async () => { const scope={projectId:'transfer-probe',environmentId:'probe',pluginInstanceId:'probe'}; return {retry:await window.aiOps.v2.serverWorkspaceDownload({...scope,retryOf:'missing'}),reveal:await window.aiOps.v2.serverWorkspaceRevealDownload({...scope,jobId:'missing'}),invalidReveal:await window.aiOps.v2.serverWorkspaceRevealDownload({...scope,jobId:'missing',localPath:'arbitrary'}),pause:await window.aiOps.v2.serverWorkspacePauseUpload({...scope,jobId:'missing'}),clear:await window.aiOps.v2.serverWorkspaceClearTransfers(scope),download:await window.aiOps.v2.serverWorkspaceDownload({...scope,path:'/file'}),invalidDownload:await window.aiOps.v2.serverWorkspaceDownload({...scope,path:'/file',localPath:'arbitrary'}),invalidClear:await window.aiOps.v2.serverWorkspaceClearTransfers({...scope,path:'/file'})}; })()");
+    assert.equal(transferContract.retry.error.code, 'DOWNLOAD_UNAVAILABLE');
+    assert.equal(transferContract.reveal.error.code, 'DOWNLOAD_UNAVAILABLE');
+    assert.equal(transferContract.invalidReveal.error.code, 'INVALID_ARGUMENT');
     assert.equal(transferContract.pause.error.code, 'UPLOAD_NOT_FOUND');
     assert.deepEqual(transferContract.clear, {ok:true,data:{removedIds:[]}});
     assert.equal(transferContract.download.ok, false);
@@ -852,6 +859,10 @@ async function main() {
     assert.doesNotMatch(inspection.csp, /script-src[^;]*(?:unsafe-inline|unsafe-eval)/u);
     assert.deepEqual(inspection.externalResources, []);
     assert.deepEqual(running.httpRequests, []);
+    if (process.argv.includes('--desktop-contracts-only')) {
+      process.stdout.write('Packaged desktop contracts passed (113 preload APIs, file editing owner/parameter guards, isolated empty workspace, no external requests)\n');
+      return;
+    }
     await exerciseThemePreferences(running.cdp);
     await waitForThemeToastsToDismiss(running.cdp, 'theme toasts dismiss before rail geometry');
 
@@ -899,7 +910,7 @@ async function main() {
       return {ok: overview?.ok === true, projectCount: Array.isArray(overview?.data) ? overview.data.length : -1,
         apiCount: Object.keys(window.aiOps.v2).length};
     })()`);
-    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 111});
+    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 113});
     assert.deepEqual(running.httpRequests, []);
     await selectThemePreference(running.cdp, 'system');
     await emulateSystemTheme(running.cdp, 'dark');
@@ -919,7 +930,7 @@ async function main() {
         availableWidth: compactSearch.availableWidth, nativeTextBox: compactSearch.nativeBox?.source ?? 'conservative-cancel-budget'},
     })}\n`);
     process.stdout.write(
-      `Packaged React UI smoke passed (111 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
+      `Packaged React UI smoke passed (113 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
     );
   } catch (error) {
     if (running) {

@@ -110,6 +110,7 @@ module.exports = async function fileActionsUi({evaluate,click,clickText,until,wa
     await clickText('开始上传 2 个文件');
     await until("!document.querySelector('[role=dialog]')",'提交混合策略');
     assert.equal(confirmCount(),before+1);
+    if (await evaluate("document.querySelector('.server-upload-tray-header > button')?.getAttribute('aria-expanded')==='false'")) await click('.server-upload-tray-header > button');
     await until("document.querySelector('.server-upload-tray')?.textContent.includes('conflict-c (1).tar.gz')",'显示固定副本任务路径');
 
     selectUploads(['all-skipped.txt']);

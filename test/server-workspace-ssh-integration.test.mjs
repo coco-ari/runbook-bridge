@@ -188,6 +188,8 @@ test('真实 SFTP 解析相对目录链接和文件链接，拒绝失效循环�
   let holdDirectoryClose = false, heldDirectoryCloseResponse, heldDirectoryValidationResponse;
   let validationAfterClose = Infinity;
   const server = new ssh2.Server({ hostKeys: [key] }, (client) => {
+    // 时序断言需要立即发送 EOF/错误响应，避免 TCP 合包延迟造成服务端与客户端观测差异。
+    client.setNoDelay(true);
     clients.add(client); client.on('close', () => clients.delete(client)); client.on('error', () => undefined);
     client.on('authentication', ctx => ctx.method === 'password' && ctx.username === 'fixture' && ctx.password === 'fixture-password' ? ctx.accept() : ctx.reject());
     client.on('ready', () => client.on('session', accept => {

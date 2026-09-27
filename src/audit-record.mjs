@@ -64,7 +64,7 @@ export function auditActor(entry) {
 
 export function auditAction(entry) {
   if (Object.hasOwn(ACTIONS, entry.auditAction)) return entry.auditAction;
-  if (entry.type === 'desktop-file-action') return {mkdir:'fs.mkdir',rename:'fs.move',delete:'fs.delete'}[entry.operation?.kind] ?? '';
+  if (entry.type === 'desktop-file-action') return {mkdir:'fs.mkdir',rename:'fs.move',delete:'fs.delete',edit:'fs.write'}[entry.operation?.kind] ?? '';
   if (entry.type === 'desktop-upload') return 'fs.upload';
   if (entry.type === 'desktop-download') return 'fs.download';
   if (entry.type === 'docker-read') return `docker.${entry.operation}`;

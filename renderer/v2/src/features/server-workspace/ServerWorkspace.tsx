@@ -43,9 +43,10 @@ interface ServerWorkspaceProps {
   readonly visible: boolean
   readonly onBack: () => void
   readonly onClose: () => void
+  readonly onDirtyChange?: (dirty: boolean) => void
 }
 
-export function ServerWorkspace({ api, entry, visible, onBack, onClose }: ServerWorkspaceProps) {
+export function ServerWorkspace({ api, entry, visible, onBack, onClose, onDirtyChange }: ServerWorkspaceProps) {
   const panelId = useId()
   const scope = useMemo<PluginScope>(() => ({ projectId: entry.plugin.projectId, environmentId: entry.plugin.environmentId, pluginInstanceId: entry.plugin.pluginInstanceId }), [entry.plugin.projectId, entry.plugin.environmentId, entry.plugin.pluginInstanceId])
   const draft = useMemo(() => pluginDraftFromRecord(entry.plugin), [entry.plugin])
@@ -67,6 +68,8 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
   const [maximized, setMaximized] = useState(false)
   const [previewRequest, setPreviewRequest] = useState<Readonly<{ file: ServerDirectoryEntry; id: number }> | null>(null)
   const [previewOpen, setPreviewOpen] = useState(false)
+  const [fileEditing, setFileEditing] = useState({ dirty: false, busy: false })
+  useEffect(() => { onDirtyChange?.(fileEditing.dirty || fileEditing.busy) }, [fileEditing.dirty, fileEditing.busy, onDirtyChange])
   const pathDrag = useMemo(() => createWorkspacePathDrag(), [scope])
   useEffect(() => {
     if (!connected || !visible) pathDrag.clear()
@@ -104,6 +107,8 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
   const visibleRef = useRef(visible)
   const treePanelRef = usePanelRef()
   const previewPanelRef = usePanelRef()
+  const expandEditor = useCallback(() => { previewPanelRef.current?.resize("60%") }, [previewPanelRef])
+  const refreshEditedFile = useCallback((savedPath: string) => { setRefreshPaths([parentRemotePath(savedPath)]); setRefreshEpoch(value => value + 1) }, [])
   const selectResource = (next:ServerResource) => {
     setResource(next)
     setMaximized(false)
@@ -135,6 +140,9 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
   const completedJobs = jobs.filter((job) => job.status === "completed")
   const interruptedJobs = jobs.filter((job) => job.status === "interrupted" || job.status === "paused")
   const failedJobs = jobs.filter((job) => job.status === "error")
+  const transferBytes = activeJobs.reduce((total, job) => total + job.bytes, 0)
+  const transferredBytes = activeJobs.reduce((total, job) => total + Math.min(job.bytes, job.transferred), 0)
+  const transferSummary = [activeJobs.length ? `${activeJobs.length} 项进行中` : "", completedJobs.length ? `${completedJobs.length} 项完成` : "", failedJobs.length ? `${failedJobs.length} 项失败` : "", interruptedJobs.length ? `${interruptedJobs.length} 项可继续` : ""].filter(Boolean).join(" · ") || (jobs.length ? "已停止" : "暂无任务")
 
   useEffect(() => {
     mountedRef.current = true
@@ -164,6 +172,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
         const completed = result.jobs.filter((job) => job.direction !== "download" && job.status === "completed" && old.get(job.jobId) !== "completed")
         if (completed.length) { setRefreshPaths(completed.map((job) => parentRemotePath(job.path))); setRefreshEpoch((value) => value + 1) }
         const changed = JSON.stringify(result.jobs) !== JSON.stringify(jobsRef.current)
+        if (result.jobs.some(job => job.status === "error" && old.get(job.jobId) !== "error" && !removedJobIds.current.has(job.jobId))) setTrayOpen(true)
         if (changed) setJobs(result.jobs.filter(job => !removedJobIds.current.has(job.jobId)))
         setUploadPollError("")
       } catch (failure) {
@@ -182,7 +191,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
     else treePanelRef.current?.expand()
     if (previewOpen && !maximized) {
       previewPanelRef.current?.expand()
-      previewPanelRef.current?.resize("30%")
+      previewPanelRef.current?.resize("40%")
     } else previewPanelRef.current?.collapse()
   }, [maximized, previewOpen, previewPanelRef, treePanelRef])
 
@@ -280,7 +289,6 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
       jobsVersion.current += 1
       setJobs((current) => [...current.filter((job) => !result.jobs.some((next) => next.jobId === job.jobId)), ...result.jobs])
       setPreparation(null)
-      if (result.jobs.length) setTrayOpen(true)
     } catch (failure) { if (mountedRef.current) { setUploadError(workspaceErrorMessage(failure)); setUploadNeedsReview(true); setOverwrite(false) } }
     finally { uploadActionRef.current = false; if (mountedRef.current) setUploadConfirming(false) }
   }
@@ -308,7 +316,6 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
         if (mountedRef.current && version === uploadSelectionVersion.current) {
           jobsVersion.current += 1
           setJobs(current => [...current.filter(item => !resumed.jobs.some(next => next.jobId === item.jobId)), ...resumed.jobs])
-          setTrayOpen(true)
         }
       } else {
         setPreparation(result); setOverwrite(false); setUploadNeedsReview(false); setUploadError("")
@@ -321,20 +328,25 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
     }
   }
 
-  const downloadFile = async (file: ServerDirectoryEntry) => {
+  const downloadFile = async (file: ServerDirectoryEntry | { retryOf: string }) => {
     if (!connected || downloadPickerRef.current) return
     downloadPickerRef.current = true
     setDownloadPicking(true)
     setUploadJobError("")
     try {
-      const job = unwrapWorkspaceResult(await api.serverWorkspaceDownload({ ...scope, path: file.path }))
+      const job = unwrapWorkspaceResult(await api.serverWorkspaceDownload({ ...scope, ...("retryOf" in file ? file : { path: file.path }) }))
       if (job && mountedRef.current) {
         jobsVersion.current += 1
         setJobs(current => [...current.filter(item => item.jobId !== job.jobId), job])
-        setTrayOpen(true)
       }
     } catch (failure) { if (mountedRef.current) setUploadJobError(workspaceErrorMessage(failure)) }
     finally { downloadPickerRef.current = false; if (mountedRef.current) setDownloadPicking(false) }
+  }
+
+  const revealDownload = async (jobId: string) => {
+    setUploadJobError("")
+    try { unwrapWorkspaceResult(await api.serverWorkspaceRevealDownload({ ...scope, jobId })) }
+    catch (failure) { if (mountedRef.current) setUploadJobError(workspaceErrorMessage(failure)) }
   }
 
   const clearTransfers = async (jobId?: string) => {
@@ -396,23 +408,23 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose }: Server
           <ServerTerminalTabs onActiveSessionChange={setActiveTerminalSessionId} onActiveTerminalLabel={setActiveTerminalLabel} api={api} scope={scope} visible={visible} connected={connected} connection={terminalState} maximized={maximized} onMaximize={() => setMaximized(value => !value)} layoutControls={`${panelId}-files`} pathDrag={pathDrag}
             dockerTabs={dockerTabs} activeDocker={activeDocker} onDockerSelect={setActiveDocker} onDockerClose={closeContainer} binding={dockerBinding}
             previewOpen={previewOpen} previewPanelRef={previewPanelRef}
-            preview={<ServerFilePreviews api={api} scope={scope} connected={connected} request={previewRequest} onOpenChange={setPreviewOpen} onStale={invalidatePreviewPath} />} />
+            preview={<ServerFilePreviews api={api} scope={scope} connected={connected} visible={visible && !maximized && activeDocker === null} request={previewRequest} onOpenChange={setPreviewOpen} onStale={invalidatePreviewPath} targetLabel={`${entry.projectName} / ${entry.environmentName} / ${entry.plugin.displayName} · ${sshIdentity}`} onEditState={setFileEditing} onSaved={refreshEditedFile} onEditOpen={expandEditor} />} />
         </ResizablePanel>
       </ResizablePanelGroup>
     </div>
     <section className="server-upload-tray" aria-label="文件传输任务">
-      <div className="server-upload-tray-header"><button className="flex min-w-0 flex-1 items-center gap-2 text-xs" type="button" onClick={() => setTrayOpen((value) => !value)} aria-expanded={trayOpen}><UploadSimple size={15} />文件传输<span className={failedJobs.length ? "text-danger" : "text-muted-foreground"}>{activeJobs.length ? `${activeJobs.length} 项进行中` : jobs.length ? `${completedJobs.length} 项完成${failedJobs.length ? ` · ${failedJobs.length} 项失败` : ""}` : "暂无任务"}{interruptedJobs.length ? ` · ${interruptedJobs.length} 项可继续` : ""}</span>{trayOpen ? <CaretDown size={12} /> : <CaretUp size={12} />}</button>{jobs.some(job => job.canRemove) ? <Button size="sm" variant="ghost" onClick={() => { void clearTransfers() }} title="只清除结束记录，保留本地和服务器文件"><Trash />清除已结束</Button> : null}<span hidden={resource !== "files"} className="server-upload-target truncate text-xs text-muted-foreground" title={`新上传目标：${path}`}>新上传目标 {path}</span><Button hidden={resource !== "files"} size="sm" variant="ghost" disabled={!connected || uploadPreparing} onClick={() => { void pickUpload() }}>{uploadPreparing ? <SpinnerGap className="animate-spin" /> : <UploadSimple />}上传文件</Button></div>
+      <div className="server-upload-tray-header"><button className="flex min-w-0 flex-1 items-center gap-2 text-xs" type="button" onClick={() => setTrayOpen((value) => !value)} aria-expanded={trayOpen}><UploadSimple size={15} />文件传输<span className={failedJobs.length ? "text-danger" : "text-muted-foreground"}>{transferSummary}</span>{activeJobs.length ? <progress className="server-transfer-summary-progress" aria-label="当前传输总进度" value={transferredBytes} max={transferBytes || 1} /> : null}{trayOpen ? <CaretDown size={12} /> : <CaretUp size={12} />}</button>{jobs.some(job => job.canRemove) ? <Button size="sm" variant="ghost" onClick={() => { void clearTransfers() }} title="只清除结束记录，保留本地和服务器文件"><Trash />清除已结束</Button> : null}<span hidden={resource !== "files"} className="server-upload-target truncate text-xs text-muted-foreground" title={`新上传目标：${path}`}>新上传目标 {path}</span><Button hidden={resource !== "files"} size="sm" variant="ghost" disabled={!connected || uploadPreparing} onClick={() => { void pickUpload() }}>{uploadPreparing ? <SpinnerGap className="animate-spin" /> : <UploadSimple />}上传文件</Button></div>
       {trayOpen ? <div className="server-upload-list">{jobs.length ? jobs.map((job) => <div className="server-upload-row" key={job.jobId}>
         <div className="server-upload-task-icon"><UploadFileIcon name={job.name} /></div>
         <div className="min-w-0 flex-1"><div className="server-upload-task-heading"><strong title={job.name}>{job.name}</strong>{job.status === "completed" ? <CheckCircle className="text-success" size={14} /> : null}<span className={job.status === "error" ? "text-danger" : "text-muted-foreground"}>{UPLOAD_STATUS_LABELS[job.status]}</span></div><div className="server-upload-task-target"><span>{job.direction === "download" ? "下载到" : "上传到"}</span><code title={job.localPath ?? job.path}>{job.localPath ?? job.path}</code><CopyUploadPath path={job.localPath ?? job.path} label={`复制 ${job.name} 的${job.direction === "download" ? "下载" : "上传"}路径`} /></div>{job.message ? <p className={job.status === "error" ? "text-xs text-danger" : "text-xs text-muted-foreground"}>{job.message}</p> : null}</div>
         <div className="server-upload-progress"><div className="flex w-full justify-between gap-2"><span>{job.status === "verifying" ? "正在校验文件" : job.status === "completed" ? "传输完成" : job.status === "queued" ? "排队中" : job.status === "running" ? (job.phase === "preparing" ? "检查文件" : "正在传输") : "已停止"}</span><strong>{job.status === "completed" ? 100 : Math.min(100, Math.round(job.transferred / (job.bytes || 1) * 100))}%</strong></div><progress aria-label={`${job.name} 传输进度`} value={job.status === "completed" ? job.bytes || 1 : job.transferred} max={job.bytes || 1} /><span>{formatTransferBytes(job.transferred)} / {formatTransferBytes(job.bytes)}</span>{job.status === "running" && job.phase !== "preparing" ? <span data-testid="upload-speed">{job.bytesPerSecond == null ? "正在估算速度…" : job.bytesPerSecond === 0 ? "等待服务器响应…" : `${formatTransferBytes(job.bytesPerSecond)}/s · 剩余${job.etaSeconds == null ? "估算中" : formatTransferEta(job.etaSeconds)}`}</span> : null}</div>
-        <div className="server-upload-task-action">{job.canPause ? <Button size="sm" variant="ghost" aria-label={`暂停上传 ${job.name}`} onClick={() => { void pauseUpload(job.jobId) }}><Pause size={14} />暂停</Button> : null}{job.status === "interrupted" || job.status === "paused" ? <><Button size="sm" variant="outline" disabled={!connected || !job.canResume || Boolean(preparation) || Boolean(resumingJobId)} onClick={() => { void resumeUpload(job) }}>{resumingJobId === job.jobId ? <><SpinnerGap className="animate-spin" />正在继续…</> : "继续上传"}</Button><Button size="icon-sm" variant="ghost" aria-label={`取消${job.direction === "download" ? "下载" : "上传"} ${job.name}`} onClick={() => { void cancelUpload(job.jobId) }}><X /></Button></> : ACTIVE_UPLOAD_STATUSES.has(job.status) ? <Button size="icon-sm" variant="ghost" aria-label={`取消${job.direction === "download" ? "下载" : "上传"} ${job.name}`} onClick={() => { void cancelUpload(job.jobId) }}><X /></Button> : job.status === "completed" && job.direction !== "download" ? <Button size="sm" variant="ghost" disabled={!connected} aria-label={`定位到 ${job.name}`} onClick={() => { setMaximized(false); setFileLocation({ path: job.path, id: Date.now() }) }}><MapPin size={14} />定位文件</Button> : (job.status === "cancelled" || job.status === "error") && job.direction !== "download" ? <Button size="sm" variant="ghost" disabled={!connected} aria-label={`打开 ${job.name} 的目标目录`} onClick={() => { const target = parentRemotePath(job.path); setMaximized(false); setRefreshPaths([target]); setRefreshEpoch(value => value + 1); setFileLocation({ path: target, id: Date.now() }) }}><MapPin size={14} />查看目录</Button> : null}{job.canRemove ? <Button size="icon-sm" variant="ghost" title="移除记录，保留文件" aria-label={`移除记录 ${job.name}`} onClick={() => { void clearTransfers(job.jobId) }}><X /></Button> : null}</div>
+        <div className="server-upload-task-action">{job.direction === "download" && job.canRemove && (job.status === "error" || job.status === "cancelled") ? <Button size="sm" variant="outline" disabled={!connected || downloadPicking} aria-label={`重新下载 ${job.name}`} title="重新选择保存位置，从头下载" onClick={() => { void downloadFile({ retryOf: job.jobId }) }}>重新下载</Button> : null}{job.direction === "download" && job.canRemove && job.status === "completed" ? <Button size="sm" variant="ghost" aria-label={`打开 ${job.name} 的本地位置`} onClick={() => { void revealDownload(job.jobId) }}><MapPin size={14} />本地位置</Button> : null}{job.canPause ? <Button size="sm" variant="ghost" aria-label={`暂停上传 ${job.name}`} onClick={() => { void pauseUpload(job.jobId) }}><Pause size={14} />暂停</Button> : null}{job.status === "interrupted" || job.status === "paused" ? <><Button size="sm" variant="outline" disabled={!connected || !job.canResume || Boolean(preparation) || Boolean(resumingJobId)} onClick={() => { void resumeUpload(job) }}>{resumingJobId === job.jobId ? <><SpinnerGap className="animate-spin" />正在继续…</> : "继续上传"}</Button><Button size="icon-sm" variant="ghost" aria-label={`取消${job.direction === "download" ? "下载" : "上传"} ${job.name}`} onClick={() => { void cancelUpload(job.jobId) }}><X /></Button></> : ACTIVE_UPLOAD_STATUSES.has(job.status) ? <Button size="icon-sm" variant="ghost" aria-label={`取消${job.direction === "download" ? "下载" : "上传"} ${job.name}`} onClick={() => { void cancelUpload(job.jobId) }}><X /></Button> : job.status === "completed" && job.direction !== "download" ? <Button size="sm" variant="ghost" disabled={!connected} aria-label={`定位到 ${job.name}`} onClick={() => { setMaximized(false); setFileLocation({ path: job.path, id: Date.now() }) }}><MapPin size={14} />定位文件</Button> : (job.status === "cancelled" || job.status === "error") && job.direction !== "download" ? <Button size="sm" variant="ghost" disabled={!connected} aria-label={`打开 ${job.name} 的目标目录`} onClick={() => { const target = parentRemotePath(job.path); setMaximized(false); setRefreshPaths([target]); setRefreshEpoch(value => value + 1); setFileLocation({ path: target, id: Date.now() }) }}><MapPin size={14} />查看目录</Button> : null}{job.canRemove ? <Button size="icon-sm" variant="ghost" title="移除记录，保留文件" aria-label={`移除记录 ${job.name}`} onClick={() => { void clearTransfers(job.jobId) }}><X /></Button> : null}</div>
       </div>) : <div className="px-4 py-6 text-center text-xs text-muted-foreground">选择目标目录，再上传本机文件。每项任务会保留自己的上传位置。</div>}</div> : null}
     </section>
     <footer className="server-workspace-footer"><span className="flex items-center gap-1.5"><TerminalWindow size={12} />SSH / SFTP</span><span>返回详情不会结束会话或传输</span></footer>
     <Dialog open={Boolean(preparation)} onOpenChange={(value) => { if (!value && !uploadActionRef.current) cancelPreparation() }}>
       {preparation ? <ServerUploadDialog preparation={preparation} serverName={entry.plugin.displayName} environmentName={entry.environmentName} identity={sshIdentity} busy={uploadConfirming || Boolean(uploadRevising)} confirming={uploadConfirming} removing={uploadRevising === "removing"} connected={connected} needsReview={uploadNeedsReview} overwrite={overwrite} error={uploadError} onOverwrite={setOverwrite} onRevise={reviseUpload} onConfirm={() => { void confirmUpload() }} onCancel={cancelPreparation} onReselect={() => { const target = preparation.sourcePath ?? preparation.path; cancelPreparation(); void pickUpload(target) }} /> : null}
     </Dialog>
-    <Dialog open={closeDialog} onOpenChange={setCloseDialog}><DialogContent><DialogHeader><DialogTitle>关闭服务器工作区</DialogTitle><DialogDescription>{activeJobs.length ? "还有传输任务进行中。返回详情可以保留所有任务；请等传输结束或取消任务后再关闭工作区。" : "将结束这个工作区的终端会话并清除显示记录。服务器连接保持。"}</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => { setCloseDialog(false); onBack() }}>返回详情并保留</Button><Button disabled={activeJobs.length > 0} onClick={onClose}>关闭工作区</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={closeDialog} onOpenChange={setCloseDialog}><DialogContent><DialogHeader><DialogTitle>关闭服务器工作区</DialogTitle><DialogDescription>{activeJobs.length ? "还有传输任务进行中。返回详情可以保留所有任务；请等传输结束或取消任务后再关闭工作区。" : fileEditing.busy ? "文件正在读取或保存，请完成后再关闭。" : fileEditing.dirty ? "未保存的文件草稿和会话内恢复版本会丢失。已保存的远端内容不会撤销。" : "将结束这个工作区的终端会话并清除显示记录。服务器连接保持。"}</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => { setCloseDialog(false); onBack() }}>返回详情并保留</Button><Button disabled={activeJobs.length > 0 || fileEditing.busy} onClick={onClose}>{fileEditing.dirty ? "放弃草稿并关闭" : "关闭工作区"}</Button></DialogFooter></DialogContent></Dialog>
   </div>
 }

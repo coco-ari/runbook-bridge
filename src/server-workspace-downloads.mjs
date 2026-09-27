@@ -1,11 +1,39 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { AppError, toPublicError } from './errors.mjs';
 import { DESKTOP_DOWNLOAD_LIMIT, downloadDestination } from './server-download-transfer.mjs';
 import { ServerUploadProgress } from './server-upload-progress.mjs';
 
 export class ServerWorkspaceDownloads {
   constructor(files) { this.files = files; }
+
+  ownedJob(ownerId, payload) {
+    this.files.ownerEpoch(ownerId);
+    const job = this.files.jobs.get(payload.jobId ?? payload.retryOf);
+    if (!job || job.ownerId !== ownerId || job.direction !== 'download' || job.epoch !== this.files.ownerEpoch(ownerId)
+      || !['projectId','environmentId','pluginInstanceId'].every(key => job.scope[key] === payload[key])) throw new AppError('DOWNLOAD_UNAVAILABLE', '下载记录已经失效，请重新选择文件。');
+    return job;
+  }
+
+  async reveal(ownerId, payload) {
+    const job = this.ownedJob(ownerId, payload);
+    if (job.status !== 'completed' || job.inFlight || !job.localPath) throw new AppError('DOWNLOAD_UNAVAILABLE', '只能定位已完成的下载文件。');
+    let stat;
+    try { stat = await fs.lstat(job.localPath); } catch { throw new AppError('DOWNLOAD_UNAVAILABLE', '本地文件已移动或删除。'); }
+    if (!stat.isFile() || stat.isSymbolicLink() || this.ownedJob(ownerId, payload) !== job) throw new AppError('DOWNLOAD_UNAVAILABLE', '本地文件已经变化。');
+    return job.localPath;
+  }
+
+  async prepareRetry(ownerId, payload) {
+    const job = this.ownedJob(ownerId, payload);
+    if (!['cancelled','error'].includes(job.status) || job.inFlight) throw new AppError('DOWNLOAD_UNAVAILABLE', '请等待下载任务结束后重试。');
+    const binding = await this.files.requirePlugin(ownerId, payload);
+    if (binding.revision !== job.revision || this.ownedJob(ownerId, payload) !== job) throw new AppError('WORKSPACE_CHANGED', '服务器配置已变化，请从目录重新选择文件下载。');
+    const prepared = await this.prepare(ownerId, {...payload, path:job.path});
+    if (prepared.revision !== job.revision || this.ownedJob(ownerId, payload) !== job) throw new AppError('WORKSPACE_CHANGED', '下载记录已变化，请从目录重新下载。');
+    return {...prepared, suggestedPath:job.localPath};
+  }
 
   async prepare(ownerId, payload) {
     const binding = await this.files.requirePlugin(ownerId, payload);

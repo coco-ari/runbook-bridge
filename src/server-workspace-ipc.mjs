@@ -3,6 +3,7 @@ import path from 'node:path';
 
 const SCOPE_KEYS = ['projectId', 'environmentId', 'pluginInstanceId'];
 const CALLS = [
+  ['server-workspace-edit-file', 'serverWorkspaceFiles', 'editFile', ['operation', 'path', 'editId', 'content', 'planId', 'dirty', 'sequence']],
   ['server-workspace-file-info', 'serverWorkspaceFiles', 'fileInfo', ['path']],
   ['server-workspace-prepare-file-action', 'serverWorkspaceFiles', 'prepareFileAction', ['kind', 'path', 'name']],
   ['server-workspace-confirm-file-action', 'serverWorkspaceFiles', 'confirmFileAction', ['operationId']],
@@ -22,7 +23,7 @@ const CALLS = [
   ['server-terminal-close', 'serverWorkspaceManager', 'closeTerminal', ['sessionId']],
   ['server-workspace-list-directory', 'serverWorkspaceFiles', 'listDirectory', ['path', 'cursor', 'snapshotId', 'deferLinks', 'resolveLinks', 'requestId']],
   ['server-workspace-cancel-directory-read', 'serverWorkspaceFiles', 'cancelDirectoryRead', ['requestId']],
-  ['server-workspace-read-file', 'serverWorkspaceFiles', 'readFile', ['path']],
+  ['server-workspace-read-file', 'serverWorkspaceFiles', 'readFile', ['path', 'tail', 'cursor', 'followToken']],
   ['server-workspace-revise-upload', 'serverWorkspaceFiles', 'reviseUploadReview', ['reviewId', 'fileNames', 'decisions']],
   ['server-workspace-read-upload-review', 'serverWorkspaceFiles', 'readUploadReview', ['reviewId']],
   ['server-workspace-cancel-upload-review', 'serverWorkspaceFiles', 'cancelUploadReview', ['reviewId']],
@@ -81,6 +82,7 @@ export function registerServerWorkspaceIpc(ipcMain, services) {
       if (name === 'server-docker-read' && payload.kind === 'stats' && event.sender.getOwnerBrowserWindow?.()?.isMinimized?.()) {
         throw new AppError('DOCKER_PAUSED', '窗口最小化期间暂停容器资源采集。');
       }
+      if (name === 'server-workspace-read-file' && payload.followToken && event.sender.getOwnerBrowserWindow?.()?.isMinimized?.()) throw new AppError('WORKSPACE_READ_PAUSED', '窗口最小化期间暂停日志跟随。');
       return manager[method](ownerId, payload);
     });
   }
@@ -105,14 +107,23 @@ export function registerServerWorkspaceIpc(ipcMain, services) {
       throw new AppError('CLIPBOARD_UNAVAILABLE', '无法访问系统剪贴板，请稍后重试。');
     }
   });
-  handle('server-workspace-download', ['path'], async (ownerId, payload, event) => {
+  handle('server-workspace-reveal-download', ['jobId'], async (ownerId, payload, event) => {
+    if (!services.serverWorkspaceFiles || !services.revealServerDownload) throw new AppError('WORKSPACE_UNAVAILABLE', '本地文件定位暂不可用。');
+    const target = await services.serverWorkspaceFiles.downloads.reveal(ownerId, payload);
+    ownerFor(event);
+    services.revealServerDownload(target);
+    return {};
+  });
+  handle('server-workspace-download', ['path', 'retryOf'], async (ownerId, payload, event) => {
     const files = services.serverWorkspaceFiles;
     if (!files || !services.pickServerDownloadPath) throw new AppError('WORKSPACE_UNAVAILABLE', '下载暂不可用。');
+    if ((payload.path === undefined) === (payload.retryOf === undefined)
+      || (payload.retryOf !== undefined && (typeof payload.retryOf !== 'string' || !payload.retryOf || payload.retryOf.length > 128))) throw new AppError('INVALID_ARGUMENT', '请选择文件或已有下载任务。');
     if (picking.has(ownerId)) throw new AppError('WORKSPACE_BUSY', '请选择或关闭当前文件选择窗口。');
     picking.add(ownerId);
     try {
-      const prepared = await files.downloads.prepare(ownerId, payload);
-      const selected = await services.pickServerDownloadPath(event.sender, prepared.name);
+      const prepared = payload.retryOf ? await files.downloads.prepareRetry(ownerId, payload) : await files.downloads.prepare(ownerId, payload);
+      const selected = await services.pickServerDownloadPath(event.sender, prepared.name, prepared.suggestedPath);
       if (!selected) return null;
       ownerFor(event);
       return await files.downloads.start(ownerId, payload, prepared, selected);

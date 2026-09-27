@@ -4,9 +4,9 @@ import { serverWorkspaceKey } from "./workspace-model"
 
 const ServerWorkspace = lazy(() => import("./ServerWorkspace").then((module) => ({ default: module.ServerWorkspace })))
 
-function ServerWorkspaceContribution({ api, entry, visible, onBack, onClose }: PluginWorkspaceProps) {
+function ServerWorkspaceContribution({ api, entry, visible, onBack, onClose, onDirtyChange }: PluginWorkspaceProps) {
   return <Suspense fallback={visible ? <div className="absolute inset-0 z-30 grid place-items-center bg-background text-sm text-muted-foreground">正在打开服务器工作区…</div> : null}>
-    <ServerWorkspace api={api} entry={entry} visible={visible} onBack={onBack} onClose={onClose} />
+    <ServerWorkspace api={api} entry={entry} visible={visible} onBack={onBack} onClose={onClose} onDirtyChange={onDirtyChange} />
   </Suspense>
 }
 
