@@ -165,13 +165,48 @@ async function run() {
   assert.equal(await js('document.querySelector("[data-testid=cloud-project-source]").textContent'),'团队仓库','仓库归属在项目详情显示');
   const singleStatus = () => js('(() => { const row=document.querySelector("button[data-project-id=cloud-demo]"), name=row.querySelector("[data-project-name]"), status=row.querySelector("[data-project-status-badge]"); return row.querySelectorAll("[data-project-status-badge]").length===1 && row.querySelectorAll(":scope > svg").length===0 && name.getBoundingClientRect().right<=status.getBoundingClientRect().left; })()');
   assert.equal(await singleStatus(),true,'列表只保留名称右侧的单个状态位');
+  if (await js('Boolean(document.querySelector("[data-testid=settings-page]"))')) {
+    await clickTestId('settings-back');
+    await wait('!document.querySelector("[data-testid=settings-page]")');
+  }
+  // 同步状态只在仓库区域显示，项目列表保留连接状态。
+  await store.updateProject(project.projectId,{name:'本地修改示例 · Alpha'});
+  await js('document.querySelector("[aria-label=检测云仓库更新]").click()');
+  await wait('Boolean(document.querySelector("[data-testid=cloud-project-sync][data-cloud-status=modified]"))');
+  await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  // 隐藏窗口先请求绘制，等待页面切换动画结束后再检查可见性。
+  await window.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
+  await wait('getComputedStyle(document.querySelector("[data-testid=cloud-project-sync]")).visibility === "visible"');
+  assert.equal(await js('document.querySelector("[data-testid=cloud-project-sync]").textContent.trim()'),'配置待上传');
+  assert.equal(await js('Boolean(document.querySelector("#project-list [data-cloud-notice]"))'),false,'列表不再展示同步标签或图标');
+  assert.equal(await js('Boolean(document.querySelector("button[data-project-id=cloud-demo] [data-status=disconnected]"))'),true,'本地修改不覆盖连接状态');
+  const syncLayout = await js('(() => { const source=document.querySelector("[data-testid=cloud-project-source]").getBoundingClientRect(), state=document.querySelector("[data-testid=cloud-project-sync]").getBoundingClientRect(), actions=document.querySelector("[data-testid=cloud-project-actions]").getBoundingClientRect(); return source.right<=state.left && state.right<=actions.left && Math.abs(source.top-state.top)<5; })()');
+  assert.equal(syncLayout,true,'同步状态紧邻仓库名称，且不遮挡上传和更新按钮');
+  if (process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR) {
+    const directory=path.resolve(process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR);
+    assert.ok(!directory.startsWith(root+path.sep)); await fs.mkdir(directory,{recursive:true});
+    await js('document.activeElement.blur(); document.querySelector("button[data-project-id=cloud-demo]").scrollIntoView({block:"center",behavior:"instant"})');
+    window.webContents.sendInputEvent({type:'mouseMove',x:600,y:100});
+    await js('(() => { const style=document.createElement("style"); style.id="project-sync-capture"; style.textContent="*, *::before, *::after { transition: none !important; animation: none !important; } [data-sonner-toaster] { visibility: hidden !important; }"; document.head.append(style); })()');
+    for (const theme of ['light','dark']) {
+      await js('document.documentElement.dataset.theme='+JSON.stringify(theme));
+      await window.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true}); window.webContents.invalidate();
+      await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      await delay(180);
+      await fs.writeFile(path.join(directory,'project-sync-'+theme+'.png'),(await window.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
+    }
+    await js('document.getElementById("project-sync-capture").remove()');
+  }
+  await store.updateProject(project.projectId,{name:project.name});
   // Publish a newer snapshot, then restore the old local version to model another device's upload.
   await store.updateProject(project.projectId,{name:'云端新版本 · Alpha'});
   await service.invoke(owner,'sync',{repositoryId,direction:'upload',projectId:project.projectId});
   await store.updateProject(project.projectId,{name:project.name});
   await js('document.querySelector("[aria-label=检测云仓库更新]").click()');
-  await wait('Boolean(document.querySelector("button[data-project-id=cloud-demo] [data-cloud-notice=behind]"))');
-  assert.equal(await singleStatus(),true,'云更新标记替换原状态，不增加第二个图标');
+  await wait('Boolean(document.querySelector("[data-testid=cloud-project-sync][data-cloud-status=behind]"))');
+  assert.equal(await singleStatus(),true,'云端有更新不影响列表的连接状态');
+  assert.equal(await js('document.querySelector("[data-testid=cloud-project-sync][data-cloud-status=behind]").textContent.trim()'),'云端有更新');
+  assert.equal(await js('Boolean(document.querySelector("button[data-project-id=cloud-demo] [data-status=disconnected]"))'),true,'云端有更新时仍显示连接状态');
   assert.match(await js('document.querySelector("button[data-project-id=cloud-demo]").getAttribute("aria-label")'),/未连接.*团队仓库.*云端有更新/);
   if (process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR) {
     const directory=path.resolve(process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR);
@@ -187,7 +222,7 @@ async function run() {
   }
   await clickTestId('cloud-project-update');
   await wait('Boolean(document.querySelector("button[data-project-id=cloud-demo] [data-cloud-status=synced]"))');
-  assert.equal(await js('Boolean(document.querySelector("button[data-project-id=cloud-demo] [data-status=disconnected]"))'),true,'更新完成后恢复连接状态标记');
+  assert.equal(await js('Boolean(document.querySelector("button[data-project-id=cloud-demo] [data-status=disconnected]"))'),true,'更新完成后保留连接状态标记');
   assert.equal(await js('Boolean(document.querySelector("[data-testid=cloud-update-confirmation]"))'),false,'已知旧版本直接更新');
   await store.updateProject(project.projectId,{name:project.name});
   await clickTestId('cloud-project-upload');
@@ -372,7 +407,7 @@ async function run() {
   await wait('Boolean(document.querySelector("[role=menuitem]"))');
   await js('[...document.querySelectorAll("[role=menuitem]")].find(item=>item.textContent.includes("个人仓库")).click()');
   await wait('Boolean(document.querySelector("[data-cloud-project-id]"))');
-  assert.equal(await js('Boolean(document.querySelector("[data-cloud-project-id] [data-project-status-badge] [data-cloud-notice=remote]"))'),true,'尚未下载的项目也只在右侧显示下载标记');
+  assert.equal(await js('Boolean(document.querySelector("[data-cloud-project-id] [data-status=disconnected]"))'),true,'尚未下载的项目仍显示未连接状态');
   const copiedId = service.state.repositories.find(r=>r.repositoryId===secondId).catalog[0].projectId;
   assert.notEqual(copiedId,cloudProjectId);
   assert.equal((await store.listProjects()).length,projectCount);

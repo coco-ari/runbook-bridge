@@ -18,9 +18,14 @@ export function CloudProjectSource({ projectId }: { projectId: string }) {
   const connection = data.cloudProjects?.find(item => item.localId === projectId)
   const repository = data.repositories?.find(repo => repo.repositoryId === connection?.repositoryId)
   const label = connection ? repository?.name ?? "云仓库" : "本地项目"
-  return <Badge variant="outline" className="min-w-0 max-w-full gap-1.5" data-testid="cloud-project-source" title={connection ? `云仓库：${label}` : label}>
-    {connection ? <Cloud className="shrink-0" /> : <FolderSimple className="shrink-0" />}<span className="truncate">{label}</span>
-  </Badge>
+  return <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+    <Badge variant="outline" className="min-w-0 max-w-full gap-1.5" data-testid="cloud-project-source" title={connection ? `云仓库：${label}` : label}>
+      {connection ? <Cloud className="shrink-0" /> : <FolderSimple className="shrink-0" />}<span className="truncate">{label}</span>
+    </Badge>
+    {connection ? <span className="text-xs text-muted-foreground" data-testid="cloud-project-sync" data-cloud-status={connection.syncStatus}>
+      {connection.syncStatus === "modified" ? "配置待上传" : cloudStatusLabels[connection.syncStatus]}
+    </span> : null}
+  </div>
 }
 export function CloudProjectActions({ projectId, linked, elsewhere = true }: { projectId?: string; linked?: CloudLinkedProject; elsewhere?: boolean }) {
   const cloud = useCloudConfig()
