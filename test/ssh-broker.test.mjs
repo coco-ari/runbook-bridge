@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import fsSync, { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -1189,7 +1190,9 @@ test('SFTP total timeout reports numeric transfer progress and closes the read s
   h.runtime.broker.withInternalSftp=(projectId,operation,options)=>internal(projectId,operation,{...options,timeoutMs:500});
   await assert.rejects(h.runtime.readRemoteBuffer(h.plugin,'/logs/slow.log',0,65536),(error)=>{
     assert.equal(error.code,'SFTP_OPERATION_TIMEOUT');
-    assert.deepEqual(error.details,{phase:'read',requestedBytes:65536,receivedBytes:30*1024,timeoutMs:500});
+    const {elapsedMs, ...progress} = error.details;
+    assert.ok(elapsedMs >= 450 && elapsedMs < 3000);
+    assert.deepEqual(progress,{phase:'read',requestedBytes:65536,receivedBytes:30*1024,timeoutMs:500});
     assert.match(error.message,/无需重新连接/);
     assert.doesNotMatch(JSON.stringify(error.details),/slow.log|AAAA/);
     return true;
@@ -1233,4 +1236,53 @@ test('日志单页预算中止真实 SFTP 读取并保留当前文件续查', as
   assert.equal(next.conclusion,'no_match');
   assert.equal(next.nextCursor,null);
   assert.equal(tracker.closeRequests,1);
+});
+
+
+test('大归档跨页只重读缺失块，乱序和迟到响应不污染续读结果', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'ai-ops-archive-resume-'));
+  const remoteRoot = path.join(root,'remote');
+  await fs.mkdir(path.join(remoteRoot,'logs'),{recursive:true});
+  const text = crypto.randomBytes(3*1024*1024).toString('hex').match(/.{1,128}/g).join('\n') + '\nRESUME_FIXTURE_OK\n';
+  const content = gzipSync(text,{level:0});
+  await fs.writeFile(path.join(remoteRoot,'logs','large.gz'),content);
+  let slow = true;
+  const tracker = {};
+  const port = await startSshServer(t,{sftpRoot:remoteRoot,sftpTracker:tracker,
+    sftpReadDelayMs:offset=>slow && offset===0 ? 2000 : 0});
+  const h = await managedServer(t,root,port);
+  await h.connect();
+  const operations = new ServerOperations(h.runtime,h.store,{logPageTimeMs:1000});
+  t.after(() => {
+    for (const key of operations.logSnapshotCache.entries.keys()) operations.logSnapshotCache.remove(key);
+    operations.logSnapshotCache.scheduleExpiry();
+  });
+  const args = {path:'/logs/large.gz',queries:['RESUME_FIXTURE_OK'],maxScanBytes:8*1024*1024,maxExpandedBytes:8*1024*1024};
+  const first = await operations.searchLogs(h.plugin,args);
+  assert.equal(first.interruption.code,'LOG_SEARCH_TIMEOUT');
+  assert.equal(first.interruption.phase,'read');
+  assert.equal(first.interruption.resumeAvailable,true);
+  assert.ok(first.interruption.retainedBytes>480*1024);
+  assert.ok(first.remoteBytesRead>0);
+  assert.equal(first.remoteBytesRead,first.interruption.receivedBytes);
+  assert.equal(first.interruption.retainedBytes,first.remoteBytesRead);
+  assert.equal(first.coverage.length,0);
+  assert.equal(first.conclusion,'inconclusive');
+  const completedBefore = new Set(tracker.completedReadOffsets);
+  const issuedBefore = tracker.readOffsets.length;
+  slow = false;
+  operations.logSearch.pageTimeMs = 5000;
+  const next = await operations.searchLogs(h.plugin,{...args,cursor:first.nextCursor});
+  assert.equal(next.status,'complete');
+  assert.equal(next.matchCount,1);
+  assert.equal(next.matches[0].text,'RESUME_FIXTURE_OK');
+  assert.equal(first.remoteBytesRead+next.remoteBytesRead,content.length);
+  assert.equal(next.cache.savedRemoteBytes,first.interruption.retainedBytes);
+  assert.ok(tracker.readOffsets.slice(issuedBefore).every(offset=>!completedBefore.has(offset)));
+  assert.ok(tracker.maxActiveReads<=16);
+  assert.ok(Math.max(...tracker.requestedReadLengths)<=30*1024);
+  await new Promise(resolve=>setTimeout(resolve,1100));
+  const cached = await operations.searchLogs(h.plugin,args);
+  assert.equal(cached.matches[0].text,'RESUME_FIXTURE_OK');
+  assert.equal(cached.remoteBytesRead,0);
 });

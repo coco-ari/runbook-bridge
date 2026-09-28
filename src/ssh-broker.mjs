@@ -15,6 +15,7 @@ import { uploadTimeouts } from './server-upload-progress.mjs';
 import { evaluateCommandPolicy } from './command-policy.mjs';
 import { createProxySocket } from './proxy.mjs';
 import { SftpReadPool } from './sftp-read-pool.mjs';
+import { LOG_READ_BLOCK_BYTES } from './log-read-checkpoint.mjs';
 
 const MAX_COMMAND_OUTPUT = 512 * 1024;
 const CONTEXT_TTL_MS = 30 * 60 * 1000;
@@ -24,7 +25,7 @@ const SFTP_CLEANUP_GRACE_MS = 1_000;
 const SFTP_READ_INACTIVITY_MS = 30_000;
 const SFTP_READ_SESSION_TIMEOUT_MS = 120_000;
 // 30 KiB 低于 SSH2 兼容端点的单次 READ 上限，避免库内拆包引入串行往返。
-const SFTP_READ_CHUNK_BYTES = 30 * 1024;
+const SFTP_READ_CHUNK_BYTES = LOG_READ_BLOCK_BYTES;
 const SFTP_READ_WINDOW = 16;
 const SFTP_BINARY_READ_MAX_BYTES = 64 * 1024 * 1024;
 const SFTP_METADATA_CONCURRENCY = 16;
@@ -150,6 +151,7 @@ function withSftp(client, action, { timeoutMs = 0, inactivityMs = 0, timeoutCode
     let inactivityTimer = null;
     let forceCloseTimer = null;
     let progress = { phase:'sftp', timeoutMs };
+    const startedAt = Date.now();
     const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Infinity;
 
     const safeEnd = () => {
@@ -213,7 +215,7 @@ function withSftp(client, action, { timeoutMs = 0, inactivityMs = 0, timeoutCode
 
     if (timeoutMs > 0) {
       timeoutTimer = setTimeout(
-        () => abort(new AppError(timeoutCode, timeoutMessage, progress)),
+        () => abort(new AppError(timeoutCode, timeoutMessage, { ...progress, elapsedMs:Date.now() - startedAt })),
         timeoutMs,
       );
       timeoutTimer.unref?.();
@@ -405,10 +407,11 @@ function throwIfAborted(signal) {
     : new AppError('TRANSFER_INTERRUPTED', 'SSH/SFTP 文件操作已中止。');
 }
 
-async function sftpReadRange(sftp, remotePath, start, maxBytes, { signal, abort, reportProgress } = {}) {
+async function sftpReadRange(sftp, remotePath, start, maxBytes, { signal, abort, reportProgress } = {}, checkpoint = null) {
   if (maxBytes <= 0) return Buffer.alloc(0);
   throwIfAborted(signal);
-  const output = Buffer.allocUnsafe(maxBytes);
+  const output = checkpoint?.content ?? Buffer.allocUnsafe(maxBytes);
+  reportProgress?.({ phase:'open', requestedBytes:maxBytes, receivedBytes:0 });
   const handle = await sftpOpen(sftp, remotePath);
   let total = 0;
   let receivedBytes = 0;
@@ -425,10 +428,10 @@ async function sftpReadRange(sftp, remotePath, start, maxBytes, { signal, abort,
   });
   interrupted.catch(() => undefined);
 
-  const readWithTimeout = async (bufferOffset, length, position) => {
+  const readWithTimeout = async (buffer, bufferOffset, length, position) => {
     throwIfAborted(signal);
     let inactivityTimer;
-    const read = sftpRead(sftp, handle, output, bufferOffset, length, position);
+    const read = sftpRead(sftp, handle, buffer, bufferOffset, length, position);
     const inactivity = new Promise((_, reject) => {
       inactivityTimer = setTimeout(() => {
         const error = new AppError('LOG_SCAN_TIMEOUT', 'SFTP 读取长时间没有响应。请缩小到单个日志文件后重试；目录和 stat 正常时无需重新连接。', { ...progress(), timeoutMs:SFTP_READ_INACTIVITY_MS });
@@ -445,13 +448,17 @@ async function sftpReadRange(sftp, remotePath, start, maxBytes, { signal, abort,
   };
 
   const readChunk = async (relativeStart, length) => {
+    // 超时后的迟到响应只能写入临时块，不能污染已缓存或下一页正在使用的正文。
+    const chunk = checkpoint ? Buffer.allocUnsafe(length) : output.subarray(relativeStart, relativeStart + length);
     let filled = 0;
     while (filled < length) {
       const bytesRead = await readWithTimeout(
-        relativeStart + filled,
+        chunk,
+        filled,
         length - filled,
         start + relativeStart + filled,
       );
+      throwIfAborted(signal);
       if (!Number.isSafeInteger(bytesRead) || bytesRead < 0 || bytesRead > length - filled) {
         throw new AppError('TRANSFER_FAILED', '服务器返回了无效的文件读取长度。');
       }
@@ -460,6 +467,7 @@ async function sftpReadRange(sftp, remotePath, start, maxBytes, { signal, abort,
       receivedBytes += bytesRead;
       reportProgress?.(progress());
     }
+    if (filled === length) checkpoint?.retain(relativeStart, chunk);
     return filled;
   };
 
@@ -474,6 +482,7 @@ async function sftpReadRange(sftp, remotePath, start, maxBytes, { signal, abort,
           const position = scheduled;
           const length = Math.min(SFTP_READ_CHUNK_BYTES, maxBytes - position);
           scheduled += length;
+          if (checkpoint?.has(position)) continue;
           const bytesRead = await readChunk(position, length);
           if (bytesRead < length) eof = Math.min(eof, position + bytesRead);
         }
@@ -487,6 +496,7 @@ async function sftpReadRange(sftp, remotePath, start, maxBytes, { signal, abort,
   if (abortListener) signal?.removeEventListener('abort', abortListener);
   if (!signal?.aborted) {
     try {
+      reportProgress?.({ ...progress(), phase:'close' });
       await sftpCloseHandle(sftp, handle);
     } catch (error) {
       primaryError ??= error;
@@ -682,7 +692,7 @@ async function listRemoteDirectoryOnSftp(sftp, remotePath, { offset = 0, limit =
   return result;
 }
 
-async function readRemoteBufferOnSftp(sftp, remotePath, start = 0, maxBytes = 262_144, lifecycle = {}, { allowGrowth = false, tail = false } = {}, { pipelineReadValidation = false } = {}) {
+async function readRemoteBufferOnSftp(sftp, remotePath, start = 0, maxBytes = 262_144, lifecycle = {}, { allowGrowth = false, tail = false, checkpoint = null } = {}, { pipelineReadValidation = false } = {}) {
   const requestedLimit = Number(maxBytes);
   if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > SFTP_BINARY_READ_MAX_BYTES) {
     throw new AppError('INVALID_ARGUMENT', '二进制读取范围必须在 1 字节到 64 MiB 之间。', {
@@ -690,23 +700,39 @@ async function readRemoteBufferOnSftp(sftp, remotePath, start = 0, maxBytes = 26
     });
   }
   const normalized = normalizeAbsoluteRemotePath(remotePath);
+  lifecycle.reportProgress?.({ phase:'metadata', requestedBytes:requestedLimit, receivedBytes:0 });
   const canonical = await sftpRealpath(sftp, normalized);
   const stats = await sftpStat(sftp, canonical);
   if (!stats.isFile()) throw new AppError('SOURCE_NOT_ALLOWED', '目标不是普通文件。');
   const initialSize = Number(stats.size);
   const offset = tail ? Math.max(0, initialSize - requestedLimit) : Math.min(Math.max(Number(start) || 0, 0), initialSize);
   const expectedBytes = Math.min(requestedLimit, initialSize - offset);
+  throwIfAborted(lifecycle.signal);
+  const reusedBytes = checkpoint?.retainedBytes ?? 0;
+  if (checkpoint) {
+    if (allowGrowth || tail || offset !== 0 || expectedBytes !== requestedLimit || checkpoint.content.length !== expectedBytes) {
+      throw new AppError('SOURCE_CHANGED', '归档续读范围已经变化，请重新搜索。');
+    }
+    checkpoint.validate({ canonicalPath:canonical, size:initialSize, mtime:Number(stats.mtime ?? 0), mode:Number(stats.mode ?? 0) });
+  }
+  let receivedBytes = 0;
+  const readLifecycle = { ...lifecycle, reportProgress:value => {
+    receivedBytes = value.receivedBytes;
+    lifecycle.reportProgress?.(value);
+  } };
   const buffer = await sftpReadRange(
     sftp,
     canonical,
     offset,
     expectedBytes,
-    lifecycle,
+    readLifecycle,
+    checkpoint,
   );
   if (buffer.length !== expectedBytes) {
     throw new AppError('SOURCE_CHANGED', '服务器文件在读取期间发生变化，请重新搜索。', { path:canonical });
   }
   let currentStats, resolvedPath;
+  lifecycle.reportProgress?.({ phase:'validation', requestedBytes:expectedBytes, receivedBytes });
   try {
     if (pipelineReadValidation) {
       // 正文和句柄均已收尾；两个末次校验全部完成后，仍优先处理属性错误和变化。
@@ -740,7 +766,8 @@ async function readRemoteBufferOnSftp(sftp, remotePath, start = 0, maxBytes = 26
   }
   return {
     canonicalPath: canonical,
-    content: buffer,
+    content: checkpoint ? Buffer.from(buffer) : buffer,
+    ...(checkpoint ? { receivedBytes, reusedBytes } : {}),
     startByte: offset,
     endByte: offset + buffer.length,
     size: initialSize,

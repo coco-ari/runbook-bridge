@@ -33,6 +33,8 @@ try {
   assert.match(logSearch.inputSchema.properties.maxScanBytes.description,/默认 4 MiB/);
   assert.match(client.getInstructions(),/queryStarted:false/);
   assert.match(client.getInstructions(),/20 秒/);
+  assert.match(client.getInstructions(),/resumeAvailable/);
+  assert.match(logSearch.description,/retainedBytes/);
   assert.equal(logSearch.inputSchema.properties.maxLines, undefined);
   assert.equal(logSearch.inputSchema.properties.cursor.pattern, '^[a-f0-9]{64}$');
   assert.equal(logSearch.inputSchema.properties.refresh.type, 'boolean');
@@ -93,6 +95,16 @@ const archiveSmoke = [
   "assert.ok(Object.keys(searched).indexOf('nextCursor') < Object.keys(searched).indexOf('matches'));",
   "const next = await operations.searchLogs({projectId:'package',environmentId:'test',pluginInstanceId:'server'}, {path:'/logs/packaged.zip',queries:['PACKAGED_ZIP_OK'],maxMatches:1,cursor:searched.nextCursor});",
   "assert.equal(next.matchCount,1); assert.equal(next.status,'complete'); assert.equal(next.cache.hits,1);",
+  "const resumeBody = gzipSync('z'.repeat(70000)+'\\nPACKAGED_RESUME_OK\\n',{level:0});",
+  "const resumeFile = {type:'file',path:'/resume.gz',canonicalPath:'/resume.gz',size:resumeBody.length,mtime:1}; let resumeCalls = 0;",
+  "const resumeRuntime = {withRemoteReadSession:async(_plugin,action)=>action({generation:1,statPath:async()=>resumeFile,readBuffer:async(_path,_start,_bytes,{checkpoint})=>{",
+  "checkpoint.validate({canonicalPath:'/resume.gz',size:resumeBody.length,mtime:1,mode:33188}); const reusedBytes=checkpoint.retainedBytes; resumeCalls+=1;",
+  "if(resumeCalls===1){checkpoint.retain(0,resumeBody.subarray(0,30720)); throw Object.assign(new Error('合成读取超时'),{code:'LOG_SEARCH_TIMEOUT',details:{phase:'read',requestedBytes:resumeBody.length,receivedBytes:30720,elapsedMs:20000}});}",
+  "assert.equal(reusedBytes,30720); for(let offset=30720;offset<resumeBody.length;offset+=30720) checkpoint.retain(offset,resumeBody.subarray(offset,Math.min(offset+30720,resumeBody.length)));",
+  "return {...resumeFile,content:Buffer.from(checkpoint.content),receivedBytes:resumeBody.length-reusedBytes,reusedBytes};}})};",
+  "const resumeOps = new ServerOperations(resumeRuntime,{}); const resumeScope={projectId:'package',environmentId:'test',pluginInstanceId:'resume'}; const resumeArgs={path:'/resume.gz',queries:['PACKAGED_RESUME_OK']};",
+  "const partial=await resumeOps.searchLogs(resumeScope,resumeArgs); assert.equal(partial.interruption.resumeAvailable,true); assert.equal(partial.remoteBytesRead,30720); assert.equal(partial.coverage.length,0);",
+  "const completed=await resumeOps.searchLogs(resumeScope,{...resumeArgs,cursor:partial.nextCursor}); assert.equal(completed.status,'complete'); assert.equal(completed.matchCount,1); assert.equal(partial.remoteBytesRead+completed.remoteBytesRead,resumeBody.length);",
   "const { MysqlPluginRuntime } = await import(new URL('./mysql-plugin-runtime.mjs',pathToFileURL(process.env.AI_OPS_OPERATIONS_MODULE).href));",
   "const mysql = new MysqlPluginRuntime({closeRelay:async()=>{}},{});",
   "const databasePlugin = {projectId:'package',environmentId:'test',pluginInstanceId:'mysql',target:{database:'fixture'},limits:{timeoutMs:1000,maxBytes:65536,maxRows:10}};",

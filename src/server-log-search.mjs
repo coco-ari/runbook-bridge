@@ -7,6 +7,7 @@ import { logProcessor } from './log-processor.mjs';
 import { LogSearchCursors, logSearchBinding } from './log-search-cursors.mjs';
 import { LOG_SEARCH_LIMITS, logInteger } from './log-search-limits.mjs';
 import { selectLogResultPage } from './log-result-page.mjs';
+import { LogReadCheckpoint } from './log-read-checkpoint.mjs';
 
 const LOG_SNAPSHOT_CACHE_TTL_MS = 5 * 60 * 1000;
 const LOG_SNAPSHOT_CACHE_MAX_BYTES = 64 * 1024 * 1024;
@@ -66,7 +67,7 @@ function logSearchGuidance(reasons) {
   if (reasons.has('maxScanBytes')) guidance.push('扫描预算不足；指定单个文件后按文件大小设置 maxScanBytes，最大 67108864。ZIP/GZIP 必须完整读取压缩输入。');
   if (reasons.has('maxExpandedBytes') || reasons.has('archiveRejected')) guidance.push('检查 skipped 中的具体原因；解压大小超限时可增大 maxExpandedBytes，最大 134217728；损坏、加密、压缩比或不支持的格式无法通过增加扫描预算解决。');
   if (reasons.has('maxFilesOrListing')) guidance.push('文件发现范围不完整；用日期 pattern、单个文件 path 或更窄的子目录继续搜索。');
-  if (reasons.has('timeBudget')) guidance.push('本页读取已停止；有 nextCursor 时保持参数完全一致续查。若同一文件再次超时，请指定该文件并缩小 maxScanBytes、合并 queries 发起新搜索；目录和 stat 正常时无需重新连接。');
+  if (reasons.has('timeBudget')) guidance.push('本页读取已停止；有 nextCursor 时保持参数完全一致续查。归档的 interruption.resumeAvailable 为 true 时会复用已接收完整块，检查 retainedBytes 是否持续增加；没有进展时停止重复续查。压缩输入预算必须容纳整个归档，缩小预算不能解决归档传输超时；目录和 stat 正常时无需重新连接。');
   return guidance;
 }
 
@@ -75,6 +76,7 @@ function cacheEntryBytes(value) {
 }
 
 function clearSnapshotBuffers(value) {
+  value?.checkpoint?.clear();
   const cleared = new Set();
   for (const snapshot of value?.snapshots ?? []) {
     if (!Buffer.isBuffer(snapshot.content) || cleared.has(snapshot.content)) continue;
@@ -128,6 +130,16 @@ class LogSnapshotCache {
     this.entries.delete(key);
     this.entries.set(key, entry);
     return entry.value;
+  }
+
+  take(key) {
+    const value = this.get(key);
+    if (!value) return null;
+    const entry = this.entries.get(key);
+    this.entries.delete(key);
+    this.bytes -= entry.bytes;
+    this.scheduleExpiry();
+    return value;
   }
 
   set(key, value) {
@@ -224,7 +236,13 @@ export class ServerLogSearch {
     const reservationBytes = (scanBudget * 2) + (expandedBudget * 3);
 
     let finishInterruptedPage;
+    let archiveTransfer = null;
+    const clearTransfer = () => {
+      archiveTransfer?.checkpoint.clear();
+      archiveTransfer = null;
+    };
     const searchPage = async (reader) => {
+      const startedAt = Date.now();
       // 建连已消耗的时间同样计入预算，工作线程不能在通道超时后继续占用一整页时间。
       const deadline = Math.min(Date.now() + this.pageTimeMs, reader.deadline ?? Infinity);
       const binding = logSearchBinding(plugin,args,reader.generation);
@@ -363,6 +381,9 @@ export class ServerLogSearch {
       let cacheSavedRemoteBytes = 0;
 
       let activeFileIndex = null;
+      let activeReadBytes = null;
+      let phase = 'metadata';
+      let interruption = null;
       let pageResult;
       const finishPage = () => {
         if (pageResult) return pageResult;
@@ -386,6 +407,7 @@ export class ServerLogSearch {
           filesConsidered:Math.min(files.length,maxFiles),
           nextCursor,
           remainingDirectories,
+          ...(interruption ? {interruption} : {}),
           status:complete ? 'complete' : 'partial',
           conclusion:matchedSoFar > 0 ? 'matches' : complete ? 'no_match' : 'inconclusive',
           progress:{filesFinished,filesRemaining:pending.length,matchedSoFar,selectionComplete:!selectionTruncated},
@@ -419,12 +441,30 @@ export class ServerLogSearch {
         };
       };
       finishInterruptedPage = (error) => {
-        // 失败的当前文件尚未形成覆盖证据，续查时重新验证并读取，不能跳过。
+        // 未完成归档只有传输进度，不能算作已搜索覆盖；游标仍停留在当前文件。
         if (activeFileIndex !== null) pending = files.slice(activeFileIndex);
+        const details = error.details ?? {};
+        const numeric = value => Number.isSafeInteger(value) && value >= 0;
+        const receivedBytes = activeReadBytes === null || !numeric(details.receivedBytes) ? 0 : Math.min(activeReadBytes, details.receivedBytes);
+        remoteBytesRead += receivedBytes;
+        interruption = {
+          code:error.code, retryable:true,
+          phase:phase === 'processing' ? 'processing' : activeReadBytes !== null && ['metadata','open','read','close','validation'].includes(details.phase) ? details.phase : phase,
+          elapsedMs:numeric(details.elapsedMs) ? details.elapsedMs : Date.now() - startedAt,
+          timeoutMs:this.pageTimeMs,
+          ...(activeReadBytes === null ? {} : {requestedBytes:activeReadBytes,receivedBytes}),
+        };
+        if (archiveTransfer) {
+          const {key,checkpoint,reusedBytes} = archiveTransfer;
+          checkpoint.active = false;
+          const retainedBytes = checkpoint.retainedBytes;
+          const resumeAvailable = retainedBytes > 0 && this.logSnapshotCache.set(key,{snapshots:[{content:checkpoint.content}],checkpoint});
+          Object.assign(interruption,{retainedBytes:resumeAvailable ? retainedBytes : 0,reusedBytes,resumeAvailable});
+          if (resumeAvailable) archiveTransfer = null;
+          else clearTransfer();
+        }
         truncationReasons.add('timeBudget');
-        const result = finishPage();
-        result.interruption = {code:error.code, retryable:true};
-        return result;
+        return finishPage();
       };
 
       for (const [fileIndex,file] of files.entries()) {
@@ -449,10 +489,12 @@ export class ServerLogSearch {
           break;
         }
         activeFileIndex = fileIndex;
+        phase = 'metadata';
         attemptedFiles += 1;
         pending = files.slice(fileIndex + 1);
         let resumedGrowth = false;
         let resumedSize = Number(file.size);
+        const checkpointKey = JSON.stringify(['archive', binding, file.path]);
         try {
           if (resumed || file.fromCachedListing) {
             const current = await reader.statPath(file.canonicalPath ?? file.path);
@@ -494,6 +536,8 @@ export class ServerLogSearch {
             // 先计入请求范围，读取中途失败仍消耗本页预算。
             scannedBytes += probeLength;
             let probe;
+            activeReadBytes = probeLength;
+            phase = 'read';
             if (typeof reader.readBuffer === 'function') {
               probe = await reader.readBuffer(file.canonicalPath ?? file.path, 0, probeLength, { allowGrowth:true });
             } else if (typeof this.serverRuntime.readRemoteBuffer === 'function') {
@@ -501,6 +545,7 @@ export class ServerLogSearch {
             } else {
               throw new AppError('CAPABILITY_NOT_IMPLEMENTED', '当前 Server Runtime 不支持二进制日志读取。');
             }
+            activeReadBytes = null;
             const probeContent = Buffer.isBuffer(probe.content) ? probe.content : Buffer.from(probe.content ?? []);
             if (probeContent.length !== probeLength) {
               throw new AppError('SOURCE_CHANGED', '日志文件在类型探测期间已经变化，请重新搜索。');
@@ -569,17 +614,31 @@ export class ServerLogSearch {
             } else {
               cacheMisses += 1;
               let read;
+              let checkpoint = null;
+              // 完成快照与断点共用容量预算，运行中的断点移出缓存，防止定时清零影响读取。
+              if (effectiveArchive && length > 0) {
+                const saved = resumed ? this.logSnapshotCache.take(checkpointKey) : null;
+                if (!resumed) this.logSnapshotCache.remove(checkpointKey);
+                checkpoint = saved?.checkpoint ?? new LogReadCheckpoint(file);
+                checkpoint.active = true;
+                archiveTransfer = {key:checkpointKey,checkpoint,reusedBytes:checkpoint.retainedBytes};
+              }
+              activeReadBytes = length;
+              phase = 'read';
               if (length === 0) {
                 read = { canonicalPath:file.canonicalPath ?? file.path, content:Buffer.alloc(0), startByte:0, endByte:0, size:0, mtime:Number(file.mtime), truncated:false };
               } else if (typeof reader.readBuffer === 'function') {
-                read = await reader.readBuffer(file.canonicalPath ?? file.path, start, length, { allowGrowth:!effectiveArchive });
+                read = await reader.readBuffer(file.canonicalPath ?? file.path, start, length, { allowGrowth:!effectiveArchive, ...(checkpoint ? {checkpoint} : {}) });
               } else if (typeof this.serverRuntime.readRemoteBuffer === 'function') {
-                read = await this.serverRuntime.readRemoteBuffer(plugin, file.canonicalPath ?? file.path, start, length, { allowGrowth:!effectiveArchive });
+                read = await this.serverRuntime.readRemoteBuffer(plugin, file.canonicalPath ?? file.path, start, length, { allowGrowth:!effectiveArchive, ...(checkpoint ? {checkpoint} : {}) });
               } else {
                 throw new AppError('CAPABILITY_NOT_IMPLEMENTED', '当前 Server Runtime 不支持二进制日志读取。');
               }
+              activeReadBytes = null;
+              clearTransfer();
               content = Buffer.isBuffer(read.content) ? read.content : Buffer.from(read.content ?? []);
-              remoteBytesRead += content.length;
+              remoteBytesRead += read.receivedBytes ?? content.length;
+              cacheSavedRemoteBytes += read.reusedBytes ?? 0;
               const detectedType = detectLogArchiveType({ filePath:read.canonicalPath, content });
               const allowGrowth = detectedType === 'plain' && !effectiveArchive;
               sourceGrew = assertLogReadIdentity(allowGrowth ? file : file.listedIdentity ?? file, read, { allowGrowth }) || sourceGrew;
@@ -602,6 +661,7 @@ export class ServerLogSearch {
               truncationReasons.add('timeBudget');
               break;
             }
+            phase = 'processing';
             expanded = await this.processor.run('process', {
               archive:{
                 filePath:file.canonicalPath ?? file.path, content,
@@ -618,6 +678,7 @@ export class ServerLogSearch {
             reader.signal?.throwIfAborted();
           } catch (error) {
             if (error?.code === 'LOG_PROCESSING_TIMEOUT') {
+              interruption = {code:error.code,retryable:true,phase:'processing',elapsedMs:Date.now() - startedAt};
               pending = files.slice(fileIndex);
               truncationReasons.add('timeBudget');
               break;
@@ -736,6 +797,10 @@ export class ServerLogSearch {
             break;
           }
         } catch (error) {
+          if (!['LOG_SEARCH_TIMEOUT','LOG_SCAN_TIMEOUT','SFTP_OPERATION_TIMEOUT'].includes(error?.code)) {
+            this.logSnapshotCache.remove(checkpointKey);
+            clearTransfer();
+          }
           const multiple = files.length > 1 || (resumed?.filesFinished ?? 0) > 0;
           if (!multiple || error.details?.reason === 'path' || !['SOURCE_CHANGED','SOURCE_NOT_FOUND'].includes(error?.code)) throw error;
           skipped.push({path:file.path,code:error.code});
@@ -755,6 +820,8 @@ export class ServerLogSearch {
           phase:'discovery', retryable:true, timeoutMs:this.pageTimeMs,
           guidance:'先指定准确文件 path，或收窄目录和日期 pattern 后重试；目录和 stat 正常时无需重新连接。',
         });
+      } finally {
+        clearTransfer();
       }
     });
   }

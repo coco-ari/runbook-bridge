@@ -70,7 +70,7 @@ SFTP 读取使用最多 16 个 30 KiB 请求构成的持续流水线，在途窗
 
 每次请求是一页，扫描/展开字节和文件/匹配数上限都按页计算。把 `nextCursor` 原样放进下一次请求的 `cursor`，其余参数（包括 `refresh`）保持一致。游标绑定项目、环境、插件版本、MCP 会话、SSH 连接代次和搜索条件；保存最多 5 分钟，淘汰或过期后从原范围重新搜索。游标只保留有界文件元数据，最多 128 个/8 MiB，不保存正文或授权。
 
-普通文件先搜尾部，续查按完整行向前移动；同一窗口匹配分页不会重新发现目录。ZIP/GZIP 的匹配可以跨成员分页，仍需完整读取压缩输入。稳定输入在内存中最多缓存 64 MiB/5 分钟，命中后仍检查身份；续查可能再次解压，但省去远端传输。大于读取窗口的超长行会在 `skipped` 标明，不能声称完整。
+普通文件先搜尾部，续查按完整行向前移动；同一窗口匹配分页不会重新发现目录。ZIP/GZIP 的匹配可以跨成员分页，仍需完整读取压缩输入。归档传输超时会保留已完整接收的 30 KiB 数据块，下一页只请求缺失块，短读未完成的块重新读取。断点与完整输入共用 64 MiB/5 分钟的本机内存缓存，不写磁盘，也不进入游标或错误正文；过期、淘汰时清零。运行中读取计入现有并发与预留内存预算。跨页读取核对真实路径、大小、修改时间、权限模式，并绑定原搜索参数、插件版本和连接代次；读取结束仍执行原有文件身份复核，变化时拒绝拼接。续查可能再次解压，但省去远端重复传输。大于读取窗口的超长行会在 `skipped` 标明，不能声称完整。
 
 | 字段 | 如何使用 |
 | --- | --- |
@@ -82,9 +82,14 @@ SFTP 读取使用最多 16 个 30 KiB 请求构成的持续流水线，在途窗
 | `coverage.complete` | 当前文件窗口是否覆盖全文件，与整个续查链的完成状态不同。 |
 | `scanStartByte/scanEndByte` | 真正搜索的字节范围；`readStartByte` 还包括被跳过的不完整首行。 |
 | `scannedBytes` | 本页计费输入范围，包括缓存输入、探测和失败读取的预留范围。 |
-| `remoteBytesRead` | 已成功返回的远端输入字节；失败请求可能已传输部分内容，故不是线速流量计。 |
+| `remoteBytesRead` | 本页完成读取及超时前已确认接收的远端输入字节；不含复用块、SSH 开销和无法确认的在途数据，不是线速流量计。 |
+| `interruption.phase` | 超时阶段：`metadata`、`open`、`read`、`close`、`validation` 或本地 `processing`。 |
+| `interruption.elapsedMs/timeoutMs` | 本次耗时与远程会话时限；本地处理超时可能仅返回耗时。 |
+| `interruption.requestedBytes/receivedBytes` | 当前读取范围大小与本页该次读取已接收字节数；不是搜索覆盖范围。 |
+| `interruption.retainedBytes/reusedBytes` | 归档累计保留的完整块字节数、本页开始时复用的字节数；未完成的短读不算可复用块。 |
+| `interruption.resumeAvailable` | 是否已在本机保留可续读的归档块；缓存过期或淘汰后可能需要重读。 |
 
-多文件搜索遇到单个文件消失或改写可保留其他文件结果；真实路径越界或安全检查失败仍拒绝。未发现的目录最多返回 32 个导航建议，不会自动扩大搜索范围。每页远程会话预算为 20 秒，覆盖 SFTP 建连、目录发现和读取，超时中止当前通道并等待有界清理，排队时间另外受队列上限约束。已确定文件清单时保留已完成的匹配、coverage 和 nextCursor；当前未完成文件在下一页重新验证读取，不把部分传输字节算作完整覆盖。返回 interruption.code（LOG_SEARCH_TIMEOUT、LOG_SCAN_TIMEOUT 或 SFTP_OPERATION_TIMEOUT）及 truncationReasons:timeBudget。未完成文件发现时仍返回带 phase:discovery 的错误，不生成虚假游标。若同一文件再次超时，应缩小范围后发起新搜索，避免无限续查。
+多文件搜索遇到单个文件消失或改写可保留其他文件结果；真实路径越界或安全检查失败仍拒绝。未发现的目录最多返回 32 个导航建议，不会自动扩大搜索范围。每页远程会话预算为 20 秒，覆盖 SFTP 建连、目录发现和读取，超时中止当前通道并等待有界清理，排队时间另外受队列上限约束。已确定文件清单时保留已完成的匹配、coverage 和 nextCursor；当前未完成文件在下一页重新验证读取，归档复用仍有效的完整块；不把部分传输字节算作完整覆盖。返回 interruption.code（LOG_SEARCH_TIMEOUT、LOG_SCAN_TIMEOUT、SFTP_OPERATION_TIMEOUT 或本地 LOG_PROCESSING_TIMEOUT）及 truncationReasons:timeBudget，诊断仅返回白名单阶段与数字。未完成文件发现时仍返回带 phase:discovery 的错误，不生成虚假游标。归档的 resumeAvailable 为 true 且 retainedBytes 持续增加时，可保持参数完全一致继续；receivedBytes 为 0 或 retainedBytes 不再增长时，应停止反复续查并检查对应阶段。压缩输入预算仍须容纳整个归档，降低 maxScanBytes 不会修复传输超时。
 
 目录最多缓存 15 秒，按作用域、插件版本、连接代次和目录身份隔离。每次仍核对目录类型/真实路径，新搜索复核缓存文件元数据。SFTP 修改时间精度有限，无法凭元数据证明目录或文件从未变化；要读取最新内容，移除游标并使用 `refresh:true`，重新发现目录和读取文件。
 
@@ -125,3 +130,5 @@ SFTP 读取使用最多 16 个 30 KiB 请求构成的持续流水线，在途窗
 - maxResultBytes：默认 32768，允许 16384–2097152。不要为了减少输出而传 10000；可减少 maxMatches 和上下文行数。
 - 归档超限：检查 skipped.requiredExpandedBytes 和 suggestedArguments。已知大小超过硬上限时 retryable:false；流式解压仅知道已观察到的字节下限，建议值不保证能容纳整个归档。
 - 只看最新片段：使用 server_read_file 的 tail:true 和 maxBytes:65536，避免启动大范围搜索。
+
+续读保持每插件一个、全局两个日志搜索名额，以及每条读取通道最多 16 个 30 KiB 请求；不增加服务器端解压或 Shell 搜索。完整归档的解压与匹配仍在本机工作线程完成。
