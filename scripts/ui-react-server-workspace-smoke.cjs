@@ -57,6 +57,7 @@ const closed = [];
 const errors = [];
 const externalRequests = [];
 let uploads = [];
+let transferLayoutHeld = false;
 let uploadStatusReads = 0;
 let responseDownloadId = 0;
 const transferResponseProbe = process.env.RUNBOOK_BRIDGE_TRANSFER_RESPONSE_PROBE === '1';
@@ -424,7 +425,7 @@ function register() {
     return input.fileNames.length?makePreparation(uploadPreparation.sourcePath,input.fileNames,revisionFailure):null;
   });
   handle('server-workspace-confirm-upload', input => { scoped(input); uploadConfirmCalls += 1; assert.equal(input.preparationId, uploadPreparation.preparationId); if(uploadPreparation.files.some(file=>file.exists&&file.action!=='skip'&&file.action!=='keep-both')) assert.equal(input.overwrite, true); uploads = uploadPreparation.files.filter(file=>file.action!=='skip').map((file, index) => ({ jobId: 'upload-job-' + index, name: path.posix.basename(file.remotePath), path: file.remotePath, bytes: file.bytes, transferred: 0, status: 'running', canPause:true, phase:'uploading', bytesPerSecond:80000, etaSeconds:12 })); return { jobs: uploads }; });
-  handle('server-workspace-uploads', (input) => { uploadStatusReads += 1; scoped(input); if (directoryLifecycle) { directoryLifecycle.uploadPolls += 1; return {jobs:directoryLifecycle.jobs.map(job=>({...job}))}; } if (uploadReadFailure) throw new Error('已有上传任务状态暂时无法读取。'); uploads = uploads.map((job) => { if (job.status !== 'running') return job; const transferred = Math.min(job.bytes, job.transferred + 80000); return { ...job, transferred, status: transferred === job.bytes ? 'completed' : 'running' }; }); return { jobs: uploads.map(job=>({...job,canPause:job.direction!=='download'&&job.status==='running',canRemove:['completed','cancelled','error'].includes(job.status)})) }; });
+  handle('server-workspace-uploads', (input) => { uploadStatusReads += 1; scoped(input); if (directoryLifecycle) { directoryLifecycle.uploadPolls += 1; return {jobs:directoryLifecycle.jobs.map(job=>({...job}))}; } if (uploadReadFailure) throw new Error('已有上传任务状态暂时无法读取。'); uploads = uploads.map((job) => { if (transferLayoutHeld || job.status !== 'running') return job; const transferred = Math.min(job.bytes, job.transferred + 80000); return { ...job, transferred, status: transferred === job.bytes ? 'completed' : 'running' }; }); return { jobs: uploads.map(job=>({...job,canPause:job.direction!=='download'&&job.status==='running',canRemove:['completed','cancelled','error'].includes(job.status)})) }; });
   handle('server-workspace-pause-upload', input => {
     scoped(input);const job=uploads.find(item=>item.jobId===input.jobId);
     assert.equal(job.status,'running');
@@ -785,6 +786,16 @@ async function run() {
     assert.deepEqual(errors,[],'下载重试专项无界面错误');
     assert.equal(externalRequests.length,0,'下载重试专项无外部页面请求');
     process.stdout.write(JSON.stringify({ok:true,downloadRecovery:true,retries:downloadRetries.length})+'\n');
+    completed = true; return;
+  }
+  if (process.env.RUNBOOK_BRIDGE_TRANSFER_LAYOUT_SMOKE === '1') {
+    transferLayoutHeld = true;
+    try {
+      await require('./workspace-transfer-layout-ui.cjs')({evaluate,click,until,snapshot,setViewport,nativeTheme,setJobs:jobs=>{uploads=jobs;}});
+    } finally { transferLayoutHeld = false; }
+    assert.deepEqual(errors, [], '传输布局专项无界面错误');
+    assert.equal(externalRequests.length, 0, '传输布局专项无外部请求');
+    process.stdout.write(JSON.stringify({ok:true,transferLayout:true})+'\n');
     completed = true; return;
   }
   await assertFileSidebarLayout();
