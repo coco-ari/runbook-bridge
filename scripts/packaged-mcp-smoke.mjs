@@ -33,6 +33,7 @@ try {
   assert.match(logSearch.inputSchema.properties.maxScanBytes.description,/默认 4 MiB/);
   assert.match(client.getInstructions(),/queryStarted:false/);
   assert.match(client.getInstructions(),/20 秒/);
+  assert.match(client.getInstructions(),/单页总时限 45 秒/);
   assert.match(client.getInstructions(),/resumeAvailable/);
   assert.match(logSearch.description,/retainedBytes/);
   assert.equal(logSearch.inputSchema.properties.maxLines, undefined);
@@ -91,7 +92,7 @@ const archiveSmoke = [
   "assert.equal(searched.matchCount, 1); assert.equal(searched.coverage[0].sourceGrew, false); assert.ok(Array.isArray(searched.guidance));",
   "assert.ok(searched.nextCursor); assert.equal(searched.status,'partial');",
   "assert.equal(searched.limitsApplied.maxResultBytes,32768); assert.ok(searched.resultBytes <= 32768);",
-  "assert.equal(searched.limitsApplied.maxScanBytes,4194304); assert.equal(operations.logSearch.pageTimeMs,20000);",
+  "assert.equal(searched.limitsApplied.maxScanBytes,4194304); assert.equal(operations.logSearch.pageTimeMs,20000); assert.equal(operations.logSearch.pageMaxTimeMs,45000);",
   "assert.ok(Object.keys(searched).indexOf('nextCursor') < Object.keys(searched).indexOf('matches'));",
   "const next = await operations.searchLogs({projectId:'package',environmentId:'test',pluginInstanceId:'server'}, {path:'/logs/packaged.zip',queries:['PACKAGED_ZIP_OK'],maxMatches:1,cursor:searched.nextCursor});",
   "assert.equal(next.matchCount,1); assert.equal(next.status,'complete'); assert.equal(next.cache.hits,1);",

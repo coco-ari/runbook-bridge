@@ -191,6 +191,7 @@ export class ServerLogSearch {
     this.findFilesWithReader = operations.findFilesWithReader.bind(operations);
     this.processor = options.logProcessor ?? logProcessor;
     this.pageTimeMs = options.logPageTimeMs ?? 20_000;
+    this.pageMaxTimeMs = options.logPageMaxTimeMs ?? options.logPageTimeMs ?? 45_000;
     this.cursors = new LogSearchCursors({ now:options.now ?? Date.now });
     this.logSnapshotCache = new LogSnapshotCache({
       now:options.now ?? Date.now,
@@ -243,8 +244,10 @@ export class ServerLogSearch {
     };
     const searchPage = async (reader) => {
       const startedAt = Date.now();
-      // 建连已消耗的时间同样计入预算，工作线程不能在通道超时后继续占用一整页时间。
-      const deadline = Math.min(Date.now() + this.pageTimeMs, reader.deadline ?? Infinity);
+      // 只跟随读取通道的真实进展延长预算；建连耗时和工作线程仍受总时限约束。
+      const fallbackDeadline = startedAt + this.pageTimeMs;
+      const hardDeadline = startedAt + Math.max(this.pageTimeMs, this.pageMaxTimeMs);
+      const deadline = () => Math.min(hardDeadline, reader.deadline ?? fallbackDeadline);
       const binding = logSearchBinding(plugin,args,reader.generation);
       const resumed = args.cursor === undefined ? null : this.cursors.get(args.cursor,binding);
       const directStat = !resumed && selector === 'path'
@@ -451,7 +454,9 @@ export class ServerLogSearch {
           code:error.code, retryable:true,
           phase:phase === 'processing' ? 'processing' : activeReadBytes !== null && ['metadata','open','read','close','validation'].includes(details.phase) ? details.phase : phase,
           elapsedMs:numeric(details.elapsedMs) ? details.elapsedMs : Date.now() - startedAt,
-          timeoutMs:this.pageTimeMs,
+          timeoutMs:numeric(details.timeoutMs) ? details.timeoutMs : this.pageTimeMs,
+          ...Object.fromEntries(['idleTimeoutMs','totalTimeoutMs','firstByteMs','lastProgressAgoMs']
+            .filter(field => numeric(details[field])).map(field => [field,details[field]])),
           ...(activeReadBytes === null ? {} : {requestedBytes:activeReadBytes,receivedBytes}),
         };
         if (archiveTransfer) {
@@ -474,7 +479,7 @@ export class ServerLogSearch {
           truncationReasons.add('maxMatches');
           break;
         }
-        if (Date.now() >= deadline) {
+        if (Date.now() >= deadline()) {
           truncationReasons.add('timeBudget');
           break;
         }
@@ -656,7 +661,7 @@ export class ServerLogSearch {
               }
             }
             if (!cached && !sourceGrew) this.logSnapshotCache.set(cacheKey, { snapshots:[{ content:Buffer.from(content) }] });
-            if (Date.now() >= deadline) {
+            if (Date.now() >= deadline()) {
               pending = files.slice(fileIndex);
               truncationReasons.add('timeBudget');
               break;
@@ -674,7 +679,7 @@ export class ServerLogSearch {
                 matchOffset:file.matchOffset ?? 0, skipPrefixBytes:searchedStart - start,
                 maxContextBytes:Math.max(0, LOG_SEARCH_MAX_CONTEXT_BYTES - contextBytes),
               },
-            }, {timeoutMs:Math.max(1,deadline - Date.now())});
+            }, {timeoutMs:Math.max(1,deadline() - Date.now())});
             reader.signal?.throwIfAborted();
           } catch (error) {
             if (error?.code === 'LOG_PROCESSING_TIMEOUT') {
@@ -812,7 +817,7 @@ export class ServerLogSearch {
     };
     return this.logSearchGate.run(gateKey, reservationBytes, async () => {
       try {
-        return await this.withRemoteReadSession(plugin, searchPage, {timeoutMs:this.pageTimeMs, timeoutCode:'LOG_SEARCH_TIMEOUT'});
+        return await this.withRemoteReadSession(plugin, searchPage, {timeoutMs:this.pageTimeMs, maxReadTimeMs:this.pageMaxTimeMs, timeoutCode:'LOG_SEARCH_TIMEOUT'});
       } catch (error) {
         if (!['LOG_SEARCH_TIMEOUT','LOG_SCAN_TIMEOUT','SFTP_OPERATION_TIMEOUT'].includes(error?.code)) throw error;
         if (finishInterruptedPage) return finishInterruptedPage(error);

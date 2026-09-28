@@ -248,6 +248,7 @@ test('日志超时保留先前匹配和当前文件游标，续查不跳行也�
   let fail = true;
   fixture.runtime.withRemoteReadSession = (scope, action, options) => {
     assert.equal(options.timeoutMs,20000);
+    assert.equal(options.maxReadTimeMs,45000);
     assert.equal(options.timeoutCode,'LOG_SEARCH_TIMEOUT');
     return session(scope, reader => action({...reader, readBuffer:async (...args) => {
       if (fail && args[0].endsWith('/b.log')) throw Object.assign(new Error('合成超时'),{code:'LOG_SEARCH_TIMEOUT'});

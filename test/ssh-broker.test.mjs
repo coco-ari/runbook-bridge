@@ -1286,3 +1286,77 @@ test('大归档跨页只重读缺失块，乱序和迟到响应不污染续读�
   assert.equal(cached.matches[0].text,'RESUME_FIXTURE_OK');
   assert.equal(cached.remoteBytesRead,0);
 });
+
+
+async function progressiveLogFixture(t, {delayMs, bytes=2*1024*1024, pageTimeMs=800, pageMaxTimeMs=6000}) {
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'ai-ops-log-progress-'));
+  const remoteRoot=path.join(root,'remote');
+  await fs.mkdir(path.join(remoteRoot,'logs'),{recursive:true});
+  const content=gzipSync(Buffer.concat([Buffer.alloc(bytes,0x61),Buffer.from('\nPROGRESS_OK\n')]),{level:0});
+  await fs.writeFile(path.join(remoteRoot,'logs','progress.gz'),content);
+  const tracker={};
+  const port=await startSshServer(t,{sftpRoot:remoteRoot,sftpTracker:tracker,sftpReadDelayMs:delayMs});
+  const h=await managedServer(t,root,port);await h.connect();
+  const operations=new ServerOperations(h.runtime,h.store,{logPageTimeMs:pageTimeMs,logPageMaxTimeMs:pageMaxTimeMs});
+  t.after(()=>{
+    for(const key of operations.logSnapshotCache.entries.keys())operations.logSnapshotCache.remove(key);
+    operations.logSnapshotCache.scheduleExpiry();
+  });
+  const args={path:'/logs/progress.gz',queries:['PROGRESS_OK'],maxScanBytes:16*1024*1024,maxExpandedBytes:16*1024*1024};
+  return {h,operations,args,content,tracker};
+}
+
+test('真实 SFTP 有持续进展时超过初始预算仍完成归档读取及搜索', async t=>{
+  const f=await progressiveLogFixture(t,{delayMs:300});
+  const began=Date.now();
+  const result=await f.operations.searchLogs(f.h.plugin,f.args);
+  assert.ok(Date.now()-began>800);
+  assert.equal(result.status,'complete');
+  assert.equal(result.matchCount,1);
+  assert.equal(result.matches[0].text,'PROGRESS_OK');
+  assert.equal(result.remoteBytesRead,f.content.length);
+  assert.equal(result.interruption,undefined);
+  await waitFor(()=>f.tracker.closedChannels===1);
+  assert.ok(f.tracker.maxActiveReads<=16);
+  assert.ok(Math.max(...f.tracker.requestedReadLengths)<=30*1024);
+});
+
+test('真实读取收到首块后停滞仍及时结束，返回安全耗时和有效断点', async t=>{
+  const f=await progressiveLogFixture(t,{delayMs:offset=>offset===0?0:3000,pageTimeMs:800,pageMaxTimeMs:5000});
+  const began=Date.now();
+  const result=await f.operations.searchLogs(f.h.plugin,f.args);
+  assert.ok(Date.now()-began<4000);
+  assert.equal(result.status,'partial');
+  assert.equal(result.interruption.code,'LOG_SEARCH_TIMEOUT');
+  assert.equal(result.interruption.phase,'read');
+  assert.equal(result.interruption.idleTimeoutMs,800);
+  assert.equal(result.interruption.totalTimeoutMs,5000);
+  assert.ok(result.interruption.lastProgressAgoMs>=750);
+  assert.ok(result.interruption.firstByteMs>=0);
+  assert.equal(result.interruption.retainedBytes,30*1024);
+  assert.equal(result.interruption.resumeAvailable,true);
+  assert.equal(result.coverage.length,0);
+  assert.ok(result.nextCursor);
+});
+
+test('持续进展仍受单页总时限约束，超时续读复用数据且连接保持', async t=>{
+  let slow=true;
+  const f=await progressiveLogFixture(t,{delayMs:()=>slow?200:0,bytes:8*1024*1024,pageTimeMs:800,pageMaxTimeMs:1600});
+  const first=await f.operations.searchLogs(f.h.plugin,f.args);
+  assert.equal(first.status,'partial');
+  assert.equal(first.interruption.timeoutMs,1600);
+  assert.equal(first.interruption.totalTimeoutMs,1600);
+  assert.ok(first.interruption.lastProgressAgoMs<800);
+  assert.ok(first.interruption.retainedBytes>480*1024);
+  assert.ok(first.nextCursor);
+  const completed=new Set(f.tracker.completedReadOffsets),issued=f.tracker.readOffsets.length;
+  slow=false;
+  f.operations.logSearch.pageTimeMs=5000;
+  f.operations.logSearch.pageMaxTimeMs=5000;
+  const next=await f.operations.searchLogs(f.h.plugin,{...f.args,cursor:first.nextCursor});
+  assert.equal(next.status,'complete');
+  assert.equal(next.matches[0].text,'PROGRESS_OK');
+  assert.equal(first.remoteBytesRead+next.remoteBytesRead,f.content.length);
+  assert.ok(f.tracker.readOffsets.slice(issued).every(offset=>!completed.has(offset)));
+  assert.ok(f.h.runtime.broker.requireSession(f.h.runtime.key(f.h.plugin)));
+});

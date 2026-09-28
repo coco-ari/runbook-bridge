@@ -15,6 +15,7 @@ import { uploadTimeouts } from './server-upload-progress.mjs';
 import { evaluateCommandPolicy } from './command-policy.mjs';
 import { createProxySocket } from './proxy.mjs';
 import { SftpReadPool } from './sftp-read-pool.mjs';
+import { SftpReadDeadline } from './sftp-read-deadline.mjs';
 import { LOG_READ_BLOCK_BYTES } from './log-read-checkpoint.mjs';
 
 const MAX_COMMAND_OUTPUT = 512 * 1024;
@@ -141,7 +142,7 @@ function transferError(error) {
   return new AppError('TRANSFER_FAILED', '文件传输失败。');
 }
 
-function withSftp(client, action, { timeoutMs = 0, inactivityMs = 0, timeoutCode = 'TRANSFER_TIMEOUT', timeoutMessage = '文件传输超时。', signal = null, releaseSftp = null, discardSftp = null } = {}) {
+function withSftp(client, action, { timeoutMs = 0, maxReadTimeMs = timeoutMs, inactivityMs = 0, timeoutCode = 'TRANSFER_TIMEOUT', timeoutMessage = '文件传输超时。', signal = null, releaseSftp = null, discardSftp = null } = {}) {
   return new Promise((resolve, reject) => {
     const controller = new AbortController();
     let sftp = null;
@@ -152,7 +153,7 @@ function withSftp(client, action, { timeoutMs = 0, inactivityMs = 0, timeoutCode
     let forceCloseTimer = null;
     let progress = { phase:'sftp', timeoutMs };
     const startedAt = Date.now();
-    const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Infinity;
+    const readDeadline = new SftpReadDeadline(timeoutMs, maxReadTimeMs);
 
     const safeEnd = () => {
       if (!sftp || closing) return;
@@ -213,15 +214,19 @@ function withSftp(client, action, { timeoutMs = 0, inactivityMs = 0, timeoutCode
       return;
     }
 
-    if (timeoutMs > 0) {
+    const scheduleTimeout = () => {
+      if (timeoutMs <= 0) return;
+      clearTimeout(timeoutTimer);
       timeoutTimer = setTimeout(
-        () => abort(new AppError(timeoutCode, timeoutMessage, { ...progress, elapsedMs:Date.now() - startedAt })),
-        timeoutMs,
+        () => abort(new AppError(timeoutCode, timeoutMessage, { ...progress, ...readDeadline.details(), elapsedMs:Date.now() - startedAt })),
+        Math.max(0, readDeadline.deadline - Date.now()),
       );
       timeoutTimer.unref?.();
-    }
+    };
+    scheduleTimeout();
     const reportProgress = (value) => {
-      if (settled) return;
+      if (settled || controller.signal.aborted) return;
+      if (readDeadline.progress(value)) scheduleTimeout();
       progress = { ...value, timeoutMs };
       clearTimeout(inactivityTimer);
       if (inactivityMs > 0) {
@@ -252,7 +257,7 @@ function withSftp(client, action, { timeoutMs = 0, inactivityMs = 0, timeoutCode
           return;
         }
         Promise.resolve()
-          .then(() => action(sftp, { signal: controller.signal, abort, reportProgress, deadline }))
+          .then(() => action(sftp, { signal: controller.signal, abort, reportProgress, get deadline() { return readDeadline.deadline; } }))
           .then(
             (value) => finish(controller.signal.reason ?? null, value),
             (error) => finish(controller.signal.reason ?? error),
@@ -1368,7 +1373,7 @@ export class SshBroker {
     });
   }
 
-  async withInternalSftp(projectId, operation, { timeoutMs = SFTP_READ_INACTIVITY_MS, inactivityMs = 0, signal = null, timeoutMessage, timeoutCode = 'SFTP_OPERATION_TIMEOUT', reuseWorkspace = false } = {}) {
+  async withInternalSftp(projectId, operation, { timeoutMs = SFTP_READ_INACTIVITY_MS, maxReadTimeMs = timeoutMs, inactivityMs = 0, signal = null, timeoutMessage, timeoutCode = 'SFTP_OPERATION_TIMEOUT', reuseWorkspace = false } = {}) {
     const session = this.requireSession(projectId);
     const pool = reuseWorkspace ? session.workspaceReads ??= new SftpReadPool(session.client) : null;
     return withSftp(
@@ -1376,6 +1381,7 @@ export class SshBroker {
       (sftp, lifecycle) => operation(sftp, session, lifecycle),
       {
         timeoutMs,
+        maxReadTimeMs,
         signal,
         timeoutCode,
         inactivityMs,
@@ -1390,7 +1396,7 @@ export class SshBroker {
     return this.withRemoteReadSession(projectId, operation, { signal, reuseWorkspace: true });
   }
 
-  async withRemoteReadSession(projectId, operation, { signal = null, reuseWorkspace = false, pipelineMetadata = false, pipelineReadValidation = false, timeoutMs = SFTP_READ_SESSION_TIMEOUT_MS, timeoutCode = 'SFTP_OPERATION_TIMEOUT' } = {}) {
+  async withRemoteReadSession(projectId, operation, { signal = null, reuseWorkspace = false, pipelineMetadata = false, pipelineReadValidation = false, timeoutMs = SFTP_READ_SESSION_TIMEOUT_MS, maxReadTimeMs = timeoutMs, timeoutCode = 'SFTP_OPERATION_TIMEOUT' } = {}) {
     if (typeof operation !== 'function') throw new AppError('INVALID_ARGUMENT', '服务器只读会话操作无效。');
     return this.withInternalSftp(projectId, async (sftp, session, lifecycle) => {
       const guard = action => async (...args) => {
@@ -1401,7 +1407,7 @@ export class SshBroker {
       };
       const reader = {
         signal:lifecycle.signal,
-        deadline:lifecycle.deadline,
+        get deadline() { return lifecycle.deadline; },
         generation: session.generation,
         statPath: (remotePath) => statRemotePathOnSftp(sftp, remotePath, { pipeline: reuseWorkspace || pipelineMetadata }),
         inspectDeletePath: (remotePath) => inspectWorkspaceDeletePath(sftp, remotePath),
@@ -1429,6 +1435,7 @@ export class SshBroker {
       return operation(reader);
     }, {
       timeoutMs: Math.min(SFTP_READ_SESSION_TIMEOUT_MS, Math.max(1, timeoutMs)),
+      maxReadTimeMs: Math.min(SFTP_READ_SESSION_TIMEOUT_MS, Math.max(1, maxReadTimeMs)),
       timeoutCode,
       signal,
       reuseWorkspace,
