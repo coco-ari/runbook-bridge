@@ -603,7 +603,7 @@ export function ProjectRail({
           </nav>
         </SidebarContent>
 
-        <SettingsButton className="mx-2 mb-2 justify-start gap-2" />
+        <SettingsButton className="mx-2 mb-2 h-10 justify-start gap-2 rounded-lg border border-sidebar-border bg-surface-inset px-2.5 text-muted-foreground shadow-none transition-colors duration-150 hover:text-foreground" />
 
         <SidebarFooter
           className={cn(
