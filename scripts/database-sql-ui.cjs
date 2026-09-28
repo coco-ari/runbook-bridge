@@ -182,7 +182,13 @@ async function assertSqlExecutionUi({win,fill,click,waitFor,textContains,testId,
   await waitFor(win,"!document.querySelector('[data-testid=mysql-query-transaction-active]')",'提交后结束事务');
   assert.match(fixture.executions.at(-1).sql,/^COMMIT$/u);
   const after=await evaluate("['run','stop','commit','rollback'].map(id=>{const r=document.querySelector('[data-testid=mysql-query-'+id+']').getBoundingClientRect();return {id,x:r.x,y:r.y}})");
-  assert.deepEqual(after,buttons.map(({id,x,y})=>({id,x,y})),'提交前后按钮位置固定');
+  assert.deepEqual(after.map(button=>button.id),buttons.map(button=>button.id),'提交前后按钮顺序固定');
+  // 允许亚像素舍入差异，实际像素级位移仍会使回归失败。
+  for (let index=0;index<buttons.length;index++) {
+    const previous=buttons[index],current=after[index];
+    assert.ok(Math.abs(current.x-previous.x)<=0.1&&Math.abs(current.y-previous.y)<=0.1,
+      '提交前后按钮位置固定：'+JSON.stringify({before:previous,after:current}));
+  }
   await setExactViewport(win,...size);
   await click(win,testId('mysql-query-run'));await resultText('mysql-query-transaction-active','事务未提交');
   await click(win,testId('mysql-query-rollback'));

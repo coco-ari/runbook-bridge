@@ -551,8 +551,8 @@ async function assertResultDetails(win) {
 async function setExactViewport(win,width,height) {
   win.setContentSize(width,height);
   await waitFor(win,`innerWidth === ${width} && innerHeight === ${height}`,'截图窗口尺寸');
-  win.webContents.invalidate();
-  await wait(100);
+  // 窗口尺寸事件先于面板的像素宽度恢复，等待真实绘制后再采集布局基准。
+  await captureFrame(win);
 }
 
 async function captureFrame(win) {
