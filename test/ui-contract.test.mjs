@@ -115,7 +115,8 @@ test('production UI is the React shadcn/Radix renderer and preserves the V2 secu
   assert.doesNotMatch(featureSource,/window\.aiOps/u);
   assert.doesNotMatch(featureSource,/dangerouslySetInnerHTML/u);
   assert.doesNotMatch(featureSource,/window\.(?:confirm|prompt|alert)/u);
-  assert.doesNotMatch(featureSource,/https?:\/\//u);
+  // 关于页仅展示固定仓库地址，外部打开仍由主进程固定处理。
+  assert.doesNotMatch(featureSource.replaceAll("https://github.com/coco-ari/runbook-bridge", ""),/https?:\/\//u);
   assert.doesNotMatch(rendererSource,/@base-ui|lucide-react|next-themes/u);
 
   assert.match(preload,/contextBridge\.exposeInMainWorld\('aiOps', \{\s*v2:/su);

@@ -29,6 +29,7 @@ import { EnvironmentContextManager } from './context-manager.mjs';
 import { ConfirmationManager } from './confirmation-manager.mjs';
 import { V2Service } from './v2-service.mjs';
 import { registerV2Ipc } from './ipc-v2.mjs';
+import { CodexIntegration } from './codex-integration.mjs';
 import { NetworkChangeWatcher } from './network-change-watcher.mjs';
 import { PluginConfigTransactionJournal } from './plugin-config-transaction.mjs';
 import { WorkspaceMutationCoordinator } from './workspace-mutation-coordinator.mjs';
@@ -248,7 +249,9 @@ if (process.argv.includes('--mcp')) {
         });
         registerV2Ipc(ipcMain, {
           ...v2,
+          codexIntegration: new CodexIntegration({ executablePath: process.execPath, entryPath: path.join(__dirname, 'mcp-v2.mjs'), dataRoot, clipboard }),
           broadcast,
+          openRepository: () => shell.openExternal('https://github.com/coco-ari/runbook-bridge'),
           quickQuestionClipboard:clipboard,
           terminalClipboard:clipboard,
           readServerClipboardFiles:readWindowsClipboardFiles,

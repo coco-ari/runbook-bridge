@@ -22,6 +22,8 @@ const legacyConnectionSnapshot = (payload) => requestConnectionIntent(payload).t
 
 contextBridge.exposeInMainWorld('aiOps', {
   v2: {
+    openRepository: () => ipcRenderer.invoke('v2:open-repository'),
+    codexIntegration: (payload) => ipcRenderer.invoke('v2:codex-integration', payload),
     cloudConfig: (payload) => ipcRenderer.invoke('v2:cloud-config',payload),
     serverDockerRead: payload => ipcRenderer.invoke('v2:server-docker-read', payload),
     serverDockerCancel: payload => ipcRenderer.invoke('v2:server-docker-cancel', payload),

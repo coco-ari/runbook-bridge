@@ -29,7 +29,13 @@ Get-Content -LiteralPath .\RunbookBridge-Setup-2.0.0-beta.2.exe.sha256
 
 ## 3. 为 Agent 配置 MCP
 
-以默认 Windows 安装位置为例，在 PowerShell 中执行：
+推荐在工作台打开 **配置 → Agent 接入 → Codex**，点击 **一键接入 Codex**。不需要另外安装 Codex CLI：工作台会按照当前安装位置生成 MCP 启动配置，写入本机用户的 `~/.codex/config.toml`；如果启动工作台时设置了 `CODEX_HOME`，则使用该目录下的配置文件。
+
+已有配置文件会先在同目录备份为 `config.toml.runbook-bridge-*.bak`，再追加 `agent-ops`，其他内容保持原样。已存在不同或已停用的同名条目、无效 TOML、非普通文件或配置期间被修改时，不会自动覆盖。可展开“手动配置”复制内容并自行合并，然后重新检测。页面显示“已配置”仅表示本机用户级注册就绪，不代表 MCP 已连接；项目级配置、WSL 和远程主机需分别核对。
+
+接入后完全退出并重新打开 Codex，保持工作台运行并连接目标插件。关于 Codex 的配置范围与格式，参见 [OpenAI 官方 MCP 文档](https://developers.openai.com/codex/mcp/)。
+
+如需通过 Codex CLI 手动注册，以默认 Windows 安装位置为例，在 PowerShell 中执行：
 
 ```powershell
 $workbenchDir = "$env:LOCALAPPDATA\Programs\Agent运维工作台"
@@ -52,6 +58,10 @@ codex mcp get agent-ops
 > 请列出当前可用项目和环境，然后检查演示项目的测试环境。先报告哪些资源已连接，再给出只读检查建议，不要修改数据。
 
 成功标准是 Agent 能识别正确环境、使用已连接的资源，并给出有依据的读取结果。不要把“没有读到”解释为“没有问题”；注意截断、范围和超时提示。
+
+## 配置与关于
+
+配置页包含外观主题、Agent 接入、云配置和关于。**关于**展示当前应用包版本、MIT 许可与云配置兼容性说明，并可通过顶部“GitHub 开源仓库”按钮在系统浏览器访问 [开源仓库](https://github.com/coco-ari/runbook-bridge)。
 
 ## 遇到问题
 

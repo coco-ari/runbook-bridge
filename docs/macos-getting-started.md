@@ -19,7 +19,7 @@ corepack pnpm run dist:mac:arm64
 
 Intel Mac 使用 `corepack pnpm run dist:mac:x64`，`dist:mac` 默认构建当前 Mac 的架构。两个架构都输出 DMG 与 ZIP。普通构建使用临时签名，供开发验收；正式分发必须完成 Developer ID 签名与 Apple 公证，参见 [测试与交付验证指南](full-function-verification.md)。
 
-安装后，macOS 的 MCP 注册命令为：
+安装后可在 **配置 → Agent 接入 → Codex** 一键写入当前用户的 MCP 配置，无需 Codex CLI；备份、同名冲突与配置范围见 [首次使用](getting-started.md#3-为-agent-配置-mcp)。如果使用 CLI 手动注册，macOS 的命令为：
 
 ```sh
 codex mcp add --env ELECTRON_RUN_AS_NODE=1 agent-ops -- "/Applications/Agent运维工作台.app/Contents/MacOS/Agent运维工作台" "/Applications/Agent运维工作台.app/Contents/Resources/app.asar/src/mcp-v2.mjs"

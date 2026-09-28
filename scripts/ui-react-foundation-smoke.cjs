@@ -230,6 +230,10 @@ function registerForbiddenMutation(channel) {
 }
 
 function registerMockApi() {
+  registerRead('v2:codex-integration', ({ action }) => {
+    assert.equal(action, 'status', '基础 UI 测试只能检测模拟 Codex 配置');
+    return { status: 'available', message: '可一键接入 Codex。', configPath: 'C:/fixture/.codex/config.toml', configSnippet: '[mcp_servers.agent-ops]\ncommand = "fixture"\n', approvalId: 'fixture-approval' };
+  });
   registerRead('v2:cloud-config',({action}) => {
     assert.ok(['status','check'].includes(action),'后台云检测只允许只读请求');
     return {repositories:[],cloudProjects:[],projects:[],backups:[],checkIntervalMinutes:0};
@@ -3581,7 +3585,7 @@ async function assertSecurity(win) {
     styleAttributeProbe.remove();
     return result;
   })()`,true);
-  assert.equal(snapshot.apiNames.length,113);
+  assert.equal(snapshot.apiNames.length,115);
   assert.equal(snapshot.hasRequire,false);
   assert.equal(snapshot.hasProcess,false);
   assert.equal(snapshot.inlineStyleAttributeWidth,'13px');
@@ -4265,11 +4269,17 @@ async function run() {
     nativeTheme.themeSource = systemThemeBeforeReload;
     await assertThemeState(win,'system',nativeTheme.shouldUseDarkColors ? 'dark' : 'light','restore theme after reload evidence');
 
+    win.webContents.sendInputEvent({ type: 'mouseMove', x: 900, y: 600 });
+    await require('./settings-ui.cjs')({
+      evaluate: code => win.webContents.executeJavaScript(code, true),
+      capture: screenshotRoot ? async name => fs.writeFileSync(path.join(screenshotRoot, name + '.png'), (await captureRenderedFrame(win)).toPNG()) : null,
+    });
+
     const readOnlyChannels = new Set([
       'v2:project-list','v2:workspace-overview','v2:environment-list','v2:environment-status',
       'v2:plugin-list','v2:runbook-read','v2:quick-question-opening-get','v2:quick-question-list',
       'v2:plugin-assess','v2:plugin-credential-status','v2:plugin-databases','v2:audit-list',
-      'v2:confirmation-list','v2:cloud-config',
+      'v2:confirmation-list','v2:cloud-config','v2:codex-integration',
     ]);
     await collectWindowErrorDiagnostics(win);
     process.stdout.write(`React smoke final diagnostics: ${JSON.stringify({

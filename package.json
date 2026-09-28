@@ -76,6 +76,7 @@
     "react-dom": "^19.2.8",
     "react-resizable-panels": "^4.12.3",
     "redis": "^6.2.1",
+    "smol-toml": "^1.9.0",
     "socks": "^2.8.7",
     "sonner": "^2.0.8",
     "ssh2": "^1.17.0",

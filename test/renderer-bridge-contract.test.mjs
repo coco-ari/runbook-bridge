@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import test from 'node:test';
 
 const EXPECTED_API_NAMES = [
+  'codexIntegration',
+  'openRepository',
   'cloudConfig',
   'serverDockerRead',
   'serverDockerCancel',
@@ -132,8 +134,8 @@ function preloadApiNames(source) {
 function interfaceApiNames(source) {
   const match = source.match(/export interface AiOpsV2Api \{\r?\n([\s\S]*?)\r?\n\}/u);
   assert.ok(match, 'bridge must export AiOpsV2Api');
-  return [...match[1].matchAll(/^ {2}([A-Za-z][A-Za-z0-9_]*)\(/gmu)]
-    .map((entry) => entry[1]);
+  return [...new Set([...match[1].matchAll(/^ {2}([A-Za-z][A-Za-z0-9_]*)\(/gmu)]
+    .map((entry) => entry[1]))];
 }
 
 function runtimeApiNames(source) {
@@ -143,14 +145,14 @@ function runtimeApiNames(source) {
     .map((entry) => entry[1]);
 }
 
-test('React 桥接固定 113 个 preload API 名称和严格签名', async () => {
+test('React 桥接固定 115 个 preload API 名称和严格签名', async () => {
   const [preload,bridge,globalTypes] = await Promise.all([
     fs.readFile('src/preload.cjs','utf8'),
     fs.readFile('renderer/v2/src/bridge/ai-ops-v2.ts','utf8'),
     fs.readFile('renderer/v2/src/types/global.d.ts','utf8'),
   ]);
 
-  assert.equal(EXPECTED_API_NAMES.length,113);
+  assert.equal(EXPECTED_API_NAMES.length,115);
   assert.deepEqual(sorted(preloadApiNames(preload)),sorted(EXPECTED_API_NAMES));
   assert.deepEqual(sorted(interfaceApiNames(bridge)),sorted(EXPECTED_API_NAMES));
   assert.deepEqual(sorted(runtimeApiNames(bridge)),sorted(EXPECTED_API_NAMES));

@@ -243,7 +243,8 @@ test('production React shell composes shadcn/Radix with the typed desktop bridge
 
   assert.doesNotMatch(nonBridgeSources,/window\.aiOps|ipcRenderer|contextBridge|node:[a-z]/u);
   assert.doesNotMatch(nonBridgeSources,/lucide-react|next-themes|@base-ui|base-ui/u);
-  assert.doesNotMatch(nonBridgeSources,/https?:\/\//u);
+  // 关于页仅展示固定仓库地址，外部打开仍由主进程固定处理。
+  assert.doesNotMatch(nonBridgeSources.replaceAll("https://github.com/coco-ari/runbook-bridge", ""),/https?:\/\//u);
   assert.doesNotMatch(nonBridgeSources,/[—–]/u);
   assert.ok(sourceByPath.has(path.join('renderer','v2','src','bridge','ai-ops-v2.ts')));
 });

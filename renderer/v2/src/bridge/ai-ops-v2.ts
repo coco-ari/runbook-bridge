@@ -867,7 +867,19 @@ export interface RedisKeyPage {
 }
 export type RedisKeyPayload = PluginScope & { patternId: string; key: string }
 
+export interface CodexIntegrationStatus {
+  readonly status: "available" | "configured" | "conflict" | "error"
+  readonly message: string
+  readonly configPath: string
+  readonly configSnippet: string
+  readonly approvalId: string | null
+  readonly backupPath?: string | null
+}
+
 export interface AiOpsV2Api {
+  openRepository(): Promise<IpcResult<{ opened: boolean }>>
+  codexIntegration(payload: { action: "status" } | { action: "install"; approvalId: string }): Promise<IpcResult<CodexIntegrationStatus>>
+  codexIntegration(payload: { action: "copy" }): Promise<IpcResult<{ copied: boolean }>>
   cloudConfig(payload: CloudConfigRequest): Promise<IpcResult<CloudConfigData>>
   serverDockerRead(payload: DockerReadRequest): Promise<IpcResult<DockerReadResult>>
   serverDockerCancel(payload: PluginScope & { requestId?: string }): Promise<IpcResult<{ stopped: boolean }>>
@@ -986,6 +998,8 @@ export interface AiOpsV2Api {
 }
 
 export const AI_OPS_V2_API_NAMES = [
+  "openRepository",
+  "codexIntegration",
   "cloudConfig",
   "serverDockerRead",
   "serverDockerCancel",

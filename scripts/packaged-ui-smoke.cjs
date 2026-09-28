@@ -720,6 +720,7 @@ async function main() {
     env: {
       ...process.env,
       AI_OPS_DATA_DIR: dataRoot,
+      CODEX_HOME: path.join(temporaryRoot, 'CodexHome'),
       LOCALAPPDATA: localAppData,
       APPDATA: appData,
     },
@@ -730,6 +731,8 @@ async function main() {
       fsp.mkdir(dataRoot, { recursive: true }),
       fsp.mkdir(profileRoot, { recursive: true }),
     ]);
+    await fsp.mkdir(isolation.env.CODEX_HOME, { recursive: true });
+    await fsp.writeFile(path.join(isolation.env.CODEX_HOME, 'config.toml'), '# 隔离的接入测试配置\n');
     running = await startPackagedApp(isolation);
     await delay(250);
     const inspection = await running.cdp.evaluate(`(async()=>{
@@ -758,7 +761,7 @@ async function main() {
     assert.equal(inspection.noPageOverflow, true);
     assert.equal(inspection.overviewOk, true);
     assert.equal(inspection.projectCount, 0);
-    assert.equal(inspection.apiCount, 113);
+    assert.equal(inspection.apiCount, 115);
     const sqlExportContract = await running.cdp.evaluate("(async () => window.aiOps.v2.mysqlExportSave({fileName:'../blocked.sql',sql:'SELECT 1;'}))()");
     assert.equal(sqlExportContract.ok, false);
     assert.equal(sqlExportContract.error.code, 'INVALID_ARGUMENT');
@@ -796,6 +799,28 @@ async function main() {
     assert.deepEqual(cloudContract.backups.data,{backups:[],unreadableBackups:0,nextBackupOffset:null});
     assert.equal(cloudContract.invalidBackups.error.code,'CLOUD_INVALID_ARGUMENT');
     assert.equal(cloudContract.invalid.error.code,'CLOUD_INVALID_ARGUMENT');
+    await running.cdp.call('Page.bringToFront');
+    await require('./settings-ui.cjs')({
+      evaluate: code => running.cdp.evaluate(code), install: true,
+      paint: () => running.cdp.call('Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false }),
+    });
+    const codexConfig = require('smol-toml').parse(await fsp.readFile(path.join(isolation.env.CODEX_HOME, 'config.toml'), 'utf8'));
+    const codexEntry = codexConfig.mcp_servers['agent-ops'];
+    assert.equal(codexEntry.command, executable);
+    assert.deepEqual(codexEntry.args, [path.join(appAsar, 'src', 'mcp-v2.mjs')]);
+    assert.equal(codexEntry.env.AI_OPS_DATA_DIR, dataRoot);
+    const codexFiles = await fsp.readdir(isolation.env.CODEX_HOME);
+    const codexBackup = codexFiles.find(file => file.endsWith('.bak'));
+    assert.ok(codexBackup, '接入前必须保存原配置');
+    assert.equal(await fsp.readFile(path.join(isolation.env.CODEX_HOME, codexBackup), 'utf8'), '# 隔离的接入测试配置\n');
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+    const codexTransport = new StdioClientTransport({ ...codexEntry, env: { ...process.env, ...codexEntry.env }, stderr: 'pipe' });
+    const codexClient = new Client({ name: 'codex-integration-smoke', version: '1.0.0' });
+    try {
+      await codexClient.connect(codexTransport);
+      assert.equal((await codexClient.listTools()).tools.length, 40, '生成的 Codex 配置必须能启动包内 MCP');
+    } finally { await codexClient.close(); }
     await running.cdp.evaluate('document.querySelector("[data-testid=settings-open]").click()');
     await waitForThemeUi(running.cdp,'Boolean(document.querySelector("[data-testid=settings-cloud]"))','配置页面加载完成');
     await running.cdp.evaluate('document.querySelector("[data-testid=settings-cloud]").click()');
@@ -860,7 +885,7 @@ async function main() {
     assert.deepEqual(inspection.externalResources, []);
     assert.deepEqual(running.httpRequests, []);
     if (process.argv.includes('--desktop-contracts-only')) {
-      process.stdout.write('Packaged desktop contracts passed (113 preload APIs, file editing owner/parameter guards, isolated empty workspace, no external requests)\n');
+      process.stdout.write('Packaged desktop contracts passed (115 preload APIs, file editing owner/parameter guards, isolated empty workspace, no external requests)\n');
       return;
     }
     await exerciseThemePreferences(running.cdp);
@@ -910,7 +935,7 @@ async function main() {
       return {ok: overview?.ok === true, projectCount: Array.isArray(overview?.data) ? overview.data.length : -1,
         apiCount: Object.keys(window.aiOps.v2).length};
     })()`);
-    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 113});
+    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 115});
     assert.deepEqual(running.httpRequests, []);
     await selectThemePreference(running.cdp, 'system');
     await emulateSystemTheme(running.cdp, 'dark');
@@ -930,7 +955,7 @@ async function main() {
         availableWidth: compactSearch.availableWidth, nativeTextBox: compactSearch.nativeBox?.source ?? 'conservative-cancel-budget'},
     })}\n`);
     process.stdout.write(
-      `Packaged React UI smoke passed (113 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
+      `Packaged React UI smoke passed (115 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
     );
   } catch (error) {
     if (running) {
