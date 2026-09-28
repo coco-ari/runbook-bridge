@@ -7,6 +7,7 @@ import { ProjectStore } from './project-store.mjs';
 import { desktopMenuTemplate } from './desktop-menu.mjs';
 import { readWindowsClipboardFiles } from './desktop-file-clipboard.mjs';
 import { createTransferExitGuard } from './desktop-transfer-exit-guard.mjs';
+import { DesktopDownloadPicker } from './desktop-download-picker.mjs';
 import { BrokerServer } from './broker-server.mjs';
 import { rotateBrokerToken } from './broker-auth.mjs';
 import { CredentialStore, migrateLegacyCredentialForPlugin } from './credential-store.mjs';
@@ -240,6 +241,11 @@ if (process.argv.includes('--mcp')) {
         const token = await rotateBrokerToken(dataRoot);
         brokerServer = new BrokerServer({ dataRoot, token, v2Service, appVersion: app.getVersion() });
         await brokerServer.start();
+        const downloadPicker = new DesktopDownloadPicker({
+          dataRoot, defaultDirectory:app.getPath('downloads'),
+          showSaveDialog:(window, options) => dialog.showSaveDialog(window, options),
+          atomicWrite:(file, content) => workspaceStore.atomicWrite(file, content),
+        });
         registerV2Ipc(ipcMain, {
           ...v2,
           broadcast,
@@ -257,8 +263,7 @@ if (process.argv.includes('--mcp')) {
           pickServerDownloadPath: async (sender, name, previousPath) => {
             const window = BrowserWindow.fromWebContents(sender);
             if (!window || window.isDestroyed()) return null;
-            const result = await dialog.showSaveDialog(window, {title:'下载文件', defaultPath:previousPath ?? path.join(app.getPath('downloads'), name), properties:['showOverwriteConfirmation']});
-            return result.canceled ? null : result.filePath;
+            return downloadPicker.pick(window, name, previousPath);
           },
           pickServerUploadFiles: async (sender) => {
             const window = BrowserWindow.fromWebContents(sender);

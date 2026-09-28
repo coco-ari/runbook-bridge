@@ -123,8 +123,11 @@ export function registerServerWorkspaceIpc(ipcMain, services) {
     picking.add(ownerId);
     try {
       const prepared = payload.retryOf ? await files.downloads.prepareRetry(ownerId, payload) : await files.downloads.prepare(ownerId, payload);
-      const selected = await services.pickServerDownloadPath(event.sender, prepared.name, prepared.suggestedPath);
-      if (!selected) return null;
+      let selected;
+      if (!prepared.destination) {
+        selected = await services.pickServerDownloadPath(event.sender, prepared.name, prepared.suggestedPath);
+        if (!selected) return null;
+      }
       ownerFor(event);
       return await files.downloads.start(ownerId, payload, prepared, selected);
     } finally { picking.delete(ownerId); }

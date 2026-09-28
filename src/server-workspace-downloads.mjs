@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { AppError, toPublicError } from './errors.mjs';
-import { DESKTOP_DOWNLOAD_LIMIT, downloadDestination } from './server-download-transfer.mjs';
+import { DESKTOP_DOWNLOAD_LIMIT, downloadDestination, assertDestination } from './server-download-transfer.mjs';
 import { ServerUploadProgress } from './server-upload-progress.mjs';
 
 export class ServerWorkspaceDownloads {
@@ -32,7 +32,17 @@ export class ServerWorkspaceDownloads {
     if (binding.revision !== job.revision || this.ownedJob(ownerId, payload) !== job) throw new AppError('WORKSPACE_CHANGED', '服务器配置已变化，请从目录重新选择文件下载。');
     const prepared = await this.prepare(ownerId, {...payload, path:job.path});
     if (prepared.revision !== job.revision || this.ownedJob(ownerId, payload) !== job) throw new AppError('WORKSPACE_CHANGED', '下载记录已变化，请从目录重新下载。');
-    return {...prepared, suggestedPath:job.localPath};
+    let destination;
+    if (job.retryDestination) {
+      try {
+        await assertDestination(job.retryDestination);
+        destination = job.retryDestination;
+      } catch (error) {
+        if (!(error instanceof AppError) || !error.code.startsWith('DOWNLOAD_')) throw error;
+        // 本地目标已变化或不可访问时，重新通过原生窗口确认保存位置。
+      }
+    }
+    return {...prepared, suggestedPath:job.localPath, retryJob:job, destination};
   }
 
   async prepare(ownerId, payload) {
@@ -47,11 +57,18 @@ export class ServerWorkspaceDownloads {
   async start(ownerId, payload, prepared, selectedPath) {
     if (prepared.ownerId !== ownerId) throw new AppError('WORKSPACE_ACCESS_DENIED', '下载窗口已失效。');
     const binding = await this.files.requirePlugin(ownerId, payload, prepared);
-    const destination = await downloadDestination(selectedPath);
+    const destination = selectedPath ? await downloadDestination(selectedPath) : prepared.destination;
+    if (!destination) throw new AppError('DOWNLOAD_TARGET_CHANGED', '请重新选择下载位置。');
+    await assertDestination(destination);
     await this.files.requirePlugin(ownerId, payload, binding);
+    const {retryJob, suggestedPath, destination:previousDestination, ...source} = prepared;
+    if (retryJob && (this.ownedJob(ownerId, payload) !== retryJob || retryJob.inFlight || !['cancelled','error'].includes(retryJob.status))) {
+      throw new AppError('DOWNLOAD_UNAVAILABLE', '下载记录已变化，请等待当前任务结束后重试。');
+    }
     if ([...this.files.jobs.values()].filter(job => job.ownerId === ownerId && !['completed','cancelled','error'].includes(job.status)).length >= 40) throw new AppError('WORKSPACE_BUSY', '传输任务过多，请等待当前任务完成。');
-    const job = {...prepared, ...binding, direction:'download', destination, localPath:destination.path,
-      jobId:crypto.randomUUID(), bytes:prepared.expected.size, transferred:0, status:'queued',
+    // 重试保留任务 ID，重新创建控制器与进度，覆盖授权仍绑定原本地文件状态。
+    const job = {...source, ...binding, direction:'download', destination, retryDestination:destination, localPath:destination.path,
+      jobId:retryJob?.jobId ?? crypto.randomUUID(), bytes:prepared.expected.size, transferred:0, status:'queued',
       controller:new AbortController(), progress:new ServerUploadProgress(this.files.now)};
     this.files.jobs.set(job.jobId, job);
     this.files.pruneJobs(ownerId);

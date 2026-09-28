@@ -26,7 +26,7 @@ macOS 测试包可运行 `node scripts/packaged-ui-smoke.cjs "dist/mac-arm64/Age
 - 上传排队或传输中可点击「暂停」。当前最多 1 MiB 批次写入完成后才显示「已暂停」，不会关闭 SSH 连接或影响其他任务。最终校验/提交阶段不提供暂停。
 - 应用及所属窗口保持运行时，暂停后 30 分钟内点击「继续上传」即可恢复，不再弹出确认窗口；后台仍重新核对源文件和已传前缀。断线中断后的恢复保留原有确认流程；手动暂停不消耗最多 3 次的断线恢复额度。返回详情保留任务，退出应用后不恢复。
 - 已完成、已取消、失败且后台已退出的任务可「移除记录」或「清除已结束」。只删除界面/内存记录，保留本地文件、服务器文件和审计。暂停与中断任务不能被批量清掉。
-- 目录树普通文件行在鼠标悬停或键盘聚焦时显示下载按钮。点击后用系统「另存为」选择本地位置，任务区显示保存路径、大小、进度和速度，可取消。
+- 目录树普通文件行在鼠标悬停或键盘聚焦时显示下载按钮。点击后用系统「另存为」选择本地位置，任务区显示保存路径、大小、进度和速度，可取消。默认打开最近一次确认选择的下载目录，重启应用后仍保留；目录不存在或不可访问时回退到系统下载目录，取消选择不更新记忆。目录偏好仅存于本机数据根的 `desktop-download-preferences.json`，不进入项目配置或云同步。
 - 首版下载限制单文件 500 MiB，上传和下载共用最多两个活动任务的队列；不支持文件夹打包、符号链接下载、下载暂停及断线续传。文件位于符号链接目录下时，请使用实际路径。
 - 下载过程中源文件变化、连接中断、取消或本地保存目标变化时停止，保留原本地文件。下载先写同目录临时文件，检查远端类型/路径/大小/时间及本地大小后提交；不计算远端整文件 SHA-256。
 - 新建目标使用独占硬链接发布，支持普通 NTFS 本地磁盘；不支持硬链接的文件系统会明确失败，不回退到可能覆盖新文件的写入。已有目标按另存为授权与状态检查后替换。最终状态检查不能阻止其他程序在检查之后并发修改文件。
@@ -68,7 +68,7 @@ macOS 测试包可运行 `node scripts/packaged-ui-smoke.cjs "dist/mac-arm64/Age
 | `serverWorkspaceClearTransfers` | 作用域、可选 jobId | 移除结束记录；省略 ID 清理本作用域所有结束记录 |
 | `serverWorkspacePasteUpload` | 作用域、远端 path | Windows 原生文件剪贴板读取并建立上传清单；不接受本地路径或剪贴板文本 |
 | `serverWorkspaceImportUpload` | 作用域、远端 path，以及独立参数 `File[]` | 接收粘贴或拖入的本地文件，返回上传检查清单；不启动传输 |
-| `serverWorkspaceDownload` | 作用域、远端 path 或原下载任务 retryOf（二选一） | 原生另存为并创建下载任务；重试从头传输并重新检查源文件；取消选择返回 null |
+| `serverWorkspaceDownload` | 作用域、远端 path 或原下载任务 retryOf（二选一） | 首次原生另存为并创建任务；重试重新检查源文件，沿用原路径并更新原任务；目标状态变化时重新另存为，取消选择返回 null |
 | `serverWorkspaceRevealDownload` | 作用域、jobId | 打开本窗口已完成下载的本地位置；文件移动、删除或已变成链接时拒绝 |
 | `serverWorkspaceReadFile` | 作用域、path、可选 tail / cursor / followToken | 只读头部、末尾或增量文本，每次最多 256 KiB；tail 与 cursor 互斥，followToken 不与两者混用 |
 | `serverWorkspaceEditFile` | 作用域及逐操作限定的字段 | 完整文本编辑、单次确认保存、核实结果与会话内恢复，详见上文 |
@@ -78,7 +78,7 @@ macOS 测试包可运行 `node scripts/packaged-ui-smoke.cjs "dist/mac-arm64/Age
 | `serverWorkspaceCancelFileAction` | 作用域、operationId | 撤销待确认文件操作 |
 | `serverWorkspaceReviseUpload` | 作用域、reviewId、fileNames、可选 decisions | 修订当前批次；decisions 仅接受已选文件的 name 与 action（skip/overwrite/keep-both） |
 
-现有 `serverWorkspaceUploads` 返回统一传输列表，增加方向、本地下载路径和可操作能力；状态增加 `pausing`、`paused`。继续上传复用原有一次性确认流程；手动暂停后的继续由界面自动完成该步骤，仍仅使用原任务的文件参数和覆盖范围。Renderer 不能指定下载本地路径、文件句柄、哈希或续传偏移；原生对话框前后、任务启动和提交均校验窗口、作用域、配置修订及连接代次。下载审计不记录本地路径或内容。
+现有 `serverWorkspaceUploads` 返回统一传输列表，增加方向、本地下载路径和可操作能力；状态增加 `pausing`、`paused`。继续上传复用原有一次性确认流程；手动暂停后的继续由界面自动完成该步骤，仍仅使用原任务的文件参数和覆盖范围。Renderer 不能指定下载本地路径、文件句柄、哈希或续传偏移；原生对话框前后、任务启动和提交均校验窗口、作用域、配置修订及连接代次。下载重试只复用主进程保存的原目标及其目录/文件身份快照，启动和提交时仍检查；新出现、修改、删除或替换目标均须重新确认保存位置。同一任务的并发重试只接受一次，每次执行单独记录审计。下载审计不记录本地路径或内容。
 
 新增文件来源入口由 preload 的 `webUtils.getPathForFile` 解析真实磁盘 `File`，不向 Renderer 暴露可接收任意本地路径的 API。内存文件和伪造对象在桥接层拒绝；主进程再次检查路径、数量、普通文件类型、大小、窗口身份和连接绑定，再进入原有 `beginUploadReview`。目录目标及文件状态仍通过一次性确认绑定；此次变更扩展桌面文件接收边界，不扩展 MCP 权限。
 
@@ -95,11 +95,14 @@ SFTP 的按路径删除没有“比较文件身份后原子删除”的通用接
 ## 验证
 
 ```powershell
-node --test test/desktop-file-clipboard.test.mjs test/server-workspace-actions.test.mjs test/server-upload-conflicts.test.mjs test/server-upload-import.test.mjs test/server-upload-reviews.test.mjs test/server-download-transfer.test.mjs test/server-upload-resume-runtime.test.mjs test/server-workspace-files.test.mjs test/renderer-bridge-contract.test.mjs
+node --test test/desktop-download-picker.test.mjs test/server-workspace-download-management.test.mjs test/desktop-file-clipboard.test.mjs test/server-workspace-actions.test.mjs test/server-upload-conflicts.test.mjs test/server-upload-import.test.mjs test/server-upload-reviews.test.mjs test/server-download-transfer.test.mjs test/server-upload-resume-runtime.test.mjs test/server-workspace-files.test.mjs test/renderer-bridge-contract.test.mjs
 corepack pnpm run check
 corepack pnpm test
 corepack pnpm run test:ui:server-workspace
 corepack pnpm run test:ui
+$env:RUNBOOK_BRIDGE_DOWNLOAD_RECOVERY_SMOKE = '1'
+corepack pnpm exec electron scripts/ui-react-server-workspace-smoke.cjs
+Remove-Item Env:RUNBOOK_BRIDGE_DOWNLOAD_RECOVERY_SMOKE
 ```
 
 文件菜单回归覆盖实际 Electron 右键及键盘菜单、名称/路径复制、实时属性、新建、改名、同名拒绝、刷新定位；冲突回归覆盖批量与逐项混合、最终副本名、全部跳过和确认前不上传。创建与改名使用回环 SFTP 验证一次性确认、源/目标并发变化、作用域和生命周期失效。
@@ -116,4 +119,4 @@ corepack pnpm run test:ui
 
 主进程签名游标绑定窗口、项目、环境、插件、配置修订、连接代次、用户路径与规范路径，不包含日志正文。每次续读检查末端最多 128 个 Unicode 字符的衔接摘要；检测到截断、衔接变化或增量超过 256 KiB 时重新读末尾并提示。这不能识别保留相同衔接片段的原地改写，也不是文件系统轮转事件订阅。文件读取仍拒绝特殊文件，校验链接目标与连接现场，保持有界读取；主进程拒绝最小化窗口的跟随请求。
 
-传输区默认折叠为进行中、完成、失败数量及进度摘要，新失败自动展开。下载失败或取消完成后可选择“重新下载”，重新检查当前源文件、配置修订并弹出原生另存为，支持修改保存位置；旧记录保留，可单独移除。下载暂停和断点续传尚未提供。完成后“本地位置”通过主进程按已拥有的任务记录定位，Renderer 无法指定任意本地路径；断开 SSH 后仍可定位本地普通文件。
+传输区默认折叠为进行中、完成、失败数量及进度摘要，新失败自动展开。下载失败或取消完成后可选择“重新下载”，重新检查当前源文件、配置修订，沿用原保存位置从头下载；原任务行就地更新，清除旧错误和进度，不新增重复记录。本地目标或目录已变化、不可访问，或缺少原授权快照时才重新弹出另存为；取消选择保留原失败记录。下载暂停和断点续传尚未提供。完成后“本地位置”通过主进程按已拥有的任务记录定位，Renderer 无法指定任意本地路径；断开 SSH 后仍可定位本地普通文件。

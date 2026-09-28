@@ -440,8 +440,10 @@ function register() {
   handle('server-workspace-download', input => {
     scoped(input); if(input.retryOf) { assert.ok(uploads.some(job=>job.jobId===input.retryOf&&['error','cancelled'].includes(job.status))); downloadRetries.push(input.retryOf); } else assert.equal(input.path,'/srv/release.tar');
     if (downloadFailure) throw Object.assign(new Error('本地保存位置空间不足，请选择其他磁盘。'), {code:'DOWNLOAD_DISK_FULL'});
-    const job={jobId:transferResponseProbe||input.retryOf?'response-download-'+(++responseDownloadId):'download-job',name:'release.tar',path:input.path??uploads.find(job=>job.jobId===input.retryOf).path,localPath:'D:/下载/release.tar',direction:'download',bytes:transferResponseProbe?1024:400000,transferred:0,status:'running'};
-    uploads.push(job);return job;
+    const job={jobId:input.retryOf??(transferResponseProbe?'response-download-'+(++responseDownloadId):'download-job'),name:'release.tar',path:input.path??uploads.find(job=>job.jobId===input.retryOf).path,localPath:'D:/下载/release.tar',direction:'download',bytes:transferResponseProbe?1024:400000,transferred:0,status:'running'};
+    const index = uploads.findIndex(item => item.jobId === job.jobId);
+    if (index >= 0) uploads[index] = job; else uploads.push(job);
+    return job;
   });
   handle('server-workspace-reveal-download', input => {scoped(input);assert.ok(uploads.some(job=>job.jobId===input.jobId&&job.direction==='download'&&job.status==='completed'));downloadReveals.push(input.jobId);return {};});
   handle('server-workspace-cancel-upload', (input) => {
@@ -778,6 +780,13 @@ async function run() {
   assert.equal(await evaluate('Boolean(document.querySelector(".server-workspace-header [data-environment-type=test]"))'),true,'终端显示明确的测试环境标识');
   assert.ok(await evaluate("document.querySelector('[data-terminal-command-audit=available]')?.textContent.includes('命令完成后记录')"));
   assert.equal(opened.length, 1, '首次点击只创建一个会话');
+  if (process.env.RUNBOOK_BRIDGE_DOWNLOAD_RECOVERY_SMOKE === '1') {
+    await require('./workspace-download-recovery-ui.cjs')({evaluate,click,until,snapshot,downloadReveals,downloadRetries,setJobs:jobs=>{uploads=jobs;}});
+    assert.deepEqual(errors,[],'下载重试专项无界面错误');
+    assert.equal(externalRequests.length,0,'下载重试专项无外部页面请求');
+    process.stdout.write(JSON.stringify({ok:true,downloadRecovery:true,retries:downloadRetries.length})+'\n');
+    completed = true; return;
+  }
   await assertFileSidebarLayout();
   if (liveFileUiProbe) {
     const result = await require(liveFileUiProbe.transfers ? './server-transfer-interaction-ui.cjs' : './server-file-interaction-ui.cjs')({ evaluate, until, wait, win, probe: liveFileUiProbe });

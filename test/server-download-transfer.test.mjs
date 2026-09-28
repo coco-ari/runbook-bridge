@@ -160,3 +160,46 @@ test('硬链接预检查成功仍在最终发布时防止同名文件被抢占',
   assert.equal(await fsp.readFile(f.localPath,'utf8'),'independent file');
   await f.noParts();
 });
+
+test('下载失败后以原任务重试真实 SFTP，保留覆盖绑定且每次审计独立', {timeout:15000}, async t => {
+  const f = await setup(t);
+  await fsp.writeFile(f.localPath,'original');
+  const scope = {projectId:'fixture-project',environmentId:'fixture-env',pluginInstanceId:'fixture-server'};
+  const plugin = {...scope,pluginType:'server',configState:'ready',revision:1,target:{hostKeyFingerprint:f.fingerprint}};
+  const runtime = new EventEmitter();
+  runtime.status = () => ({connected:true,generation:1});
+  runtime.statRemotePath = (_plugin,target) => f.broker.statRemotePath('fixture',target);
+  let attempts = 0;
+  runtime.downloadWorkspaceFile = (_plugin,...args) => {
+    if (++attempts === 1) throw new AppError('READ_QUEUE_TIMEOUT','模拟读取排队超时');
+    return downloadWorkspaceFile(f.broker,'fixture',...args);
+  };
+  const audits = [];
+  const files = new ServerWorkspaceFiles({workspaceStore:{getPlugin:async () => plugin,appendAudit:async (_project,item) => audits.push(item)},serverRuntime:runtime,serverOperations:{}});
+  t.after(() => files.dispose());
+  const owner = 'renderer:1';
+  const prepared = await files.downloads.prepare(owner,{...scope,path:'/source.bin'});
+  const first = await files.downloads.start(owner,scope,prepared,f.localPath);
+  const finished = async () => {
+    const deadline = Date.now()+8000;
+    while (files.jobs.get(first.jobId).inFlight && Date.now()<deadline) await new Promise(resolve => setTimeout(resolve,10));
+    assert.equal(files.jobs.get(first.jobId).inFlight,false);
+    return files.uploads(owner,scope).jobs[0];
+  };
+  assert.equal((await finished()).status,'error');
+  assert.equal(await fsp.readFile(f.localPath,'utf8'),'original');
+  assert.equal(files.jobs.get(first.jobId).destination,undefined);
+  const input = {...scope,retryOf:first.jobId};
+  const retry = await files.downloads.prepareRetry(owner,input);
+  assert.ok(retry.destination);
+  const second = await files.downloads.start(owner,input,retry);
+  assert.equal(second.jobId,first.jobId);
+  assert.equal((await finished()).status,'completed');
+  assert.equal(files.jobs.size,1);
+  assert.deepEqual(await fsp.readFile(f.localPath),f.data);
+  assert.deepEqual(audits.map(item => item.result),['started','error','started','success']);
+  assert.notEqual(audits[0].operationId,audits[2].operationId);
+  assert.equal(audits[0].operationId,audits[1].operationId);
+  assert.equal(audits[2].operationId,audits[3].operationId);
+  await f.noParts();
+});

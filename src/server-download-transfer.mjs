@@ -28,7 +28,7 @@ export async function downloadDestination(localPath) {
 }
 
 function matches(left, right) { return JSON.stringify(left) === JSON.stringify(right); }
-async function assertDestination(destination) {
+export async function assertDestination(destination) {
   const current = await downloadDestination(destination.path);
   // 创建临时文件会改变目录时间，目录身份只比较设备及节点。
   if (current.parent !== destination.parent || current.parentIdentity.ino !== destination.parentIdentity.ino
