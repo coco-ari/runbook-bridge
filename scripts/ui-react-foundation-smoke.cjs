@@ -635,12 +635,26 @@ async function assertKeyboardResizerPersistence(win,{testId,keyCode,panelId}) {
   await waitFor(win,
     `document.hasFocus() && document.activeElement === document.querySelector(${JSON.stringify(selector)})`,
     `${testId} native keyboard focus`);
-  const before = await readSnapshot();
+  let before = await readSnapshot();
   assert.ok(before,`${testId} is missing`);
   assert.equal(before.visible,true,`${testId} must be visible`);
   assert.equal(before.role,'separator',`${testId} must expose separator semantics`);
   assert.equal(before.controls,panelId,`${testId} must control its exact panel`);
   assert.ok([before.value,before.min,before.max].every(Number.isFinite),`${testId} must expose finite ARIA values`);
+  // 前面的折叠与恢复可能使分栏停在边界，先用真实键盘输入留出本次测试所需空间。
+  assert.ok(before.min < before.max,`${testId} must have a usable resize range`);
+  if (!(keyCode === 'RIGHT' ? before.value < before.max : before.value > before.min)) {
+    await pressKey(win,keyCode === 'RIGHT' ? 'LEFT' : 'RIGHT');
+    await waitFor(win,`(() => {
+      const target = document.querySelector(${JSON.stringify(selector)});
+      const value = Number(target?.getAttribute('aria-valuenow'));
+      const bound = Number(target?.getAttribute(${JSON.stringify(keyCode === 'RIGHT' ? 'aria-valuemax' : 'aria-valuemin')}));
+      return Number.isFinite(value) && Number.isFinite(bound)
+        && ${keyCode === 'RIGHT' ? 'value < bound' : 'value > bound'};
+    })()`,`${testId} keyboard preparation leaves room for ${keyCode}`);
+    await captureRenderedFrame(win);
+    before = await readSnapshot();
+  }
   assert.ok(keyCode === 'RIGHT' ? before.value < before.max : before.value > before.min,
     `${testId} has no room for ${keyCode}: ${JSON.stringify(before)}`);
   await pressKey(win,keyCode);
