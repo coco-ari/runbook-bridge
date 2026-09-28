@@ -10,8 +10,8 @@ import { CodexIntegrationPanel } from "./CodexIntegrationPanel"
 
 const sections = [
   { id: "appearance", title: "外观主题", description: "选择适合你的界面外观，设置会应用到整个工作台。", icon: Palette },
-  { id: "agent", title: "Agent 接入", description: "将工作台接入你的 Agent，先从 Codex 开始。", icon: PlugsConnected },
-  { id: "cloud", title: "云配置", description: "管理云仓库与项目显示，按项目更新或上传配置。", icon: Cloud },
+  { id: "agent", title: "Agent 接入", description: "让 Agent 使用工作台中的资源，在这里查看和管理接入状态。", icon: PlugsConnected },
+  { id: "cloud", title: "云同步", description: "管理云仓库与项目显示，按项目更新或上传配置。", icon: Cloud },
   { id: "about", title: "关于", description: "查看应用版本与兼容性信息。", icon: Info },
 ] as const
 

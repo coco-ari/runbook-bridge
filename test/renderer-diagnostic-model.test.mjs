@@ -17,7 +17,7 @@ test('diagnostics identify only known error stages and keep cancellation, timeou
   assert.match(diagnosticFor({code:'MYSQL_WRITE_OUTCOME_UNKNOWN'},'operation').guidance,/不要直接重复写入/);
   assert.equal(diagnosticFor({code:'SSH_CONNECTION_FAILED'}).stage,'阶段尚未确定');
   assert.equal(diagnosticFor({code:'DATABASE_QUERY_TIMEOUT',details:{phase:'queue'}}).stage,'等待执行');
-  assert.equal(diagnosticFor({code:'CLOUD_AUTH_FAILED'},'cloud').stage,'云配置');
+  assert.equal(diagnosticFor({code:'CLOUD_AUTH_FAILED'},'cloud').stage,'云同步');
   assert.match(diagnosticFor({code:'CLOUD_AUTH_FAILED'},'cloud').guidance,/所选仓库/);
 });
 

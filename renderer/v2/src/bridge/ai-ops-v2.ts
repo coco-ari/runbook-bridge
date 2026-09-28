@@ -868,7 +868,7 @@ export interface RedisKeyPage {
 export type RedisKeyPayload = PluginScope & { patternId: string; key: string }
 
 export interface CodexIntegrationStatus {
-  readonly status: "available" | "configured" | "conflict" | "error"
+  readonly status: "available" | "configured" | "outdated" | "conflict" | "error"
   readonly message: string
   readonly configPath: string
   readonly configSnippet: string

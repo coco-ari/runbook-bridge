@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { parse, stringify } from 'smol-toml';
+import { defaultDataRoot } from '../src/paths.mjs';
 import { CodexIntegration, codexConfigPath, registerCodexIntegrationIpc } from '../src/codex-integration.mjs';
 
 async function fixture(t, content) {
@@ -39,12 +40,56 @@ test('first install creates a valid MCP entry with actual paths and detects it a
   const result = await install(service);
   assert.equal(result.status, 'configured');
   assert.equal(result.backupPath, null);
-  assert.equal(result.approvalId, null);
+  assert.equal(typeof result.approvalId, 'string');
   const text = await fs.readFile(configPath, 'utf8');
   assert.deepEqual(JSON.parse(JSON.stringify(parse(text).mcp_servers['agent-ops'])), service.entry);
   assert.equal((await service.status(1)).status, 'configured');
   assert.equal((await fs.stat(configPath)).nlink, 1);
   assert.deepEqual(await fs.readdir(path.dirname(configPath)), ['config.toml']);
+});
+
+test('default data directory may be omitted without requiring reconnect or changing the file', async t => {
+  const { service, configPath } = await fixture(t, '');
+  service.entry.env.AI_OPS_DATA_DIR = defaultDataRoot({ env: { LOCALAPPDATA: process.env.LOCALAPPDATA } });
+  const current = { ...service.entry, env: { ELECTRON_RUN_AS_NODE: '1' }, disabled_tools: ['blocked'], startup_timeout_sec: 30 };
+  const original = '# 已有的本机配置\n' + stringify({ mcp_servers: { 'agent-ops': current } });
+  await fs.writeFile(configPath, original);
+  const state = await service.status(1);
+  assert.equal(state.status, 'configured');
+  assert.match(state.message, /无需重复配置/u);
+  assert.equal(await fs.readFile(configPath, 'utf8'), original);
+  assert.deepEqual(await fs.readdir(path.dirname(configPath)), ['config.toml']);
+  const result = await service.install(1, state.approvalId);
+  assert.equal(result.status, 'configured');
+  assert.equal(await fs.readFile(configPath, 'utf8'), original);
+  assert.equal(await fs.readFile(result.backupPath, 'utf8'), original);
+});
+
+test('missing data directory does not hide a custom root or other startup differences', async t => {
+  const { service, configPath, root } = await fixture(t, '');
+  const fallback = defaultDataRoot({ env: { LOCALAPPDATA: process.env.LOCALAPPDATA } });
+  service.entry.env.AI_OPS_DATA_DIR = path.join(root, 'custom-data');
+  const current = { ...service.entry, env: { ELECTRON_RUN_AS_NODE: '1' } };
+  await fs.writeFile(configPath, stringify({ mcp_servers: { 'agent-ops': current } }));
+  assert.equal((await service.status(1)).status, 'outdated');
+  service.entry.env.AI_OPS_DATA_DIR = fallback;
+  for (const change of [
+    { command: 'old-workbench' },
+    { args: ['old-entry.mjs'] },
+    { enabled: false },
+    { env: { ELECTRON_RUN_AS_NODE: '0' } },
+    { env: { ELECTRON_RUN_AS_NODE: '1', AI_OPS_DATA_DIR: path.join(root, 'other-data') } },
+  ]) {
+    await fs.writeFile(configPath, stringify({ mcp_servers: { 'agent-ops': { ...current, ...change } } }));
+    assert.equal((await service.status(1)).status, 'outdated');
+  }
+});
+
+test('the configured default directory respects explicit Windows local app data overrides', { skip: process.platform !== 'win32' }, async t => {
+  const { service, configPath, root } = await fixture(t, '');
+  service.entry.env.AI_OPS_DATA_DIR = defaultDataRoot({ env: { LOCALAPPDATA: process.env.LOCALAPPDATA } });
+  await fs.writeFile(configPath, stringify({ mcp_servers: { 'agent-ops': { ...service.entry, env: { ELECTRON_RUN_AS_NODE: '1', LOCALAPPDATA: root } } } }));
+  assert.equal((await service.status(1)).status, 'outdated');
 });
 
 test('append preserves comments, BOM, CRLF, unrelated settings and exact backup bytes', async t => {
@@ -72,20 +117,90 @@ test('rechecking and copying are read-only and copied content only contains our 
   assert.deepEqual(await fs.readdir(path.dirname(configPath)), ['config.toml']);
 });
 
-test('existing different, disabled and inline entries are not overwritten', async t => {
+test('reconnect updates stale paths and enables the server while preserving restrictions and unrelated text', async t => {
+  const prefix = '\uFEFF# 用户偏好\r\nmodel = "fixture"\r\n[mcp_servers.other]\r\ncommand = "keep-tool"\r\n';
+  const suffix = '[profiles.work]\r\nmodel = "keep-model" # 保留注释\r\n';
+  const original = prefix + '[mcp_servers."agent-ops"] # 旧接入\r\ncommand = "old-tool"\r\nargs = ["--old"]\r\nenabled = false\r\ndisabled_tools = ["blocked"]\r\nstartup_timeout_sec = 30\r\n'
+    + suffix + '[mcp_servers."agent-ops".env]\r\nCUSTOM = "fixture-value"\r\n';
+  const { service, configPath } = await fixture(t, original);
+  let state = await service.status(1);
+  assert.equal(state.status, 'outdated');
+  assert.equal(await fs.readFile(configPath, 'utf8'), original);
+  assert.ok(!JSON.stringify(state).includes('fixture-value'));
+  const result = await service.install(1, state.approvalId);
+  assert.equal(result.status, 'configured');
+  assert.equal(await fs.readFile(result.backupPath, 'utf8'), original);
+  const updated = await fs.readFile(configPath, 'utf8');
+  assert.ok(updated.startsWith(prefix + suffix));
+  assert.doesNotMatch(updated, /(?<!\r)\n/u);
+  const entry = parse(updated.replace(/^\uFEFF/u, '')).mcp_servers['agent-ops'];
+  assert.equal(entry.command, service.entry.command);
+  assert.deepEqual(entry.args, service.entry.args);
+  assert.equal(entry.enabled, true);
+  assert.deepEqual(entry.disabled_tools, ['blocked']);
+  assert.equal(entry.startup_timeout_sec, 30);
+  assert.equal(entry.env.CUSTOM, 'fixture-value');
+  state = await service.status(1);
+  const reconnected = await service.install(1, state.approvalId);
+  assert.equal(reconnected.status, 'configured');
+  assert.equal(await fs.readFile(reconnected.backupPath, 'utf8'), updated);
+  assert.equal(await fs.readFile(configPath, 'utf8'), updated);
+});
+
+test('inline entries and ambiguous dotted assignments remain read-only', async t => {
   for (const original of [
-    '[mcp_servers.agent-ops]\ncommand = "other"\n',
     'mcp_servers = {}\n',
+    'mcp_servers = { agent-ops = { command = "old" } }\n',
+    '[mcp_servers]\nagent-ops.command = "old"\n',
+    '[mcp_servers]\nagent-ops.command = "old"\n[mcp_servers.agent-ops.env]\nCUSTOM = "value"\n',
   ]) {
     const { service, configPath } = await fixture(t, original);
     assert.equal((await service.status(1)).status, 'conflict');
     await assert.rejects(service.install(1, 'forged'), { code: 'CODEX_APPROVAL_EXPIRED' });
     assert.equal(await fs.readFile(configPath, 'utf8'), original);
   }
-  const { service, configPath } = await fixture(t);
-  await install(service);
-  await fs.writeFile(configPath, stringify({ mcp_servers: { 'agent-ops': { ...service.entry, enabled: false } } }));
-  assert.equal((await service.status(1)).status, 'conflict');
+});
+
+test('header-like content in strings and arrays is preserved during reconnect', async t => {
+  const original = [
+    '# 前缀注释', 'note = ' + '"'.repeat(3), '[mcp_servers.agent-ops]', 'text with \\" quote', '"'.repeat(3),
+    "literal = " + "'".repeat(3), '[mcp_servers.agent-ops.env]', "'".repeat(3),
+    'values = [', '["[mcp_servers.agent-ops]"],', ']',
+    '[mcp_servers.other]', 'command = "keep"',
+    '[mcp_servers.agent-ops]', 'command = "old"',
+    '[mcp_servers.agent-ops-extra]', 'command = "also-keep"', '',
+  ].join('\n');
+  const { service, configPath } = await fixture(t, original);
+  const state = await service.status(1);
+  assert.equal(state.status, 'outdated');
+  await service.install(1, state.approvalId);
+  const updated = await fs.readFile(configPath, 'utf8');
+  assert.ok(updated.startsWith(original.slice(0, original.indexOf('[mcp_servers.agent-ops]\ncommand'))));
+  const parsed = parse(updated);
+  for (const key of ['note', 'literal', 'values']) assert.deepEqual(parsed[key], parse(original)[key]);
+  assert.equal(parsed.mcp_servers['agent-ops-extra'].command, 'also-keep');
+});
+
+test('reconnect removes HTTP transport while preserving tool approval settings', async t => {
+  const { service, configPath } = await fixture(t, '[mcp_servers.agent-ops]\nurl = "https://fixture.invalid/mcp"\nbearer_token_env_var = "FIXTURE_TOKEN"\nenabled_tools = ["safe"]\ndefault_tools_approval_mode = "prompt"\n[mcp_servers.agent-ops.http_headers]\nX-Fixture = "fixture-value"\n');
+  const state = await service.status(1);
+  assert.equal(state.status, 'outdated');
+  await service.install(1, state.approvalId);
+  const entry = parse(await fs.readFile(configPath, 'utf8')).mcp_servers['agent-ops'];
+  assert.equal(entry.url, undefined);
+  assert.equal(entry.http_headers, undefined);
+  assert.equal(entry.bearer_token_env_var, undefined);
+  assert.deepEqual(entry.enabled_tools, ['safe']);
+  assert.equal(entry.default_tools_approval_mode, 'prompt');
+});
+
+test('an external edit invalidates reconnect without overwriting the new content', async t => {
+  const { service, configPath } = await fixture(t, '[mcp_servers.agent-ops]\ncommand = "old"\n');
+  const state = await service.status(1);
+  const external = '[mcp_servers.agent-ops]\ncommand = "external"\n';
+  await fs.writeFile(configPath, external);
+  await assert.rejects(service.install(1, state.approvalId), { code: 'CODEX_CONFIG_CHANGED' });
+  assert.equal(await fs.readFile(configPath, 'utf8'), external);
 });
 
 test('malformed, oversized and non-regular configuration fail closed without exposing content', async t => {

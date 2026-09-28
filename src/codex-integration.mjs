@@ -1,9 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { isDeepStrictEqual } from 'node:util';
 import { createHash, randomUUID } from 'node:crypto';
 import { parse, stringify } from 'smol-toml';
 import { AppError, toPublicError } from './errors.mjs';
+import { defaultDataRoot } from './paths.mjs';
 
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const APPROVAL_TTL_MS = 5 * 60 * 1000;
@@ -16,6 +18,51 @@ export function codexConfigPath(env = process.env, home = os.homedir()) {
 function parseConfig(text) {
   try { return parse(text.replace(/^\uFEFF/u, '')); }
   catch { throw failure('CODEX_CONFIG_INVALID', 'Codex 配置格式无效，请先在 Codex 中修复 config.toml，再重新检测。'); }
+}
+
+// 只定位独立表的边界；字符串和数组中的伪表头不能成为替换位置。
+function tableSections(text) {
+  const sections = [];
+  let quote = null;
+  let multiline = false;
+  let depth = 0;
+  let lineStart = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (index === lineStart && !quote && depth === 0) {
+      const end = text.indexOf('\n', index);
+      const line = text.slice(index, end < 0 ? text.length : end);
+      if (/^\s*\[/u.test(line)) {
+        const header = parseConfig(line + '\n');
+        sections.push({ start: index === 0 && text.startsWith('\uFEFF') ? 1 : index,
+          target: Object.hasOwn(header.mcp_servers ?? {}, 'agent-ops') });
+      }
+    }
+    if (char === '\n') lineStart = index + 1;
+    if (quote) {
+      if (quote === '"' && char === '\\') { index += 1; continue; }
+      if (char === quote) {
+        if (!multiline) quote = null;
+        else if (text.slice(index, index + 3) === quote.repeat(3)) {
+          while (text[index + 1] === quote) index += 1;
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (char === '#') {
+      const end = text.indexOf('\n', index);
+      if (end < 0) break;
+      index = end;
+      lineStart = end + 1;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+      multiline = text.slice(index, index + 3) === char.repeat(3);
+      if (multiline) index += 2;
+    } else if (char === '[' || char === '{') depth += 1;
+    else if (char === ']' || char === '}') depth -= 1;
+  }
+  return sections.map((section, index) => ({ ...section, end: sections[index + 1]?.start ?? text.length }));
 }
 
 export class CodexIntegration {
@@ -74,28 +121,67 @@ export class CodexIntegration {
     return { exists: true, text, revision, parsed: parseConfig(text) };
   }
 
+  replacementEntry(snapshot) {
+    const current = snapshot.parsed.mcp_servers?.['agent-ops'];
+    if (current !== undefined && (!current || typeof current !== 'object' || Array.isArray(current))) {
+      throw failure('CODEX_CONFIG_CONFLICT', '同名配置不是 MCP 配置表，请手动核对。');
+    }
+    // 保留工具限制、超时与自定义环境变量，只更新启动配置并重新启用。
+    const entry = { ...current, ...this.entry, env: { ...current?.env, ...this.entry.env } };
+    if (current?.enabled === false) entry.enabled = true;
+    for (const key of ['url', 'http_headers', 'env_http_headers', 'bearer_token_env_var']) delete entry[key];
+    return entry;
+  }
+
+  isConfigured(snapshot) {
+    const current = snapshot.parsed.mcp_servers?.['agent-ops'];
+    if (!current) return false;
+    const expected = this.replacementEntry(snapshot);
+    if (!Object.hasOwn(current.env ?? {}, 'AI_OPS_DATA_DIR')) {
+      // 未显式指定数据目录时按 MCP 的默认规则比较，不能把自定义目录误认成默认目录。
+      const fallback = defaultDataRoot({ env: { LOCALAPPDATA: process.env.LOCALAPPDATA, ...current.env, AI_OPS_DATA_DIR: undefined } });
+      const normalize = value => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+      if (normalize(fallback) === normalize(this.entry.env.AI_OPS_DATA_DIR)) delete expected.env.AI_OPS_DATA_DIR;
+    }
+    return isDeepStrictEqual(current, parseConfig(stringify({ entry: expected })).entry);
+  }
+
   classify(snapshot) {
+    try {
+      const updated = this.updatedText(snapshot);
+      if (Buffer.byteLength(updated, 'utf8') > MAX_CONFIG_BYTES) {
+        return { status: 'error', message: '更新接入后配置将超过 1 MiB，请手动配置接入。' };
+      }
+    } catch {
+      return { status: 'conflict', message: '现有配置结构无法安全更新，请使用下方配置手动接入。' };
+    }
     const current = snapshot.parsed.mcp_servers?.['agent-ops'];
     if (current !== undefined) {
-      const matches = current?.command === this.entry.command
-        && JSON.stringify(current.args) === JSON.stringify(this.entry.args)
-        && Object.entries(this.entry.env).every(([key, value]) => current.env?.[key] === value)
-        && Object.keys(current.env ?? {}).length === Object.keys(this.entry.env).length;
-      if (matches && current.enabled !== false) return { status: 'configured', message: '用户级配置已就绪。重启 Codex 后使用；此状态不代表 MCP 已连接。' };
-      return { status: 'conflict', message: '已有不同或已停用的 agent-ops 配置。请手动核对并替换该条目，然后重新检测。' };
+      if (this.isConfigured(snapshot)) {
+        return { status: 'configured', message: '本机已配置 Codex 接入，无需重复配置。此状态仅表示配置就绪，不代表 MCP 已连接。' };
+      }
+      return { status: 'outdated', message: '检测到已有 agent-ops 配置，可重新接入以更新为当前应用的启动配置并启用。' };
     }
-    if (Buffer.byteLength(this.updatedText(snapshot), 'utf8') > MAX_CONFIG_BYTES) {
-      return { status: 'error', message: '添加接入后配置将超过 1 MiB，请手动配置接入。' };
-    }
-    // 只追加本应用的配置；再次解析可识别内联表等不允许追加的 TOML 结构。
-    try { parseConfig(this.updatedText(snapshot)); }
-    catch { return { status: 'conflict', message: '现有 MCP 配置结构不支持直接追加，请使用下方配置手动接入。' }; }
     return { status: 'available', message: '可一键写入本机 Codex 的用户级配置，无需安装 Codex CLI。' };
   }
 
   updatedText(snapshot) {
     const newline = snapshot.text.includes('\r\n') ? '\r\n' : '\n';
-    return snapshot.text + (snapshot.text ? newline + newline : '') + this.configSnippet.replace(/\n/gu, newline);
+    const entry = this.replacementEntry(snapshot);
+    const current = snapshot.parsed.mcp_servers?.['agent-ops'];
+    if (current && this.isConfigured(snapshot)) return snapshot.text;
+    let preserved = snapshot.text;
+    if (snapshot.parsed.mcp_servers?.['agent-ops'] !== undefined) {
+      const sections = tableSections(snapshot.text).filter(section => section.target);
+      if (!sections.length) throw failure('CODEX_CONFIG_CONFLICT', '同名配置不是独立表，请手动核对。');
+      for (const section of sections.reverse()) preserved = preserved.slice(0, section.start) + preserved.slice(section.end);
+    }
+    const updated = preserved + (preserved ? newline + newline : '')
+      + stringify({ mcp_servers: { 'agent-ops': entry } }).replace(/\n/gu, newline);
+    const expected = { ...snapshot.parsed, mcp_servers: { ...snapshot.parsed.mcp_servers, 'agent-ops': entry } };
+    // 除目标条目外的解析结果必须完全相同，任何歧义都拒绝自动写入。
+    if (!isDeepStrictEqual(parseConfig(updated), parseConfig(stringify(expected)))) throw failure('CODEX_CONFIG_CONFLICT', '配置结构无法安全更新，请手动核对。');
+    return updated;
   }
 
   async status(owner) {
@@ -104,7 +190,7 @@ export class CodexIntegration {
     try {
       const snapshot = await this.snapshot();
       const state = this.classify(snapshot);
-      if (state.status === 'available') {
+      if (['available', 'outdated', 'configured'].includes(state.status)) {
         const approvalId = randomUUID();
         if (this.approvals.size >= 32) this.approvals.delete(this.approvals.keys().next().value);
         this.approvals.set(owner, { approvalId, revision: snapshot.revision, expires: Date.now() + APPROVAL_TTL_MS });
@@ -128,7 +214,7 @@ export class CodexIntegration {
     try {
       const snapshot = await this.snapshot();
       if (snapshot.revision !== approval.revision) throw failure('CODEX_CONFIG_CHANGED', 'Codex 配置已变化，请重新检测后再接入。');
-      if (this.classify(snapshot).status !== 'available') throw failure('CODEX_CONFIG_CONFLICT', '已有配置需要手动核对，请重新检测。');
+      if (!['available', 'outdated', 'configured'].includes(this.classify(snapshot).status)) throw failure('CODEX_CONFIG_CONFLICT', '已有配置需要手动核对，请重新检测。');
       const updated = this.updatedText(snapshot);
       parseConfig(updated);
       await fs.mkdir(path.dirname(this.configPath), { recursive: true, mode: 0o700 });

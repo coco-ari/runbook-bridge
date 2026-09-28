@@ -51,7 +51,7 @@ export function CloudConfigPanel({ api, onBusyChange }: { api: AiOpsV2Api; onCha
     if (result) { setAdding(false); setPassword(""); setAdminToken(""); setShowPassword(false); changeRepository(result.repositoryId ?? ""); setView("projects") }
   }
   const showAll = (show: boolean) => { if (repository) void cloud.run({ action: "visibility", repositoryId: repository.repositoryId, projectIds: projects.map(p => p.projectId), visible: show }) }
-  if (cloud.loading) return <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground"><SpinnerGap className="animate-spin" />正在读取云配置…</div>
+  if (cloud.loading) return <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground"><SpinnerGap className="animate-spin" />正在读取云同步…</div>
   return <div className="@container/cloud-config flex min-h-0 flex-1 flex-col gap-3 text-sm" data-testid="cloud-config-panel" aria-busy={cloud.busy}>
     {cloud.error && !cloud.operationError ? <p role="alert" className="flex shrink-0 items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive"><WarningCircle className="shrink-0" />{cloud.error}</p> : null}
     {cloud.operationError ? <div className="shrink-0 rounded-md border bg-surface p-3 text-xs" data-testid="cloud-operation-error"><div className="flex items-start justify-between gap-2"><p role="alert" className="text-danger">{cloud.operationError.message}</p><Button size="xs" variant="ghost" onClick={cloud.clearOperationError}>清除</Button></div><DiagnosticDetails error={cloud.operationError} domain="cloud" /></div> : null}
@@ -74,7 +74,7 @@ export function CloudConfigPanel({ api, onBusyChange }: { api: AiOpsV2Api; onCha
       <div className="flex shrink-0 flex-wrap items-center gap-2">
         {repository ? <SelectControl value={repository.repositoryId ?? ""} onValueChange={changeRepository} aria-label="选择云仓库" disabled={cloud.busy} size="sm" className="max-w-full min-w-40"><>{repositories.map(repo => <SelectItem key={repo.repositoryId} value={repo.repositoryId}>{repo.name}</SelectItem>)}</></SelectControl> : null}
         <Button size="xs" variant="outline" disabled={cloud.busy} data-testid="cloud-add-repository" onClick={() => beginBind()}><Plus />关联仓库</Button>
-        <div className="ml-auto flex gap-1" aria-label="云配置栏目">{([["projects", "项目"], ["repository", "仓库设置"], ["backups", "本机备份"]] as const).map(([key, label]) => <Button key={key} size="xs" variant={view === key ? "secondary" : "ghost"} disabled={cloud.busy} aria-current={view === key ? "page" : undefined} data-testid={`cloud-view-${key}`} onClick={() => setView(key)}>{label}</Button>)}</div>
+        <div className="ml-auto flex gap-1" aria-label="云同步栏目">{([["projects", "项目"], ["repository", "仓库设置"], ["backups", "本机备份"]] as const).map(([key, label]) => <Button key={key} size="xs" variant={view === key ? "secondary" : "ghost"} disabled={cloud.busy} aria-current={view === key ? "page" : undefined} data-testid={`cloud-view-${key}`} onClick={() => setView(key)}>{label}</Button>)}</div>
       </div>
       {repository?.error ? <div className="shrink-0 text-xs"><p role="alert" className="text-warning">{repository.error.message} 当前显示上次读取的项目。</p><DiagnosticDetails error={repository.error} domain="cloud" /></div> : null}
       {repository && !repository.unlocked ? <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground"><span>仓库尚未解锁</span><Button size="xs" variant="outline" disabled={cloud.busy} onClick={() => beginBind(true)}>解锁仓库</Button></div> : null}

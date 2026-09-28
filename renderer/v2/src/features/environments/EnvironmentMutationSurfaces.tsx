@@ -228,7 +228,7 @@ export function EnvironmentMutationSurfaces({
                 <SelectControl id="environment-type" aria-describedby="environment-type-description" aria-label="环境类型" value={environmentType} onValueChange={value => setEnvironmentType(value as EnvironmentType)} disabled={controller.busy !== null}>
                   <SelectItem value="unspecified">未标注</SelectItem><SelectItem value="production">生产</SelectItem><SelectItem value="test">测试</SelectItem>
                 </SelectControl>
-                <FieldDescription id="environment-type-description">显示在工作区和数据修改处，随云配置同步。上传类型标识后，共享仓库的其他设备也需使用支持此功能的版本。</FieldDescription>
+                <FieldDescription id="environment-type-description">显示在工作区和数据修改处，随云同步保存。上传类型标识后，共享仓库的其他设备也需使用支持此功能的版本。</FieldDescription>
               </Field>
               <MutationError id="new-environment-name-error" message={mutationError} />
             </FieldGroup>
@@ -354,7 +354,7 @@ export function EnvironmentMutationSurfaces({
                 <SelectControl id="environment-type" aria-describedby="environment-type-description" aria-label="环境类型" value={environmentType} onValueChange={value => setEnvironmentType(value as EnvironmentType)} disabled={controller.busy !== null}>
                   <SelectItem value="unspecified">未标注</SelectItem><SelectItem value="production">生产</SelectItem><SelectItem value="test">测试</SelectItem>
                 </SelectControl>
-                <FieldDescription id="environment-type-description">显示在工作区和数据修改处，随云配置同步。上传类型标识后，共享仓库的其他设备也需使用支持此功能的版本。</FieldDescription>
+                <FieldDescription id="environment-type-description">显示在工作区和数据修改处，随云同步保存。上传类型标识后，共享仓库的其他设备也需使用支持此功能的版本。</FieldDescription>
               </Field>
             <MutationError id="environment-settings-name-error" message={mutationError} />
           </FieldGroup>

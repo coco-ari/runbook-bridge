@@ -156,7 +156,7 @@ export function ProjectMutationSurfaces({
     if (action?.kind !== "delete" || !project || controller.busy !== null) return
     setCloudDeleteError("")
     const beforeDelete = deleteCloud ? async () => {
-      if (!linked || !repository?.snapshotId || !repository.unlocked) { setCloudDeleteError("请先在云配置中解锁并检测此项目所属仓库。"); return false }
+      if (!linked || !repository?.snapshotId || !repository.unlocked) { setCloudDeleteError("请先在云同步中解锁并检测此项目所属仓库。"); return false }
       const preview = await cloud.run({ action: "prepareProjectOperation", repositoryId: linked.repositoryId, projectId: linked.projectId, snapshotId: repository.snapshotId, operation: "delete" })
       if (!preview?.projectOperation) { setCloudDeleteError("云端删除准备失败，本地项目保留。请重新检测后再试。"); return false }
       const result = await cloud.run({ action: "confirmProjectOperation", planId: preview.projectOperation.planId })
@@ -267,7 +267,7 @@ export function ProjectMutationSurfaces({
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {linked && !project.isolated ? <label className="flex items-start gap-2 text-xs"><Checkbox data-testid="delete-project-cloud" checked={deleteCloud} disabled={controller.busy !== null || cloud.busy || !repository?.unlocked} onCheckedChange={value => setDeleteCloud(value === true)} /><span className="min-w-0 break-words [overflow-wrap:anywhere]">同时删除“{repository?.name}”中的云端项目“{linked.name}”<span className="mt-1 block text-muted-foreground">{repository?.unlocked ? "不勾选时只删除本地副本，云端仍可下载。云端删除后可在 30 天内恢复。" : "请先在云配置中解锁仓库。"}</span></span></label> : null}
+          {linked && !project.isolated ? <label className="flex items-start gap-2 text-xs"><Checkbox data-testid="delete-project-cloud" checked={deleteCloud} disabled={controller.busy !== null || cloud.busy || !repository?.unlocked} onCheckedChange={value => setDeleteCloud(value === true)} /><span className="min-w-0 break-words [overflow-wrap:anywhere]">同时删除“{repository?.name}”中的云端项目“{linked.name}”<span className="mt-1 block text-muted-foreground">{repository?.unlocked ? "不勾选时只删除本地副本，云端仍可下载。云端删除后可在 30 天内恢复。" : "请先在云同步中解锁仓库。"}</span></span></label> : null}
           {cloudDeleted ? <p role="status" className="text-xs text-warning">云端项目已删除。{mutationError ? "本地删除未完成，请处理下方问题后重试本地删除。" : "正在删除本地项目…"}</p> : null}
           {cloudDeleteError ? <p role="alert" className="text-xs text-destructive">{cloudDeleteError}</p> : null}
           <Field data-invalid={Boolean(typedConfirmation) && !confirmationMatches || undefined}>

@@ -810,12 +810,33 @@ async function main() {
     assert.deepEqual(codexEntry.args, [path.join(appAsar, 'src', 'mcp-v2.mjs')]);
     assert.equal(codexEntry.env.AI_OPS_DATA_DIR, dataRoot);
     const codexFiles = await fsp.readdir(isolation.env.CODEX_HOME);
-    const codexBackup = codexFiles.find(file => file.endsWith('.bak'));
+    const codexBackups = await Promise.all(codexFiles.filter(file => file.endsWith('.bak')).map(file => fsp.readFile(path.join(isolation.env.CODEX_HOME, file), 'utf8')));
+    const codexBackup = codexBackups.find(content => content === '# 隔离的接入测试配置\n');
     assert.ok(codexBackup, '接入前必须保存原配置');
-    assert.equal(await fsp.readFile(path.join(isolation.env.CODEX_HOME, codexBackup), 'utf8'), '# 隔离的接入测试配置\n');
+    assert.equal(codexBackups.length, 2, '首次接入与重新接入均应保留备份');
+    const defaultEntry = { ...codexEntry, env: { ...codexEntry.env } };
+    delete defaultEntry.env.AI_OPS_DATA_DIR;
+    const existingDefaultConfig = require('smol-toml').stringify({ mcp_servers: { 'agent-ops': defaultEntry } });
+    await fsp.writeFile(path.join(isolation.env.CODEX_HOME, 'config.toml'), existingDefaultConfig);
+    await require('./settings-ui.cjs')({
+      evaluate: code => running.cdp.evaluate(code), initialCodexStatus: '已配置',
+      paint: () => running.cdp.call('Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false }),
+    });
+    assert.equal(await fsp.readFile(path.join(isolation.env.CODEX_HOME, 'config.toml'), 'utf8'), existingDefaultConfig, '识别已有默认配置时不得自动改写文件');
+    assert.equal((await fsp.readdir(isolation.env.CODEX_HOME)).filter(file => file.endsWith('.bak')).length, 2, '只读检测不得创建备份');
+    process.stdout.write('包内 Codex 默认配置识别通过：省略数据目录仍显示已配置，无需重新接入。\n');
+    await fsp.writeFile(path.join(isolation.env.CODEX_HOME, 'config.toml'), '# 旧接入配置\n[mcp_servers.agent-ops]\ncommand = "old-workbench"\nenabled = false\ndisabled_tools = ["blocked-fixture-tool"]\n');
+    await require('./settings-ui.cjs')({
+      evaluate: code => running.cdp.evaluate(code), install: true, initialCodexStatus: '配置需要更新',
+      paint: () => running.cdp.call('Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false }),
+    });
+    const reconnectedEntry = require('smol-toml').parse(await fsp.readFile(path.join(isolation.env.CODEX_HOME, 'config.toml'), 'utf8')).mcp_servers['agent-ops'];
+    assert.equal(reconnectedEntry.command, executable);
+    assert.equal(reconnectedEntry.enabled, true);
+    assert.deepEqual(reconnectedEntry.disabled_tools, ['blocked-fixture-tool']);
     const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
     const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
-    const codexTransport = new StdioClientTransport({ ...codexEntry, env: { ...process.env, ...codexEntry.env }, stderr: 'pipe' });
+    const codexTransport = new StdioClientTransport({ ...reconnectedEntry, env: { ...process.env, ...reconnectedEntry.env }, stderr: 'pipe' });
     const codexClient = new Client({ name: 'codex-integration-smoke', version: '1.0.0' });
     try {
       await codexClient.connect(codexTransport);

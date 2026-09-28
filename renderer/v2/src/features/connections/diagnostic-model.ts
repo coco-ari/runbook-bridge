@@ -25,7 +25,7 @@ const STAGES: Readonly<Record<string, readonly [string, string]>> = {
   transaction: ["事务状态", "回到对应 SQL 标签提交或回滚；结果待核实时先查询确认，再关闭标签后继续其他操作。"],
   transfer: ["文件传输", "检查连接、目标路径和文件权限；传输中断后先核对目标文件，再选择恢复或重新传输。"],
   conflict: ["核对当前版本", "数据或配置已发生变化。重新读取并核对差异，再决定是否提交。"],
-  cloud: ["云配置", "到配置 → 云配置检查所选仓库、解锁状态和检测结果；此问题不代表服务器连接失败。"],
+  cloud: ["云同步", "到配置 → 云同步检查所选仓库、解锁状态和检测结果；此问题不代表服务器连接失败。"],
   unknown: ["阶段尚未确定", "展开原始提示并核对当前目标。已提交的修改应先核实结果，再决定下一步。"],
 }
 
@@ -53,7 +53,7 @@ export function diagnosticFor(error: Pick<PublicError, "code" | "details">, doma
   const details = error.details && typeof error.details === "object" ? error.details as Record<string, unknown> : {}
   if (code === "MYSQL_SQL_WRITE_UNSAFE" && typeof details.reason === "string" && Object.hasOwn(SQL_REASONS, details.reason)) {
     const [stage, outcome, guidance] = SQL_REASONS[details.reason]!
-    return { code, stage: domain === "cloud" ? `云配置 · ${stage}` : stage, outcome, guidance, neutral: false }
+    return { code, stage: domain === "cloud" ? `云同步 · ${stage}` : stage, outcome, guidance, neutral: false }
   }
   let key = domain === "cloud" ? "cloud" : "unknown"
   if (code === "MYSQL_SQL_WRITE_UNSAFE") key = "sql_preflight"
@@ -77,7 +77,7 @@ export function diagnosticFor(error: Pick<PublicError, "code" | "details">, doma
   if (domain === "cloud" && code.startsWith("CLOUD_")) key = "cloud"
   const [stage, guidance] = STAGES[key]!
   return {
-    code, stage: domain === "cloud" && key !== "cloud" ? `云配置 · ${stage}` : stage,
+    code, stage: domain === "cloud" && key !== "cloud" ? `云同步 · ${stage}` : stage,
     outcome: cancelled ? "已取消" : uncertain ? "结果待核实" : timeout ? "等待超时" : "未完成",
     neutral: cancelled,
     guidance: cancelled ? "本次操作已取消。若此前已提交修改，请核实执行结果。"

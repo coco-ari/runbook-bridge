@@ -35,7 +35,7 @@ interface CloudController {
 const CloudContext = createContext<CloudController | null>(null)
 export function useCloudConfig() {
   const value = useContext(CloudContext)
-  if (!value) throw new Error("云配置上下文不可用")
+  if (!value) throw new Error("云同步上下文不可用")
   return value
 }
 
@@ -70,7 +70,7 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
         refreshAgain.current = false
         const revision = ++sequence.current
         try { const next = await call({ action: "status" }); if (active.current && sequence.current === revision && !refreshAgain.current) { setData(next); setError("") } }
-        catch (cause) { if (active.current && sequence.current === revision) setError(cause instanceof Error ? cause.message : "无法读取云配置") }
+        catch (cause) { if (active.current && sequence.current === revision) setError(cause instanceof Error ? cause.message : "无法读取云同步") }
         finally { if (active.current) setLoading(false) }
       } while (active.current && refreshAgain.current)
     })()
@@ -130,7 +130,7 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
       await refresh()
       return result
     } catch (cause) {
-      if (active.current) { const message = cause instanceof Error ? cause.message : "云配置操作失败"; setError(message); setOperationError({ code: cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string" ? cause.code : "CLOUD_OPERATION_FAILED", message }); toast.error(message) }
+      if (active.current) { const message = cause instanceof Error ? cause.message : "云同步操作失败"; setError(message); setOperationError({ code: cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string" ? cause.code : "CLOUD_OPERATION_FAILED", message }); toast.error(message) }
       return null
     } finally { busyRef.current = false; if (active.current) setWorking(false) }
   }, [call, check, refresh])
@@ -163,7 +163,7 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
       <DialogContent>
         <DialogHeader><DialogTitle>选择上传仓库</DialogTitle><DialogDescription>用此项目的本地配置更新所选云仓库。</DialogDescription></DialogHeader>
         <div className="grid max-h-[50vh] gap-2 overflow-y-auto">{(data.repositories ?? []).filter(repo => repo.unlocked).map(repo => <Button key={repo.repositoryId} variant="outline" onClick={() => { const id = uploadId; setUploadId(null); if (id) upload(id, repo.repositoryId) }}>{repo.name}</Button>)}</div>
-        {!(data.repositories ?? []).some(repo => repo.unlocked) ? <p className="text-xs text-muted-foreground">请先在配置 → 云配置中关联或解锁仓库。</p> : null}
+        {!(data.repositories ?? []).some(repo => repo.unlocked) ? <p className="text-xs text-muted-foreground">请先在配置 → 云同步中关联或解锁仓库。</p> : null}
       </DialogContent>
     </Dialog>
   </CloudContext.Provider>

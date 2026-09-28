@@ -229,10 +229,12 @@ function registerForbiddenMutation(channel) {
   });
 }
 
+let codexFixtureStatus = 'available';
+
 function registerMockApi() {
   registerRead('v2:codex-integration', ({ action }) => {
     assert.equal(action, 'status', '基础 UI 测试只能检测模拟 Codex 配置');
-    return { status: 'available', message: '可一键接入 Codex。', configPath: 'C:/fixture/.codex/config.toml', configSnippet: '[mcp_servers.agent-ops]\ncommand = "fixture"\n', approvalId: 'fixture-approval' };
+    return { status: codexFixtureStatus, message: ['conflict', 'error'].includes(codexFixtureStatus) ? '模拟配置需要核对，请查看高级设置。' : '可一键接入 Codex。', configPath: 'C:/fixture/.codex/config.toml', configSnippet: '[mcp_servers.agent-ops]\ncommand = "fixture"\n', approvalId: ['conflict', 'error'].includes(codexFixtureStatus) ? null : 'fixture-approval' };
   });
   registerRead('v2:cloud-config',({action}) => {
     assert.ok(['status','check'].includes(action),'后台云检测只允许只读请求');
@@ -3675,6 +3677,35 @@ async function run() {
     assert.equal(initial.selected,'project-operations');
     assert.equal(initial.confirmationAboveProjects,true);
     assert.equal(initial.addProjectBelowProjects,true);
+    if (app.commandLine.hasSwitch('settings-regression-only')) {
+      const states = { configured: '已配置', available: '尚未配置', outdated: '配置需要更新', conflict: '需要手动处理', error: '暂时无法检测' };
+      if (screenshotRoot) fs.mkdirSync(screenshotRoot, { recursive: true });
+      for (const theme of ['light', 'dark']) {
+        await setTheme(win, theme);
+        for (const [width, height] of [[1280, 820], [430, 820]]) {
+          win.setContentSize(width, height);
+          await captureRenderedFrame(win);
+          for (const [status, label] of Object.entries(states)) {
+            codexFixtureStatus = status;
+            await require('./settings-ui.cjs')({
+              evaluate: code => win.webContents.executeJavaScript(code, true),
+              initialCodexStatus: label,
+              paint: () => captureRenderedFrame(win),
+              capture: screenshotRoot ? async name => {
+                if (name === 'settings-agent') fs.writeFileSync(path.join(screenshotRoot, 'codex-' + status + '-' + theme + '-' + width + '.png'), (await captureRenderedFrame(win)).toPNG());
+              } : null,
+            });
+          }
+        }
+      }
+      await collectWindowErrorDiagnostics(win);
+      assert.deepEqual(mutationCalls, []);
+      assert.deepEqual(externalRequests, []);
+      assert.deepEqual(rendererErrors, []);
+      assert.deepEqual(rendererWindowErrors, []);
+      process.stdout.write('Agent 接入页面通过：五种状态、浅深主题、宽窄窗口、成功信息层级及高级设置。\n');
+      return;
+    }
     if (app.commandLine.hasSwitch('delete-actions-menu-only')) {
       await openDeleteProjectAlert(win);
       await assertEscapeFocusRestore(win,{
