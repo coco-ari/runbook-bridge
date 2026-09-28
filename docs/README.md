@@ -3,7 +3,7 @@
 ## 开始使用
 
 - [首次使用：安装、连接和 MCP 配置](getting-started.md)
-- [测试版说明：升级、备份、限制与反馈](beta-guide.md)
+- [升级说明、备份、限制与反馈](beta-guide.md)
 - [工作区与 Agent 使用指南](workspace-guide.md)
 - [macOS 源码构建与 MCP](macos-getting-started.md)
 - [版本记录](../CHANGELOG.md) · [安全说明](../SECURITY.md)

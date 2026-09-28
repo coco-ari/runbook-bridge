@@ -527,15 +527,13 @@ function SidebarMenuButton({
     }
   }
 
+  const tooltipHidden = tooltip.hidden ?? (state !== "collapsed" || isMobile)
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>{button}</TooltipTrigger>
-      <TooltipContent
-        side="right"
-        align="center"
-        hidden={state !== "collapsed" || isMobile}
-        {...tooltip}
-      />
+      {/* 隐藏时卸载提示内容，避免定位观察器反复测量零尺寸；保留按钮以维持原生拖拽。 */}
+      {!tooltipHidden ? <TooltipContent side="right" align="center" {...tooltip} /> : null}
     </Tooltip>
   )
 }

@@ -9,7 +9,8 @@ import { registerServerWorkspaceIpc } from '../src/server-workspace-ipc.mjs';
 import { downloadDestination } from '../src/server-download-transfer.mjs';
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-download-'));
+  // 下载目标使用规范路径，夹具也先展开 Windows 短路径和 macOS 临时目录别名。
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-download-')));
   const scope = {projectId:'fixture',environmentId:'test',pluginInstanceId:'server'};
   const plugin = {...scope,revision:1,pluginType:'server',configState:'ready'};
   const state = {connected:true,generation:1};

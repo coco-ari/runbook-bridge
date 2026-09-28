@@ -1,6 +1,6 @@
 {
   "name": "runbook-bridge",
-  "version": "2.0.0-beta.2",
+  "version": "2.0.0",
   "private": true,
   "packageManager": "pnpm@11.21.0",
   "author": "AI Ops Tool contributors",

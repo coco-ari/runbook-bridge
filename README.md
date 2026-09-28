@@ -4,9 +4,9 @@
 
 面向独立开发者、后端开发者和小团队的本地桌面工作台。按项目和环境组织资源，通过 MCP 为 Codex 等 Agent 提供排查工具，并保留人工终端、数据库和缓存工作区。
 
-当前代码包版本：`2.0.0-beta.2` · Windows x64 / macOS arm64、x64 · [MIT 开源](LICENSE)
+当前代码包版本：`2.0.0` · Windows x64 稳定版 · macOS arm64 / x64 源码构建 · [MIT 开源](LICENSE)
 
-[下载最新测试版](https://github.com/coco-ari/runbook-bridge/releases/tag/v2.0.0-beta.2) · [首次使用](docs/getting-started.md) · [测试版限制](docs/beta-guide.md) · [反馈问题](https://github.com/coco-ari/runbook-bridge/issues/new/choose)
+[下载最新稳定版](https://github.com/coco-ari/runbook-bridge/releases/tag/v2.0.0) · [首次使用](docs/getting-started.md) · [已知限制](docs/beta-guide.md) · [反馈问题](https://github.com/coco-ari/runbook-bridge/issues/new/choose)
 
 ## 它能帮你做什么
 
@@ -41,14 +41,14 @@ MySQL 草稿使用不同颜色和文字标记，新增、复制、修改、删�
 
 | 渠道 | 版本 | 说明 |
 | --- | --- | --- |
-| 最新测试版 | [2.0.0-beta.2](https://github.com/coco-ari/runbook-bridge/releases/tag/v2.0.0-beta.2) | 体验当前服务器、MySQL、Redis 工作区；建议先在测试环境使用 |
-| 原稳定版 | [1.0.46](https://github.com/coco-ari/runbook-bridge/releases/latest) | 保留原有稳定版入口，不包含本页全部新工作区能力 |
+| 最新稳定版 | [2.0.0](https://github.com/coco-ari/runbook-bridge/releases/tag/v2.0.0) | 当前服务器、MySQL、Redis 工作区及 Agent 接入 |
+| 历史稳定版 | [1.0.46](https://github.com/coco-ari/runbook-bridge/releases/tag/v1.0.46) | 仅供旧版本查阅，不包含本页全部新工作区能力 |
 
-[直接下载 Windows x64 安装包](https://github.com/coco-ari/runbook-bridge/releases/download/v2.0.0-beta.2/RunbookBridge-Setup-2.0.0-beta.2.exe) · [SHA-256 校验文件](https://github.com/coco-ari/runbook-bridge/releases/download/v2.0.0-beta.2/RunbookBridge-Setup-2.0.0-beta.2.exe.sha256) · [本版更新说明](docs/releases/v2.0.0-beta.2.md)
+[直接下载 Windows x64 安装包](https://github.com/coco-ari/runbook-bridge/releases/download/v2.0.0/RunbookBridge-Setup-2.0.0.exe) · [SHA-256 校验文件](https://github.com/coco-ari/runbook-bridge/releases/download/v2.0.0/RunbookBridge-Setup-2.0.0.exe.sha256) · [本版更新说明](docs/releases/v2.0.0.md)
 
 安装包尚未进行 Windows 发布者数字签名，系统可能提示未知发布者。请从本仓库 Release 下载并核对校验值，遵守所在组织的软件安装要求。Source code 压缩包不是安装包。
 
-测试版与稳定版共用安装位置和本地数据。升级前退出应用并备份 `%LOCALAPPDATA%\AIOpsTool`；不要同时运行两个版本。跨大版本降级兼容性尚未保证。[备份、升级和已知限制](docs/beta-guide.md)
+2.0 稳定版、此前测试版与 1.x 版本共用安装位置和本地数据。升级前退出应用并备份 `%LOCALAPPDATA%\AIOpsTool`；不要同时运行两个版本。跨大版本降级兼容性尚未保证。[备份、升级和已知限制](docs/beta-guide.md)
 
 macOS 已有源码构建支持，尚未提供完成签名与公证的正式下载包。[macOS 构建说明](docs/macos-getting-started.md)
 
@@ -63,7 +63,7 @@ macOS 已有源码构建支持，尚未提供完成签名与公证的正式下�
 
 ## 文档与贡献
 
-- 用户：[首次使用](docs/getting-started.md) · [工作区指南](docs/workspace-guide.md) · [测试版说明](docs/beta-guide.md)
+- 用户：[首次使用](docs/getting-started.md) · [工作区指南](docs/workspace-guide.md) · [升级与已知限制](docs/beta-guide.md)
 - 开发者：[贡献指南](CONTRIBUTING.md) · [架构说明](docs/architecture.md) · [验证指南](docs/full-function-verification.md)
 - 项目：[文档导航](docs/README.md) · [版本记录](CHANGELOG.md) · [报告问题](https://github.com/coco-ari/runbook-bridge/issues/new/choose)
 

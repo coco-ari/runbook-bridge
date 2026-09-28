@@ -70,9 +70,10 @@ test('发布工作流等待目标平台验证完成，保留签名、Latest 和�
   assert.ok(assets.includes("name + '.sha256'"));
 });
 
-test('公开测试版只分发 Windows，稳定版仍验证三平台并拒绝无效标签', () => {
+test('公开测试版与 2.0.0 稳定版仅分发 Windows，其他稳定版保留三平台验证', () => {
   assert.deepEqual(releasePlatforms('v2.0.0-beta.2').include.map(item => [item.platform, item.arch]), [['win32', 'x64']]);
-  assert.deepEqual(releasePlatforms('v2.0.0').include.map(item => [item.platform, item.arch]), [
+  assert.deepEqual(releasePlatforms('v2.0.0').include.map(item => [item.platform, item.arch]), [['win32', 'x64']]);
+  assert.deepEqual(releasePlatforms('v2.0.1').include.map(item => [item.platform, item.arch]), [
     ['win32', 'x64'], ['darwin', 'arm64'], ['darwin', 'x64'],
   ]);
   for (const tag of [undefined, '', 'main', 'v2.0', 'v2.0.0/other']) assert.throws(() => releasePlatforms(tag));

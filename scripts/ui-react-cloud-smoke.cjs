@@ -400,9 +400,12 @@ async function run() {
   const secondId = service.state.activeRepositoryId;
   await clickTestId('settings-back');
   await wait('!document.querySelector("[data-testid=settings-page]")');
+  // 配置页返回会在两帧后恢复焦点，完成后再聚焦工作台菜单。
+  await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   await js('document.querySelector("button[data-project-id=cloud-demo]").click()');
   await wait('Boolean(document.querySelector("[aria-label=上传到其他仓库]"))');
   await js('document.querySelector("[aria-label=上传到其他仓库]").focus()');
+  await wait('document.activeElement === document.querySelector("[aria-label=上传到其他仓库]")');
   await pressKey('Down');
   await wait('Boolean(document.querySelector("[role=menuitem]"))');
   await js('[...document.querySelectorAll("[role=menuitem]")].find(item=>item.textContent.includes("个人仓库")).click()');

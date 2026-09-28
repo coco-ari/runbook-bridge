@@ -1,19 +1,19 @@
 # 首次使用
 
-[返回首页](../README.md) · [测试版说明](beta-guide.md)
+[返回首页](../README.md) · [升级与已知限制](beta-guide.md)
 
 ## 1. 安装与准备
 
-从 [2.0.0-beta.2 Release](https://github.com/coco-ari/runbook-bridge/releases/tag/v2.0.0-beta.2) 下载 Windows x64 的 `.exe` 安装包及同名 `.sha256` 文件。无需安装 Node.js 即可运行桌面应用；下方 MCP 命令需要已安装 Codex CLI。
+从 [2.0.0 Release](https://github.com/coco-ari/runbook-bridge/releases/tag/v2.0.0) 下载 Windows x64 的 `.exe` 安装包及同名 `.sha256` 文件。无需安装 Node.js 即可运行桌面应用；推荐通过配置页一键接入 Agent，仅手动 CLI 注册命令需要 Codex CLI。
 
 在安装包所在目录用 PowerShell 核对校验值：
 
 ```powershell
-Get-FileHash -Algorithm SHA256 -LiteralPath .\RunbookBridge-Setup-2.0.0-beta.2.exe
-Get-Content -LiteralPath .\RunbookBridge-Setup-2.0.0-beta.2.exe.sha256
+Get-FileHash -Algorithm SHA256 -LiteralPath .\RunbookBridge-Setup-2.0.0.exe
+Get-Content -LiteralPath .\RunbookBridge-Setup-2.0.0.exe.sha256
 ```
 
-两处 SHA-256 应一致。本测试版未进行发布者数字签名。升级前退出应用并备份 `%LOCALAPPDATA%\AIOpsTool`，详见[升级说明](beta-guide.md#升级与备份)。
+两处 SHA-256 应一致。当前 Windows 安装包未进行发布者数字签名。升级前退出应用并备份 `%LOCALAPPDATA%\AIOpsTool`，详见[升级说明](beta-guide.md#升级与备份)。
 
 先准备一个有权访问的测试环境，优先使用专用低权限账号。普通桌面工作区可以独立使用；只有需要 Agent 排障时才配置 MCP。
 
