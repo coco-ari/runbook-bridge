@@ -34,7 +34,13 @@ export class ServerUploadResumes {
 
   interrupt(job) {
     if (!['queued', 'running', 'verifying', 'pausing'].includes(job.status)) return;
-    if (job.direction === 'download') { this.files.stopJob(job, 'error', '下载已中断，请重新下载。'); return; }
+    if (job.direction === 'download') {
+      const message = job.status === 'queued'
+        ? '服务器连接已断开，排队下载已停止；连接恢复后可点击“重新下载”。'
+        : '服务器连接已断开，下载已中断；连接恢复后可点击“重新下载”，从头传输。';
+      this.files.stopJob(job, 'error', message, 'TRANSFER_INTERRUPTED');
+      return;
+    }
     if (!job.plugin.target?.hostKeyFingerprint || (job.resumeAttempts ?? 0) >= MAX_RESUMES) {
       this.files.stopJob(job, 'error', '上传已中断，请重新选择文件上传。');
       return;

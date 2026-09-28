@@ -14,5 +14,17 @@ module.exports = async ({evaluate,click,until,snapshot,downloadReveals,downloadR
   assert.equal(await evaluate("document.querySelector('.server-upload-row').textContent.includes('模拟下载失败')"),false,'清除旧失败信息');
   await click('[aria-label="打开 release.tar 的本地位置"]'); assert.equal(downloadReveals.length,1);
   await snapshot('ssh-download-recovery.png');
+  const queued={...failed,jobId:'queued-download',name:'queued.bin',path:'/srv/queued.bin',status:'queued',canRemove:false,message:undefined};
+  setJobs([queued]);
+  await until("document.querySelector('.server-upload-row')?.textContent.includes('排队中')",'等待名额显示排队中');
+  assert.equal(await evaluate("document.querySelector('.server-upload-row [data-testid=upload-speed]')!==null"),false,'排队不显示传输速度');
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"重新下载 queued.bin\"]')!==null"),false,'排队不误报失败');
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"移除记录 queued.bin\"]')!==null"),false,'排队不能清除记录');
+  await click('[aria-label="取消下载 queued.bin"]');
+  await until("document.querySelector('.server-upload-row')?.textContent.includes('已取消')",'排队可立即取消');
+  const interrupted={...queued,status:'error',canRemove:true,message:'服务器连接已断开，排队下载已停止；连接恢复后可点击“重新下载”。'};
+  setJobs([interrupted]);
+  await until("document.querySelector('.server-upload-row')?.textContent.includes('服务器连接已断开')",'断线明确显示中断原因');
+  await until(has('[aria-label="重新下载 queued.bin"]'),'断线后保留原任务重试入口');
   setJobs([]);
 };

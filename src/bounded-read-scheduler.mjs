@@ -11,11 +11,12 @@ export class BoundedReadScheduler {
     this.queue = [];
   }
 
-  run(key, reservationBytes, operation, { signal, cancelCode = 'READ_CANCELLED' } = {}) {
+  run(key, reservationBytes, operation, { signal, cancelCode = 'READ_CANCELLED', queueTimeoutMs = this.queueTimeoutMs } = {}) {
     if (typeof operation !== 'function') throw new AppError('INVALID_ARGUMENT', '只读操作无效。');
     if (!Number.isSafeInteger(reservationBytes) || reservationBytes < 1 || reservationBytes > this.maxReservedBytes) {
       throw new AppError('RESULT_LIMIT_EXCEEDED', '读取请求超过本地资源预算。');
     }
+    if (!Number.isSafeInteger(queueTimeoutMs) || queueTimeoutMs < 0) throw new AppError('INVALID_ARGUMENT', '排队时限无效。');
     const cancelled = () => new AppError(cancelCode, '读取已取消。');
     if (signal?.aborted) return Promise.reject(cancelled());
     if (this.queue.length >= this.maxQueued) {
@@ -34,13 +35,14 @@ export class BoundedReadScheduler {
         this.queue.splice(index, 1); task.cleanup(); reject(cancelled());
         this.drain();
       };
-      task.timer = setTimeout(() => {
+      // 桌面传输可在有界队列中持续等待；普通查询仍使用原有排队时限。
+      if (queueTimeoutMs > 0) task.timer = setTimeout(() => {
         const index = this.queue.indexOf(task);
         if (index < 0) return;
         this.queue.splice(index, 1);
         task.cleanup();
         reject(new AppError(this.busyCode, '等待读取超过排队时限，请合并查询条件后重试。', { phase:'queue', retryAfterMs:1000 }));
-      }, this.queueTimeoutMs);
+      }, queueTimeoutMs);
       this.queue.push(task);
       signal?.addEventListener('abort', task.abort, { once:true });
       if (signal?.aborted) task.abort(); else this.drain();

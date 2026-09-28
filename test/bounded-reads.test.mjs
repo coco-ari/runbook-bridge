@@ -126,3 +126,21 @@ test('排队超时后移除取消监听器，迟到取消不重复结束任务',
     controller.abort(); assert.equal(scheduler.queue.length, 0);
   } finally { release(); await active; }
 });
+
+test('允许桌面等待的请求仍受容量和取消约束，同队列普通查询继续超时', async () => {
+  const scheduler=new BoundedReadScheduler({maxConcurrent:1,maxQueued:2,queueTimeoutMs:15});
+  let release;const held=new Promise(resolve=>{release=resolve;});
+  const active=scheduler.run('server',1,()=>held);
+  const controller=new AbortController();
+  const desktop=scheduler.run('server',1,()=>assert.fail('已取消下载不得启动'),{signal:controller.signal,queueTimeoutMs:0});
+  const cancelled=assert.rejects(desktop,{code:'READ_CANCELLED'});
+  try {
+    const ordinary=scheduler.run('server',1,()=>assert.fail('超时查询不得启动'));
+    assert.throws(()=>scheduler.run('server',1,()=>{}),{code:'READ_BUSY'});
+    await assert.rejects(ordinary,error=>error.code==='READ_BUSY'&&error.details.phase==='queue');
+    assert.equal(scheduler.queue.length,1);
+    controller.abort();await cancelled;
+    assert.equal(scheduler.queue.length,0);
+    assert.equal(getEventListeners(controller.signal,'abort').length,0);
+  } finally {controller.abort();release();await active;await cancelled;}
+});

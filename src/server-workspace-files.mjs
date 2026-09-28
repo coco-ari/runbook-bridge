@@ -341,6 +341,7 @@ export class ServerWorkspaceFiles {
       ...job.scope, actor:'user', operationId:job.auditOperationId, pluginNameSnapshot:job.plugin?.displayName,
       ...(result !== 'started' ? {durationMs:Math.max(0,this.now() - job.auditStartedAt)} : {}),
       pluginType: 'server', type: job.direction === 'download' ? 'desktop-download' : 'desktop-upload', source: 'desktop-human', result, operation: { remotePath: job.path, bytes: job.bytes },
+      ...(job.direction === 'download' && result !== 'started' ? this.downloads.auditDetails(job) : {}),
     });
   }
 
@@ -348,8 +349,10 @@ export class ServerWorkspaceFiles {
     if (this.disposed) return;
     for (const job of this.jobs.values()) {
       if (this.running >= 2) break;
-      if (job.status !== 'queued') continue;
-      job.status = 'running';
+      if (job.status !== 'queued' || job.inFlight) continue;
+      // 同服务器下载在任务层串行等待，空闲名额仍可用于其他服务器或上传。
+      if (job.direction === 'download' && [...this.jobs.values()].some(active => active.direction === 'download' && active.inFlight && sameScope(active.scope, job.scope))) continue;
+      job.status = job.direction === 'download' ? 'queued' : 'running';
       job.inFlight = true;
       this.running += 1;
       void this.runJob(job).finally(() => { this.running -= 1; this.pruneJobs(job.ownerId); this.drain(); });
@@ -426,12 +429,14 @@ export class ServerWorkspaceFiles {
     return {active, resumable};
   }
 
-  stopJob(job, status, message) {
+  stopJob(job, status, message, errorCode = status === 'cancelled' ? 'TRANSFER_CANCELLED' : 'WORKSPACE_CHANGED') {
     if (!ACTIVE.has(job.status) && !['interrupted', 'paused'].includes(job.status)) return;
     const idle = !job.inFlight;
+    const error = new AppError(errorCode, message);
+    if (job.direction === 'download') this.downloads.recordFailure(job, error);
     job.status = status;
     job.message = message;
-    job.controller.abort(new AppError(status === 'cancelled' ? 'TRANSFER_CANCELLED' : 'WORKSPACE_CHANGED', message));
+    job.controller.abort(error);
     if (!job.inFlight) this.uploadResumes.forget(job);
     if (idle) {
       delete job.args;

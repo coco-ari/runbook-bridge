@@ -5,8 +5,33 @@ import { AppError, toPublicError } from './errors.mjs';
 import { DESKTOP_DOWNLOAD_LIMIT, downloadDestination, assertDestination } from './server-download-transfer.mjs';
 import { ServerUploadProgress } from './server-upload-progress.mjs';
 
+const DOWNLOAD_ERROR_CODES = new Set([
+  'TRANSFER_CANCELLED', 'TRANSFER_INTERRUPTED', 'TRANSFER_TIMEOUT', 'TRANSFER_FAILED', 'TRANSFER_INTEGRITY_FAILED',
+  'SFTP_OPERATION_TIMEOUT', 'SFTP_UNAVAILABLE', 'NOT_CONNECTED', 'PLUGIN_RECONNECTING', 'WORKSPACE_CHANGED',
+  'WORKSPACE_UNAVAILABLE', 'PLUGIN_CONFIG_INCOMPLETE', 'SOURCE_CHANGED', 'SOURCE_NOT_ALLOWED', 'FILE_TOO_LARGE',
+  'SOURCE_NOT_FOUND', 'SOURCE_ACCESS_DENIED', 'DOWNLOAD_BUSY', 'DOWNLOAD_DISK_FULL', 'DOWNLOAD_ACCESS_DENIED', 'DOWNLOAD_FILE_BUSY', 'DOWNLOAD_SAVE_UNSUPPORTED',
+  'DOWNLOAD_TARGET_CHANGED', 'DOWNLOAD_SAVE_FAILED',
+]);
+const DOWNLOAD_PHASES = new Set(['queue', 'preparing', 'transferring', 'verifying', 'committing']);
+
 export class ServerWorkspaceDownloads {
   constructor(files) { this.files = files; }
+
+  recordFailure(job, error) {
+    if (job.errorCode) return;
+    // 仅保留应用已知错误码和本地阶段，不记录远端错误正文或任意 details。
+    job.errorCode = error instanceof AppError && DOWNLOAD_ERROR_CODES.has(error.code) ? error.code : 'DOWNLOAD_FAILED';
+    job.failurePhase = DOWNLOAD_PHASES.has(job.transferPhase) ? job.transferPhase : 'queue';
+  }
+
+  auditDetails(job) {
+    const queuedAt = job.queuedAt ?? this.files.now();
+    return {
+      ...(job.errorCode ? {errorCode:job.errorCode, failurePhase:job.failurePhase} : {}),
+      transferredBytes:Math.max(0, Math.min(job.bytes, job.transferred)),
+      queuedMs:Math.max(0, (job.transferStartedAt ?? this.files.now()) - queuedAt),
+    };
+  }
 
   ownedJob(ownerId, payload) {
     this.files.ownerEpoch(ownerId);
@@ -69,6 +94,7 @@ export class ServerWorkspaceDownloads {
     // 重试保留任务 ID，重新创建控制器与进度，覆盖授权仍绑定原本地文件状态。
     const job = {...source, ...binding, direction:'download', destination, retryDestination:destination, localPath:destination.path,
       jobId:retryJob?.jobId ?? crypto.randomUUID(), bytes:prepared.expected.size, transferred:0, status:'queued',
+      queuedAt:this.files.now(), transferPhase:'queue',
       controller:new AbortController(), progress:new ServerUploadProgress(this.files.now)};
     this.files.jobs.set(job.jobId, job);
     this.files.pruneJobs(ownerId);
@@ -86,10 +112,21 @@ export class ServerWorkspaceDownloads {
       signal.throwIfAborted();
       await this.files.serverRuntime.downloadWorkspaceFile(binding.plugin, job.path, job.destination, job.expected, {
         signal,
-        beforeCommit:async () => { await this.files.requirePlugin(job.ownerId, job.scope, job); signal.throwIfAborted(); },
+        onStart:async () => {
+          await this.files.requirePlugin(job.ownerId, job.scope, job);
+          signal.throwIfAborted();
+          job.transferStartedAt = this.files.now();
+          job.transferPhase = 'preparing';
+          job.status = 'running';
+        },
+        beforeCommit:async () => {
+          job.transferPhase = 'committing';
+          await this.files.requirePlugin(job.ownerId, job.scope, job); signal.throwIfAborted();
+        },
         onProgress:({transferredBytes, phase}) => {
           if (signal.aborted) return;
           job.transferred = transferredBytes;
+          job.transferPhase = phase === 'verifying' ? 'verifying' : 'transferring';
           job.progress.update(transferredBytes, phase);
           job.status = phase === 'verifying' ? 'verifying' : 'running';
         },
@@ -97,12 +134,17 @@ export class ServerWorkspaceDownloads {
       job.status = 'completed';
       job.transferred = job.bytes;
       delete job.message;
+      delete job.errorCode;
+      delete job.failurePhase;
       try { await this.files.audit(job, 'success'); } catch { job.message = '下载完成，但记录审计失败。'; }
     } catch (error) {
       if (!['cancelled','error'].includes(job.status)) {
         job.status = signal.aborted ? 'cancelled' : 'error';
-        job.message = signal.aborted ? '下载已取消。' : toPublicError(error).message;
+        job.message = signal.aborted ? '下载已取消。'
+          : error?.code === 'TRANSFER_INTERRUPTED' ? '下载通道已中断；请检查连接，恢复后可点击“重新下载”，从头传输。'
+          : toPublicError(error).message;
       }
+      this.recordFailure(job, signal.aborted ? signal.reason : error);
       await this.files.audit(job, job.status).catch(() => undefined);
     } finally {
       job.inFlight = false;

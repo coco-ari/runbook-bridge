@@ -315,14 +315,23 @@ export class ServerPluginRuntime extends EventEmitter {
     return this.boundedRead(plugin, () => this.broker.readRemoteBuffer(this.key(plugin), remotePath, start, maxBytes, options));
   }
 
-  downloadWorkspaceFile(plugin, remotePath, destination, expected, options) {
+  async downloadWorkspaceFile(plugin, remotePath, destination, expected, options = {}) {
     const resource = this.key(plugin);
     const session = this.broker.requireSession(resource);
-    return this.downloadScheduler.run(resource, 1, () => {
-      options.signal?.throwIfAborted();
-      if (this.broker.requireSession(resource) !== session) throw new AppError('PLUGIN_RECONNECTING', '等待下载期间连接已更新，请重新下载。');
-      return downloadWorkspaceFile(this.broker, resource, remotePath, destination, expected, options);
-    });
+    try {
+      return await this.downloadScheduler.run(resource, 1, async () => {
+        options.signal?.throwIfAborted();
+        if (this.broker.requireSession(resource) !== session) throw new AppError('PLUGIN_RECONNECTING', '等待下载期间连接已更新，请重新下载。');
+        await options.onStart?.();
+        options.signal?.throwIfAborted();
+        return downloadWorkspaceFile(this.broker, resource, remotePath, destination, expected, options);
+      }, {signal:options.signal, cancelCode:'TRANSFER_CANCELLED', queueTimeoutMs:0});
+    } catch (error) {
+      if (error instanceof AppError && error.code === 'READ_BUSY' && error.details?.phase === 'queue') {
+        throw new AppError('DOWNLOAD_BUSY', '等待下载的任务较多，请等待现有下载完成后再添加任务。');
+      }
+      throw error;
+    }
   }
 
   downloadRemoteFile(plugin, remotePath, localPath, maxBytes) {

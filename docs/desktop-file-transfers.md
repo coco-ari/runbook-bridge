@@ -27,7 +27,7 @@ macOS 测试包可运行 `node scripts/packaged-ui-smoke.cjs "dist/mac-arm64/Age
 - 应用及所属窗口保持运行时，暂停后 30 分钟内点击「继续上传」即可恢复，不再弹出确认窗口；后台仍重新核对源文件和已传前缀。断线中断后的恢复保留原有确认流程；手动暂停不消耗最多 3 次的断线恢复额度。返回详情保留任务，退出应用后不恢复。
 - 已完成、已取消、失败且后台已退出的任务可「移除记录」或「清除已结束」。只删除界面/内存记录，保留本地文件、服务器文件和审计。暂停与中断任务不能被批量清掉。
 - 目录树普通文件行在鼠标悬停或键盘聚焦时显示下载按钮。点击后用系统「另存为」选择本地位置，任务区显示保存路径、大小、进度和速度，可取消。默认打开最近一次确认选择的下载目录，重启应用后仍保留；目录不存在或不可访问时回退到系统下载目录，取消选择不更新记忆。目录偏好仅存于本机数据根的 `desktop-download-preferences.json`，不进入项目配置或云同步。
-- 首版下载限制单文件 500 MiB，上传和下载共用最多两个活动任务的队列；不支持文件夹打包、符号链接下载、下载暂停及断线续传。文件位于符号链接目录下时，请使用实际路径。
+- 首版下载限制单文件 500 MiB，上传和下载共用最多两个活动任务的队列；同服务器的桌面下载顺序执行，其他服务器或上传可使用空闲名额。等待下载名额时显示“排队中”，不套用普通查询的 10 秒排队超时；排队可立即取消，取消、断线、窗口关闭或配置变化后不会因名额释放而重新启动。不支持文件夹打包、符号链接下载、下载暂停及断线续传。文件位于符号链接目录下时，请使用实际路径。
 - 下载过程中源文件变化、连接中断、取消或本地保存目标变化时停止，保留原本地文件。下载先写同目录临时文件，检查远端类型/路径/大小/时间及本地大小后提交；不计算远端整文件 SHA-256。
 - 新建目标使用独占硬链接发布，支持普通 NTFS 本地磁盘；不支持硬链接的文件系统会明确失败，不回退到可能覆盖新文件的写入。已有目标按另存为授权与状态检查后替换。最终状态检查不能阻止其他程序在检查之后并发修改文件。
 - 取消已暂停/中断的上传、记录过期或退出应用会释放恢复信息，服务器可能留下当前任务的 `.part-*`；不扫描或删除历史临时文件。取消有检查点的任务会明确提示可能保留临时文件；已取消或失败的上传提供「查看目录」，刷新并定位原目标目录，用户核对后通过单项删除确认清理。
@@ -52,7 +52,7 @@ macOS 测试包可运行 `node scripts/packaged-ui-smoke.cjs "dist/mac-arm64/Age
 
 ## 实现与权限
 
-复用现有 `ssh2` 与内部 SFTP 通道，不增加生产依赖。下载每批最多 512 KiB，最多 16 个 32 KiB 读取调用；使用固定远端句柄和有界读取，避免整文件载入内存。无进展及总时间限制复用现有传输策略。
+复用现有 `ssh2` 与内部 SFTP 通道，不增加生产依赖。下载每批最多 512 KiB，最多 16 个 32 KiB 读取调用；使用固定远端句柄和有界读取，避免整文件载入内存。实际传输开始后的无进展及总时间限制复用现有传输策略；等待桌面下载名额不计入这些时限。桌面任务总量、共享下载队列容量和同服务器下载并发限制保持，普通查询及 Agent 下载的默认排队时限不变。
 
 上传在同一 SSH 连接上共享最多 32 个在途写入调用，初始从一个调用开始，按实际回执扩张或缩小，避免两个任务分别积压整批数据。正常扩窗保留已经发出的有效确认；缩窗或空闲重启后，旧代次确认不推动新窗口扩张。每批仍读取最多 1 MiB，并在整批确认后发布哈希检查点及响应暂停；取消和失败后的迟到回执不恢复已结束任务。保活、无进展期限、续传核验和最终提交检查保持。该策略在本地受限带宽对照中避免了发送积压导致的断连，但有启动成本；性能测量与限制见 [服务器响应审计](server-responsiveness-audit.md)。
 
@@ -78,7 +78,7 @@ macOS 测试包可运行 `node scripts/packaged-ui-smoke.cjs "dist/mac-arm64/Age
 | `serverWorkspaceCancelFileAction` | 作用域、operationId | 撤销待确认文件操作 |
 | `serverWorkspaceReviseUpload` | 作用域、reviewId、fileNames、可选 decisions | 修订当前批次；decisions 仅接受已选文件的 name 与 action（skip/overwrite/keep-both） |
 
-现有 `serverWorkspaceUploads` 返回统一传输列表，增加方向、本地下载路径和可操作能力；状态增加 `pausing`、`paused`。继续上传复用原有一次性确认流程；手动暂停后的继续由界面自动完成该步骤，仍仅使用原任务的文件参数和覆盖范围。Renderer 不能指定下载本地路径、文件句柄、哈希或续传偏移；原生对话框前后、任务启动和提交均校验窗口、作用域、配置修订及连接代次。下载重试只复用主进程保存的原目标及其目录/文件身份快照，启动和提交时仍检查；新出现、修改、删除或替换目标均须重新确认保存位置。同一任务的并发重试只接受一次，每次执行单独记录审计。下载审计不记录本地路径或内容。
+现有 `serverWorkspaceUploads` 返回统一传输列表，增加方向、本地下载路径和可操作能力；状态增加 `pausing`、`paused`。继续上传复用原有一次性确认流程；手动暂停后的继续由界面自动完成该步骤，仍仅使用原任务的文件参数和覆盖范围。Renderer 不能指定下载本地路径、文件句柄、哈希或续传偏移；原生对话框前后、任务启动和提交均校验窗口、作用域、配置修订及连接代次。下载重试只复用主进程保存的原目标及其目录/文件身份快照，启动和提交时仍检查；新出现、修改、删除或替换目标均须重新确认保存位置。同一任务的并发重试只接受一次，每次执行单独记录审计。下载结束审计增加已知错误码、失败阶段（排队、准备、传输、校验或提交）、已传字节数和等待名额的耗时；不记录原始错误正文、任意错误详情、本地路径或内容。连接断开会明确提示排队或传输已停止，恢复连接后可对原任务从头重试。
 
 新增文件来源入口由 preload 的 `webUtils.getPathForFile` 解析真实磁盘 `File`，不向 Renderer 暴露可接收任意本地路径的 API。内存文件和伪造对象在桥接层拒绝；主进程再次检查路径、数量、普通文件类型、大小、窗口身份和连接绑定，再进入原有 `beginUploadReview`。目录目标及文件状态仍通过一次性确认绑定；此次变更扩展桌面文件接收边界，不扩展 MCP 权限。
 
@@ -95,7 +95,7 @@ SFTP 的按路径删除没有“比较文件身份后原子删除”的通用接
 ## 验证
 
 ```powershell
-node --test test/desktop-download-picker.test.mjs test/server-workspace-download-management.test.mjs test/desktop-file-clipboard.test.mjs test/server-workspace-actions.test.mjs test/server-upload-conflicts.test.mjs test/server-upload-import.test.mjs test/server-upload-reviews.test.mjs test/server-download-transfer.test.mjs test/server-upload-resume-runtime.test.mjs test/server-workspace-files.test.mjs test/renderer-bridge-contract.test.mjs
+node --test test/server-download-queue.test.mjs test/bounded-reads.test.mjs test/desktop-download-picker.test.mjs test/server-workspace-download-management.test.mjs test/desktop-file-clipboard.test.mjs test/server-workspace-actions.test.mjs test/server-upload-conflicts.test.mjs test/server-upload-import.test.mjs test/server-upload-reviews.test.mjs test/server-download-transfer.test.mjs test/server-upload-resume-runtime.test.mjs test/server-workspace-files.test.mjs test/renderer-bridge-contract.test.mjs
 corepack pnpm run check
 corepack pnpm test
 corepack pnpm run test:ui:server-workspace
