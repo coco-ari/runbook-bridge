@@ -47,6 +47,8 @@ function matches(operation, filters) {
   const time = Date.parse(operation.updatedAt);
   if (filters.from && (!Number.isFinite(time) || time < Date.parse(filters.from))) return false;
   if (filters.to && (!Number.isFinite(time) || time > Date.parse(filters.to))) return false;
+  // 确认结果跳转使用精确标识过滤，仍受项目、环境和插件范围约束。
+  if (filters.query.startsWith("confirmation:")) return operation._confirmationId === filters.query.slice("confirmation:".length);
   if (filters.query) {
     const text = [operation.title,operation.target,operation.pluginNameSnapshot,operation.errorCode,operation.errorSummary,
       AUDIT_RESULTS[operation.result],...operation.participants.map(actor => AUDIT_ACTORS[actor]),
@@ -88,7 +90,7 @@ function aggregate(group, active, sessionId) {
     const duration = Date.parse(operation.updatedAt) - Date.parse(operation.time);
     if (Number.isFinite(duration) && duration >= 0) operation.durationMs = duration;
   }
-  return {...operation,_offset:latest.offset};
+  return {...operation,_confirmationId:identifier(entry.confirmationId),_offset:latest.offset};
 }
 
 const operationUpdated = ({entry}) => Number.isFinite(Date.parse(entry.time)) ? entry.time : null;
@@ -200,7 +202,7 @@ export class AuditHistory {
     const after = await fs.stat(file).catch(() => null);
     if (!after || `${after.dev}:${after.ino}:${after.birthtimeMs}` !== identity || after.size < snapshot.end) throw stale();
     return {
-      entries:output.map(({_offset,...operation}) => operation),
+      entries:output.map(({_offset,_confirmationId,...operation}) => operation),
       nextCursor:before > 0 ? this.encode({...snapshot,before}) : null,
       scanning:before > 0 && output.length < limit,
     };

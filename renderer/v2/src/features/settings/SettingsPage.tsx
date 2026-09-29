@@ -38,8 +38,8 @@ export function SettingsPage({ api, onBack, onChanged }: {
   useEffect(() => { headingRef.current?.focus({ preventScroll: true }) }, [section])
 
   return <div className="absolute inset-0 z-50 flex min-h-0 min-w-0 flex-col bg-background sm:flex-row" data-testid="settings-page">
-    <aside className="flex shrink-0 flex-col border-b bg-sidebar p-3 sm:w-52 sm:border-r sm:border-b-0" aria-label="配置导航">
-      <div className="hidden h-12 items-center gap-2 px-2 text-sm font-semibold sm:flex"><GearSix size={20} />配置</div>
+    <aside className="flex shrink-0 flex-col border-b bg-sidebar p-3 sm:w-52 sm:border-r sm:border-b-0" aria-label="应用设置导航">
+      <div className="hidden h-12 items-center gap-2 px-2 text-sm font-semibold sm:flex"><GearSix size={20} />应用设置</div>
       <Button className="justify-start sm:my-4" variant="ghost" size="sm" disabled={busy} data-testid="settings-back" onClick={onBack}><ArrowLeft />返回工作台</Button>
       <p className="mt-2 mb-2 hidden px-2 text-xs text-muted-foreground sm:block">应用配置</p>
       <nav className="grid grid-cols-2 gap-1 sm:flex sm:flex-col">

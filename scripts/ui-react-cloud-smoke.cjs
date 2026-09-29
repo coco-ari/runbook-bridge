@@ -48,8 +48,8 @@ async function waitForOverlay() {
 async function assertLayout() {
   const layout = await window.webContents.executeJavaScript('(() => { const panel=document.querySelector("[data-testid=cloud-config-panel]"), page=document.querySelector("[data-testid=settings-main]"); return {overflow:panel.scrollWidth>panel.clientWidth || page.scrollWidth>page.clientWidth || document.documentElement.scrollWidth>innerWidth,inside:panel.getBoundingClientRect().left>=0 && panel.getBoundingClientRect().right<=innerWidth}; })()');
   assert.deepEqual(layout,{overflow:false,inside:true},'云配置及长项目名不得产生水平溢出');
-  const cardRows = await window.webContents.executeJavaScript('([...document.querySelectorAll("[data-testid=cloud-project-card]")].every(card => { const status=card.querySelector("[data-slot=badge]").getBoundingClientRect(), update=card.querySelector("[data-testid=cloud-project-update]").getBoundingClientRect(), upload=card.querySelector("[data-testid=cloud-project-upload]").getBoundingClientRect(); return Math.abs((status.top+status.bottom-update.top-update.bottom)/2)<2 && Math.abs(update.top-upload.top)<2 && status.right<=update.left && upload.right<=card.getBoundingClientRect().right; }))');
-  assert.equal(cardRows,true,'卡片的同步状态、更新、上传保持同排且不互相遮挡');
+  const cardRows = await window.webContents.executeJavaScript('([...document.querySelectorAll("[data-testid=cloud-project-card]")].every(card => { const status=card.querySelector("[data-slot=badge]").getBoundingClientRect(), update=card.querySelector("[data-testid=cloud-project-update]").getBoundingClientRect(), upload=card.querySelector("[data-testid=cloud-project-upload]").getBoundingClientRect(); return (status.right<=update.left || status.bottom<=update.top) && Math.abs(update.top-upload.top)<2 && update.right<=upload.left && update.left>=card.getBoundingClientRect().left && upload.right<=card.getBoundingClientRect().right; }))');
+  assert.equal(cardRows,true,'卡片状态可按空间换行，两个方向明确的同步按钮保持同排且不遮挡');
 }
 async function capture(suffix='') {
   const destination = process.env.RUNBOOK_BRIDGE_CLOUD_SCREENSHOT || (process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR ? path.join(process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR, 'cloud-config.png') : null);
@@ -113,6 +113,9 @@ async function run() {
   await vault.save(plugin,{password:'synthetic-ui-only-secret'});
   const service = new CloudConfigService({workspace:new CloudConfigWorkspace(store,vault,encryption),mutationCoordinator:new WorkspaceMutationCoordinator(),client:new CloudConfigClient(),connectionManager:{disconnect:async () => {},forgetProject:async () => {}},contextManager:{invalidateProject(){}},confirmationManager:{invalidateProject(){}}});
   await service.init();
+  const visibilityCalls=[];
+  const originalVisibility=service.visibility.bind(service);
+  service.visibility=async (owner,input)=>{visibilityCalls.push({projectIds:[...input.projectIds],visible:input.visible});return originalVisibility(owner,input);};
   let checkFailure = false, checks = 0;
   const originalRemote = service.remote.bind(service);
   service.remote = async (...args) => { if (checkFailure) throw new Error('synthetic network failure'); return originalRemote(...args); };
@@ -308,7 +311,14 @@ async function run() {
   await wait('!document.querySelector("button[data-project-id=cloud-demo]")');
   assert.equal(await js('document.querySelector("#project-list").textContent.includes("已同步")'),false,'左侧不显示同步状态文字');
   assert.equal((await store.listProjects()).length,projectCount,'隐藏不删除配置');
-  await openSettings(); await clickText('全部显示'); await idle();
+  await openSettings(); await clickTestId('cloud-show-filtered'); await idle();
+  await fill('cloud-project-search','上传后的 Alpha');
+  await wait('document.querySelectorAll("[data-testid=cloud-project-card]").length === 1');
+  await clickTestId('cloud-hide-filtered'); await idle();
+  assert.deepEqual(visibilityCalls.at(-1),{projectIds:[cloudProjectId],visible:false},'批量隐藏仅影响筛选结果');
+  await clickTestId('cloud-show-filtered'); await idle();
+  assert.deepEqual(visibilityCalls.at(-1),{projectIds:[cloudProjectId],visible:true},'批量显示仅影响筛选结果');
+  await fill('cloud-project-search','');
   await clickTestId('settings-back'); await wait('!document.querySelector("[data-testid=settings-page]")');
   await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   await js('document.querySelector("button[data-project-id=cloud-demo]").focus()');
@@ -454,7 +464,17 @@ async function run() {
   assert.equal((await store.listProjects()).some(p => p.projectId === 'cloud-secondary'),false);
   console.log('UI: local-only delete and combined delete partial failure/retry verified');
   await openSettings();
-  for(let index=0;index<2;index++) { await clickTestId('cloud-view-repository'); await clickText('解除绑定'); await idle(); }
+  for(let index=0;index<2;index++) {
+    await clickTestId('cloud-view-repository');
+    const count=service.state.repositories.length;
+    await clickText('解除绑定');
+    await wait('Boolean(document.querySelector("[data-testid=cloud-confirm-unbind]"))');
+    assert.equal(service.state.repositories.length,count,'打开解绑确认不会解除关联');
+    await js('[...document.querySelectorAll("[role=dialog] button")].find(button=>button.textContent==="保留绑定").click()');
+    await wait('!document.querySelector("[data-testid=cloud-confirm-unbind]")');
+    assert.equal(service.state.repositories.length,count,'取消解绑保留关联');
+    await clickText('解除绑定'); await clickTestId('cloud-confirm-unbind'); await idle();
+  }
   await wait('Boolean(document.getElementById("cloud-password"))');
   await clickTestId('cloud-view-backups');
   await wait('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("恢复备份")');

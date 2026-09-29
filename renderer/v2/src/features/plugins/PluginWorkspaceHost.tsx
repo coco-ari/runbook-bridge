@@ -1,3 +1,4 @@
+import { WorkspaceEntryProvider } from "./WorkspaceNavigation"
 import { EnvironmentTypeContext } from "@/features/environments/EnvironmentTypeBadge"
 import type { WorkspaceReadModel } from "@/features/workspace/workspace-read-model"
 import { useCallback } from "react"
@@ -23,10 +24,10 @@ function WorkspaceSlot({ api, entry, visible, onBack, onClose, onDirtyChange, wo
   const dirty = useCallback((value: boolean) => onDirtyChange(entry.key, value), [entry.key, onDirtyChange])
   const Component = pluginWorkspaces.get(entry.type)?.Component
   const environmentType = workspace?.projects.find(project => project.projectId === entry.scope.projectId)?.environments.find(environment => environment.environmentId === entry.scope.environmentId)?.environmentType ?? "unspecified"
-  return Component ? <EnvironmentTypeContext.Provider value={environmentType}><Component api={api} entry={entry} visible={visible} onBack={onBack} onClose={close} onDirtyChange={dirty} /></EnvironmentTypeContext.Provider> : null
+  return Component ? <EnvironmentTypeContext.Provider value={environmentType}><WorkspaceEntryProvider entry={entry}><Component api={api} entry={entry} visible={visible} onBack={onBack} onClose={close} onDirtyChange={dirty} /></WorkspaceEntryProvider></EnvironmentTypeContext.Provider> : null
 }
 
 export function PluginWorkspaceHost({ api, state, hidden, workspace, onBack, onClose, onDirtyChange }: Props) {
   return state.entries.map((entry) => <WorkspaceSlot key={entry.key} workspace={workspace} api={api} entry={entry}
-    visible={!hidden && entry.key === state.activeKey} onBack={onBack} onClose={onClose} onDirtyChange={onDirtyChange} />)
+    visible={!hidden && entry.key === state.activeKey} onBack={entry.key === state.activeKey ? onBack : () => {}} onClose={onClose} onDirtyChange={onDirtyChange} />)
 }

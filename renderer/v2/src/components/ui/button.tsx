@@ -3,6 +3,7 @@ import { Slot } from "radix-ui"
 import { cva, type VariantProps } from "class-variance-authority"
 import type * as React from "react"
 
+import { DisabledReason } from "./disabled-reason"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
@@ -55,6 +56,7 @@ function Button({
       {...props}
     />
   )
+  if (props.disabled && title) return <DisabledReason reason={title}>{button}</DisabledReason>
   return title ? <Tooltip><TooltipTrigger asChild>{button}</TooltipTrigger><TooltipContent>{title}</TooltipContent></Tooltip> : button
 }
 

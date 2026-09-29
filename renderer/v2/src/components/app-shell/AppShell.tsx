@@ -1,3 +1,5 @@
+import { WorkspaceNavigationProvider } from "@/features/plugins/WorkspaceNavigation"
+import type { PluginWorkspaceEntry } from "@/features/plugins/workspace-registry"
 import { pluginWorkspaces } from "@/features/plugins/workspace-contributions"
 import { workspaceScopeMatches } from "@/features/plugins/workspace-registry"
 import { PluginWorkspaceHost } from "@/features/plugins/PluginWorkspaceHost"
@@ -142,6 +144,8 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
   const [commandOpen, setCommandOpen] = useState(false)
   const [environmentWorkspaceTarget, setEnvironmentWorkspaceTarget] = useState<{ projectId: string; environmentId: string; pluginInstanceId: string } | null>(null)
   const workspaceSessions = usePluginWorkspaceSessions(api)
+  const [pendingWorkspaceKey, setPendingWorkspaceKey] = useState<string | null>(null)
+  const [auditTarget, setAuditTarget] = useState<(ConfirmationScope & {requestId: string}) | null>(null)
   const removePluginWorkspaces = workspaceSessions.removeScope
   const [detailTab, setDetailTab] = useState("overview")
   const [notice, setNotice] = useState("")
@@ -347,6 +351,17 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
     projectName:selectedProject?.name ?? "", environmentName:selectedEnvironment?.name ?? "", runtime:rawRuntime,
   })
   useEffect(() => { if (pluginWorkspace.visible) setCommandOpen(false) }, [pluginWorkspace.visible])
+  useEffect(() => {
+    if (!pendingWorkspaceKey) return
+    const entry = workspaceSessions.state.entries.find(item => item.key === pendingWorkspaceKey)
+    if (!entry) { setPendingWorkspaceKey(null); return }
+    if (selectedWorkspaceScope?.projectId !== entry.scope.projectId || selectedWorkspaceScope.environmentId !== entry.scope.environmentId
+      || selectedWorkspaceScope.pluginInstanceId !== entry.scope.pluginInstanceId || pluginList.loading) return
+    setPendingWorkspaceKey(null)
+    if (pluginWorkspace.retained) pluginWorkspace.openSelected()
+    // 等待目标插件的完整配置就绪，不能用旧范围或旧连接状态打开。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingWorkspaceKey, selectedWorkspaceScope?.projectId, selectedWorkspaceScope?.environmentId, selectedWorkspaceScope?.pluginInstanceId, pluginList.loading, pluginWorkspace.retained])
   const workspaceVisible = pluginWorkspace.visible
   const environmentWorkspaceActions = Object.fromEntries(navigationPlugins.flatMap(plugin => {
     const definition = pluginWorkspaces.get(plugin.pluginType)
@@ -354,11 +369,13 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
     const record = supportedPlugin(scopedPluginRecords.find(item => item.pluginInstanceId === plugin.pluginInstanceId) ?? null)
     const scope = selectedScope ? { ...selectedScope, pluginInstanceId: plugin.pluginInstanceId } : null
     const key = record ? JSON.stringify([definition.type, definition.sessionKey(record)]) : null
+    const retained = pluginWorkspace.state.entries.some(entry => entry.key === key)
+    const connected = !environmentStatus.error
+      && scopedRuntime?.plugins.find(item => item.pluginInstanceId === plugin.pluginInstanceId)?.status === "connected"
     return [[plugin.pluginInstanceId, {
       enabled: Boolean(record && scope && workspaceScopeMatches(scope, record) && definition.canOpen(record)
-        && plugin.configState === "ready" && !pluginList.loading && !pluginList.error && !environmentStatus.error
-        && scopedRuntime?.plugins.find(item => item.pluginInstanceId === plugin.pluginInstanceId)?.status === "connected"),
-      retained: pluginWorkspace.state.entries.some(entry => entry.key === key),
+        && plugin.configState === "ready" && !pluginList.loading && !pluginList.error && (retained || connected)),
+      retained,
     }]]
   }))
 
@@ -636,7 +653,10 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       workspaceSessions.open({
         key: JSON.stringify([definition.type, definition.sessionKey(record)]), type: definition.type,
         scope, plugin: record, projectName: selectedProject.name, environmentName: selectedEnvironment.name,
-        runtime: rawRuntime, connected: true, dirty: false, connectionEpoch: 0,
+        runtime: rawRuntime,
+        connected: !environmentStatus.error
+          && scopedRuntime?.plugins.find(plugin => plugin.pluginInstanceId === pluginInstanceId)?.status === "connected",
+        dirty: false, connectionEpoch: 0,
         returnFocusTestId: `environment-plugin-workspace-${pluginInstanceId}`,
       })
     })
@@ -884,8 +904,10 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
   const locateConfirmationScope = useCallback((
     scope: ConfirmationScope,
     tab: "overview" | "audit" = "overview",
+    requestId?: string,
   ) => {
     requestNavigation(() => {
+      setAuditTarget(tab === "audit" && requestId ? {...scope, requestId} : null)
       setPendingSelection({
         projectId: scope.projectId,
         environmentId: scope.environmentId,
@@ -911,6 +933,16 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
     : `拖动调整项目栏宽度，双击恢复默认宽度（224 像素，受窗口空间限制）。聚焦分隔线后，按左右方向键调整宽度，按 Enter 折叠或展开；在非输入区域也可按 ${shortcutLabel("B")}。`
 
   return (
+    <WorkspaceNavigationProvider entries={pluginWorkspace.state.entries} activeKey={pluginWorkspace.state.activeKey}
+      onSelect={(entry: PluginWorkspaceEntry) => {
+        setPendingWorkspaceKey(entry.key)
+        selectPlugin(entry.scope.projectId, entry.scope.environmentId, entry.scope.pluginInstanceId)
+      }} onConfigure={(entry: PluginWorkspaceEntry) => {
+        const environment = workspace.data?.projects.find(project => project.projectId === entry.scope.projectId)?.environments.find(item => item.environmentId === entry.scope.environmentId)
+        if (!environment) { toast.error("插件所属环境已不存在"); return }
+        workspaceSessions.back()
+        enterPluginEditor(environment, entry.plugin)
+      }}>
     <SettingsNavigationContext.Provider value={openSettings}>
     <div className="h-full max-h-full min-h-0 relative w-full min-w-0 overflow-hidden bg-background text-foreground" data-shell-ready="true" data-testid="react-app-shell">
       <a
@@ -1019,6 +1051,12 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
             workspaceRetained={pluginWorkspace.retained}
             environmentWorkspaceActions={environmentWorkspaceActions}
             onOpenEnvironmentWorkspace={openEnvironmentWorkspace}
+            onConfigureEnvironmentPlugin={id => {
+              const record = supportedPlugin(scopedPluginRecords.find(plugin => plugin.pluginInstanceId === id) ?? null)
+              if (record && selectedEnvironment) enterPluginEditor(selectedEnvironment, record)
+              else toast.error("插件配置尚未读取，请刷新后重试")
+            }}
+            auditRequestId={auditTarget?.projectId === selectedProject?.projectId && auditTarget?.environmentId === selectedEnvironment?.environmentId && auditTarget?.pluginInstanceId === selectedPlugin?.pluginInstanceId ? auditTarget?.requestId ?? null : null}
             activeTab={detailTab}
             api={api}
             collapsed={layoutState.detailCollapsed}
@@ -1169,5 +1207,6 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       <span className="sr-only">当前范围：{shellLabel}</span>
     </div>
     </SettingsNavigationContext.Provider>
+    </WorkspaceNavigationProvider>
   )
 }

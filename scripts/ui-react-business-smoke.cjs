@@ -957,7 +957,7 @@ async function assertQuickQuestionComposer(win,{projectId,environmentId}) {
     assert.equal(reused,true,'the common-question row must remain a reusable action');
     await waitFor(win,`(() => {
       const input = document.querySelector('#quick-question-input');
-      return input?.value === ${JSON.stringify(sampleQuestion)} && document.activeElement === input
+      return input?.value === ${JSON.stringify(firstQuestion + "\n\n" + sampleQuestion)} && document.activeElement === input
         && document.querySelector(${JSON.stringify(previewSelector)})?.textContent?.includes(${JSON.stringify(sampleQuestion)}) === true;
     })()`,'reusing a common question returns focus to the input and updates the preview');
     assert.equal(mutationCalls.length,mutationCount,'layout, preview, and question reuse must not invoke mutation APIs');
@@ -1587,7 +1587,8 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
   assert.equal(runbookWrites[1].payload.content,draft);
   await clickText(win,'编辑','[data-feature="runbook"]');
   await fill(win,'textarea[aria-label="当前环境运维说明"]','# 应取消的运维说明');
-  await clickText(win,'取消','[data-feature="runbook"]');
+  await clickText(win,'放弃编辑','[data-feature="runbook"]');
+  await click(win,'[data-testid=runbook-discard-confirm]','确认放弃说明草稿');
   assert.equal(state.runbooks.get(scopeKey(projectId,environmentId)),draft,'runbook cancellation must not overwrite the saved document');
 
   let copyAttempts = 0;
@@ -1682,7 +1683,19 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
   await waitFor(win,`document.querySelector('[data-confirmation-id="recover-reject"]') === null`,'rejected request removed');
   assert.equal(approvalAttempts,2);
   assert.deepEqual(pending.map(item => item.requestId),['out-of-scope']);
+  // 为确认记录导航提供同范围的合成插件，不连接远端。
+  ipcMain.removeHandler('v2:plugin-list');
+  registerRead('v2:plugin-list',requested => requested.projectId===projectId && requested.environmentId===environmentId ? [{...scope,pluginInstanceId:'mock-server',pluginType:'server',displayName:'确认记录验证服务器',revision:1,configState:'ready',target:{host:'audit.smoke.invalid',port:22,addressFamily:'ipv4Preferred'},auth:{username:'operator',type:'agent'},uplink:{type:'direct'},sources:[]}] : []);
+  win.webContents.send('v2:workspace-changed',{type:'plugin-updated',...scope,pluginInstanceId:'mock-server'});
+  await clickText(win,'查看操作记录','[data-feature="confirmations"]');
+  await waitFor(win,"Boolean(document.querySelector('[data-testid=audit-focused-operation]'))",'从确认结果定位本次操作');
+  await waitUntil(()=>readCalls.some(call=>call.channel==='v2:audit-list' && call.args[0]?.query==='confirmation:recover-reject'),'审计定位保留请求标识');
+  await clickText(win,'查看全部记录','[data-feature="audit"]');
+  await waitFor(win,"!document.querySelector('[data-testid=audit-focused-operation]')",'允许恢复全部记录');
 
+  ipcMain.removeHandler('v2:plugin-list');
+  registerRead('v2:plugin-list',() => []);
+  win.webContents.send('v2:workspace-changed',{type:'plugin-deleted',...scope,pluginInstanceId:'mock-server'});
   await activateTab(win,'overview');
   const beforeCreate = mutationCalls.length;
   await click(win,'[data-testid="add-environment-footer"]','add lifecycle environment');
@@ -2209,6 +2222,9 @@ async function run() {
       `created quick question missing: ${JSON.stringify(createdQuestionUi)}`,
     );
 
+    await fill(win,'#quick-question-input','保留我正在输入的问题');
+    await win.webContents.executeJavaScript("[...document.querySelectorAll('[data-testid=common-question-library] button')].find(button => button.textContent.includes('如何检查预发布服务?') && !button.hasAttribute('aria-label')).click()",true);
+    await waitFor(win,"document.querySelector('#quick-question-input')?.value === '保留我正在输入的问题\\n\\n如何检查预发布服务?'",'常见问题追加而非覆盖输入');
     await click(
       win,
       'button[aria-label="编辑常见问题：如何检查预发布服务?"]',

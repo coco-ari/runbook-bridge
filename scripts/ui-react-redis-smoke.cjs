@@ -136,9 +136,13 @@ function mocks(redisKeySearch) {
     return ok({planId:plan.planId,status:plan.status,result:{key:session.key,mode:session.mode}});
   });
   register('v2:connection-intent', async (event, payload) => {
-    assert.ok(['disconnect','connect'].includes(payload.intent));
+    assert.ok(['disconnect','connect','cancel'].includes(payload.intent));
     assert.equal(payload.projectId,projectId); assert.equal(payload.environmentId,environmentId); assert.equal(payload.pluginInstanceId,scope.pluginInstanceId);
     if (payload.intent === 'connect') { assert.equal(payload.source,'renderer-plugin'); assert.ok(payload.planId); }
+    state.cancelledPlans ??= new Set();
+    if (payload.intent === 'cancel') state.cancelledPlans.add(payload.planId);
+    if (payload.intent === 'connect' && state.reconnectHold) await new Promise(resolve => { state.reconnectHold.release = resolve; });
+    if (payload.intent === 'connect' && state.cancelledPlans.has(payload.planId)) return fail('CONNECTION_CANCELLED','模拟连接已取消');
     if (state.failReconnect && payload.intent === 'connect') return fail('CONNECTION_FAILED','模拟重连失败');
     plugin.assessment = assessment(payload.intent === 'connect' ? 'connected' : 'disconnected'); sequence++;
     event.sender.send('v2:environment-status-changed', runtime());

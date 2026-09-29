@@ -2,6 +2,8 @@ import { usePluginConnection } from "@/features/connections/use-plugin-connectio
 import { RuntimeHostKeyDialog } from "@/features/connections/RuntimeHostKeyDialog"
 import { DiagnosticDetails } from "@/features/connections/DiagnosticDetails"
 import type { PublicError } from "@/bridge/ai-ops-v2"
+import { useWorkspaceNavigationActions } from "@/features/plugins/WorkspaceNavigation"
+import { resolveConnectionCancelTarget } from "@/features/connections/connection-model"
 import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
 import { StatusIndicator } from "@/components/app-shell/StatusIndicator"
 import { WorkspaceBackButton, WorkspaceHeaderActions, WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
@@ -71,6 +73,7 @@ function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, envi
   const reconnectFocus = useRef<HTMLElement | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
   const [closing, setClosing] = useState(false)
+  useWorkspaceNavigationActions({navigate: (action, reason) => { if (reason === "configure") editing.protect(action); else action() }, close: () => setClosing(true)})
   async function disconnect() {
     if (disconnecting) return
     setDisconnecting(true)
@@ -85,14 +88,18 @@ function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, envi
       <WorkspaceBackButton label={backLabel} testId="mysql-workspace-back" onClick={() => editing.protect(onBack, undefined, { preserveTransactions: true })} />
       <span className="mysql-workspace-header-divider" />
       <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold" title={plugin.displayName}>{plugin.displayName}</h1><EnvironmentTypeBadge /><StatusIndicator appearance="badge" status={connected ? "connected" : "disconnected"} /><Badge variant="outline"><ShieldCheck className="size-3" />Agent 只读</Badge></div><p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName + " · " + database}>{projectName} / {environmentName} · {database}</p></div>
-      <WorkspaceHeaderActions connected={connected} busy={disconnecting} onDisconnect={() => editing.protect(() => void disconnect())} onClose={() => setClosing(true)} prefix="mysql-workspace" closeLabel="关闭数据库工作区" closeTitle="关闭工作区并清除查询" />
+      <WorkspaceHeaderActions connected={connected} busy={disconnecting || connection.state.phase === "disconnecting"}
+        reconnecting={Boolean(connection.state.operation) || connection.state.phase === "connecting"}
+        canCancel={resolveConnectionCancelTarget(connection.state.operation, connection.state.runtime, scope, scope.pluginInstanceId) !== null}
+        cancelling={connection.state.operation?.intent === "cancel"} onCancel={() => { void connection.cancel() }}
+        awaitingConfirmation={Boolean(connection.state.challenge)}
+        onReconnect={() => {
+          reconnectFocus.current = document.activeElement as HTMLElement | null
+          void connection.connect()
+        }} onDisconnect={() => editing.protect(() => void disconnect())} onClose={() => setClosing(true)} prefix="mysql-workspace" closeLabel="关闭数据库工作区" closeTitle="关闭工作区并清除查询" />
     </header>
     {!connected ? <div className="mysql-edit-message" role="status" data-testid="mysql-workspace-disconnected">
       <span>连接已断开，SQL 和表标签已保留，可继续编辑 SQL。</span>
-      <Button data-testid="mysql-workspace-reconnect" size="sm" variant="outline" disabled={Boolean(connection.state.operation || connection.state.challenge)} onClick={() => {
-        reconnectFocus.current = document.activeElement as HTMLElement | null
-        void connection.connect()
-      }}>{connection.state.operation ? "连接中…" : "重新连接"}</Button>
       {connection.state.error ? <DiagnosticDetails error={connection.state.error} domain="operation" /> : null}
     </div> : null}
     <RuntimeHostKeyDialog state={connection.state} onReject={connection.rejectHostKey} onTrust={connection.trustHostKey} returnFocusRef={reconnectFocus} testId="mysql-workspace-host-key-confirmation" />

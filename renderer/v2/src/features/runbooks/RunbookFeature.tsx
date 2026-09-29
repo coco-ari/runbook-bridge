@@ -12,6 +12,7 @@ import {
   type IpcResult,
   type PublicError,
 } from "@/bridge/ai-ops-v2"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -84,6 +85,8 @@ export function RunbookFeature({
   const [draft, setDraft] = useState("")
   const [revision, setRevision] = useState(environmentRevision)
   const [editing, setEditing] = useState(false)
+  const [discarding, setDiscarding] = useState(false)
+  const discardDraft = () => { draftGenerationRef.current += 1; setDraft(content); setEditing(false); setConflict(null); setDiscarding(false) }
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -243,16 +246,11 @@ export function RunbookFeature({
             <>
               <Button
                 disabled={saving}
-                onClick={() => {
-                  draftGenerationRef.current += 1
-                  setDraft(content)
-                  setEditing(false)
-                  setConflict(null)
-                }}
+                onClick={() => { if (dirty) setDiscarding(true); else discardDraft() }}
                 size="xs"
                 variant="outline"
               >
-                取消
+                放弃编辑
               </Button>
               <Button
                 disabled={saving || loading || !dirty || tooLarge}
@@ -337,6 +335,7 @@ export function RunbookFeature({
         )}
         {tooLarge && <span className="sr-only" id="runbook-size-error">内容超过 64 KiB。</span>}
       </div>
+    <Dialog open={discarding} onOpenChange={setDiscarding}><DialogContent><DialogHeader><DialogTitle>放弃本次说明编辑？</DialogTitle><DialogDescription>本次尚未保存的修改将被清除，已保存的运维说明保持不变。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => setDiscarding(false)}>继续编辑</Button><Button variant="destructive" data-testid="runbook-discard-confirm" onClick={discardDraft}>放弃本次编辑</Button></DialogFooter></DialogContent></Dialog>
     </section>
   )
 }

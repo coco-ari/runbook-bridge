@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 
 module.exports = async function ({win,fill,click,waitFor,textContains,testId,state,databaseCalls,PRIMARY_ID,plugins,runtime,assessment,queryResult}) {
   const evaluate = source => win.webContents.executeJavaScript(source,true);
+  const connectionButton = options => require('./workspace-connection-ui.cjs')(evaluate, 'mysql-workspace', options);
   const fixture = state.sqlFixture;
   const active = plugins.find(plugin => plugin.pluginInstanceId === PRIMARY_ID);
   const phase = value => {
@@ -26,6 +27,7 @@ module.exports = async function ({win,fill,click,waitFor,textContains,testId,sta
     await textContains(win,'mysql-table-list','orders');
   };
   await textContains(win,'mysql-table-list','orders');
+  await connectionButton({connected:true});
   await fill(win,testId('mysql-sql-editor'),'SELECT * FROM orders');
   await click(win,testId('mysql-query-run'));
   await textContains(win,'mysql-query-result','模拟订单');
@@ -47,14 +49,38 @@ module.exports = async function ({win,fill,click,waitFor,textContains,testId,sta
   await evaluate("document.querySelector('[data-testid=mysql-query-run]').click()");
   await new Promise(resolve => setTimeout(resolve,150));
   assert.equal(databaseCalls.length,offlineCalls,'离线编辑 SQL 不触发读取或执行');
+  await click(win,testId('mysql-workspace-back'));
+  await waitFor(win,"document.querySelector('[data-testid=plugin-workspace-open]')?.disabled === false",'离线详情允许继续已有工作区');
+  await click(win,testId('plugin-workspace-open'));
+  await waitFor(win,"document.querySelector('[data-testid=mysql-full-window-workspace]')?.getClientRects().length > 0",'离线恢复数据库工作区');
+  assert.equal(await value(),'SELECT id FROM orders WHERE id = 8','离线返回详情后草稿保留');
+  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-query-run]').disabled"),true);
+  assert.equal(databaseCalls.length,offlineCalls,'离线继续工作区不访问数据库');
   state.allowDisconnect = true;
-  state.failReconnect = true;
+  await connectionButton({connected:false});
+  state.reconnectHold = {};
   await click(win,testId('mysql-workspace-reconnect'));
-  await waitFor(win,"document.querySelector('[data-testid=mysql-workspace-reconnect]')?.disabled === false",'重连失败后允许重试');
+  await connectionButton({connected:false,pending:true});
+  const cancelledConnection = state.reconnectHold;
+  await click(win,testId('mysql-workspace-reconnect'));
+  await waitFor(win,"document.querySelector('[data-testid=mysql-workspace-reconnect]')?.textContent === '重新连接'",'取消连接后恢复入口');
+  cancelledConnection.release(); state.reconnectHold = null;
+  await new Promise(resolve=>setTimeout(resolve,100));
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=mysql-workspace-disconnected]'))"),true,'取消后迟到连接响应不复活工作区连接');
+  state.failReconnect = true;
+  state.reconnectHold = {};
+  await click(win,testId('mysql-workspace-reconnect'));
+  await connectionButton({connected:false,pending:true});
+  assert.equal(typeof state.reconnectHold.release,'function');
+  state.reconnectHold.release();
+  state.reconnectHold = null;
+  await waitFor(win,"document.querySelector('[data-testid=mysql-workspace-reconnect]')?.textContent === '重新连接'",'重连失败后允许重试');
   assert.equal(await value(),'SELECT id FROM orders WHERE id = 8','重连失败仍保留草稿');
+  await connectionButton({connected:false});
   state.failReconnect = false;
   await click(win,testId('mysql-workspace-reconnect'));
   await waitFor(win,"document.querySelector('[data-testid=mysql-workspace-disconnected]') === null",'再次重连成功');
+  await connectionButton({connected:true});
   state.allowDisconnect = false;
   assert.equal(await value(),'SELECT id FROM orders WHERE id = 8');
   assert.equal(fixture.executions.length,executions,'重连不自动执行 SQL');

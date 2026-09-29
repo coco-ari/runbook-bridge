@@ -39,6 +39,7 @@ export interface EnvironmentConnectionPanelProps {
   readonly plugins: readonly WorkspacePluginReadModel[] | null
   readonly onOpenWorkspace: (pluginInstanceId: string) => void
   readonly workspaceActions: Readonly<Record<string, EnvironmentWorkspaceAction>>
+  readonly onConfigurePlugin: (pluginInstanceId: string) => void
   readonly onOpenPlugin: (pluginInstanceId: string) => void
   readonly runtime?: EnvironmentRuntime | null
   readonly onRuntime?: (runtime: EnvironmentRuntime) => void
@@ -60,6 +61,7 @@ export function EnvironmentConnectionPanel({
   environment,
   plugins,
   onOpenPlugin,
+  onConfigurePlugin,
   onOpenWorkspace,
   workspaceActions,
   runtime = null,
@@ -216,7 +218,7 @@ export function EnvironmentConnectionPanel({
         ) : (
           <CardContent>
             <div aria-label="环境插件状态" className="divide-y divide-border" role="list">
-              {detail.rows.map(row => <EnvironmentPluginRow key={row.plugin.pluginInstanceId} api={api} environment={environment} row={row} runtime={connection.state.runtime} onRuntime={onRuntime} onOpenPlugin={onOpenPlugin} onOpenWorkspace={onOpenWorkspace} workspace={workspaceActions[row.plugin.pluginInstanceId]} />)}
+              {detail.rows.map(row => <EnvironmentPluginRow key={row.plugin.pluginInstanceId} api={api} environment={environment} row={row} runtime={connection.state.runtime} onRuntime={onRuntime} onOpenPlugin={onOpenPlugin} onConfigurePlugin={onConfigurePlugin} onOpenWorkspace={onOpenWorkspace} workspace={workspaceActions[row.plugin.pluginInstanceId]} />)}
             </div>
           </CardContent>
         )}

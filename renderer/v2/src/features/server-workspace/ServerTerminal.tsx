@@ -536,9 +536,9 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
       {status === "closed" ? <div className="flex shrink-0 flex-wrap items-center gap-3 border-t border-border px-3 py-2" data-testid="terminal-ended-actions">
         <div className="min-w-0 flex-1 text-xs text-muted-foreground">
           <p>{serverReconnect ? "正在重新连接服务器…" : closedMessage || "终端会话已结束。"}</p>
-          <p>重新连接将建立新会话，保留历史显示，不重放旧命令。</p>
+          <p>重新打开终端将建立新会话，保留历史显示，不重放旧命令。</p>
         </div>
-        <Button size="sm" variant="outline" disabled={Boolean(serverReconnect) || (!connected && connectionPending)} onClick={() => { void reconnect() }}><ArrowClockwise />{serverReconnect ? "正在连接…" : "重新连接"}</Button>
+        <Button size="sm" variant="outline" disabled={Boolean(serverReconnect) || (!connected && connectionPending)} onClick={() => { void reconnect() }}><ArrowClockwise />{serverReconnect ? "正在连接…" : connected ? "重新打开终端" : "连接并打开终端"}</Button>
         <Button size="sm" variant="ghost" onClick={onClose}><X />关闭终端</Button>
       </div> : null}
       <Dialog open={colorHelp} onOpenChange={setColorHelp}>

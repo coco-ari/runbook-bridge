@@ -1,3 +1,6 @@
+import { getAiOpsV2 } from "@/bridge/ai-ops-v2"
+import { Button } from "@/components/ui/button"
+import { useCommandPlugins } from "./use-command-plugins"
 import { shortcutLabel } from "@/lib/platform"
 import { FolderSimple, Plus, Stack, TreeStructure } from "@phosphor-icons/react"
 import { Fragment, useEffect, useRef } from "react"
@@ -47,6 +50,7 @@ export function GlobalCommand({
   pluginsByScope = new Map(),
   projects,
 }: GlobalCommandProps) {
+  const complete = useCommandPlugins(getAiOpsV2(), open, projects)
   const pendingActionRef = useRef<(() => void) | null>(null)
   const actionFrameRef = useRef(0)
   const openRef = useRef(open)
@@ -113,8 +117,10 @@ export function GlobalCommand({
     >
       <Command data-testid="global-command">
         <CommandInput autoFocus placeholder="搜索项目、环境、插件或操作" />
+        {complete.loading ? <p role="status" className="px-3 py-2 text-xs text-muted-foreground">正在读取其余插件，搜索结果会继续补充…</p> : null}
+        {complete.failed ? <div role="status" className="px-3 py-2 text-xs text-warning">部分插件未读取完整，当前搜索结果可能不全。<Button size="xs" variant="link" onClick={complete.retry}>重新读取全部插件</Button></div> : null}
         <CommandList>
-          <CommandEmpty>没有匹配的项目、环境或插件</CommandEmpty>
+          <CommandEmpty>{complete.loading ? "正在查找更多插件…" : complete.failed ? "已加载内容中没有匹配项" : "没有匹配的项目、环境或插件"}</CommandEmpty>
           <CommandGroup heading="快速操作">
             <CommandItem
               aria-keyshortcuts="Control+N Meta+N"
@@ -162,7 +168,7 @@ export function GlobalCommand({
                       {project.name}
                     </CommandShortcut>
                   </CommandItem>
-                  {(pluginsByScope.get(`${project.projectId}/${environment.environmentId}`) ?? environment.resourcePreview).map((plugin) => (
+                  {(complete.lists.get(`${project.projectId}/${environment.environmentId}`) ?? pluginsByScope.get(`${project.projectId}/${environment.environmentId}`) ?? environment.resourcePreview).map((plugin) => (
                     <CommandItem
                       disabled={project.isolated}
                       key={plugin.pluginInstanceId}

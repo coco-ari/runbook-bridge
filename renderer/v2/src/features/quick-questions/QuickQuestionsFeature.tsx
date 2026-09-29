@@ -904,7 +904,7 @@ export function QuickQuestionsFeature({
                         <Button
                           className="h-auto min-w-0 flex-1 justify-start rounded-none px-2.5 py-2 text-left font-normal hover:bg-transparent focus-visible:ring-inset"
                           onClick={() => {
-                            setQuestion(item.text)
+                            setQuestion(current => current.trim() ? current + "\n\n" + item.text : item.text)
                             const input = document.getElementById("quick-question-input")
                             if (focusWorkspaceElement(input)) input?.scrollIntoView({ block: "nearest", behavior: "auto" })
                           }}
@@ -923,7 +923,7 @@ export function QuickQuestionsFeature({
                         </Button>
                       </TooltipTrigger>
                       <TooltipContent className="whitespace-normal break-words" side="top">
-                        点击填入问题；可展开预览查看完整内容
+                        点击填入问题；已有内容时追加到末尾，可展开预览查看完整内容
                       </TooltipContent>
                     </Tooltip>
                     <ItemActions asChild>

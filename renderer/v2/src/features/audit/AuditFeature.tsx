@@ -54,6 +54,7 @@ function errorMessage(error: unknown, fallback = "读取操作记录失败，请
 }
 
 export interface AuditFeatureProps {
+  readonly requestId?: string | null
   readonly projectId: string
   readonly environmentId: string
   readonly pluginInstanceId: string | null
@@ -64,7 +65,9 @@ export interface AuditFeatureProps {
 
 const results: readonly AuditResult[] = ["success", "running", "pending", "approved", "rejected", "error", "blocked", "warning", "cancelled", "interrupted", "paused", "stopped", "expired", "invalidated", "unknown"]
 
-export function AuditFeature({ projectId, environmentId, pluginInstanceId, projectName = "当前项目", environmentName, pluginName }: AuditFeatureProps) {
+export function AuditFeature({ requestId = null, projectId, environmentId, pluginInstanceId, projectName = "当前项目", environmentName, pluginName }: AuditFeatureProps) {
+  const [focusedRequest, setFocusedRequest] = useState(requestId)
+  useEffect(() => { setFocusedRequest(requestId) }, [requestId, projectId, environmentId, pluginInstanceId])
   const [entries, setEntries] = useState<readonly AuditDisplayEntry[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [scanning, setScanning] = useState(false)
@@ -87,7 +90,8 @@ export function AuditFeature({ projectId, environmentId, pluginInstanceId, proje
   const requestCoordinatorRef = useRef(new AuditRequestCoordinator<AuditPage>())
   const scopeKey = auditScopeKey(projectId, environmentId, pluginInstanceId)
   const from = useMemo(() => range === "all" ? "" : new Date(Date.now() - Number(range) * 86400000).toISOString(), [range])
-  const requestedKey = JSON.stringify([scopeKey, deferredQuery, resultFilter, actorFilter, categoryFilter, from, includeRedisScans])
+  const effectiveQuery = focusedRequest ? "confirmation:" + focusedRequest : deferredQuery
+  const requestedKey = JSON.stringify([scopeKey, effectiveQuery, resultFilter, actorFilter, categoryFilter, from, includeRedisScans])
 
   useEffect(() => {
     const timer = window.setTimeout(() => setSearch(query), 250)
@@ -102,7 +106,7 @@ export function AuditFeature({ projectId, environmentId, pluginInstanceId, proje
     const coordinator = requestCoordinatorRef.current
     const { lease, started } = coordinator.start(requestedKey, async () => normalizeAuditPage(unwrap(await getAiOpsV2().listAudit({
       projectId, environmentId, ...(pluginInstanceId ? { pluginInstanceId } : {}),
-      view: "operations", includeRedisScans, limit: 50, query: deferredQuery, result: resultFilter, actor: actorFilter, category: categoryFilter,
+      view: "operations", includeRedisScans, limit: 50, query: effectiveQuery, result: resultFilter, actor: actorFilter, category: categoryFilter,
       ...(from ? { from } : {}), ...(cursor ? { cursor } : {}),
     }) as IpcResult<unknown>)))
     if (!started) return lease.promise
@@ -124,7 +128,7 @@ export function AuditFeature({ projectId, environmentId, pluginInstanceId, proje
     }).finally(() => {
       if (coordinator.isCurrent(lease.ticket)) setLoading(false)
     })
-  }, [requestedKey, projectId, environmentId, pluginInstanceId, deferredQuery, resultFilter, actorFilter, categoryFilter, from, includeRedisScans])
+  }, [requestedKey, projectId, environmentId, pluginInstanceId, effectiveQuery, resultFilter, actorFilter, categoryFilter, from, includeRedisScans])
 
   useEffect(() => {
     const coordinator = requestCoordinatorRef.current
@@ -191,6 +195,7 @@ export function AuditFeature({ projectId, environmentId, pluginInstanceId, proje
 
   return (
     <section aria-labelledby="audit-feature-title" className="flex min-h-0 flex-1 flex-col @container/audit" data-feature="audit" data-scope-key={scopeKey}>
+      {focusedRequest ? <div role="status" className="flex flex-wrap items-center gap-2 border-b p-3 text-xs" data-testid="audit-focused-operation">仅显示刚才确认的操作<Button size="xs" variant="outline" onClick={() => { setFocusedRequest(null); setQuery(""); setSearch("") }}>查看全部记录</Button></div> : null}
       <FeatureToolbar
         actions={<ButtonGroup aria-label="操作记录管理">
           <Button aria-label="刷新操作记录" data-testid="audit-refresh-trigger" disabled={loading || clearing} onClick={refreshAudit} size="icon-xs" variant="outline"><ArrowClockwise aria-hidden="true" className={loading ? "animate-spin motion-reduce:animate-none" : ""} /></Button>
@@ -202,7 +207,7 @@ export function AuditFeature({ projectId, environmentId, pluginInstanceId, proje
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <InputGroup className="min-w-40 flex-1">
           <InputGroupAddon><MagnifyingGlass aria-hidden="true" /></InputGroupAddon>
-          <InputGroupInput aria-label="搜索操作记录" name="audit-search" autoComplete="off" spellCheck={false} onChange={event => setQuery(event.target.value)} placeholder="搜索动作、目标或失败原因…" type="search" value={query} />
+          <InputGroupInput aria-label="搜索操作记录" name="audit-search" autoComplete="off" spellCheck={false} onChange={event => { setFocusedRequest(null); setQuery(event.target.value) }} placeholder="搜索动作、目标或失败原因…" type="search" value={query} />
         </InputGroup>
         <Select value={actorFilter} onValueChange={setActorFilter}><SelectTrigger aria-label="筛选参与方" className="w-28"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部参与方</SelectItem>{Object.entries(actorLabels).map(([key,label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select>
         <Select value={categoryFilter} onValueChange={setCategoryFilter}><SelectTrigger aria-label="筛选操作类型" className="w-28"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部类型</SelectItem>{Object.entries(categoryLabels).map(([key,label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select>
@@ -215,7 +220,7 @@ export function AuditFeature({ projectId, environmentId, pluginInstanceId, proje
       <ScrollArea ref={scrollRef} className="min-h-0 flex-1">
         {loading && entries.length === 0 ? <div className="space-y-2 p-4" aria-label="正在读取操作记录"><Skeleton className="h-16 w-full" /><Skeleton className="h-16 w-full" /><Skeleton className="h-16 w-full" /></div>
           : visibleEntries.length === 0 ? <Empty className="min-h-48"><EmptyHeader><EmptyMedia variant="icon"><ClockCounterClockwise aria-hidden="true" /></EmptyMedia><EmptyTitle>{query || resultFilter !== "all" || actorFilter !== "all" || categoryFilter !== "all" || range !== "all" ? nextCursor ? "尚未找到匹配记录" : "没有符合条件的操作记录" : "还没有操作记录"}</EmptyTitle><EmptyDescription>{nextCursor ? "可继续查找更早的记录。" : "操作会按实际发起方和执行结果显示在这里。"}</EmptyDescription></EmptyHeader></Empty>
-          : <AuditOperationList entries={visibleEntries} />}
+          : <AuditOperationList entries={visibleEntries} expandAll={Boolean(focusedRequest)} />}
         {nextCursor ? <div className="flex justify-center p-3"><Button data-testid="audit-load-more" disabled={loading || clearing} variant="outline" size="sm" onClick={() => void loadAudit(nextCursor).catch(() => undefined)}>{loading ? "读取中…" : scanning ? "继续查找更早记录" : "加载更多操作"}</Button></div> : null}
         <p className="p-3 text-center text-xs text-muted-foreground" aria-live="polite">{visibleEntries.length ? `已显示 ${visibleEntries.length} 项操作` : ""}{visibleEntries.length && !nextCursor ? " · 已到记录末尾" : ""}</p>
       </ScrollArea>

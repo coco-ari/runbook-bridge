@@ -255,3 +255,21 @@ test('数据库写入呈现修改字段与行数，未知提交状态不被误�
   assert.match(uncertain.errorSummary,/勿重复提交/u);
   assert.doesNotMatch(JSON.stringify(page),/不返回业务/u);
 });
+
+
+test('确认结果跳转精确筛选本次操作，不能匹配相似标识或越过环境插件范围', async t => {
+  const {write,list,base} = await fixture(t);
+  await write([
+    {type:'confirmation-approved',confirmationId:'approval-target',actor:'user',result:'success'},
+    {type:'plugin-operation',confirmationId:'approval-target',result:'success',auditAction:'service.restart',auditTarget:'fixture.service'},
+    {type:'plugin-operation',confirmationId:'approval-target-extra',result:'success'},
+    {type:'plugin-operation',confirmationId:'approval-target',pluginInstanceId:'other-plugin',result:'error'},
+    {type:'plugin-operation',confirmationId:'approval-target',environmentId:'other-environment',result:'error'},
+  ]);
+  const page = await list({query:'confirmation:approval-target',pluginInstanceId:base.pluginInstanceId});
+  assert.equal(page.entries.length,1);
+  assert.equal(page.entries[0].eventCount,2);
+  assert.equal(page.entries[0].result,'success');
+  assert.equal(Object.hasOwn(page.entries[0],'_confirmationId'),false);
+  assert.equal((await list({query:'confirmation:approval',pluginInstanceId:base.pluginInstanceId})).entries.length,0);
+});

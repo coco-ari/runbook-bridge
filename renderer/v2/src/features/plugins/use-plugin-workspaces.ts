@@ -75,12 +75,12 @@ export function usePluginWorkspaceSessions(api: AiOpsV2Api) {
 
   const open = useCallback((entry: PluginWorkspaceEntry) => {
     const definition = pluginWorkspaces.get(entry.type)
-    if (!definition || !definition.canOpen(entry.plugin) || !workspaceScopeMatches(entry.scope, entry.plugin)
-      || (definition.requiresConnection && !entry.connected)) return
+    if (!definition || !definition.canOpen(entry.plugin) || !workspaceScopeMatches(entry.scope, entry.plugin)) return
     const reconciled = reconcileWorkspaceSelection(current.current, entry, pluginWorkspaces)
     const retained = reconciled.entries.find((item) => item.key === entry.key)
+    if (definition.requiresConnection && !entry.connected && !retained) return
     if (!retained && reconciled.entries.filter((item) => item.type === entry.type).length >= definition.maxSessions) {
-      toast.error(`最多保留 ${definition.maxSessions} 个同类工作区，请先关闭一个工作区。`)
+      toast.error(`最多保留 ${definition.maxSessions} 个同类工作区，请在“工作区”列表中关闭一个工作区。`)
       return
     }
     const scopeKey = JSON.stringify([entry.scope.projectId, entry.scope.environmentId])

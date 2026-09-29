@@ -15,6 +15,7 @@ import {
 } from "@phosphor-icons/react"
 
 import { StatusIndicator, statusLabel } from "@/components/app-shell/StatusIndicator"
+import { WorkspaceSwitcherButton } from "@/features/plugins/WorkspaceNavigation"
 import { SettingsButton } from "@/features/settings/SettingsButton"
 import {
   Alert,
@@ -389,7 +390,7 @@ export function ProjectRail({
           <SidebarGroupLabel className="mx-4 mt-3 mb-2 h-6 px-0 text-xs leading-4 tracking-normal">
             项目
             <span aria-hidden="true" className={cn("ml-2 text-xs font-normal text-muted-foreground", (!projectDrag.enabled || collapsed) && "hidden")}>拖动排序</span>
-            {cloudRepositories.length > 0 ? <Button aria-label="检测云仓库更新" size="icon-xs" variant="ghost" className="ml-auto mr-1" disabled={cloudChecking} onClick={onCheckCloud}><ArrowClockwise className={cloudChecking ? "animate-spin" : undefined} /></Button> : null}
+            {cloudRepositories.length > 0 ? <Button aria-label="检测云仓库更新" title={cloudChecking ? "正在检测云端配置更新" : "检测云端配置更新，不会自动下载"} size="icon-xs" variant="ghost" className="ml-auto mr-1" disabled={cloudChecking} onClick={onCheckCloud}><ArrowClockwise className={cloudChecking ? "animate-spin" : undefined} /></Button> : null}
             <span className="ml-auto font-mono tabular-nums">
               {normalizedProjectQuery ? `${visibleProjects.length}/${displayedProjects.length}` : displayedProjects.length}
             </span>
@@ -603,6 +604,7 @@ export function ProjectRail({
           </nav>
         </SidebarContent>
 
+        <WorkspaceSwitcherButton className="mx-2 mb-1 justify-start" />
         <SettingsButton className="mx-2 mb-2 h-10 justify-start gap-2 rounded-lg border border-sidebar-border bg-surface-inset px-2.5 text-muted-foreground shadow-none transition-colors duration-150 hover:text-foreground" />
 
         <SidebarFooter

@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge"
 import { auditResultLabel, auditResultVariant, publicErrorLabel } from "@/lib/operation-copy"
 import { actorLabels, auditDay, auditTime, categoryLabels, durationLabel, type AuditDisplayEntry } from "./audit-display"
 
-export function AuditOperationList({ entries }: { readonly entries: readonly AuditDisplayEntry[] }) {
+export function AuditOperationList({ entries, expandAll = false }: { readonly entries: readonly AuditDisplayEntry[]; readonly expandAll?: boolean }) {
   return (
     <div aria-label="操作记录" data-audit-layout="operations" className="divide-y divide-border/70">
       {entries.map((entry, index) => {
@@ -15,7 +15,7 @@ export function AuditOperationList({ entries }: { readonly entries: readonly Aud
             {index === 0 || auditDay(entries[index - 1]?.time ?? null) !== auditDay(entry.time) ? (
               <div className="bg-surface-inset px-3 py-2 text-xs font-medium text-muted-foreground">{auditDay(entry.time)}</div>
             ) : null}
-            <details className="group px-3 py-3 [content-visibility:auto] [contain-intrinsic-size:auto_92px]" data-audit-operation={entry.auditId}>
+            <details open={expandAll || undefined} className="group px-3 py-3 [content-visibility:auto] [contain-intrinsic-size:auto_92px]" data-audit-operation={entry.auditId}>
               <summary className="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring @lg/audit:grid-cols-[5rem_minmax(0,1fr)_auto] [&::-webkit-details-marker]:hidden">
                 <time className="col-span-2 text-xs tabular-nums text-muted-foreground @lg/audit:col-span-1 @lg/audit:row-span-3" dateTime={entry.time ?? undefined}>{auditTime(entry.time)}</time>
                 <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium">

@@ -137,3 +137,48 @@ test('Redis 无草稿也保留标签，重连更新后台工作区并保留连�
     assert.deepEqual(reconnectWorkspaceScope({entries:[],activeKey:null},redis.scope),{entries:[],activeKey:null});
   }
 });
+
+
+test('已有工作区允许离线恢复且保留草稿和连接代次，未保留的工作区不能离线创建', () => {
+  for (const type of ['mysql', 'redis', 'server']) {
+    const retainedRegistry = createWorkspaceRegistry([definition(type, {retainOnDisconnect:'always'})]);
+    const original = entry(type, {dirty:true, connectionEpoch:4});
+    const disconnected = disconnectWorkspaceScope({entries:[original],activeKey:original.key}, original.scope, retainedRegistry);
+    const hidden = {...disconnected,activeKey:null};
+    const candidate = entry(type, {connected:false});
+    const reopened = openWorkspaceSession(hidden, candidate, retainedRegistry);
+    assert.equal(reopened.activeKey, original.key);
+    assert.equal(reopened.entries.length, 1);
+    assert.equal(reopened.entries[0].connected, false);
+    assert.equal(reopened.entries[0].dirty, true);
+    assert.equal(reopened.entries[0].connectionEpoch, 5);
+    const empty = {entries:[],activeKey:null};
+    assert.equal(openWorkspaceSession(empty, candidate, retainedRegistry), empty);
+    const changed = {...candidate,key:type+'-v2',plugin:{...candidate.plugin,revision:2}};
+    const reconciled = reconcileWorkspaceSelection(hidden, changed, retainedRegistry);
+    assert.equal(openWorkspaceSession(reconciled, changed, retainedRegistry).activeKey, null);
+  }
+});
+
+test('离线恢复不能利用相同键跨项目、环境、插件或配置身份复用会话', () => {
+  const retainedRegistry = createWorkspaceRegistry([definition('mysql', {sessionKey:plugin => String(plugin.revision)})]);
+  const original = entry('mysql');
+  const state = {entries:[original],activeKey:null};
+  for (const field of ['projectId','environmentId','pluginInstanceId']) {
+    const scope = {...original.scope,[field]:'other'};
+    const candidate = {...original,connected:false,scope,plugin:{...original.plugin,...scope}};
+    assert.equal(openWorkspaceSession(state, candidate, retainedRegistry), state);
+  }
+  assert.equal(openWorkspaceSession(state, {...original,connected:false,plugin:{...original.plugin,revision:2}}, retainedRegistry), state);
+});
+
+test('单个 MySQL 工作区跨选择保留，打开另一库不能覆盖旧草稿', () => {
+  const retainedRegistry=createWorkspaceRegistry([definition('mysql',{retainAcrossSelection:true,retainOnDisconnect:'always'})]);
+  const original=entry('mysql',{dirty:true});
+  const state={entries:[original],activeKey:null};
+  assert.equal(reconcileWorkspaceSelection(state,null,retainedRegistry),state);
+  assert.equal(reconcileWorkspaceSelection(state,entry('server'),retainedRegistry),state);
+  const other=entry('mysql',{key:'other',scope:{...original.scope,pluginInstanceId:'other'},plugin:{...original.plugin,pluginInstanceId:'other'}});
+  assert.equal(openWorkspaceSession(state,other,retainedRegistry),state);
+  assert.equal(openWorkspaceSession(state,original,retainedRegistry).entries[0].dirty,true);
+});

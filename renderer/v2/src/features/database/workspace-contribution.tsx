@@ -15,6 +15,6 @@ export const mysqlWorkspaceContribution: PluginWorkspaceContribution = {
   type: "mysql", Component: MysqlWorkspaceContribution,
   sessionKey: (plugin) => mysqlWorkspaceSessionKey(plugin, plugin),
   canOpen: (plugin) => Boolean(mysqlDatabaseName(plugin)),
-  retainAcrossSelection: false, retainOnDisconnect: "always", requiresConnection: true, maxSessions: 1,
+  retainAcrossSelection: true, retainOnDisconnect: "always", requiresConnection: true, maxSessions: 1,
   focusTestId: "mysql-workspace-back", returnFocusTestId: "plugin-workspace-open",
 }

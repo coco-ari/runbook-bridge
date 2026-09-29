@@ -39,6 +39,13 @@ module.exports = async ({evaluate,click,clickText,until,wait,win,setViewport,sna
   await evaluate("(() => {const input=document.querySelector('[aria-label=\"搜索已加载日志\"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'WARN'); input.dispatchEvent(new Event('input',{bubbles:true}));})()");
   await until("document.querySelector('.server-docker-logs')?.textContent.includes('WARN') && !document.querySelector('.server-docker-logs')?.textContent.includes('complete')",'搜索只影响已加载正文');
   assert.equal(count('logs'),beforeRefresh + 1,'本地搜索不重新读取服务器');
+  await click('[data-testid=docker-copy-visible]');
+  await until("document.querySelector('[data-testid=docker-copy-visible]').textContent.includes('已复制')",'筛选日志复制完成');
+  assert.equal(require('electron').clipboard.readText(),await evaluate("document.querySelector('.server-docker-logs').textContent"),'默认复制与筛选显示范围一致');
+  await click('[data-testid=docker-copy-all]');
+  await until("document.querySelector('[data-testid=docker-copy-all]').textContent.includes('已复制全部')",'全部已加载日志复制完成');
+  assert.ok(require('electron').clipboard.readText().includes('fixture request complete'),'显式复制全部才包含隐藏行');
+
   await evaluate("(() => {const input=document.querySelector('[aria-label=\\\"搜索已加载日志\\\"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,''); input.dispatchEvent(new Event('input',{bubbles:true}));})()");
   for (const theme of ['light','dark']) {
     await nativeClick('[data-testid="server-workspace"] [data-testid="settings-open"]');

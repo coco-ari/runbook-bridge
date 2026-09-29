@@ -266,12 +266,14 @@ export function PluginConnectionPanel({
             {(plugin.pluginType === "server" || plugin.pluginType === "mysql" || plugin.pluginType === "redis") && onOpenWorkspace ? (
               <Button
                 data-testid={plugin.pluginType === "server" ? "plugin-open-workspace" : "plugin-workspace-open"}
-                disabled={editingBlocked || connection.state.phase !== "connected"}
+                disabled={editingBlocked || (!workspaceRetained && connection.state.phase !== "connected")}
                 onClick={onOpenWorkspace}
                 size="sm"
-                title={plugin.pluginType === "server"
+                title={workspaceRetained && connection.state.phase !== "connected"
+                  ? "继续查看已保留的工作区；远程操作需先重新连接"
+                  : plugin.pluginType === "server"
                   ? connection.state.phase === "connected" ? "打开目录树、终端和文件上传" : "请先连接服务器"
-                  : plugin.pluginType === "redis" ? connection.state.phase === "connected" ? "搜索 Key 并只读查看内容" : "请先连接 Redis"
+                  : plugin.pluginType === "redis" ? connection.state.phase === "connected" ? "浏览 Key、编辑 String / JSON 或删除 Key；Agent 权限独立控制" : "请先连接 Redis"
                     : connection.state.phase === "connected" ? "进入数据库工作区" : "请先连接数据库"}
                 type="button"
                 variant={connection.state.phase === "connected" ? "default" : "outline"}

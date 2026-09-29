@@ -18,7 +18,7 @@ module.exports = async function ({evaluate,until,root,win}) {
     const header = document.querySelector(${JSON.stringify(root)}).querySelector('header');
     return [...header.querySelectorAll('button')].map(button => ({label:button.getAttribute('aria-label') || button.textContent.trim(),description:button.getAttribute('aria-description') || ''}));
   })()`);
-  assert.ok(header.some(button => button.label === '配置'),'工作区必须提供配置入口');
+  assert.ok(header.some(button => button.label === '应用设置'),'工作区必须提供应用设置入口');
   assert.ok(header.some(button => button.label === '断开连接' && button.description === '断开连接'));
   assert.ok(header.some(button => button.label.startsWith('关闭') && button.description.startsWith('关闭工作区')));
   for (const preference of ['light','dark','system',original]) {

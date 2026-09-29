@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 
-module.exports = async function assertEnvironmentWorkspaceUi({win,click,fill,waitFor,textContains,testId,screenshot,databaseCalls,PRIMARY_ID,OTHER_ID,OFFLINE_ID,ENVIRONMENT_ID,returnToDetails,setExactViewport}) {
+module.exports = async function assertEnvironmentWorkspaceUi({win,click,fill,waitFor,textContains,testId,screenshot,databaseCalls,PRIMARY_ID,OTHER_ID,OFFLINE_ID,ENVIRONMENT_ID,returnToDetails,setExactViewport,state,plugins,runtime,assessment}) {
   const evaluate = source => win.webContents.executeJavaScript(source,true);
   const entry = id => testId('environment-plugin-workspace-'+id);
   await returnToDetails(win);
@@ -37,11 +37,33 @@ module.exports = async function assertEnvironmentWorkspaceUi({win,click,fill,wai
   await waitFor(win,"document.querySelector('[data-testid=mysql-full-window-workspace]')?.getClientRects().length > 0",'继续原工作区');
   assert.equal(await evaluate("document.querySelector('[data-testid=mysql-sql-editor]').value"),sql,'返回环境详情保留原 SQL');
   assert.equal(databaseCalls.length,beforeResume,'继续原工作区不会重新读取表列表');
+  const primary = plugins.find(plugin => plugin.pluginInstanceId === PRIMARY_ID);
+  primary.assessment = assessment('disconnected'); state.sequence++;
+  win.webContents.send('v2:environment-status-changed',runtime());
+  await waitFor(win,"document.querySelector('[data-testid=mysql-workspace-disconnected]')",'环境入口工作区已离线');
   await returnToDetails(win);
+  await waitFor(win,`document.querySelector('${entry(PRIMARY_ID)}')?.disabled === false`,'环境详情允许离线继续已有工作区');
+  const offlineCalls=databaseCalls.length;
+  await click(win,entry(PRIMARY_ID));
+  await waitFor(win,"document.querySelector('[data-testid=mysql-full-window-workspace]')?.getClientRects().length > 0",'环境详情离线恢复工作区');
+  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-sql-editor]').value"),sql,'离线环境入口保留 SQL 草稿');
+  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-query-run]').disabled"),true,'离线进入仍禁止执行 SQL');
+  assert.equal(databaseCalls.length,offlineCalls,'离线进入不读取数据库');
+  await returnToDetails(win);
+  primary.assessment = assessment('connected'); state.sequence++;
+  win.webContents.send('v2:environment-status-changed',runtime());
+  await click(win,entry(OTHER_ID));
+  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-sql-editor]').value"),sql,'达到单工作区上限不覆盖旧草稿');
+  await evaluate("[...document.querySelectorAll('[data-testid=workspace-switcher]')].find(button=>button.getClientRects().length).click()");
+  await waitFor(win,"document.querySelector('[data-testid=workspace-manager]')",'打开工作区管理');
+  await click(win,'[data-workspace-close="'+PRIMARY_ID+'"]');
+  await waitFor(win,"document.querySelector('[data-testid=mysql-workspace-confirm-close]')",'关闭保留数据库的确认');
+  await click(win,testId('mysql-workspace-confirm-close'));
+  await waitFor(win,"!document.querySelector('[data-testid=mysql-full-window-workspace]')",'明确关闭后释放名额');
   await click(win,entry(OTHER_ID));
   await textContains(win,'mysql-table-list','reports');
   assert.equal(await evaluate("document.querySelector('[data-testid=mysql-sql-editor]').value.includes('environment_entry_draft')"),false,'环境详情的不同插件工作区不串用 SQL');
   await returnToDetails(win);
   assert.equal(await evaluate("document.querySelector('#detail-main')?.dataset.selectionKind"),'environment');
-  process.stdout.write('环境详情工作区入口通过：离线禁用、直接进入、返回焦点、SQL 保留、跨插件隔离与窄屏布局。\n');
+  process.stdout.write('环境详情工作区入口通过：未保留离线禁用、已保留离线恢复、直接进入、返回焦点、SQL 保留、跨插件隔离与窄屏布局。\n');
 };

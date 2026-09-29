@@ -1,6 +1,8 @@
 import { usePluginConnection } from "@/features/connections/use-plugin-connection"
 import { RuntimeHostKeyDialog } from "@/features/connections/RuntimeHostKeyDialog"
 import { DiagnosticDetails } from "@/features/connections/DiagnosticDetails"
+import { useWorkspaceNavigationActions } from "@/features/plugins/WorkspaceNavigation"
+import { resolveConnectionCancelTarget } from "@/features/connections/connection-model"
 import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
 import { OperationMessage, OperationSpinner, useOperationLabel } from "@/components/workspace/OperationFeedback"
 import { RedisWriteEditor } from "./RedisWriteEditor"
@@ -137,6 +139,8 @@ export function RedisWorkspace({ backLabel = "返回 Redis 详情", api, scope, 
   const [searchHistory, setSearchHistory] = useState<readonly RedisSearchEntry[]>([])
   const searchScope = JSON.stringify([scope.projectId, scope.environmentId, scope.pluginInstanceId, plugin.revision, plugin.target?.db, state.patternId])
   const [closing, setClosing] = useState(false)
+  const requestClose = () => { if (editing.deletion?.uncertain || Object.values(editing.drafts).some(draft => draft.uncertain)) editing.protect(() => setClosing(true)); else if (!editing.busy) setClosing(true) }
+  useWorkspaceNavigationActions({navigate: (action, reason) => { if (reason === "configure") editing.protect(action); else action() }, close: requestClose})
   const [disconnecting, setDisconnecting] = useState(false)
   const [sidebar, setSidebar] = useState(true)
   const sidebarRef = usePanelRef()
@@ -186,15 +190,19 @@ export function RedisWorkspace({ backLabel = "返回 Redis 详情", api, scope, 
         <div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold">{plugin.displayName}</h1><EnvironmentTypeBadge /><StatusIndicator appearance="badge" status={connected ? "connected" : "disconnected"} /></div>
         <p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName}>{projectName} / {environmentName} · DB {String(plugin.target?.db ?? 0)}</p>
       </div>
-      <WorkspaceHeaderActions connected={connected} busy={disconnecting} disabled={editing.busy} onDisconnect={() => editing.protect(() => void disconnect(), undefined, true)} onClose={() => { if (editing.deletion?.uncertain || Object.values(editing.drafts).some(draft => draft.uncertain)) editing.protect(() => setClosing(true)); else if (!editing.busy) setClosing(true) }} prefix="redis-workspace" closeLabel="关闭 Redis 工作区" closeTitle="关闭工作区并清除浏览数据" />
+      <WorkspaceHeaderActions connected={connected} busy={disconnecting || connection.state.phase === "disconnecting"}
+        reconnecting={Boolean(connection.state.operation) || connection.state.phase === "connecting"}
+        canCancel={resolveConnectionCancelTarget(connection.state.operation, connection.state.runtime, scope, scope.pluginInstanceId) !== null}
+        cancelling={connection.state.operation?.intent === "cancel"} onCancel={() => { void connection.cancel() }}
+        awaitingConfirmation={Boolean(connection.state.challenge)}
+        onReconnect={() => {
+          reconnectFocus.current = document.activeElement as HTMLElement | null
+          void connection.connect()
+        }} disabled={editing.busy} onDisconnect={() => editing.protect(() => void disconnect(), undefined, true)} onClose={requestClose} prefix="redis-workspace" closeLabel="关闭 Redis 工作区" closeTitle="关闭工作区并清除浏览数据" />
     </header>
 
     {!connected ? <div className="redis-notice flex flex-wrap items-center gap-2" role="status" data-testid="redis-workspace-disconnected">
       <span>连接已断开，Key 标签、搜索条件和草稿已保留。</span>
-      <Button size="sm" variant="outline" data-testid="redis-workspace-reconnect" disabled={Boolean(connection.state.operation || connection.state.challenge)} onClick={() => {
-        reconnectFocus.current = document.activeElement as HTMLElement | null
-        void connection.connect()
-      }}>{connection.state.operation ? "连接中…" : "重新连接"}</Button>
       {connection.state.error ? <DiagnosticDetails error={connection.state.error} domain="operation" /> : null}
     </div> : null}
     <RuntimeHostKeyDialog state={connection.state} onReject={connection.rejectHostKey} onTrust={connection.trustHostKey} returnFocusRef={reconnectFocus} testId="redis-workspace-host-key-confirmation" />

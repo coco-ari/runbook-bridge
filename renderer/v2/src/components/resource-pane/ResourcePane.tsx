@@ -355,7 +355,13 @@ function EnvironmentGroup({
               api={api}
               environment={environment}
               fallbackStatus={environment.status}
-              onConfigure={() => onAction({ type: "create-plugin", environment })}
+              configureLabel={environment.pluginCount ? "完善配置" : "新增插件"}
+              onConfigure={() => {
+                const target = plugins.find(plugin => plugin.configState !== "ready")
+                if (target) onAction({type: "edit-plugin", environment, plugin: target})
+                else if (!environment.pluginCount) onAction({type: "create-plugin", environment})
+                else { onSelectEnvironment(); onReloadScope?.() }
+              }}
               {...(onRuntime ? { onRuntime } : {})}
               rawRuntime={rawRuntime}
               ready={environment.readyPluginCount > 0}

@@ -37,6 +37,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
 }) {
   const guard = useMysqlEditingGuard()
   const boundary = useMysqlConnectionBoundary()
+  const [discarding, setDiscarding] = useState(false)
   const [edit, setEdit] = useState<MysqlEditData | null>(null)
   const editRef = useRef(edit)
   const [drafts, setDrafts] = useState<Drafts>({})
@@ -524,7 +525,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
       <EnvironmentTypeBadge /><span data-testid="mysql-edit-message" className="min-w-0 flex-1"><OperationMessage diagnostic={uncertain ? { code: "MYSQL_WRITE_OUTCOME_UNKNOWN", message: error } : stale ? { code: "MYSQL_EDIT_STALE", message: error } : !error ? feedback?.diagnostic : undefined} error={Boolean(error || feedback?.error)} message={error || feedback?.error || (feedback?.busy && feedback.message ? feedback.message + " · " : "") + waiting || notice || feedback?.message || ""} /></span>
     </span>,
     footer: <div className="mysql-inline-actions">
-      <Button size="xs" variant="ghost" disabled={Boolean(busy) || uncertain || (!pendingCount && !activeCell)} data-testid="mysql-edit-undo" aria-label="取消更改" onClick={() => { finishCell(true); updateDrafts({}); updateInserts([]); updateDeleted(new Set()); updateRowDraft(null); setSelection(new Set()); setError(""); setNotice("已取消全部未保存更改。"); }}><ArrowCounterClockwise />取消更改</Button>
+      <Button size="xs" variant="ghost" disabled={Boolean(busy) || uncertain || (!pendingCount && !activeCell)} data-testid="mysql-edit-undo" aria-label="放弃全部更改" onClick={() => { finishCell(); setDiscarding(true) }}><ArrowCounterClockwise />放弃全部更改</Button>
       <Button size="xs" className="mysql-save-operation" aria-label={uncertain ? "检查保存状态" : "保存更改"} aria-busy={busy === "commit" || busy === "prepare" || busy === "check"} data-testid="mysql-edit-save" disabled={uncertain && plan ? Boolean(busy) : locked || (!pendingCount && !activeCell)} onClick={() => uncertain && plan ? void commit(plan, true) : void save()}>{busy === "commit" || busy === "prepare" || busy === "check" ? <OperationSpinner /> : uncertain ? <ArrowClockwise /> : <FloppyDisk />}{busy === "check" ? "核对中…" : uncertain ? "检查状态" : busy === "commit" || busy === "prepare" ? "保存中…" : "保存更改"}</Button>
     </div>,
   }
@@ -532,9 +533,10 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   if (!visible && documentKey.startsWith("table:")) return null
   return <MysqlInlineEditingContext.Provider value={controller}>
     <div className="mysql-edit-container" data-testid={visible ? "mysql-data-editor" : undefined} ref={rootRef} onKeyDown={event => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); if (!exportSelection && !batch && !rowDraft && !deleteConfirmation && !activeRef.current?.modal) void save() }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); if (!discarding && !exportSelection && !batch && !rowDraft && !deleteConfirmation && !activeRef.current?.modal) void save() }
     }}>
       {children}
+      <Dialog open={discarding} onOpenChange={setDiscarding}><DialogContent><DialogHeader><DialogTitle>放弃当前表格的全部更改？</DialogTitle><DialogDescription>将清除尚未保存的 {pendingCount} 行新增、修改或删除草稿，数据库中已保存的数据不受影响。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => setDiscarding(false)}>继续编辑</Button><Button variant="destructive" data-testid="mysql-discard-changes" disabled={Boolean(busy) || uncertain} onClick={() => { finishCell(true); updateDrafts({}); updateInserts([]); updateDeleted(new Set()); updateRowDraft(null); setPlan(null); setDeleteConfirmation(false); setSelection(new Set()); setError(""); setNotice("已取消全部未保存更改。"); setDiscarding(false) }}>放弃全部更改</Button></DialogFooter></DialogContent></Dialog>
       {rowDraft && edit ? <MysqlRowSheet key={rowDraft.rowId} api={api} scope={scope} edit={edit} draft={rowDraft} locked={locked} onChange={updateRowDraft} onStage={stageRow} onClose={() => { updateRowDraft(null) }} /> : null}
       <Dialog open={deleteConfirmation} onOpenChange={setDeleteConfirmation}><DialogContent><DialogHeader><EnvironmentTypeBadge /><DialogTitle>保存对 {edit?.table} 的更改？</DialogTitle><DialogDescription>本次新增 {inserts.length - copiedCount} 行、复制 {copiedCount} 行、修改 {plan?.counts?.update ?? pendingRows.length} 行、删除 {plan?.counts?.delete ?? deleted.size} 行。删除保存后无法通过此工作区撤销。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => setDeleteConfirmation(false)}>继续编辑</Button><Button variant="destructive" data-testid="mysql-confirm-delete" onClick={() => { setDeleteConfirmation(false); if (plan) void commit(plan) }}>确认保存并删除</Button></DialogFooter></DialogContent></Dialog>
       {exportSelection ? <MysqlSqlExportDialog api={api} selection={exportSelection} onClose={() => setExportSelection(null)} /> : null}

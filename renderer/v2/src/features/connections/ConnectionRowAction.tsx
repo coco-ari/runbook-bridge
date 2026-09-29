@@ -62,6 +62,7 @@ function ConnectionActionButton({
   scopeLabel,
   testId,
   pluginInstanceId,
+  configureLabel = "完善配置",
 }: {
   readonly connection: Readonly<{
     state: ConnectionState
@@ -79,6 +80,7 @@ function ConnectionActionButton({
   readonly scopeLabel: string
   readonly testId: string
   readonly pluginInstanceId?: string
+  readonly configureLabel?: string
 }) {
   const connectionTriggerRef = useRef<HTMLButtonElement | null>(null)
   const [tooltipOpen, setTooltipOpen] = useState(false)
@@ -147,7 +149,7 @@ function ConnectionActionButton({
             variant={action.variant}
           >
             <ActionIcon className={action.pending ? "animate-spin" : undefined} size={12} />
-            {action.label}
+            {action.kind === "configure" ? configureLabel : action.label}
           </Button>
         </TooltipTrigger>
         {!tooltipBlocked ? <TooltipContent>{help}</TooltipContent> : null}
@@ -172,6 +174,7 @@ export function EnvironmentConnectionRowAction({
   onRuntime,
   rawRuntime,
   ready,
+  configureLabel,
 }: {
   readonly api: AiOpsV2Api
   readonly environment: EnvironmentConnectionTarget
@@ -179,6 +182,7 @@ export function EnvironmentConnectionRowAction({
   readonly onConfigure: () => void
   readonly onRuntime?: (runtime: EnvironmentRuntime) => void
   readonly rawRuntime: EnvironmentRuntime | null
+  readonly configureLabel?: string
   readonly ready: boolean
 }) {
   const connection = useEnvironmentConnection({
@@ -198,6 +202,7 @@ export function EnvironmentConnectionRowAction({
         environmentId: environment.environmentId,
       }}
       scopeLabel={`环境“${environment.name}”`}
+      {...(configureLabel ? {configureLabel} : {})}
       testId={`environment-connection-${environment.environmentId}`}
     />
   )

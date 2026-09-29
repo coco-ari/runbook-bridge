@@ -80,8 +80,10 @@ export type WorkspaceDetailAction =
 
 export interface WorkspaceDetailProps {
   readonly onOpenWorkspace: () => void
+  readonly onConfigureEnvironmentPlugin: (id: string) => void
   readonly onOpenEnvironmentWorkspace: (pluginInstanceId: string) => void
   readonly environmentWorkspaceActions: Readonly<Record<string, EnvironmentWorkspaceAction>>
+  readonly auditRequestId: string | null
   readonly workspaceRetained: boolean
   readonly activeTab: string
   readonly api: AiOpsV2Api
@@ -93,7 +95,7 @@ export interface WorkspaceDetailProps {
   readonly onAction: (action: WorkspaceDetailAction) => void
   readonly onAgentAccessDirtyChange: (dirty: boolean) => void
   readonly onAgentAccessSavingChange: (saving: boolean) => void
-  readonly onLocateScope: (scope: ConfirmationScope, tab?: "overview" | "audit") => void
+  readonly onLocateScope: (scope: ConfirmationScope, tab?: "overview" | "audit", requestId?: string) => void
   readonly onOpenEnvironment: (projectId: string, environmentId: string) => void
   readonly onOpenPlugin: (projectId: string, environmentId: string, pluginInstanceId: string) => void
   readonly onTabChange: (value: string) => void
@@ -227,8 +229,10 @@ function SelectionActions({
 export function WorkspaceDetail({
   onOpenWorkspace,
   onOpenEnvironmentWorkspace,
+  onConfigureEnvironmentPlugin,
   environmentWorkspaceActions,
   workspaceRetained,
+  auditRequestId,
   api,
   activeTab,
   collapsed,
@@ -569,6 +573,7 @@ export function WorkspaceDetail({
                   connectionPanel={(
                     <EnvironmentConnectionPanel
                       onOpenWorkspace={onOpenEnvironmentWorkspace}
+                      onConfigurePlugin={onConfigureEnvironmentPlugin}
                       workspaceActions={environmentWorkspaceActions}
                       api={api}
                       environment={environment}
@@ -607,7 +612,7 @@ export function WorkspaceDetail({
                   </>
                 ) : null}
                 <TabsContent className="flex min-h-0 flex-1 flex-col" value="audit">
-                  <AuditFeature
+                  <AuditFeature requestId={auditRequestId}
                     environmentId={environment.environmentId}
                     environmentName={environment.name}
                     pluginInstanceId={plugin?.pluginInstanceId ?? null}
@@ -621,7 +626,7 @@ export function WorkspaceDetail({
                     environmentId={environment.environmentId}
                     environmentName={environment.name}
                     onLocateScope={(scope) => onLocateScope(scope, "overview")}
-                    onOpenAudit={(scope) => onLocateScope(scope, "audit")}
+                    onOpenAudit={(scope, requestId) => onLocateScope(scope, "audit", requestId)}
                     pluginInstanceId={plugin?.pluginInstanceId ?? null}
                     scopeMode={hasPlugin ? "plugin" : "environment"}
                     projectId={project.projectId}

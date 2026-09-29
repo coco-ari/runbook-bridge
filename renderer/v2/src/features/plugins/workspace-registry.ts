@@ -121,9 +121,13 @@ export function openWorkspaceSession(
   state: PluginWorkspaceState, entry: PluginWorkspaceEntry, registry: PluginWorkspaceRegistry,
 ): PluginWorkspaceState {
   const definition = registry.get(entry.type)
-  if (!definition || entry.type !== entry.plugin.pluginType || !definition.canOpen(entry.plugin) || !workspaceScopeMatches(entry.scope, entry.plugin)
-    || (definition.requiresConnection && !entry.connected)) return state
+  if (!definition || entry.type !== entry.plugin.pluginType || !definition.canOpen(entry.plugin)
+    || !workspaceScopeMatches(entry.scope, entry.plugin)) return state
   const retained = state.entries.find(item => item.key === entry.key)
+  if (retained && (retained.type !== entry.type || !workspaceScopeMatches(retained.scope, entry.plugin)
+    || definition.sessionKey(retained.plugin) !== definition.sessionKey(entry.plugin))) return state
+  // 离线只允许恢复已保留的会话，不能借此新建需要连接的工作区。
+  if (definition.requiresConnection && !entry.connected && !retained) return state
   if (!retained && state.entries.filter(item => item.type === entry.type).length >= definition.maxSessions) return state
   return {
     entries: retained ? state.entries.map(item => item.key === entry.key

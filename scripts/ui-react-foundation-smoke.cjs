@@ -230,9 +230,11 @@ function registerForbiddenMutation(channel) {
 }
 
 let codexFixtureStatus = 'available';
+let commandPluginRead = null, codexReadGate = null;
 
 function registerMockApi() {
-  registerRead('v2:codex-integration', ({ action }) => {
+  registerRead('v2:codex-integration', async ({ action }) => {
+    if (codexReadGate) await codexReadGate();
     assert.equal(action, 'status', '基础 UI 测试只能检测模拟 Codex 配置');
     return { status: codexFixtureStatus, message: ['conflict', 'error'].includes(codexFixtureStatus) ? '模拟配置需要核对，请查看高级设置。' : '可一键接入 Codex。', configPath: 'C:/fixture/.codex/config.toml', configSnippet: '[mcp_servers.agent-ops]\ncommand = "fixture"\n', approvalId: ['conflict', 'error'].includes(codexFixtureStatus) ? null : 'fixture-approval' };
   });
@@ -248,7 +250,7 @@ function registerMockApi() {
       ?.environments.find((candidate) => candidate.environmentId === environmentId);
     return environmentRecord?.runtime ?? runtime(projectId,environmentId,'disconnected',[],0);
   });
-  registerRead('v2:plugin-list',({environmentId}) => pluginsByEnvironment[environmentId] ?? []);
+  registerRead('v2:plugin-list',async ({projectId,environmentId}) => { if (commandPluginRead) await commandPluginRead({projectId,environmentId}); return pluginsByEnvironment[environmentId] ?? []; });
   registerRead('v2:runbook-read',() => ({
     content:'# 模拟环境运维说明\n\n- 仅用于 Renderer 集成测试\n- 不包含真实地址、凭据或客户数据',
     hash:'0'.repeat(64),
@@ -4320,6 +4322,7 @@ async function run() {
       capture: screenshotRoot ? async name => fs.writeFileSync(path.join(screenshotRoot, name + '.png'), (await captureRenderedFrame(win)).toPNG()) : null,
     });
 
+    await require('./interaction-review-ui.cjs')({win,waitFor,workspaceProjects,pluginsByEnvironment,readCalls,setPluginRead: value => {commandPluginRead=value;},setCodexGate: value => {codexReadGate=value;}});
     const readOnlyChannels = new Set([
       'v2:project-list','v2:workspace-overview','v2:environment-list','v2:environment-status',
       'v2:plugin-list','v2:runbook-read','v2:quick-question-opening-get','v2:quick-question-list',

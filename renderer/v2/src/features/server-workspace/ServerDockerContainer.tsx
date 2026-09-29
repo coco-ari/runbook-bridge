@@ -1,3 +1,4 @@
+import { copyText } from "@/lib/clipboard"
 import { SelectControl, SelectItem } from "@/components/ui/select"
 import { useState } from "react"
 import type { DockerContainer, DockerContainerDetails, DockerLogs, DockerStats } from "@/bridge/ai-ops-v2"
@@ -16,20 +17,20 @@ export function ServerDockerContainer({ container, ...props }: DockerViewProps &
   const [since, setSince] = useState<string>()
   const [search, setSearch] = useState("")
   const [copyError, setCopyError] = useState("")
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState<"visible" | "all" | null>(null)
   const detail = useDockerRead<DockerContainerDetails>({ api, scope, query:{ kind:"inspect", containerId:container.id }, enabled:visible && connected && view === "inspect", binding })
   const logs = useDockerRead<DockerLogs>({ api, scope, query:{ kind:"logs", containerId:container.id, lines, ...(since ? { since } : {}) }, enabled:visible && connected && view === "logs", binding })
   const stats = useDockerRead<DockerStats>({ api, scope, query:{ kind:"stats", containerId:container.id }, enabled:visible && connected && view === "stats", binding, interval:5000 })
   const result = view === "inspect" ? detail : view === "logs" ? logs : stats
   const logLines = logs.data?.content.split("\n") ?? []
   const displayedLines = search ? logLines.filter(line => line.toLowerCase().includes(search.toLowerCase())) : logLines
-  const copy = async () => {
-    setCopyError(""); setCopied(false)
-    try { await navigator.clipboard.writeText(logs.data?.content ?? ""); setCopied(true) }
+  const copy = async (all = false) => {
+    setCopyError(""); setCopied(null)
+    try { await copyText(all ? logs.data?.content ?? "" : displayedLines.join("\n")); setCopied(all ? "all" : "visible") }
     catch { setCopyError("复制失败，请选中日志后复制。") }
   }
   const refresh = () => {
-    setCopied(false)
+    setCopied(null)
     if (view === "logs" && range !== "all") setSince(new Date(Date.now() - Number(range) * 60000).toISOString())
     else result.refresh()
   }
@@ -39,9 +40,9 @@ export function ServerDockerContainer({ container, ...props }: DockerViewProps &
         {([["inspect", "概览"], ["logs", "日志"], ["stats", "资源"]] as const).map(([id, label]) => <button type="button" key={id} aria-pressed={view === id} onClick={() => setView(id)}>{label}</button>)}
       </div>
       <span className="server-docker-id" title={container.id}>{container.id.slice(0, 12)}</span>
-      {view === "logs" ? <><SelectControl aria-label="日志时间范围" value={range} onValueChange={value => { setRange(value); setSince(value === "all" ? undefined : new Date(Date.now() - Number(value) * 60000).toISOString()); setCopied(false) }}><SelectItem value="all">最近记录</SelectItem><SelectItem value="15">最近 15 分钟</SelectItem><SelectItem value="60">最近 1 小时</SelectItem><SelectItem value="1440">最近 24 小时</SelectItem></SelectControl>
-        <SelectControl aria-label="日志行数" value={String(lines)} onValueChange={value => { setLines(Number(value)); setCopied(false) }}>{[200, 500, 2000].map(value => <SelectItem key={value} value={String(value)}>{value} 行</SelectItem>)}</SelectControl>
-        <Button size="sm" variant="ghost" disabled={!logs.data} onClick={() => { void copy() }}>{copied ? "已复制" : "复制"}</Button></> : null}
+      {view === "logs" ? <><SelectControl aria-label="日志时间范围" value={range} onValueChange={value => { setRange(value); setSince(value === "all" ? undefined : new Date(Date.now() - Number(value) * 60000).toISOString()); setCopied(null) }}><SelectItem value="all">最近记录</SelectItem><SelectItem value="15">最近 15 分钟</SelectItem><SelectItem value="60">最近 1 小时</SelectItem><SelectItem value="1440">最近 24 小时</SelectItem></SelectControl>
+        <SelectControl aria-label="日志行数" value={String(lines)} onValueChange={value => { setLines(Number(value)); setCopied(null) }}>{[200, 500, 2000].map(value => <SelectItem key={value} value={String(value)}>{value} 行</SelectItem>)}</SelectControl>
+        <Button size="sm" variant="ghost" disabled={!logs.data || !displayedLines.some(line => line.length)} title={search ? "复制当前筛选的 " + displayedLines.length + " 行日志" : "复制全部已加载日志"} data-testid="docker-copy-visible" onClick={() => { void copy() }}>{copied === "visible" ? "已复制" : search ? "复制筛选结果" : "复制已加载日志"}</Button>{search ? <Button size="sm" variant="ghost" disabled={!logs.data} data-testid="docker-copy-all" onClick={() => { void copy(true) }}>{copied === "all" ? "已复制全部" : "复制全部已加载日志"}</Button> : null}</> : null}
       <WorkspaceIconButton action="refresh" label="刷新容器内容" disabled={!connected || result.busy} busy={result.busy} onClick={refresh} />
     </div>
     {!connected ? <p className="server-docker-message">服务器已断开，重新连接后读取。</p> : null}
@@ -53,7 +54,7 @@ export function ServerDockerContainer({ container, ...props }: DockerViewProps &
       </dl> : null}
     </div>
     <div className="server-docker-log-panel" hidden={view !== "logs"}>
-      <div className="server-docker-log-search"><Input aria-label="搜索已加载日志" placeholder="搜索已加载日志" value={search} onChange={event => setSearch(event.target.value)} />{search ? <span>{displayedLines.length} 行匹配</span> : null}</div>
+      <div className="server-docker-log-search"><Input aria-label="搜索已加载日志" placeholder="搜索已加载日志" value={search} onChange={event => { setSearch(event.target.value); setCopied(null) }} />{search ? <span>{displayedLines.length} 行匹配</span> : null}</div>
       {logs.data?.truncated ? <p className="server-docker-message text-warning" role="status">日志已截断；请缩短时间范围或调整行数，不能据此判断没有其他记录。</p> : null}
       {copyError ? <p className="server-docker-message text-danger" role="alert">{copyError}</p> : null}
       <pre className="server-docker-logs" tabIndex={0} aria-label="容器日志">{logs.data ? displayedLines.join("\n") || (search ? "已加载日志中没有匹配项。" : "当前读取范围内没有日志。") : ""}</pre>

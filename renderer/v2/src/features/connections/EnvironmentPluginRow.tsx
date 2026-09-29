@@ -11,12 +11,13 @@ export interface EnvironmentWorkspaceAction {
   readonly retained: boolean
 }
 
-export function EnvironmentPluginRow({ api, environment, row, runtime, onRuntime, onOpenPlugin, onOpenWorkspace, workspace }: {
+export function EnvironmentPluginRow({ api, environment, row, runtime, onRuntime, onOpenPlugin, onConfigurePlugin, onOpenWorkspace, workspace }: {
   readonly api: AiOpsV2Api
   readonly environment: WorkspaceEnvironmentReadModel
   readonly row: EnvironmentDetailRow
   readonly runtime: EnvironmentRuntime | null
   readonly onRuntime?: ((runtime: EnvironmentRuntime) => void) | undefined
+  readonly onConfigurePlugin: (id: string) => void
   readonly onOpenPlugin: (id: string) => void
   readonly onOpenWorkspace: (id: string) => void
   readonly workspace?: EnvironmentWorkspaceAction | undefined
@@ -34,7 +35,7 @@ export function EnvironmentPluginRow({ api, environment, row, runtime, onRuntime
       {row.providerName ? <p className="break-all text-xs leading-5 text-muted-foreground">依赖：{row.providerName}</p> : null}
     </div>
     <div aria-label={`${plugin.displayName} 的操作`} className="col-span-2 flex flex-wrap items-center gap-2 @2xl/environment-connection:col-span-1" role="group">
-      <PluginConnectionRowAction api={api} plugin={{ projectId: environment.projectId, environmentId: environment.environmentId, pluginInstanceId: plugin.pluginInstanceId }} fallbackStatus={row.status} ready={plugin.configState === "ready"} runtime={runtime} {...(onRuntime ? { onRuntime } : {})} onConfigure={openDetails} scopeLabel={plugin.displayName} testId={`environment-plugin-connection-${plugin.pluginInstanceId}`} />
+      <PluginConnectionRowAction api={api} plugin={{ projectId: environment.projectId, environmentId: environment.environmentId, pluginInstanceId: plugin.pluginInstanceId }} fallbackStatus={row.status} ready={plugin.configState === "ready"} runtime={runtime} {...(onRuntime ? { onRuntime } : {})} onConfigure={() => onConfigurePlugin(plugin.pluginInstanceId)} scopeLabel={plugin.displayName} testId={`environment-plugin-connection-${plugin.pluginInstanceId}`} />
       {workspace ? <Button aria-label={`${workspace.retained ? "继续" : "打开"} ${plugin.displayName} 工作区`} data-testid={`environment-plugin-workspace-${plugin.pluginInstanceId}`} disabled={!workspace.enabled} onClick={() => onOpenWorkspace(plugin.pluginInstanceId)} size="xs" title={workspace.enabled ? undefined : "请先连接插件并完善配置"} type="button" variant={workspace.enabled ? "default" : "outline"}><ArrowsOutSimple />{workspace.retained ? "继续工作区" : "打开工作区"}</Button> : null}
     </div>
   </div>

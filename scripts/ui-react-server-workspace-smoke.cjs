@@ -234,6 +234,11 @@ function register() {
   handle('quick-question-list', () => ({ ...scope, schemaVersion: 1, revision: 1, items: [] }));
   handle('runbook-read', () => ({ content: '', bytes: 0, hash: '0'.repeat(64), empty: true }));
   handle('plugin-credential-status', () => ({ fields: { primary: false, proxy: false }, legacyAvailable: false }));
+  handle('plugin-connection-edit-prepare', input => {
+    scoped(input); assert.equal(input.expectedRevision,plugin.revision);
+    return {prepareToken:'workspace-config-prepare',affectedIds:[scope.pluginInstanceId],preEditConnectedSet:[scope.pluginInstanceId],activeOperations:{connection:[],workspace:[]}};
+  });
+  handle('plugin-connection-edit-cancel', input => { assert.deepEqual(input,{prepareToken:'workspace-config-prepare'}); return {cancelled:true}; });
   handle('connection-intent', async (input) => {
     scoped(input);
     connectionRequests.push(input);
@@ -699,7 +704,7 @@ async function assertWorkspaceCoexistence() {
   await click('[data-testid="plugin-workspace-open"]');
   assert.equal(redisCalls.length, 1, '返回 Redis 工作区复用当前列表');
   await click('[data-testid="redis-workspace-back"]');
-  assert.ok(await evaluate('document.querySelector("[data-testid=mysql-full-window-workspace]") === null'), '切换插件清除数据库旧结果');
+  assert.ok(await evaluate('document.querySelector("[data-testid=mysql-full-window-workspace]").hidden'), '切换插件保留隐藏的数据库工作区');
   await click('[data-testid="plugin-trigger-server-workspace-smoke"]');
   await until('document.querySelector("[data-testid=plugin-open-workspace]")?.textContent.includes("继续工作区")', '继续服务器工作区');
 }
@@ -1041,6 +1046,10 @@ async function run() {
   }
   if (process.env.RUNBOOK_BRIDGE_RECOVERY_SMOKE === '1') {
     releaseRootMetadata();
+    await click('[data-testid=server-workspace-back]');
+    await assertWorkspaceCoexistence();
+    await click('[data-testid=plugin-open-workspace]');
+    await require('./workspace-manager-ui.cjs')({evaluate,click,until,connectionRequests,opened,redisCalls,snapshot});
     await testTerminalRecovery();
     assert.deepEqual(errors, [], '自动恢复没有渲染错误');
     completed = true;
@@ -1545,7 +1554,7 @@ async function run() {
   await until(`document.querySelector('.server-workspace-connection-notice')`, '断线反馈');
   assert.equal(connected, false);
   await click('[data-testid="server-workspace-back"]');
-  await until(`document.querySelector('[data-testid="plugin-open-workspace"]')?.disabled === true`, '未连接不能打开工作区');
+  await until(`document.querySelector('[data-testid="plugin-open-workspace"]')?.disabled === false`, '未连接仍可继续已有工作区');
   assert.ok(resizes.length > 0 && resizes.every((item) => item.cols > 1 && item.rows > 1), '布局变化只传有效尺寸');
   assert.deepEqual(externalRequests, [], '不连接真实服务');
   assert.deepEqual(errors, [], '没有渲染错误');
@@ -1691,7 +1700,7 @@ async function testTerminalRecovery() {
   interruptTerminals();
   publishRecovery(false,'exhausted');
   await until("document.querySelector('[data-testid=server-connection-notice]')?.textContent.includes('自动重连未成功')",'重试耗尽停止动画');
-  await clickText('重新连接');
+  await click('[data-testid=server-workspace-reconnect]');
   await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent.includes('已重新连接')",'直接在工作区重连并恢复终端');
   assert.equal(connectionRequests.length,connections+1,'人工重试只有一个连接动作');
 
@@ -1728,10 +1737,24 @@ async function testTerminalRecovery() {
   for (let cycle=0;cycle<2;cycle++) {
     const beforeManual=opened.length;
     const requestsBefore=connectionRequests.length;
+    const historyMarker='offline-resume-history-'+cycle;
+    terminalSessions.get(opened.at(-1)).chunks.push(Buffer.from('\r\n'+historyMarker+'\r\n'));
+    await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) .xterm-rows')?.textContent.includes("+JSON.stringify(historyMarker)+")",'断线前写入历史标记');
+    await evaluate("window.__offlineTerminalElement=document.querySelector('.server-terminal-tab-panel:not([hidden]) .xterm')");
     await clickText('断开连接');
     await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [data-testid=terminal-ended-actions]')",'主动断开显示手动操作');
     await wait(150);
     assert.equal(opened.length,beforeManual,'断开期间不创建终端');
+    const offlineRequests=connectionRequests.length;
+    await click('[data-testid=server-workspace-back]');
+    await until("document.querySelector('[data-testid=plugin-open-workspace]')?.disabled === false",'离线允许继续服务器工作区');
+    await click('[data-testid=plugin-open-workspace]');
+    await until("document.querySelector('[data-testid=server-workspace-back]')?.getClientRects().length > 0",'离线恢复原服务器工作区');
+    // 终端重新显示会调整可视行，使用历史标记和实例身份验证内容保留。
+    await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) .xterm-rows')?.textContent.includes("+JSON.stringify(historyMarker)+")",'离线重新进入保留终端历史');
+    assert.equal(await evaluate("window.__offlineTerminalElement === document.querySelector('.server-terminal-tab-panel:not([hidden]) .xterm')"),true,'离线重新进入复用原终端实例');
+    assert.equal(connectionRequests.length,offlineRequests,'离线重新进入不连接服务器');
+    assert.equal(opened.length,beforeManual,'离线重新进入不新建终端');
     if (cycle===0) {
       connectionRetryFailures=1;
       await reconnectTerminal();
@@ -1746,11 +1769,19 @@ async function testTerminalRecovery() {
     assert.ok(await evaluate("document.querySelector('.server-terminal-tab-panel[hidden] [role=status]')?.textContent.includes('会话已结束')"),'其他已结束标签不会复活');
   }
   assert.equal(writes.length,beforeManualWrites,'主动重连不重放历史输入');
+  const connectionButton = options => require('./workspace-connection-ui.cjs')(evaluate, 'server-workspace', options);
+  await connectionButton({connected:true});
   await clickText('断开连接');
   await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [data-testid=terminal-ended-actions]')",'等待用户选择');
   const beforeManualStop=opened.length;
-  await clickText('重新连接');
+  await connectionButton({connected:false});
+  const previousRetryDelay = connectionRetryDelay;
+  connectionRetryDelay = 1500;
+  await click('[data-testid=server-workspace-reconnect]');
+  await connectionButton({connected:false,pending:true});
   await until("!document.querySelector('[data-testid=server-connection-notice]')",'仅重连服务器');
+  connectionRetryDelay = previousRetryDelay;
+  await connectionButton({connected:true});
   await wait(200);
   assert.equal(opened.length,beforeManualStop,'服务器重连不会自动打开非网络原因结束的终端');
   await reconnectTerminal();
@@ -1759,7 +1790,7 @@ async function testTerminalRecovery() {
   const beforeEnded=opened.length;
   await clickText('断开连接');
   await until("document.querySelector('[data-testid=server-connection-notice]')?.textContent.includes('服务器已断开')",'结束后断开服务器');
-  await clickText('重新连接');
+  await click('[data-testid=server-workspace-reconnect]');
   await until("!document.querySelector('[data-testid=server-connection-notice]')",'结束后重新连接服务器');
   await wait(200);
   assert.equal(opened.length,beforeEnded,'单独结束的终端不会因手动重连而复活');
@@ -1807,6 +1838,11 @@ async function testWorkspaceConveniences() {
     await until("document.activeElement?.getAttribute('aria-label')==='搜索终端内容' && document.activeElement.selectionStart===0 && document.activeElement.selectionEnd===document.activeElement.value.length",'标准快捷键聚焦搜索并选中关键词');
   };
   const activeText=panel+" [role=status]";
+  // 恢复用例可能关闭全部终端，搜索用例需独立准备可用会话。
+  if (!await evaluate("document.querySelector(" + JSON.stringify(panel) + ") !== null")) {
+    await click('[aria-label="新增终端"]');
+    await until("document.querySelector(" + JSON.stringify(activeText) + ")?.textContent==='人工会话'",'搜索测试创建终端');
+  }
   if(await evaluate("document.querySelector("+JSON.stringify(activeText)+")?.textContent.includes('会话已结束')")) {
     await reconnectTerminal();
     await until("document.querySelector("+JSON.stringify(activeText)+")?.textContent==='人工会话'",'搜索测试终端就绪');
@@ -1991,7 +2027,7 @@ async function testWorkspaceConveniences() {
   await setInput(searchInput,'中文查找');
   await expectCount(3);
   await click('[aria-label="关闭终端搜索"]');
-  await clickText('重新连接');
+  await click('[data-testid=server-workspace-reconnect]');
   await until("!document.querySelector('[data-testid=server-connection-notice]')",'恢复服务器连接');
   await reconnectTerminal();
   await until("document.querySelector("+JSON.stringify(activeText)+")?.textContent==='人工会话'",'手动重连兼容搜索扩展');

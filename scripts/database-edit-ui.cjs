@@ -127,6 +127,9 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   win.webContents.setZoomFactor(1);
 
   await click(win,testId('mysql-edit-undo'));
+  await waitFor(win,"document.querySelector('[data-testid=mysql-discard-changes]')",'显示全部草稿放弃确认');
+  await click(win,testId('mysql-discard-changes'));
+  await waitFor(win,'!document.querySelector("[role=dialog]")','放弃更改后弹窗关闭');
   assert.equal(await evaluate('document.querySelectorAll("tr[data-row-state]").length'),0,'统一取消清除全部行状态');
   assert.equal(await current(cell(2,'label')),initialRows[1].label,'统一取消恢复修改原值');
   assert.equal((await fixture.read()).length,initialRows.length+1,'统一取消没有写库');
@@ -141,7 +144,11 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   await click(win,testId('mysql-edit-save'));
   await waitFor(win,'document.querySelector("[data-testid=mysql-confirm-delete]")','统一删除确认');
   await button('继续编辑');
+  await waitFor(win,'!document.querySelector("[role=dialog]")','删除确认返回编辑');
   await click(win,testId('mysql-edit-undo'));
+  await waitFor(win,"document.querySelector('[data-testid=mysql-discard-changes]')",'显示全部草稿放弃确认');
+  await click(win,testId('mysql-discard-changes'));
+  await waitFor(win,'!document.querySelector("[role=dialog]")','放弃更改后弹窗关闭');
   const beforeEdit=await geometry();
   await doubleClick(cell(1,'label'));
   sameGeometry(await geometry(),beforeEdit,'进入单元格编辑不得改变列宽、行高、坐标和滚动位置');

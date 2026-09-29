@@ -1,3 +1,5 @@
+import { useWorkspaceNavigationActions, useWorkspaceConfigure } from "@/features/plugins/WorkspaceNavigation"
+import { resolveConnectionCancelTarget } from "@/features/connections/connection-model"
 import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
 import { WorkspaceNotice } from "@/components/workspace/WorkspaceNotice"
 import { StatusIndicator } from "@/components/app-shell/StatusIndicator"
@@ -99,6 +101,11 @@ export function ServerWorkspace({ backLabel = "返回服务器详情", api, entr
   const [refreshEpoch, setRefreshEpoch] = useState(0)
   const [refreshPaths, setRefreshPaths] = useState<readonly string[]>([])
   const [closeDialog, setCloseDialog] = useState(false)
+  const configureWorkspace = useWorkspaceConfigure()
+  useWorkspaceNavigationActions({navigate: (action, reason) => {
+    if (reason === "configure" && (fileEditing.dirty || fileEditing.busy)) { setUploadError("请先保存或放弃文件更改，再修改连接配置。"); return }
+    action()
+  }, close: () => setCloseDialog(true)})
   const mountedRef = useRef(true)
   const previewGenerationRef = useRef(0)
   const jobsRef = useRef(jobs)
@@ -386,12 +393,17 @@ export function ServerWorkspace({ backLabel = "返回服务器详情", api, entr
       <span className="h-5 w-px bg-border" />
       <div className="server-workspace-heading"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold">{entry.plugin.displayName}</h1><EnvironmentTypeBadge /><StatusIndicator appearance="badge" status={connected ? "connected" : terminalState.phase === "waiting" || terminalState.phase === "connecting" ? "connecting" : terminalState.phase === "action-required" ? "blocked" : "disconnected"} label={connected ? "已连接" : terminalState.phase === "waiting" || terminalState.phase === "connecting" ? "正在重连" : terminalState.phase === "action-required" ? "需要处理" : "已断开"} /></div><p className="truncate text-xs text-muted-foreground">{entry.projectName} / {entry.environmentName}<span className="server-workspace-identity"> · {sshIdentity}</span></p></div>
       <ServerMetrics api={api} scope={scope} connected={connected} visible={visible} />
-      <WorkspaceHeaderActions connected={connected} busy={Boolean(connection.state.operation)} onDisconnect={() => { void connection.disconnect() }} onClose={() => setCloseDialog(true)} prefix="server-workspace" closeLabel="关闭工作区" closeTitle="关闭工作区并结束终端" />
+      <WorkspaceHeaderActions connected={connected} busy={connection.state.phase === "disconnecting" || connection.state.operation?.intent === "disconnect"}
+        reconnecting={Boolean(connection.state.operation) || terminalState.phase === "connecting"}
+        canCancel={resolveConnectionCancelTarget(connection.state.operation, connection.state.runtime, scope, scope.pluginInstanceId) !== null}
+        cancelling={connection.state.operation?.intent === "cancel"} onCancel={() => { void connection.cancel() }}
+        awaitingConfirmation={Boolean(connection.state.challenge)}
+        onReconnect={() => {
+          reconnectFocusRef.current = document.activeElement as HTMLElement | null
+          void connection.retry()
+        }} onDisconnect={() => { void connection.disconnect() }} onClose={() => setCloseDialog(true)} prefix="server-workspace" closeLabel="关闭工作区" closeTitle="关闭工作区并结束终端" />
     </header>
-    <ServerConnectionNotice connection={terminalState} busy={Boolean(connection.state.operation)} error={connection.state.error?.message ?? ""} onSettings={onBack} onRetry={() => {
-      reconnectFocusRef.current = document.activeElement as HTMLElement | null
-      void connection.retry()
-    }} />
+    <ServerConnectionNotice connection={terminalState} error={connection.state.error?.message ?? ""} onSettings={configureWorkspace ?? onBack} />
     <RuntimeHostKeyDialog state={connection.state} onReject={connection.rejectHostKey} onTrust={connection.trustHostKey} returnFocusRef={reconnectFocusRef} testId="workspace-host-key-confirmation" />
     {uploadError && !preparation ? <WorkspaceNotice className="server-workspace-error" variant="destructive">{uploadError}<Button size="icon-sm" variant="ghost" aria-label="收起上传提示" onClick={() => setUploadError("")}><X /></Button></WorkspaceNotice> : null}
     {uploadJobError ? <WorkspaceNotice className="server-workspace-error" variant="destructive" data-testid="upload-job-error">{uploadJobError}<Button size="icon-sm" variant="ghost" aria-label="收起传输提示" onClick={() => setUploadJobError("")}><X /></Button></WorkspaceNotice> : null}

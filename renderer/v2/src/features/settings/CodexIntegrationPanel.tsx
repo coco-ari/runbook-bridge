@@ -19,6 +19,8 @@ export function CodexIntegrationPanel({ api, onBusyChange }: {
   const statusHeadingRef = useRef<HTMLHeadingElement>(null)
   const advancedRef = useRef<HTMLDetailsElement>(null)
   const inFlight = useRef(false)
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   useEffect(() => {
     let cancelled = false
     inFlight.current = true
@@ -35,10 +37,11 @@ export function CodexIntegrationPanel({ api, onBusyChange }: {
   const run = async (action: "status" | "install" | "copy") => {
     if (inFlight.current) return
     inFlight.current = true
-    setPendingAction(action); setBusy(true); onBusyChange(true); setError(""); setNotice("")
+    setPendingAction(action); setBusy(true); if (action === "install") onBusyChange(true); setError(""); setNotice("")
     try {
       if (action === "copy") {
         const result = await api.codexIntegration({ action: "copy" })
+        if (!mounted.current) return
         if (result.ok) setNotice("配置已复制。请合并到 Codex 配置文件，避免重复添加同名条目。")
         else setError(result.error.message)
         return
@@ -46,6 +49,7 @@ export function CodexIntegrationPanel({ api, onBusyChange }: {
       if (action === "install" && !state?.approvalId) return
       const result = await api.codexIntegration(action === "install"
         ? { action, approvalId: state!.approvalId! } : { action })
+      if (!mounted.current) return
       if (result.ok) {
         setState(result.data)
         if (action === "install" && result.data.status === "configured") {
@@ -58,9 +62,10 @@ export function CodexIntegrationPanel({ api, onBusyChange }: {
         if (action === "install") setState(previous => previous ? { ...previous, approvalId: null } : null)
       }
     } catch {
+      if (!mounted.current) return
       setError("操作未完成，请重新检测 Codex 配置后再试。")
       setState(previous => previous ? { ...previous, approvalId: null } : null)
-    } finally { inFlight.current = false; setBusy(false); setPendingAction(null); onBusyChange(false) }
+    } finally { inFlight.current = false; if (mounted.current) { setBusy(false); setPendingAction(null); if (action === "install") onBusyChange(false) } }
   }
 
   const configured = state?.status === "configured"

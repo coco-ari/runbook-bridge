@@ -210,12 +210,16 @@ function registerMockApi() {
     assert.equal(payload.projectId,PROJECT_ID);
     assert.equal(payload.environmentId,ENVIRONMENT_ID);
     assert.equal(payload.pluginInstanceId,PRIMARY_ID);
-    assert.ok(['connect','disconnect'].includes(payload.intent));
+    assert.ok(['connect','disconnect','cancel'].includes(payload.intent));
     if (payload.intent === 'disconnect') assert.deepEqual(payload,{...scope(PRIMARY_ID),intent:'disconnect',source:'legacy-plugin'});
     else { assert.equal(payload.source,'renderer-plugin'); assert.ok(payload.requestId); assert.ok(payload.planId); }
     if (state.failDisconnect) return failed('模拟断开失败');
+    state.cancelledPlans ??= new Set();
+    if (payload.intent === 'cancel') state.cancelledPlans.add(payload.planId);
+    if (payload.intent === 'connect' && state.reconnectHold) await new Promise(resolve => { state.reconnectHold.release = resolve; });
+    if (payload.intent === 'connect' && state.cancelledPlans.has(payload.planId)) return failed('模拟连接已取消');
     if (payload.intent === 'connect' && state.failReconnect) return failed('模拟重连失败');
-    plugins.find(plugin => plugin.pluginInstanceId === PRIMARY_ID).assessment = assessment(payload.intent === 'disconnect' ? 'disconnected' : 'connected');
+    plugins.find(plugin => plugin.pluginInstanceId === PRIMARY_ID).assessment = assessment(payload.intent === 'connect' ? 'connected' : 'disconnected');
     state.sequence++;
     event.sender.send('v2:environment-status-changed',runtime());
     return ok({snapshot:runtime(),planId:payload.planId??null,actions:[]});
@@ -331,6 +335,13 @@ async function openDatabaseWorkspace(win) {
 }
 
 async function selectPlugin(win,pluginInstanceId) {
+  const target=plugins.find(record=>record.pluginInstanceId===pluginInstanceId);
+  const current=await win.webContents.executeJavaScript("document.querySelector('[data-testid=mysql-database-workspace] h1')?.textContent",true);
+  if(current && current!==target.displayName) {
+    await click(win,testId('mysql-workspace-close'));
+    await click(win,testId('mysql-workspace-confirm-close'));
+    await waitFor(win,"!document.querySelector('[data-testid=mysql-full-window-workspace]')",'切换数据库前明确关闭旧工作区');
+  }
   await selectPluginDetails(win,pluginInstanceId);
   await openDatabaseWorkspace(win);
 }
@@ -816,6 +827,8 @@ async function run() {
     await fill(win,testId('mysql-sql-editor'),'SELECT delayed_scope_result FROM orders');
     await click(win,testId('mysql-query-run'));
     await waitUntil(() => Boolean(queryHold.release),'查询延迟响应挂起');
+    await click(win,testId('mysql-query-stop'));
+    await waitFor(win,"document.querySelector('[data-testid=mysql-query-stop]')?.disabled === true",'先停止执行再明确关闭工作区');
     await selectPlugin(win,OTHER_ID);
     await textContains(win,'mysql-table-list','reports');
     await click(win,testId('mysql-sql-tab'));
@@ -853,7 +866,7 @@ async function run() {
     state.sequence += 1;
     win.webContents.send('v2:environment-status-changed',runtime());
     await waitFor(win,`document.querySelector('${testId('mysql-workspace-disconnected')}') !== null`,'断连保留数据库会话');
-    await waitFor(win,`document.querySelector('${testId('plugin-workspace-open')}')?.disabled === true`,'断连入口禁用');
+    await waitFor(win,`document.querySelector('${testId('plugin-workspace-open')}')?.disabled === false`,'断连后仍可继续已保留工作区');
     const disconnectedCalls = databaseCalls.length;
     await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-query-run')}')?.click()`,true);
     await wait(100);
@@ -869,11 +882,11 @@ async function run() {
     await fill(win,testId('mysql-sql-editor'),`SELECT '${SQL_MARKER}' FROM reports`);
     await returnToDetails(win);
     await click(win,testId(`environment-trigger-${SECOND_ENVIRONMENT_ID}`));
-    await waitFor(win,`document.querySelector('${testId('mysql-full-window-workspace')}') === null`,'切换环境销毁保留的数据库工作区');
+    await waitFor(win,`document.querySelector('${testId('mysql-full-window-workspace')}')?.hidden === true`,'切换环境保留隐藏的数据库工作区');
     await click(win,testId(`environment-trigger-${ENVIRONMENT_ID}`));
     await selectPlugin(win,OTHER_ID);
     await click(win,testId('mysql-sql-tab'));
-    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').value.includes(${JSON.stringify(SQL_MARKER)})`,true),false,'切换环境后不得恢复旧 SQL。');
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').value.includes(${JSON.stringify(SQL_MARKER)})`,true),true,'返回原范围恢复保留的 SQL。');
     await fill(win,testId('mysql-sql-editor'),`SELECT '${SQL_MARKER}' FROM reports`);
     active.revision += 1;
     win.webContents.send('v2:workspace-changed',{...scope(OTHER_ID),type:'plugin-updated'});
@@ -901,7 +914,7 @@ async function run() {
     await require('./database-sql-ui.cjs').assertSqlExecutionUi({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID,setExactViewport,returnToDetails,openDatabaseWorkspace});
     await require('./database-tabs-ui.cjs')({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID,clipboard,openRowDetail});
     await require('./database-reconnect-ui.cjs')({win,fill,click,waitFor,textContains,testId,state,databaseCalls,PRIMARY_ID,plugins,runtime,assessment,queryResult,scope});
-    await require('./environment-workspace-ui.cjs')({win,click,fill,waitFor,textContains,testId,screenshot,databaseCalls,PRIMARY_ID,OTHER_ID,OFFLINE_ID,ENVIRONMENT_ID,returnToDetails,setExactViewport});
+    await require('./environment-workspace-ui.cjs')({win,click,fill,waitFor,textContains,testId,screenshot,databaseCalls,PRIMARY_ID,OTHER_ID,OFFLINE_ID,ENVIRONMENT_ID,returnToDetails,setExactViewport,state,plugins,runtime,assessment});
     await assertNoPersistence(win);
     assert.deepEqual(forbiddenCalls,[],'数据库工作区不得调用未授权通道。');
     assert.deepEqual(externalRequests,[],'数据库 UI 测试不得发起外部网络请求。');
