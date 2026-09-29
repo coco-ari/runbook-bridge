@@ -16,12 +16,16 @@ export function useRedisEditing(api: AiOpsV2Api, scope: PluginScope, connected: 
   const currentEpoch = useRef(connectionEpoch)
   const isConnected = useRef(connected)
   currentEpoch.current = connectionEpoch; isConnected.current = connected
+  function capture() {
+    const epoch = currentEpoch.current
+    return () => alive.current && isConnected.current && epoch === currentEpoch.current
+  }
   const [opening, setOpening] = useState<{id: string; mode: "update" | "delete"} | null>(null)
   const [notice, setNotice] = useState("")
   const [deletionVisible, setDeletionVisible] = useState(false)
   const [verification, setVerification] = useState<{id: string; key: string; exists: boolean; type: string; value: string; complete: boolean; deletion: boolean} | null>(null)
   const openingRef = useRef(false)
-  const [deletion, storeDeletion] = useState<{id: string; patternId: string; session: RedisEditData; plan: RedisEditPlan | null; busy: boolean; phase?: "commit" | "check" | "read" | undefined; uncertain: boolean; error: string} | null>(null)
+  const [deletion, storeDeletion] = useState<{id: string; patternId: string; session: RedisEditData; plan: RedisEditPlan | null; busy: boolean; phase?: "prepare" | "commit" | "check" | "read" | undefined; uncertain: boolean; error: string} | null>(null)
   const deletionRef = useRef(deletion)
   deletionRef.current = deletion
   function setDeletion(value: typeof deletion) { deletionRef.current = value; storeDeletion(value) }
@@ -34,7 +38,7 @@ export function useRedisEditing(api: AiOpsV2Api, scope: PluginScope, connected: 
   function discard(id: string) { release(ref.current[id]?.session); const next = {...ref.current}; delete next[id]; ref.current = next; setDrafts(next) }
   function create(id: string) { ref.current = {...ref.current,[id]:blank("",true)}; setDrafts(ref.current) }
   async function open(tab: RedisTab, mode: "update" | "delete") {
-    if (openingRef.current || !isConnected.current) return
+    if (openingRef.current || !isConnected.current || tab.stale) return
     if (deletionRef.current?.uncertain) { setDeletionVisible(true); return }
     openingRef.current = true; setOpening({id:tab.id,mode}); setNotice("")
     const epoch = currentEpoch.current
@@ -62,6 +66,7 @@ export function useRedisEditing(api: AiOpsV2Api, scope: PluginScope, connected: 
     const draft = ref.current[id]
     if (!draft || draft.busy || (!checkOnly && (!isConnected.current || draft.stale || draft.uncertain))) return
     update(id,{busy:true,phase:checkOnly ? "check" : "prepare",error:""})
+    const isCurrent = capture()
     let attempted = false
     try {
       let session = draft.session
@@ -72,51 +77,63 @@ export function useRedisEditing(api: AiOpsV2Api, scope: PluginScope, connected: 
       if (draft.creating && (!session || session.key !== draft.key)) {
         release(session)
         session = unwrap(await api.redisEditOpen({...scope,patternId,key:draft.key,mode:"create"}))
-        if (!alive.current) { release(session); return }
+        if (!isCurrent()) { release(session); return }
         update(id,{session})
       }
       if (!session) throw new Error("请重新读取并核对内容。")
       const plan = unwrap(await api.redisEditPrepare({...scope,editId:session.editId,value:draft.value,format:draft.format,expiry:draft.expiry === "relative" ? {mode:"relative",milliseconds:Number(draft.duration)*Number(draft.unit)} : {mode:draft.expiry}}))
+      if (!isCurrent()) return
       update(id,{plan,phase:"commit"}); attempted = true
       const status = unwrap(await api.redisEditCommit({...scope,editId:session.editId,planId:plan.planId}))
       if (alive.current) accept(id,status)
     } catch (error) {
       const code = (error as {code?: string}).code
-      if (alive.current) update(id,{error:(error instanceof Error ? error.message : "保存失败") + (attempted ? "。请检查保存状态，勿重复提交。" : ""),uncertain:attempted || checkOnly || draft.uncertain,stale:draft.stale || (!attempted && ["REDIS_EDIT_STALE","REDIS_EDIT_CONFLICT"].includes(code ?? ""))})
+      if (alive.current) update(id,{error:(error instanceof Error ? error.message : "保存失败") + (attempted ? "。请检查保存状态，勿重复提交。" : ""),uncertain:attempted || checkOnly || draft.uncertain,stale:!isCurrent() || draft.stale || (!attempted && ["REDIS_EDIT_STALE","REDIS_EDIT_CONFLICT"].includes(code ?? ""))})
     } finally { if (alive.current) update(id,{busy:false,phase:undefined}) }
   }
   async function confirmDelete(checkOnly = false) {
     const item = deletionRef.current
     if (!item || item.busy || (!checkOnly && (!isConnected.current || item.uncertain))) return
-    setDeletion({...item,busy:true,phase:checkOnly ? "check" : "commit",error:""})
+    const isCurrent = capture()
+    setDeletion({...item,busy:true,phase:checkOnly ? "check" : item.plan ? "commit" : "prepare",error:""})
     let plan = item.plan, attempted = false
     try {
       if (!plan) plan = unwrap(await api.redisEditPrepare({...scope,editId:item.session.editId}))
+      if (!checkOnly && !isCurrent()) {
+        release(item.session); setDeletion(null); setDeletionVisible(false); return
+      }
+      if (!checkOnly) setDeletion({...item,plan,busy:true,phase:"commit",error:""})
       attempted = !checkOnly
       const payload = {...scope,editId:item.session.editId,planId:plan.planId}
       const status = unwrap(await (checkOnly ? api.redisEditStatus(payload) : api.redisEditCommit(payload)))
       if (!alive.current) return
       if (status.status === "success") { const summary = "已删除 Key：" + item.session.key + (status.result?.auditWarning ? "；操作记录未能写入。" : ""); release(item.session); discard(item.id); saved(item.id,item.session.key,true,summary); setNotice(summary); setDeletion(null); setDeletionVisible(false); toast.success(summary) }
       else setDeletion({...item,plan,busy:false,uncertain:status.status === "unknown" || status.status === "running",error:status.error?.message ?? "删除仍在进行，请检查状态。"})
-    } catch (error) { if (alive.current) setDeletion({...item,plan,busy:false,uncertain:attempted || checkOnly,error:(error instanceof Error ? error.message : "删除失败") + (attempted || checkOnly ? "。删除结果尚未确认，请检查状态或读取核实，勿重复删除。" : "")}) }
+    } catch (error) { if (alive.current && (isCurrent() || attempted || checkOnly)) setDeletion({...item,plan,busy:false,uncertain:attempted || checkOnly,error:(error instanceof Error ? error.message : "删除失败") + (attempted || checkOnly ? "。删除结果尚未确认，请检查状态或读取核实，勿重复删除。" : "")}) }
+    finally {
+      if (alive.current && !isCurrent() && !attempted && !checkOnly && deletionRef.current?.session === item.session) {
+        release(item.session); setDeletion(null); setDeletionVisible(false)
+      }
+    }
   }
   function cancelDelete() { const item = deletionRef.current; if (item?.busy) return; setDeletionVisible(false); if (!item?.uncertain) { release(item?.session); setDeletion(null) } }
   const busy = Boolean(opening) || Object.values(drafts).some(draft => draft.busy) || Boolean(deletion?.busy)
-  function protect(action: () => void, ids = Object.keys(ref.current)) {
+  function protect(action: () => void, ids = Object.keys(ref.current), preserveDrafts = false) {
     if (openingRef.current || Object.values(ref.current).some(draft => draft.busy) || deletionRef.current?.busy) { toast.info("正在处理数据，请等待结果。"); return }
     if (deletionRef.current?.uncertain) { setDeletionVisible(true); return }
     if (ids.some(id => ref.current[id]?.uncertain)) { toast.info("提交结果尚未确认，请先检查保存状态或读取数据核实；关闭草稿不会撤销服务器操作。"); return }
-    const dirty = ids.filter(id => ref.current[id])
+    const dirty = preserveDrafts ? [] : ids.filter(id => ref.current[id])
     if (dirty.length) setPending({action,ids:dirty}); else action()
   }
   async function recheck(id: string, patternId: string) {
     const draft = ref.current[id]
     if (!draft || !isConnected.current || draft.busy || draft.uncertain) return
     if (draft.creating) { release(draft.session); update(id,{session:null,plan:null,stale:false,uncertain:false,error:""}); return }
+    const isCurrent = capture()
     update(id,{busy:true,phase:"read"})
     try {
       const session = unwrap(await api.redisEditOpen({...scope,patternId,key:draft.key,mode:"update"}))
-      if (!alive.current) { release(session); return }
+      if (!isCurrent()) { release(session); return }
       setReview({id,session})
     } catch (error) { update(id,{error:error instanceof Error ? error.message : "无法重新读取"}) }
     finally { if (alive.current) update(id,{busy:false,phase:undefined}) }
@@ -135,7 +152,9 @@ export function useRedisEditing(api: AiOpsV2Api, scope: PluginScope, connected: 
       const status = unwrap(await api.redisEditStatus({...scope,editId:session.editId,planId:plan.planId}))
       if (status.status === "running" || status.status === "prepared") throw new Error("操作仍在处理中，请稍后检查状态。")
       const payload = {...scope,patternId,key}
+      if (!alive.current || epoch !== currentEpoch.current || !isConnected.current) return
       const info = unwrap(await api.redisWorkspaceInspect(payload))
+      if (!alive.current || epoch !== currentEpoch.current || !isConnected.current) return
       const content = info.exists && info.type === "string" ? unwrap(await api.redisWorkspaceRead({...payload,expectedType:info.type})) : null
       if (!alive.current || epoch !== currentEpoch.current || !isConnected.current) throw new Error("连接已变化，请重新核实。")
       setVerification({id,key,exists:content?.exists ?? info.exists,type:info.type,value:content?.value?.text ?? "",complete:Boolean(content?.value && content.value.text !== null && !content.value.truncated),deletion:remove})
@@ -163,13 +182,22 @@ export function useRedisEditing(api: AiOpsV2Api, scope: PluginScope, connected: 
   function finishReview(accept: boolean) {
     const item = reviewRef.current
     if (!item) return
-    if (accept) { release(ref.current[item.id]?.session); update(item.id,{session:item.session,plan:null,stale:false,uncertain:false,error:""}) }
+    if (accept && isConnected.current) { release(ref.current[item.id]?.session); update(item.id,{session:item.session,plan:null,stale:false,uncertain:false,error:""}) }
     else release(item.session)
     setReview(null)
   }
   useEffect(() => { onDirtyChange(Object.keys(drafts).length > 0 || Boolean(opening) || Boolean(deletion)); }, [drafts, opening, deletion, onDirtyChange])
   useEffect(() => {
     setVerification(null)
+    release(reviewRef.current?.session); setReview(null)
+    const item = deletionRef.current
+    if (item && !item.uncertain) {
+      if (item.busy && item.phase === "commit") {
+        setDeletion({...item,uncertain:true,error:"连接已变化，删除结果待核实，请勿重复删除。"})
+      } else if (!item.busy) {
+        release(item.session); setDeletion(null); setDeletionVisible(false)
+      } else setDeletionVisible(false)
+    }
     for (const id of Object.keys(ref.current)) update(id,{stale:true,error:"连接已变化，草稿已保留。请重新读取并核对后继续。"})
     // 连接代次变化后保留本地输入，旧授权不再使用。
     // eslint-disable-next-line react-hooks/exhaustive-deps

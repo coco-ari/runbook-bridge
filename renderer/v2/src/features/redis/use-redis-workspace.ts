@@ -14,6 +14,7 @@ export interface RedisTab {
   readonly key: string
   readonly patternId: string
   readonly pinned: boolean
+  readonly stale?: boolean
   readonly loading: boolean
   readonly error: string
   readonly info: RedisKeyInfo | null
@@ -27,13 +28,14 @@ function unwrap<T>(result: IpcResult<T>): T {
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : "读取失败，请重试。" }
 
-export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: PluginConfigurationRecord, visible: boolean) {
+export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: PluginConfigurationRecord, visible: boolean, connected: boolean, connectionEpoch: number) {
   const patterns = redisPatterns(plugin)
   const [patternId, setPatternId] = useState(patterns[0]?.patternId ?? "")
   const [keys, setKeys] = useState<readonly string[]>([])
   const keysRef = useRef(keys)
   const [cursor, setCursor] = useState<string | null>(null)
   const cursorRef = useRef<string | null>(null)
+  const [scanStale, setScanStale] = useState(false)
   const [complete, setComplete] = useState(false)
   const [loading, setLoading] = useState(false)
   const [scanStatus, setScanStatus] = useState("尚未搜索")
@@ -51,6 +53,11 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
   const visibleRef = useRef(visible)
   visibleRef.current = visible
   const epoch = useRef(0)
+  const connection = useRef({ connected, connectionEpoch })
+  if (connection.current.connected !== connected || connection.current.connectionEpoch !== connectionEpoch) {
+    connection.current = { connected, connectionEpoch }; epoch.current++
+  }
+  const previousEpoch = useRef(connectionEpoch)
   const scanSequence = useRef(0)
   const tabSequences = useRef(new Map<string, number>())
   const queue = useRef<Promise<unknown>>(Promise.resolve())
@@ -71,7 +78,7 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
   function enqueue<T>(work: () => Promise<T>): Promise<T> {
     const captured = epoch.current
     const pending = queue.current.catch(() => undefined).then(() => {
-      if (!mounted.current || captured !== epoch.current || !visibleRef.current) throw new Error("读取已暂停，返回工作区后可刷新重试。")
+      if (!mounted.current || captured !== epoch.current || !connection.current.connected || !visibleRef.current) throw new Error("读取已暂停，返回工作区后可刷新重试。")
       return work()
     })
     queue.current = pending.catch(() => undefined)
@@ -86,17 +93,17 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
   }
 
   async function scan(next = false, selectedPattern = patternId, search = keywordRef.current) {
-    if (!selectedPattern || !visibleRef.current || (next && (scanRun.current || !cursorRef.current))) return
+    if (!connection.current.connected || !selectedPattern || !visibleRef.current || (next && (scanRun.current || !cursorRef.current))) return
     if (scanRun.current) scanRun.current.stopped = true
     const run = { stopped: false }
     scanRun.current = run
     const sequence = ++scanSequence.current
     const captured = epoch.current
-    const current = () => mounted.current && captured === epoch.current && sequence === scanSequence.current
+    const current = () => mounted.current && connection.current.connected && captured === epoch.current && sequence === scanSequence.current
     let nextCursor = next ? cursorRef.current : null
     if (!next) {
       keysRef.current = []; setKeys([]); cursorRef.current = null; setCursor(null)
-      setComplete(false); keywordRef.current = search; setKeyword(search)
+      setScanStale(false); setComplete(false); keywordRef.current = search; setKeyword(search)
     }
     const initialCount = keysRef.current.length
     const started = performance.now()
@@ -168,11 +175,11 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
 
   async function readTab(id: string, more = false, field?: string) {
     const tab = tabsRef.current.find((item) => item.id === id)
-    if (!tab) return
+    if (!tab || !connection.current.connected || ((more || field !== undefined) && tab.stale)) return
     const sequence = (tabSequences.current.get(id) ?? 0) + 1
     tabSequences.current.set(id, sequence)
     const captured = epoch.current
-    const current = () => mounted.current && captured === epoch.current && tabSequences.current.get(id) === sequence && tabsRef.current.some((item) => item.id === id)
+    const current = () => mounted.current && connection.current.connected && captured === epoch.current && tabSequences.current.get(id) === sequence && tabsRef.current.some((item) => item.id === id)
     patchTab(id, { loading: true, error: "", ...(!more && field === undefined ? { fieldContent: null, fieldName: null } : {}) })
     try {
       await enqueue(async () => {
@@ -180,19 +187,19 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
         const payload = { ...scope, patternId: tab.patternId, key: tab.key }
         const info = more || field !== undefined ? tab.info : unwrap(await api.redisWorkspaceInspect(payload))
         if (!current()) return
-        if (info) patchTab(id, { info })
+        if (info) patchTab(id, { info, ...(!info.exists ? { stale: false, content: null, fieldContent: null } : {}) })
         if (info?.auditWarning) setNotice("本次读取已完成，但操作记录未能保存。")
         if (!info?.exists || !visibleRef.current) return
         const supported = ["string", "hash", "list", "set", "zset"].includes(info.type)
         if (!supported) {
-          patchTab(id, { content: { key: tab.key, type: info.type, exists: true, rows: [], complete: true, nextCursor: null, truncated: false, unsupported: true, readAt: info.readAt } })
+          patchTab(id, { stale: false, content: { key: tab.key, type: info.type, exists: true, rows: [], complete: true, nextCursor: null, truncated: false, unsupported: true, readAt: info.readAt } })
           return
         }
         const result = unwrap(await api.redisWorkspaceRead({ ...payload, expectedType: info.type, ...(more && tab.content?.nextCursor ? { cursor: tab.content.nextCursor } : {}), ...(field !== undefined ? { field } : {}) }))
         if (!current()) return
-        if (!result.exists) { patchTab(id, { info: { ...info, exists: false, type: "none", ttlSeconds: -2 }, content: null, fieldContent: null, fieldName: null }); return }
+        if (!result.exists) { patchTab(id, { stale: false, info: { ...info, exists: false, type: "none", ttlSeconds: -2 }, content: null, fieldContent: null, fieldName: null }); return }
         const content = more && tab.content ? { ...result, rows: mergeRedisRows(tab.content.rows, result.rows), truncated: tab.content.truncated || result.truncated } : { ...result, rows: mergeRedisRows([], result.rows) }
-        const accepted = patchTab(id, field !== undefined ? { fieldContent: result, fieldName: field } : { content })
+        const accepted = patchTab(id, field !== undefined ? { fieldContent: result, fieldName: field } : { content, stale: false })
         if (!accepted) {
           if (tab.content) patchTab(id, { content: { ...tab.content, nextCursor: null, complete: false } })
           throw new Error("浏览缓存已达上限；本页未保留，请关闭标签后重新读取。")
@@ -202,7 +209,7 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
     } catch (failure) {
       if (current()) {
         const code = (failure as { code?: string })?.code
-        patchTab(id, { error: (tab.writeSummary ? tab.writeSummary + "；刷新失败，可重新刷新。" : "") + message(failure), ...(["REDIS_TYPE_CHANGED", "REDIS_WORKSPACE_STALE", "PLUGIN_NOT_CONNECTED"].includes(code ?? "") ? { info: null, content: null, fieldContent: null } : {}) })
+        patchTab(id, { error: (tab.writeSummary ? tab.writeSummary + "；刷新失败，可重新刷新。" : "") + message(failure), ...(["REDIS_TYPE_CHANGED", "REDIS_WORKSPACE_STALE", "PLUGIN_NOT_CONNECTED"].includes(code ?? "") ? { stale: true, content: tab.content ? { ...tab.content, nextCursor: null } : null } : {}) })
       }
     } finally { if (current()) patchTab(id, { loading: false }) }
   }
@@ -214,6 +221,7 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
       setActiveId(existing.id)
       return
     }
+    if (!connection.current.connected) return
     const preview = tabsRef.current.find((tab) => !tab.pinned)
     if (!preview && tabsRef.current.length >= REDIS_MAX_TABS) { setNotice("最多打开 8 个标签，请先关闭已有标签。"); return }
     const id = crypto.randomUUID()
@@ -224,6 +232,7 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
     void readTab(id)
   }
   function createTab() {
+    if (!connection.current.connected) return null
     if (tabsRef.current.length >= REDIS_MAX_TABS) { setNotice("最多打开 8 个标签，请先关闭已有标签。"); return null }
     const id = crypto.randomUUID()
     if (!updateTabs(current => [...current,{id,key:"",patternId,pinned:true,loading:false,error:"",info:null,content:null,fieldContent:null,fieldName:null,creating:true}])) return null
@@ -247,11 +256,27 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
     if (id === activeId) setActiveId(tabsRef.current.at(-1)?.id ?? "")
   }
   function changePattern(value: string) {
-    if (value === patternId) return
+    if (!connection.current.connected || value === patternId) return
     setPatternId(value); tabSequences.current.clear(); updateTabs(() => []); setActiveId("")
     void scan(false, value, "")
   }
 
+  useEffect(() => {
+    if (!connected || previousEpoch.current !== connectionEpoch) {
+      if (scanRun.current) scanRun.current.stopped = true
+      scanRun.current = null; scanSequence.current++; tabSequences.current.clear()
+      // 新连接不等待旧连接的迟到读取；旧队列通过代次校验停止继续发请求。
+      queue.current = Promise.resolve()
+      cursorRef.current = null; setCursor(null); setComplete(false); setScanStale(true)
+      setLoading(false); setStopping(false); setScanStatus("断线前的搜索结果，请重新搜索。")
+      updateTabs(current => current.map(tab => ({ ...tab, loading: false, stale: true,
+        content: tab.content ? { ...tab.content, nextCursor: null, complete: false } : null,
+      })))
+    }
+    previousEpoch.current = connectionEpoch
+    // 重连仅恢复操作能力，不自动扫描或读取 Key。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, connectionEpoch])
   useEffect(() => {
     if (!visible) stopScan()
     // 隐藏后暂停自动续扫；重新打开只恢复已保留的结果。
@@ -274,7 +299,7 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  return { patterns, patternId, changePattern, keys, cursor, complete, loading, error, notice, setNotice, readAt, keyword,
+  return { patterns, patternId, changePattern, keys, cursor, complete, scanStale, loading, error, notice, setNotice, readAt, keyword,
     createTab, written, pin: (id: string) => patchTab(id,{pinned:true}),
     scan, stopScan, scanStatus, stopping, tabs, activeId, setActiveId, openKey, closeTab, readTab, clearField: (id: string) => patchTab(id, { fieldContent: null, fieldName: null }) }
 }

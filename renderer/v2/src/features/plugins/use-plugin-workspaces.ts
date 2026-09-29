@@ -6,7 +6,7 @@ import { normalizeEnvironmentRuntime } from "@/features/workspace/workspace-read
 import type { PluginConfigurationRecord } from "./plugin-types"
 import { pluginWorkspaces } from "./workspace-contributions"
 import {
-  EMPTY_PLUGIN_WORKSPACES, openWorkspaceSession, disconnectWorkspaceScope, reconcileWorkspaceSelection, workspaceScopeMatches,
+  EMPTY_PLUGIN_WORKSPACES, openWorkspaceSession, disconnectWorkspaceScope, reconnectWorkspaceScope, reconcileWorkspaceSelection, workspaceScopeMatches,
   type PluginWorkspaceEntry,
 } from "./workspace-registry"
 
@@ -51,6 +51,9 @@ export function usePluginWorkspaceSessions(api: AiOpsV2Api) {
           if (status ? status.status !== "connected" : !runtime.pluginsPartial) {
             // 按事件顺序使旧内容失效，快速断重连不能复用旧游标；草稿由插件保留策略决定。
             next = disconnectWorkspaceScope(next, entry.scope, pluginWorkspaces)
+          } else if (status?.status === "connected") {
+            // 跨选择保留的工作区也需要接收重连状态，原连接代次仍用于隔离旧请求。
+            next = reconnectWorkspaceScope(next, entry.scope)
           }
         }
         return next

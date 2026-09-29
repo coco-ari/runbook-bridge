@@ -108,6 +108,7 @@ function mocks(redisKeySearch) {
   });
   for(const operation of ['open','prepare','commit','status','release']) register('v2:redis-edit-'+operation,async(_event,payload)=>{
     assert.deepEqual({projectId:payload.projectId,environmentId:payload.environmentId,pluginInstanceId:payload.pluginInstanceId},scope);
+    if(state.writeHold?.operation===operation){const hold=state.writeHold;state.writeHold=null;await new Promise(resolve=>{hold.release=resolve;});}
     if(state.writeDelays[operation])await wait(state.writeDelays[operation]);
     if(operation==='open'){
       if(!payload.key.startsWith(payload.patternId+':'))return fail('POLICY_DENIED','Key 不在允许范围。');
@@ -135,10 +136,13 @@ function mocks(redisKeySearch) {
     return ok({planId:plan.planId,status:plan.status,result:{key:session.key,mode:session.mode}});
   });
   register('v2:connection-intent', async (event, payload) => {
-    assert.equal(payload.intent, 'disconnect');
-    plugin.assessment = assessment('disconnected'); sequence++;
+    assert.ok(['disconnect','connect'].includes(payload.intent));
+    assert.equal(payload.projectId,projectId); assert.equal(payload.environmentId,environmentId); assert.equal(payload.pluginInstanceId,scope.pluginInstanceId);
+    if (payload.intent === 'connect') { assert.equal(payload.source,'renderer-plugin'); assert.ok(payload.planId); }
+    if (state.failReconnect && payload.intent === 'connect') return fail('CONNECTION_FAILED','模拟重连失败');
+    plugin.assessment = assessment(payload.intent === 'connect' ? 'connected' : 'disconnected'); sequence++;
     event.sender.send('v2:environment-status-changed', runtime());
-    return ok({ snapshot: runtime() });
+    return ok({ snapshot: runtime(), planId:payload.planId??null, actions:[] });
   });
   for (const [, channel] of fs.readFileSync(path.join(root, 'src', 'preload.cjs'), 'utf8').matchAll(/ipcRenderer\.invoke\('([^']+)'/gu)) {
     if (!channels.has(channel)) register(channel, async (_event,payload) => {
@@ -761,7 +765,9 @@ async function run() {
     await text(win, testId('redis-pattern-current'), '全部 Key（*）');
     await assertCompactSearch(win);
     await click(win, testId('redis-workspace-disconnect'));
-    await waitFor(win, '!document.querySelector("[data-testid=redis-workspace]")', '断连销毁旧会话');
+    await waitFor(win, 'document.querySelector("[data-testid=redis-workspace-disconnected]")', '断连保留工作区');
+    await require('./redis-reconnect-ui.cjs')({win,click,fill,waitFor,testId,active,openKey,menuAction,state,calls,writeValues,value,stamp,
+      publish:phase=>{plugin.assessment=assessment(phase);sequence++;win.webContents.send('v2:environment-status-changed',runtime());}});
     const writes = await win.webContents.executeJavaScript('window.__redisWrites', true);
     assert.ok(!JSON.stringify(writes).includes('cache:text') && !JSON.stringify(writes).includes('精确字段内容'), '数据不得持久化');
     assert.ok(calls.some((entry) => entry.operation === 'release'));

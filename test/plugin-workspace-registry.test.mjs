@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  createWorkspaceRegistry, reconcileWorkspaceSelection, disconnectWorkspaceScope, openWorkspaceSession,
+  createWorkspaceRegistry, reconcileWorkspaceSelection, disconnectWorkspaceScope, reconnectWorkspaceScope, openWorkspaceSession,
 } from '../renderer/v2/src/features/plugins/workspace-registry.ts';
 
 const component = () => null;
@@ -49,7 +49,7 @@ test('配置版本或完整作用域变化不能复用旧会话', () => {
   ]) assert.deepEqual(reconcileWorkspaceSelection(state, selected, registry), {entries:[], activeKey:null});
 });
 
-test('快速断重连不会使已经释放的 Redis 内容和游标复活', () => {
+test('不保留策略下快速断重连不会使已释放的内容和游标复活', () => {
   const redis = entry('redis');
   const state = {entries:[redis], activeKey:redis.key};
   const disconnected = disconnectWorkspaceScope(state, redis.scope, registry);
@@ -116,4 +116,24 @@ test('Redis 草稿跨选择和断连保留，配置身份改变仍释放旧会�
   assert.equal(disconnected.entries[0].dirty,true);assert.equal(disconnected.entries[0].connected,false);assert.equal(disconnected.entries[0].connectionEpoch,1);
   const changed={...redis,key:'redis-v2',plugin:{...redis.plugin,revision:2}};
   assert.deepEqual(reconcileWorkspaceSelection(state,changed,retainedRegistry),{entries:[],activeKey:null});
+});
+
+
+test('Redis 无草稿也保留标签，重连更新后台工作区并保留连接代次', () => {
+  const retained = createWorkspaceRegistry([definition('redis', {retainAcrossSelection:true,retainOnDisconnect:'always',maxSessions:4})]);
+  for (const dirty of [false,true]) {
+    const redis = entry('redis',{dirty}), other = entry('redis',{key:'other',scope:{projectId:'other',environmentId:'other',pluginInstanceId:'redis'},plugin:{projectId:'other',environmentId:'other',pluginInstanceId:'redis',pluginType:'redis'},connected:false});
+    const state = {entries:[redis,other],activeKey:redis.key};
+    const disconnected = disconnectWorkspaceScope(state,redis.scope,retained);
+    assert.equal(disconnected.entries.length,2);
+    assert.equal(disconnected.activeKey,redis.key);
+    assert.equal(reconcileWorkspaceSelection(disconnected,null,retained),disconnected);
+    const reconnected = reconnectWorkspaceScope(disconnected,redis.scope);
+    assert.equal(reconnected.entries[0].connected,true);
+    assert.equal(reconnected.entries[0].dirty,dirty);
+    assert.equal(reconnected.entries[0].connectionEpoch,1);
+    assert.equal(reconnected.entries[1],other);
+    assert.equal(reconnectWorkspaceScope(reconnected,redis.scope),reconnected);
+    assert.deepEqual(reconnectWorkspaceScope({entries:[],activeKey:null},redis.scope),{entries:[],activeKey:null});
+  }
 });

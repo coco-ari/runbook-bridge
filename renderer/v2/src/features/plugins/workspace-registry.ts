@@ -111,6 +111,11 @@ export function disconnectWorkspaceScope(
   return { entries, activeKey: entries.some((entry) => entry.key === state.activeKey) ? state.activeKey : null }
 }
 
+export function reconnectWorkspaceScope(state: PluginWorkspaceState, scope: PluginScope): PluginWorkspaceState {
+  if (!state.entries.some(entry => workspaceScopeMatches(scope, entry.plugin) && !entry.connected)) return state
+  return { ...state, entries: state.entries.map(entry => workspaceScopeMatches(scope, entry.plugin) ? { ...entry, connected: true } : entry) }
+}
+
 export function openWorkspaceSession(
   state: PluginWorkspaceState, entry: PluginWorkspaceEntry, registry: PluginWorkspaceRegistry,
 ): PluginWorkspaceState {
