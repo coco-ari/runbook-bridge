@@ -15,6 +15,7 @@ import { createDirectoryReader } from "./directory-read-controller"
 import { canDragWorkspacePath, type WorkspacePathDrag } from "./workspace-path-drag"
 import { displayServerDirectoryEntries, isWorkspacePathStale, parentRemotePath, serverEntryType, unwrapWorkspaceResult, workspaceErrorMessage } from "./workspace-model"
 import { normalizeWorkspaceLocation, workspaceLocationAncestors } from "./workspace-location"
+import { TREE_INDENT, useTreeContentWidth } from "./use-tree-content-width"
 
 interface DirectoryState { readonly page?: ServerDirectoryPage; readonly loading: boolean; readonly readRequest?: number; readonly loadedAt?: number; readonly resumeRead?: boolean; readonly error?: string; readonly metadataError?: string | undefined; readonly startCursor?: string; readonly history?: readonly string[] }
 interface DirectoryReadResult { readonly page: ServerDirectoryPage; readonly request: number }
@@ -542,6 +543,18 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
     return result
   }, [details, treeRows, directories, path, filter, sort, descending, showHidden])
 
+  const linkLabel = (row: Extract<TreeRow, { kind: "entry" }>) => {
+    const { entry } = row
+    const pending = entry.type === "symlink" && !entry.linkTargetType
+    const metadataError = directories[parentRemotePath(entry.path)]?.metadataError
+    return `→ ${entry.linkTarget ?? (pending ? metadataError ? "点击重试" : "读取中…" : "目标不可用")}${row.cycle ? " · 循环链接" : serverEntryType(entry) === "special" ? " · 特殊文件" : ""}`
+  }
+  const treeLabels = useMemo(() => details ? [] : rows.flatMap(row => row.kind === "entry" ? [{
+    depth: row.depth, name: row.entry.name, download: row.entry.type === "file",
+    ...(row.entry.type === "symlink" ? { link: linkLabel(row) } : {}),
+  }] : []), [rows, details, directories])
+  const treeContentWidth = useTreeContentWidth(scrollRef, treeLabels, !details && visible)
+
   useEffect(() => {
     setFilter("")
     if (details && scrollRef.current) scrollRef.current.scrollTop = 0
@@ -739,7 +752,7 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
     if (index * rowHeight < element.scrollTop) element.scrollTop = index * rowHeight
     else if ((index + 1) * rowHeight > element.scrollTop + element.clientHeight) element.scrollTop = (index + 1) * rowHeight - element.clientHeight
     setViewport({ scrollTop: element.scrollTop, height: element.clientHeight })
-    requestAnimationFrame(() => requestAnimationFrame(() => element.querySelector<HTMLButtonElement>(`[data-tree-index="${index}"]`)?.focus()))
+    requestAnimationFrame(() => requestAnimationFrame(() => element.querySelector<HTMLButtonElement>(`[data-tree-index="${index}"]`)?.focus({ preventScroll: true })))
   }
 
   return <section className="server-file-tree" data-view={details ? "details" : "tree"} aria-label="服务器目录树" onKeyDownCapture={event => {
@@ -835,10 +848,10 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
       }} onClick={event => {
         if (!(event.target as Element).closest("[data-tree-index], button")) event.currentTarget.focus()
       }} onScroll={(event) => setViewport({ scrollTop: event.currentTarget.scrollTop, height: event.currentTarget.clientHeight })}>
-      <div style={{ height: rows.length * rowHeight, position: "relative" }}>
+      <div style={{ height: rows.length * rowHeight, position: "relative", minWidth: details ? undefined : treeContentWidth }}>
         {rows.slice(start, end).map((row, offset) => {
           const index = start + offset
-          const style = { position: "absolute" as const, top: index * rowHeight, left: 0, right: 0, height: rowHeight, paddingLeft: 12 + row.depth * 18 }
+          const style = { position: "absolute" as const, top: index * rowHeight, left: 0, right: 0, height: rowHeight, paddingLeft: 12 + row.depth * TREE_INDENT }
           if (row.kind !== "entry") {
             const state = directories[row.directory]
             return <div key={`status:${row.kind}:${row.directory}`} data-upload-path={row.kind === "error" || row.kind === "cycle" ? "" : row.directory} style={style} className="flex min-w-0 items-center gap-1 pr-2 text-xs text-muted-foreground">
@@ -872,7 +885,7 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
             setRevealError("")
             setSelected(entry.path)
           }} onDragEnd={() => pathDrag.clear()} onClick={event => {
-            if (!(event.target as Element).closest("button")) { event.currentTarget.focus(); activate(false) }
+            if (!(event.target as Element).closest("button")) { event.currentTarget.focus({ preventScroll: true }); activate(false) }
           }} onDoubleClick={event => {
             if ((event.target as Element).closest("button") || isDirectory) return
             event.preventDefault()
@@ -893,7 +906,7 @@ export function ServerFileTree({ api, scope, connected, serverLabel, visible, pa
             <span hidden={details} className="server-tree-chevron">{isDirectory ? open ? <CaretDown size={12} weight="fill" /> : <CaretRight size={12} weight="fill" /> : null}</span>
             <span className="server-tree-icon">{isDirectory ? open ? <FolderOpen className="server-icon-folder" size={16} weight="fill" /> : <FolderSimple className="server-icon-folder" size={16} weight="fill" /> : (entry.type === "symlink" && targetType !== "file") ? <Link className="server-icon-link" size={16} weight="bold" /> : /\.(zip|tar|gz|tgz|jar|7z)$/iu.test(entry.name) ? <FileZip className="server-icon-archive" size={16} weight="duotone" /> : /\.(conf|json|yml|yaml|xml|sh|js|ts|html|css)$/iu.test(entry.name) ? <FileCode className="server-icon-code" size={16} weight="duotone" /> : /\.(txt|log|md)$/iu.test(entry.name) ? <FileText className="server-icon-file" size={16} weight="duotone" /> : <File className="server-icon-file" size={16} weight="duotone" />}{entry.type === "symlink" && supported ? <Link className="server-tree-link-badge" size={11} weight="bold" /> : null}</span>
             <span className="server-tree-name">{entry.name}</span>
-            {entry.type === "symlink" && !details ? <span className="server-tree-link-target" title={entry.linkTarget ?? (pending ? metadataError ?? "正在读取链接信息" : "链接目标无法解析")}>→ {entry.linkTarget ?? (pending ? metadataError ? "点击重试" : "读取中…" : "目标不可用")}{row.cycle ? " · 循环链接" : targetType === "special" ? " · 特殊文件" : ""}</span> : null}
+            {entry.type === "symlink" && !details ? <span className="server-tree-link-target" title={entry.linkTarget ?? (pending ? metadataError ?? "正在读取链接信息" : "链接目标无法解析")}>{linkLabel(row)}</span> : null}
             {details ? <><span className="server-file-size">{entry.size == null || isDirectory ? "--" : formatTransferBytes(entry.size)}</span><time className="server-file-mtime" title={entry.mtime == null ? "" : new Date(entry.mtime * 1000).toLocaleString()}>{entry.mtime == null ? "--" : new Date(entry.mtime * 1000).toLocaleString(undefined, {month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false})}</time></> : null}
             {details && entry.type !== "file" ? <span className="server-file-action-spacer" /> : null}
             {entry.type === "file" ? <Button className="server-tree-download" size="icon-sm" variant="ghost" disabled={!connected || downloadBusy} aria-label={`下载 ${entry.name}`} title="下载文件" onClick={event => { event.stopPropagation(); onDownload(entry) }}><DownloadSimple size={15} /></Button> : null}
