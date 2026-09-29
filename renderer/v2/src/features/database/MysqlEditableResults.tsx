@@ -1,3 +1,4 @@
+import { useMysqlConnectionBoundary } from "./use-mysql-connection-boundary"
 import type { PublicError } from "@/bridge/ai-ops-v2"
 import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
 import { OperationMessage, OperationSpinner, useOperationLabel } from "@/components/workspace/OperationFeedback"
@@ -28,12 +29,14 @@ function MysqlRowAction({ hint, railClassName, ...props }: ComponentProps<typeof
   return <Tooltip><TooltipTrigger asChild><span className={"mysql-row-action " + (railClassName ?? "")} tabIndex={props.disabled ? 0 : undefined}><Button {...props} size="icon-sm" variant="ghost" /></span></TooltipTrigger><TooltipContent side="right" sideOffset={8}>{hint}</TooltipContent></Tooltip>
 }
 
-export function MysqlEditableResults({ api, scope, documentKey, sql, result, visible = true, onReload, feedback, children }: {
+export function MysqlEditableResults({ api, scope, documentKey, sql, result, visible = true, resultStale = false, onReload, feedback, children }: {
   readonly api: AiOpsV2Api; readonly scope: PluginScope; readonly documentKey: string; readonly sql: string; readonly result: MysqlQueryResult
+  readonly resultStale?: boolean
   readonly visible?: boolean; readonly onReload: (summary?: string) => void; readonly children: ReactNode
   readonly feedback?: { diagnostic?: PublicError | undefined; busy: boolean; error: string; message: string }
 }) {
   const guard = useMysqlEditingGuard()
+  const boundary = useMysqlConnectionBoundary()
   const [edit, setEdit] = useState<MysqlEditData | null>(null)
   const editRef = useRef(edit)
   const [drafts, setDrafts] = useState<Drafts>({})
@@ -100,7 +103,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   const pendingRows = Object.keys(drafts).filter(id => !deleted.has(id))
   const pendingCount = pendingRows.length + inserts.length + deleted.size
   const cellCount = Object.entries(drafts).filter(([id]) => !deleted.has(id)).reduce((count, [, values]) => count + Object.keys(values).length, 0) + inserts.reduce((count, row) => count + Object.keys(row.values).length, 0)
-  const locked = Boolean(busy || uncertain || stale || !guard.connected || feedback?.busy || feedback?.error)
+  const locked = Boolean(busy || uncertain || stale || resultStale || !guard.connected || feedback?.busy || feedback?.error)
   const waiting = useOperationLabel(Boolean(busy || feedback?.busy), busy === "check" ? "正在检查保存状态…" : busy === "prepare" ? "正在校验更改…" : busy === "commit" ? "正在保存更改…" : busy === "open" ? reading : "正在刷新数据…")
   useEffect(() => {
     alive.current = true
@@ -121,6 +124,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   useEffect(() => {
     if (connectionEpoch.current !== guard.connectionEpoch && editRef.current) { setStale(true); setError("连接已变化，旧数据不能继续保存。请刷新并核对修改。") }
     connectionEpoch.current = guard.connectionEpoch
+    setDeleteConfirmation(false)
   }, [guard.connectionEpoch])
   useEffect(() => { if (activeCell) { inputRef.current?.focus({ preventScroll: true }); if (insertsRef.current.some(row => row.rowId === activeCell.rowId && row.copied)) inputRef.current?.select() } }, [activeCell?.rowId, activeCell?.name, activeCell?.modal])
 
@@ -270,7 +274,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
     }
   }
   async function commit(prepared: MysqlEditPlan, checkOnly = false) {
-    if (!editRef.current || busyRef.current === "commit" || busyRef.current === "check") return
+    if ((!checkOnly && (stale || resultStale || !connected.current)) || !editRef.current || busyRef.current === "commit" || busyRef.current === "check") return
     setError(""); setWorking(checkOnly ? "check" : "commit")
     try {
       const payload = { ...scope, editId: editRef.current.editId, planId: prepared.planId }
@@ -290,9 +294,11 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
       ...insertsRef.current.map(row => ({ kind: "insert" as const, rowId: row.rowId, values: row.values })),
     ]
     if (!changes.length) return
+    const isCurrent = boundary.capture()
     setWorking("prepare"); setError(""); setNotice("")
     try {
       const response = await api.mysqlEditPrepare({ ...scope, editId: edit.editId, changes })
+      if (!isCurrent() || !alive.current) return
       if (!response.ok) {
         if (response.error.code === "MYSQL_EDIT_STALE") setStale(true)
         const details = response.error.details as { column?: string; rowIds?: string[] } | undefined

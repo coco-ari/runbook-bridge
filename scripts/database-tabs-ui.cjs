@@ -76,7 +76,9 @@ module.exports = async function ({win,fill,click,waitFor,textContains,testId,scr
   assert.equal(await evaluate("document.querySelectorAll('[data-testid=mysql-database-workspace]').length"),1);
   state.failDisconnect = false;
   await click(win,testId('mysql-workspace-disconnect'));
-  await waitFor(win,"document.querySelector('[data-testid=mysql-full-window-workspace]') === null",'成功断开清理数据库工作区');
+  await waitFor(win,"document.querySelector('[data-testid=mysql-workspace-disconnected]') !== null",'成功断开保留数据库工作区');
+  await click(win,testId('mysql-workspace-reconnect'));
+  await waitFor(win,"document.querySelector('[data-testid=mysql-workspace-disconnected]') === null",'工作区内重新连接');
   state.allowDisconnect = false;
   state.browseFixture = false;
 };

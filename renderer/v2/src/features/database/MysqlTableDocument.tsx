@@ -1,3 +1,4 @@
+import { useMysqlConnectionBoundary } from "./use-mysql-connection-boundary"
 import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { useEffect, useRef, useState } from "react"
 import { Key, ListBullets, Table as TableIcon } from "@phosphor-icons/react"
@@ -38,6 +39,7 @@ export function MysqlTableDocument({ api, scope, table, visible, dragScope, maxR
   readonly api: AiOpsV2Api; readonly scope: PluginScope; readonly table: string
   readonly visible: boolean; readonly dragScope: string; readonly maxRows: number
 }) {
+  const { connected, connectionEpoch, capture } = useMysqlConnectionBoundary()
   const [tab, setTab] = useState("preview")
   const [filterHost, setFilterHost] = useState<HTMLDivElement | null>(null)
   const [description, setDescription] = useState<MysqlTableDescription | null>(null)
@@ -45,23 +47,25 @@ export function MysqlTableDocument({ api, scope, table, visible, dragScope, maxR
   const [loading, setLoading] = useState(true)
   const ticket = useRef(0)
   async function refresh() {
+    if (!connected) return
+    const isCurrent = capture()
     const owner = ++ticket.current
     setLoading(true)
     setError("")
     try {
       const response = await api.mysqlDescribeTable({ ...scope, table })
-      if (ticket.current !== owner) return
+      if (!isCurrent() || ticket.current !== owner) return
       if (!response.ok) throw new Error(response.error.message)
       setDescription(response.data)
     } catch (failure) {
-      if (ticket.current === owner) setError(failure instanceof Error ? failure.message : "表结构读取失败")
-    } finally { if (ticket.current === owner) setLoading(false) }
+      if (isCurrent() && ticket.current === owner) setError(failure instanceof Error ? failure.message : "表结构读取失败")
+    } finally { if (isCurrent() && ticket.current === owner) setLoading(false) }
   }
-  useEffect(() => { void refresh(); return () => { ticket.current++ } }, [])
+  useEffect(() => { setLoading(false); if (connected) void refresh(); return () => { ticket.current++ } }, [connected, connectionEpoch])
   return <div className="mysql-table-content">
     {visible ? <>
-      <div className="mysql-table-toolbar"><Tabs value={tab} onValueChange={setTab}><TabsList aria-label="数据表视图" variant="line"><TabsTrigger data-testid="mysql-table-preview-tab" value="preview"><TableIcon />数据</TabsTrigger><TabsTrigger data-testid="mysql-table-structure-tab" value="structure"><ListBullets />结构</TabsTrigger></TabsList></Tabs><div className="mysql-table-result-filter" ref={setFilterHost} hidden={tab !== "preview"} />{tab === "structure" ? <WorkspaceIconButton action="refresh" label="刷新表结构" busy={loading} onClick={() => void refresh()} /> : null}</div>
-      {error ? <div role="alert" className="mysql-browser-error" data-testid="mysql-structure-error">{error}<Button onClick={() => void refresh()} size="sm" variant="ghost">重试</Button></div> : null}
+      <div className="mysql-table-toolbar"><Tabs value={tab} onValueChange={setTab}><TabsList aria-label="数据表视图" variant="line"><TabsTrigger data-testid="mysql-table-preview-tab" value="preview"><TableIcon />数据</TabsTrigger><TabsTrigger data-testid="mysql-table-structure-tab" value="structure"><ListBullets />结构</TabsTrigger></TabsList></Tabs><div className="mysql-table-result-filter" ref={setFilterHost} hidden={tab !== "preview"} />{tab === "structure" ? <WorkspaceIconButton action="refresh" label="刷新表结构" disabled={!connected} busy={loading} onClick={() => void refresh()} /> : null}</div>
+      {error ? <div role="alert" className="mysql-browser-error" data-testid="mysql-structure-error">{error}<Button disabled={!connected} onClick={() => void refresh()} size="sm" variant="ghost">重试</Button></div> : null}
       {description?.auditWarning ? <p role="status" className="mysql-browser-error">表结构已读取，但操作记录未能保存。</p> : null}
       {tab === "structure" ? loading ? <p role="status">正在读取表结构…</p> : description ? <TableStructure description={description} /> : null : null}
     </> : null}

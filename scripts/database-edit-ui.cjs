@@ -326,6 +326,12 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   assert.match(await current(cell(2,'label')),/断连保留的草稿/u);
   assert.equal((await fixture.read())[1].label,'其他用户已修改');
   await screenshot(win,'edit-disconnected');
+  plugins.find(p=>p.pluginInstanceId===PRIMARY_ID).assessment={phase:'connected',primaryStatus:{kind:'connected',label:'已连接',action:'disconnect'}};
+  state.sequence++;win.webContents.send('v2:environment-status-changed',runtime());
+  await waitFor(win,'document.querySelector("[data-testid=mysql-workspace-disconnected]")===null','重连后保留数据编辑工作区');
+  assert.equal(await evaluate('document.querySelector("[data-testid=mysql-edit-save]").disabled'),true,'重连后旧编辑快照不能直接保存');
+  assert.match(await current(cell(2,'label')),/断连保留的草稿/u);
+  assert.equal((await fixture.read())[1].label,'其他用户已修改','断重连不自动保存本地草稿');
   assert.ok(fixture.audits.some(entry=>entry.auditAction==='mysql.update'&&entry.result==='success'&&entry.affectedRows===2));
   assert.doesNotMatch(JSON.stringify(fixture.audits),/SQL入口保存|统一赋值|多行/u);
   process.stdout.write('数据库编辑 UI 通过：两个入口、右键菜单、防误触、拖选与取消、四类 SQL 预览/复制/导出、主键只读、暂存、批量、单次保存、原位布局、精确小数、复制、行详情、NULL、多行、关闭保护、并发冲突及断连草稿（'+(fixture.live?'真实 MySQL':'隔离内存夹具')+'）。\n');

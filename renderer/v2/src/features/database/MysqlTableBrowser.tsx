@@ -1,3 +1,4 @@
+import { useMysqlConnectionBoundary } from "./use-mysql-connection-boundary"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { SelectControl, SelectItem } from "@/components/ui/select"
 import { useEffect, useRef, useState } from "react"
@@ -17,6 +18,8 @@ export function MysqlTableBrowser({ api, scope, table, description, maxRows, vis
   readonly description: MysqlTableDescription | null; readonly maxRows: number
 }) {
   const editing = useMysqlEditingGuard()
+  const { connected, connectionEpoch, capture } = useMysqlConnectionBoundary()
+  const previousEpoch = useRef(connectionEpoch)
   const documentKey = "table:" + table
   const protect = (action: () => void) => editing.protect(action, [documentKey])
   const filterRef = useRef<HTMLInputElement>(null)
@@ -45,7 +48,8 @@ export function MysqlTableBrowser({ api, scope, table, description, maxRows, vis
   useEffect(() => { active.current = true; return () => { active.current = false; owner.current++ } }, [])
 
   async function readPage(reset: boolean, configuration = applied.current, summary?: string) {
-    if (!editing.connected || !active.current || (!reset && (busy.current || !hasMore))) return
+    if (!connected || !active.current || (!reset && (busy.current || !hasMore || refreshRequired))) return
+    const isCurrent = capture()
     if (summary !== undefined) { writeSummaryRef.current = summary; setWriteSummary(summary) }
     const ticket = ++owner.current
     const previous = reset ? null : current.current
@@ -62,7 +66,7 @@ export function MysqlTableBrowser({ api, scope, table, description, maxRows, vis
     const orderBy: MysqlSort[] = [...(configuration.sort ? [configuration.sort] : []), ...primaryKeys.filter(column => column !== configuration.sort?.column).map(column => ({ column, direction: "asc" as const }))].slice(0, 8)
     try {
       const response = await api.mysqlPreviewTable({ ...scope, table, where: configuration.where, orderBy, limit: configuration.limit, offset: previous?.rowCount ?? 0 })
-      if (!active.current || owner.current !== ticket) return
+      if (!isCurrent() || !active.current || owner.current !== ticket) return
       if (!response.ok) throw new Error(response.error.message)
       const data = response.data
       if (previous && JSON.stringify(previous.columns) !== JSON.stringify(data.columns)) throw new Error("表结构已变化，请重新执行查询。")
@@ -81,14 +85,22 @@ export function MysqlTableBrowser({ api, scope, table, description, maxRows, vis
       setHasMore(more)
       setMessage(capped ? `已加载 ${MYSQL_BROWSE_MAX_ROWS} 行，请缩小筛选范围后重新查询。` : data.truncated && !data.rowCount ? "单行数据超过读取上限，请在 SQL 页选择需要的字段。" : more ? "向下滚动继续加载" : "已加载完本次查询的数据")
     } catch (failure) {
-      if (active.current && owner.current === ticket) setError((writeSummaryRef.current ? writeSummaryRef.current + " 刷新失败，可点击刷新重新读取。" : "") + (failure instanceof Error ? failure.message : "数据查询失败，请重试。"))
+      if (isCurrent() && active.current && owner.current === ticket) setError((writeSummaryRef.current ? writeSummaryRef.current + " 刷新失败，可点击刷新重新读取。" : "") + (failure instanceof Error ? failure.message : "数据查询失败，请重试。"))
     } finally {
-      if (active.current && owner.current === ticket) { busy.current = false; setLoading(false) }
+      if (isCurrent() && active.current && owner.current === ticket) { busy.current = false; setLoading(false) }
     }
   }
   useEffect(() => {
-    if (description && !started.current) { started.current = true; void readPage(true) }
-  }, [description])
+    if (!connected || previousEpoch.current !== connectionEpoch) {
+      owner.current++; busy.current = false; setLoading(false)
+      setRefreshRequired(true); setHasMore(false)
+      setMessage("断线前的数据，请重新执行或刷新。")
+    }
+    previousEpoch.current = connectionEpoch
+  }, [connected, connectionEpoch])
+  useEffect(() => {
+    if (connected && description && !started.current) { started.current = true; void readPage(true) }
+  }, [description, connected])
   function dropColumn(event: React.DragEvent<HTMLInputElement>) {
     const raw = event.dataTransfer.getData("application/x-runbook-mysql-column")
     if (!raw) return
@@ -122,9 +134,10 @@ export function MysqlTableBrowser({ api, scope, table, description, maxRows, vis
         <p className="text-xs font-medium">本次查询 SQL</p>
         <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded border p-2 font-mono text-xs">{"SELECT * FROM " + quoteMysqlIdentifier(table) + (where.trim() ? " WHERE " + where.trim() : "") + (order.length ? " ORDER BY " + order.map(item => quoteMysqlIdentifier(item.column) + " " + item.direction.toUpperCase()).join(", ") : "") + " LIMIT " + requestedPageSize}</pre>
       </PopoverContent></Popover>
-      <Button data-testid="mysql-preview-run" size="sm" type="submit"><Play />{loading ? "重新查询" : "执行"}</Button>
+      <Button disabled={!connected} data-testid="mysql-preview-run" size="sm" type="submit"><Play />{loading ? "重新查询" : "执行"}</Button>
     </form>
     </> : null}
-    {result ? <MysqlEditableResults key={generation} feedback={{busy: loading, error: error ?? "", message: writeSummary}} api={api} scope={scope} documentKey={documentKey} result={result} sql={editSql} visible={visible} onReload={summary => void readPage(true, applied.current, summary)}><MysqlQueryResults columnWidthCache={columnWidthCache.current} columnWidthScope={JSON.stringify([dragScope, table])} persistColumnWidths filterHost={filterHost} snapshot={snapshot} columnDragScope={{ workspace: dragScope, table }} kind="preview" result={result} sort={sort} onSort={next => protect(() => { setSort(next); void readPage(true, { where: where.trim(), sort: next, limit: requestedPageSize }) })} stream={{ key: `${table}/${generation}`, loading, hasMore: hasMore && !error && !refreshRequired, retry: Boolean(error) && !refreshRequired && editing.connected, onLoadMore: () => void readPage(false), message }} /></MysqlEditableResults> : <div className="mysql-browser-empty" data-testid={error ? "mysql-preview-error" : undefined} role={error ? "alert" : "status"}>{loading ? "正在读取数据…" : error || message || `输入筛选条件或直接执行，每次读取 ${pageSize} 行。`}</div>}
+    {result && refreshRequired ? <p className="mysql-edit-message" role="status" data-testid="mysql-preview-stale">断线或刷新前的数据，请重新执行或刷新以获取最新数据。</p> : null}
+    {result ? <MysqlEditableResults resultStale={refreshRequired} key={generation} feedback={{busy: loading, error: error ?? "", message: writeSummary}} api={api} scope={scope} documentKey={documentKey} result={result} sql={editSql} visible={visible} onReload={summary => void readPage(true, applied.current, summary)}><MysqlQueryResults columnWidthCache={columnWidthCache.current} columnWidthScope={JSON.stringify([dragScope, table])} persistColumnWidths filterHost={filterHost} snapshot={snapshot} columnDragScope={{ workspace: dragScope, table }} kind="preview" result={result} sort={sort} onSort={next => { if (connected) protect(() => { setSort(next); void readPage(true, { where: where.trim(), sort: next, limit: requestedPageSize }) }) }} stream={{ key: `${table}/${generation}`, loading, hasMore: hasMore && !error && !refreshRequired, retry: Boolean(error) && !refreshRequired && editing.connected, onLoadMore: () => void readPage(false), message }} /></MysqlEditableResults> : <div className="mysql-browser-empty" data-testid={error ? "mysql-preview-error" : undefined} role={error ? "alert" : "status"}>{loading ? "正在读取数据…" : error || message || `输入筛选条件或直接执行，每次读取 ${pageSize} 行。`}</div>}
   </div>
 }

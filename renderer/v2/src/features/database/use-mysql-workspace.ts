@@ -1,3 +1,4 @@
+import { useMysqlConnectionBoundary } from "./use-mysql-connection-boundary"
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import type {
@@ -18,6 +19,7 @@ function readError(error: unknown, fallback: string): string {
 }
 
 export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
+  const { connected, connectionEpoch, capture } = useMysqlConnectionBoundary()
   const [tables, setTables] = useState<readonly MysqlTableSummary[]>([])
   const [tablesLoading, setTablesLoading] = useState(false)
   const [tablesError, setTablesError] = useState<string | null>(null)
@@ -31,7 +33,8 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
   const { projectId, environmentId, pluginInstanceId } = scope
 
   const loadTables = useCallback(async (cursor?: string) => {
-    if (!active.current || busy.current.tables) return
+    if (!connected || !active.current || busy.current.tables) return
+    const isCurrent = capture()
     const ticket = ++tickets.current.tables
     busy.current.tables = true
     setTablesLoading(true)
@@ -51,7 +54,7 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
         limit: MYSQL_TABLE_PAGE_SIZE,
         ...(cursor ? { cursor } : {}),
       }))
-      if (!active.current || ticket !== tickets.current.tables) return
+      if (!isCurrent() || !active.current || ticket !== tickets.current.tables) return
       setTables((current) => {
         if (!cursor) return result.tables
         const existing = new Set(current.map((table) => table.name))
@@ -62,18 +65,20 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
       setTablesAuditWarning((current) => current || result.auditWarning === true)
       setTablesLoaded(true)
     } catch (error) {
-      if (active.current && ticket === tickets.current.tables) setTablesError(readError(error, "数据表读取失败，请重试。"))
+      if (isCurrent() && active.current && ticket === tickets.current.tables) setTablesError(readError(error, "数据表读取失败，请重试。"))
     } finally {
-      if (active.current && ticket === tickets.current.tables) {
+      if (isCurrent() && active.current && ticket === tickets.current.tables) {
         busy.current.tables = false
         setTablesLoading(false)
       }
     }
-  }, [api, projectId, environmentId, pluginInstanceId])
+  }, [api, projectId, environmentId, pluginInstanceId, connected, connectionEpoch, capture])
 
   useEffect(() => {
     active.current = true
-    void loadTables()
+    setTablesLoading(false)
+    setNextCursor(null)
+    if (connected) void loadTables()
     return () => {
       // 断连、切换作用域或配置后，旧请求不得回填到新的数据库会话。
       active.current = false

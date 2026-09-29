@@ -12,7 +12,7 @@ const definition = (type, overrides = {}) => ({
 });
 const registry = createWorkspaceRegistry([
   definition('server', {retainAcrossSelection:true, retainOnDisconnect:'always', maxSessions:8}),
-  definition('mysql', {retainOnDisconnect:'dirty'}), definition('redis'),
+  definition('mysql', {retainOnDisconnect:'always'}), definition('redis'),
   definition('test-queue', {retainAcrossSelection:true}),
 ]);
 function entry(type, overrides = {}) {
@@ -57,18 +57,20 @@ test('快速断重连不会使已经释放的 Redis 内容和游标复活', () =
   assert.deepEqual(reconcileWorkspaceSelection(disconnected, redis, registry), disconnected);
 });
 
-test('MySQL 断连保留编辑草稿并推进连接代次，非编辑会话被释放', () => {
+test('MySQL 断连保留所有文档并推进连接代次，重连仍使用原工作区', () => {
   for (const dirty of [true, false]) {
     const mysql = entry('mysql', {dirty});
     const state = {entries:[mysql], activeKey:mysql.key};
     const disconnected = disconnectWorkspaceScope(state, mysql.scope, registry);
-    if (dirty) {
-      assert.equal(disconnected.activeKey, mysql.key);
-      assert.equal(disconnected.entries[0].connectionEpoch, 1);
-      assert.equal(disconnected.entries[0].dirty, true);
-      assert.equal(disconnected.entries[0].connected, false);
-      assert.equal(reconcileWorkspaceSelection(disconnected, {...mysql, connected:false}, registry).entries.length, 1);
-    } else assert.deepEqual(disconnected, {entries:[], activeKey:null});
+    assert.equal(disconnected.activeKey, mysql.key);
+    assert.equal(disconnected.entries[0].connectionEpoch, 1);
+    assert.equal(disconnected.entries[0].dirty, dirty);
+    assert.equal(disconnected.entries[0].connected, false);
+    assert.equal(reconcileWorkspaceSelection(disconnected, {...mysql, connected:false}, registry).entries.length, 1);
+    const restored = reconcileWorkspaceSelection(disconnected, mysql, registry);
+    assert.equal(restored.activeKey, mysql.key);
+    assert.equal(restored.entries[0].connected, true);
+    assert.equal(restored.entries[0].connectionEpoch, 1);
   }
 });
 

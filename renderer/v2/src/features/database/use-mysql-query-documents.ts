@@ -1,3 +1,4 @@
+import { useMysqlConnectionBoundary } from "./use-mysql-connection-boundary"
 import { useEffect, useRef, useState } from "react"
 
 import type { AiOpsV2Api, MysqlQueryResult, MysqlSqlMode, MysqlSqlState, PluginScope, PublicError } from "@/bridge/ai-ops-v2"
@@ -8,6 +9,7 @@ export const MYSQL_MAX_QUERY_DOCUMENTS = 6
 export const mysqlSqlGuardKey = (id: string) => `sql:${id}`
 
 interface MysqlDocumentRead {
+  readonly stale?: boolean
   readonly revision?: number
   readonly writeSummary?: string
   readonly executedSql?: string
@@ -27,7 +29,7 @@ export interface MysqlQueryDocument {
   readonly result: MysqlDocumentRead
   readonly confirmation: boolean
 }
-interface QueryTicket { ticket: number; busy: boolean; released?: boolean }
+interface QueryTicket { ticket: number; busy: boolean; executing?: boolean; released?: boolean }
 const createQuery = (number: number): MysqlQueryDocument => ({
   id: `query-${number}`, documentId: `sql-${crypto.randomUUID()}`, name: `SQL 查询 ${number}`, sql: "", mode: "atomic", execution: null,
   result: { data: null, loading: false, error: null }, confirmation: false,
@@ -43,6 +45,9 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
   const tickets = useRef(new Map<string, QueryTicket>([["query-1", { ticket: 0, busy: false }]]))
   const active = useRef(false)
   const guard = useMysqlEditingGuard()
+  const { connected, connectionEpoch, capture } = useMysqlConnectionBoundary()
+  const previousEpoch = useRef(connectionEpoch)
+  const pollTimers = useRef(new Set<number>())
   const { projectId, environmentId, pluginInstanceId } = scope
   const scopeRef = { projectId, environmentId, pluginInstanceId }
   function update(id: string, change: (document: MysqlQueryDocument) => MysqlQueryDocument) {
@@ -65,19 +70,42 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
     active.current = true
     return () => {
       active.current = false
+      for (const timer of pollTimers.current) window.clearInterval(timer)
+      pollTimers.current.clear()
       for (const ticket of tickets.current.values()) { ticket.ticket++; ticket.busy = false }
       // 通常由关闭守卫先等待释放；卸载兜底只释放会话，绝不提交事务。
       for (const document of documentsRef.current) if (!tickets.current.get(document.id)?.released) void api.mysqlSql({ projectId, environmentId, pluginInstanceId, documentId: document.documentId, operation: "release" }).catch(() => {})
     }
   }, [api, projectId, environmentId, pluginInstanceId])
   useEffect(() => {
+    if (!connected || previousEpoch.current !== connectionEpoch) {
+      for (const timer of pollTimers.current) window.clearInterval(timer)
+      pollTimers.current.clear()
+      for (const document of documentsRef.current) {
+        const owner = tickets.current.get(document.id)
+        const uncertain = owner?.executing || document.execution?.transaction === "active"
+          || document.execution?.transaction === "unknown" || document.execution?.status === "unknown"
+        if (owner) { owner.ticket++; owner.busy = false; owner.executing = false }
+        // 文本与结果快照保留；旧确认失效，在途执行或事务必须先核对状态。
+        update(document.id, current => ({ ...current, confirmation: false,
+          execution: uncertain && current.execution ? { ...current.execution, status: "unknown", transaction: "unknown" }
+            : current.execution?.status === "prepared" ? null : current.execution,
+          result: { ...current.result, loading: false, stale: true },
+        }))
+      }
+    }
+    previousEpoch.current = connectionEpoch
+  }, [connected, connectionEpoch])
+  useEffect(() => {
+    if (!connected) return
+    const isCurrent = capture()
     const reading = new Set<string>()
     const timer = window.setInterval(() => {
       for (const document of documentsRef.current) {
         if (tickets.current.get(document.id)?.busy || reading.has(document.id) || !document.execution || (document.execution.transaction === "none" && document.execution.status !== "unknown")) continue
         reading.add(document.id)
         void api.mysqlSql({ projectId, environmentId, pluginInstanceId, documentId: document.documentId, operation: "status" }).then(response => {
-          if (!active.current || !response.ok) return
+          if (!isCurrent() || !active.current || !response.ok) return
           const previous = find(document.id)?.execution
           if (!previous || tickets.current.get(document.id)?.busy || previous.plan?.planId !== response.data.plan?.planId) return
           // 状态变化更新结果；仅摘要/校时变化保留结果引用和revision，避免重置滚动和选择。
@@ -90,7 +118,7 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
       }
     }, 2500)
     return () => window.clearInterval(timer)
-  }, [api, projectId, environmentId, pluginInstanceId])
+  }, [api, projectId, environmentId, pluginInstanceId, connected, connectionEpoch, capture])
   const documentIds = documents.map(document => document.id).join("|")
   useEffect(() => {
     const ids = documentIds.split("|")
@@ -135,6 +163,9 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
   }
   function applyState(id: string, state: MysqlSqlState, loading = false) {
     update(id, current => {
+      if (current.result.stale && (state.status === "running" || state.status === "prepared" || state.transaction === "active")) {
+        state = { ...state, status: "unknown", transaction: "unknown" }
+      }
       const single = state.results.length === 1 ? state.results[0] : null
       return { ...current, execution: state, mode: state.mode, result: { ...current.result,
         data: single?.data ?? null, loading, revision: (current.result.revision ?? 0) + (loading ? 0 : 1), error: state.error?.message ?? null,
@@ -154,11 +185,13 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
   }
   async function execute(id: string, confirmed = false) {
     const owner = tickets.current.get(id), document = find(id), plan = document?.execution?.plan
-    if (!owner || !document || !plan || owner.busy) return
+    if (!connected || !owner || !document || !plan || owner.busy || document.result.stale) return
+    const connectionIsCurrent = capture()
+    owner.executing = true
     owner.busy = true
     const ticket = ++owner.ticket
     let finished = false
-    const isCurrent = () => !finished && active.current && tickets.current.get(id) === owner && ticket === owner.ticket
+    const isCurrent = () => !finished && connectionIsCurrent() && active.current && tickets.current.get(id) === owner && ticket === owner.ticket
     update(id, current => ({ ...current, confirmation: false, result: { ...current.result, loading: true, error: null } }))
     let polling = false
     const timer = window.setInterval(() => {
@@ -168,6 +201,7 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
         if (response.ok && isCurrent()) applyState(id, response.data, true)
       }).catch(() => {}).finally(() => { polling = false })
     }, 750)
+    pollTimers.current.add(timer)
     try {
       const response = await api.mysqlSql({ ...scopeRef, documentId: document.documentId, operation: "execute", planId: plan.planId, ...(confirmed ? { confirmed: true } : {}) })
       if (!isCurrent()) return
@@ -178,52 +212,67 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
         // IPC 中断可能发生在服务器已经写入后。先读取状态，无法核实时锁住重试。
         try {
           const status = await api.mysqlSql({ ...scopeRef, documentId: document.documentId, operation: "status" })
+          if (!isCurrent()) return
           if (status.ok && status.data.status !== "running" && status.data.status !== "prepared") applyState(id, status.data)
           else {
             fail(id, error)
             update(id, current => ({ ...current, execution: { ...(current.execution ?? document.execution!), status: "unknown", transaction: "unknown" } }))
           }
         } catch {
+          if (!isCurrent()) return
           fail(id, error)
           update(id, current => ({ ...current, execution: { ...(current.execution ?? document.execution!), status: "unknown", transaction: "unknown" } }))
         }
       }
-    } finally { window.clearInterval(timer); if (isCurrent()) owner.busy = false; finished = true }
+    } finally { window.clearInterval(timer); pollTimers.current.delete(timer); if (isCurrent()) { owner.busy = false; owner.executing = false }; finished = true }
   }
   async function runQuery(id: string, sql: string, summary = "", lineOffset = 0) {
     const owner = tickets.current.get(id), document = find(id)
-    if (!active.current || !owner || owner.busy || !document || !sql.trim() || document.execution?.status === "unknown" || document.execution?.transaction === "unknown") return
+    if (!connected || !active.current || !owner || owner.busy || !document || !sql.trim() || document.execution?.status === "unknown" || document.execution?.transaction === "unknown") return
+    const ticket = ++owner.ticket
+    const connectionIsCurrent = capture()
+    const isCurrent = () => connectionIsCurrent() && active.current && tickets.current.get(id) === owner && owner.ticket === ticket
     owner.busy = true
     update(id, current => ({ ...current, confirmation: false, result: { ...current.result, executedSql: sql, lineOffset: summary ? current.result.lineOffset ?? 0 : lineOffset, writeSummary: summary, loading: true, error: null } }))
     try {
+      if (document.result.stale) {
+        const released = await api.mysqlSql({ ...scopeRef, documentId: document.documentId, operation: "release" })
+        if (!isCurrent()) return
+        if (!released.ok) throw Object.assign(new Error(released.error.message), { publicError: released.error })
+      }
       owner.released = false
       const response = await api.mysqlSql({ ...scopeRef, documentId: document.documentId, operation: "prepare", sql, mode: /^(COMMIT|ROLLBACK)$/i.test(sql.trim()) ? "manual" : document.mode })
-      if (!active.current || tickets.current.get(id) !== owner) return
+      if (!isCurrent()) return
       if (!response.ok) throw Object.assign(new Error(response.error.message), { publicError: response.error })
+      update(id, current => ({ ...current, result: { ...current.result, stale: false } }))
       applyState(id, response.data)
       owner.busy = false
       if (response.data.plan?.requiresConfirmation) update(id, current => ({ ...current, confirmation: true }))
       else await execute(id)
-    } catch (error) { if (active.current && tickets.current.get(id) === owner) fail(id, error) }
-    finally { owner.busy = false }
+    } catch (error) { if (isCurrent()) fail(id, error) }
+    finally { if (isCurrent()) owner.busy = false }
   }
   async function checkStatus(id: string) {
     const document = find(id)
-    if (!document || tickets.current.get(id)?.busy) return
+    if (!connected || !document || tickets.current.get(id)?.busy) return
+    const isCurrent = capture()
     try {
       const response = await api.mysqlSql({ ...scopeRef, documentId: document.documentId, operation: "status" })
+      if (!isCurrent() || !active.current || !find(id)) return
       if (!response.ok) throw Object.assign(new Error(response.error.message), { publicError: response.error })
       applyState(id, response.data.status === "running" ? { ...response.data, status: "unknown", message: "服务器仍在执行，请稍后再次核对状态。" } : response.data)
-    } catch (error) { fail(id, error) }
+    } catch (error) { if (isCurrent() && active.current && find(id)) fail(id, error) }
   }
   async function stop(id: string) {
     const document = find(id), planId = document?.execution?.plan?.planId
-    if (!document || !planId) return
+    if (!connected || !document || !planId) return
+    const isCurrent = capture()
     try {
       const response = await api.mysqlSql({ ...scopeRef, documentId: document.documentId, operation: "stop", planId })
       if (!response.ok) throw Object.assign(new Error(response.error.message), { publicError: response.error })
-      applyState(id, response.data, response.data.status === "running")
+      if (isCurrent() && active.current && find(id)) applyState(id, response.data, response.data.status === "running")
     } catch (error) {
+      if (!isCurrent() || !active.current || !find(id)) return
       const diagnostic = publicError(error)
       update(id, current => ({ ...current, result: { ...current.result, error: diagnostic.message, diagnostic } }))
     }

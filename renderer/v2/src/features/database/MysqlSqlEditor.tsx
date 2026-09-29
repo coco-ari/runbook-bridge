@@ -79,7 +79,7 @@ export function MysqlSqlEditor({ active = true, value, loading, collapsed, onCha
     setChoices([])
     setChoiceIndex(0)
     setAssistNotice("")
-    if (!context || !focused || !active || composing || loading) return
+    if (!context || !focused || !active || composing || loading || !connected) return
     let cancelled = false
     const matches = (name: string) => name.toLowerCase().startsWith(context.prefix.toLowerCase())
     if (context.kind === "table") setChoices(tables.filter(table => table.queryable && matches(table.name)).slice(0, 30).map(table => ({ name: table.name, type: "表" })))
@@ -91,7 +91,7 @@ export function MysqlSqlEditor({ active = true, value, loading, collapsed, onCha
       }).catch(() => { if (!cancelled) setAssistNotice("字段读取失败，按 Ctrl+Space 重试。") })
     }
     return () => { cancelled = true }
-  }, [context, focused, active, composing, loading, getSchema, tables, retry])
+  }, [context, focused, active, composing, loading, connected, getSchema, tables, retry])
   useEffect(() => {
     if (showChoices) document.getElementById(`${uniqueId}-choice-${choiceIndex}`)?.scrollIntoView({ block: "nearest" })
   }, [showChoices, uniqueId, choiceIndex])
