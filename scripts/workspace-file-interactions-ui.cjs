@@ -109,7 +109,7 @@ module.exports = async function testWorkspaceFileInteractions({evaluate,click,do
     await until(has(panel) + "?.textContent.includes('会话已结束')", '结束终端');
     const beforeClosed = writes.length;
     await dragPath('/srv/example.conf',{accepted:false});
-    await clickText('打开终端');
+    await click(panel + ' [data-testid=terminal-ended-actions] button');
     await until(has(panel + ' .xterm-rows') + "?.textContent.includes('operator@demo')", '重新打开终端');
     await wait(180);
     assert.equal(writes.length, beforeClosed, '结束期间的拖拽不会在重新打开后补发');

@@ -24,6 +24,9 @@ let connected = true;
 let recoveryPhase = null;
 let terminalOpenDelay = 0;
 let recoveryOpenFailures = 0;
+let manualOpenFailures = 0;
+let connectionRetryFailures = 0;
+let connectionRetryDelay = 100;
 const openRequests = [];
 const connectionRequests = [];
 let win;
@@ -131,7 +134,7 @@ function publishRecovery(isConnected, phase=null) {
 }
 function interruptTerminals(reason='connection-lost') {
   for(const item of terminalSessions.values()) if(item.status==='open') {
-    item.status='closed';item.closeReason=reason;item.recoverable=true;
+    item.status='closed';item.closeReason=reason;item.recoverable=reason==='connection-lost';
   }
 }
 const project = () => ({ schemaVersion: 2, projectId: scope.projectId, name: '服务器工作区演示', revision: 1, environmentCount: 1, pluginCount: plugins.length, environments: [{ projectId: scope.projectId, environmentId: scope.environmentId, name: '测试环境', environmentType:'test', revision: 1, pluginCount: plugins.length, readyPluginCount: plugins.length, resourcePreview: plugins, resourcePreviewTruncated: false, runtime: runtime() }] });
@@ -242,19 +245,21 @@ function register() {
       connectingSnapshot.manualDisconnected = {};
       connectingSnapshot.plugins[scope.pluginInstanceId].reason = null;
       win.webContents.send('v2:environment-status-changed', connectingSnapshot);
-      await wait(100);
+      await wait(connectionRetryDelay);
+      if (connectionRetryFailures-- > 0) throw Object.assign(new Error('模拟服务器连接失败'), { code:'SSH_CONNECT_FAILED' });
     }
     recoveryPhase = null;
     connected = input.intent !== 'disconnect';
     sequence += 1;
-    if (!connected) for (const value of terminalSessions.values()) if (value.status === 'open' || value.recoverable) { value.status = 'closed'; value.closeReason = 'user-disconnected'; value.recoverable = true; }
+    if (!connected) for (const value of terminalSessions.values()) if (value.status === 'open' || value.recoverable) { value.status = 'closed'; value.closeReason = 'user-disconnected'; value.recoverable = false; }
     win.webContents.send('v2:environment-status-changed', runtime());
-    return { outcome: 'completed', snapshot: runtime(), actions: [] };
+    return { outcome: 'completed', planId: input.planId ?? null, snapshot: runtime(), actions: [] };
   });
   handle('server-terminal-open', async (input) => {
     scoped(input); assert.ok(connected);
     openRequests.push(input);
     if (terminalOpenDelay) await wait(terminalOpenDelay);
+    if (!input.recoveryOf && manualOpenFailures-- > 0) throw Object.assign(new Error('模拟终端打开失败'), { code:'TERMINAL_OPEN_FAILED' });
     if (input.recoveryOf) {
       const previous = terminalSessions.get(input.recoveryOf);
       if (!previous?.recoverable || previous.tabId !== input.tabId) throw Object.assign(new Error('恢复已停止'), { code:'TERMINAL_RECOVERY_STOPPED' });
@@ -485,6 +490,7 @@ async function doubleClick(selector) {
   await wait(100);
 }
 async function clickText(text) { assert.ok(await evaluate(`(() => { const element = [...document.querySelectorAll('button')].find((item) => item.textContent.trim() === ${JSON.stringify(text)} && item.getClientRects().length && !item.disabled); if (!element) return false; element.click(); return true })()`), text); await wait(70); }
+async function reconnectTerminal() { await click('.server-terminal-tab-panel:not([hidden]) [data-testid=terminal-ended-actions] button'); }
 async function key(key, keyCode, ctrlKey = false) { await evaluate(`document.querySelector('.server-workspace:not([hidden]) .server-terminal-tab-panel:not([hidden]) .xterm-helper-textarea').dispatchEvent(new KeyboardEvent('keydown', { key:${JSON.stringify(key)}, code:${JSON.stringify(key === 'Enter' ? 'Enter' : 'Key' + key.toUpperCase())}, keyCode:${keyCode}, which:${keyCode}, ctrlKey:${ctrlKey}, bubbles:true, cancelable:true }))`); await wait(80); }
 async function paste(text) { await evaluate(`(() => { const data = new DataTransfer(); data.setData('text/plain', ${JSON.stringify(text)}); document.querySelector('.server-workspace:not([hidden]) .server-terminal-tab-panel:not([hidden]) .xterm-helper-textarea').dispatchEvent(new ClipboardEvent('paste', { clipboardData:data, bubbles:true, cancelable:true })) })()`); await wait(80); }
 async function nativePaste(text, shortcut = false) {
@@ -1530,7 +1536,7 @@ async function run() {
   await click('[data-testid="server-workspace-back"]');
   await click('[data-testid="plugin-open-workspace"]');
   assert.equal(opened.length, retainedTerminalCount, '已结束的终端不会自动重开');
-  await clickText('打开终端');
+  await reconnectTerminal();
   await wait(200);
   assert.equal(opened.length, retainedTerminalCount + 1, '显式打开新的终端');
   assert.equal(defaultColorOptions.at(-1), false, '重开终端读取最新配色偏好');
@@ -1623,28 +1629,55 @@ async function testTerminalRecovery() {
   await clickText('终端 1');
   const current=opened.at(-1);
   const item=terminalSessions.get(current);
-  item.status='closed';item.closeReason='remote-exit';item.recoverable=false;item.exitCode=0;
-  await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent.includes('会话已结束')",'正常退出不重开');
+  item.status='closed';item.closeReason='remote-exit';item.recoverable=false;item.exitCode=1;
+  await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent.includes('会话已结束')",'非零退出不重开');
   publishRecovery(false,'waiting');
   publishRecovery(true);
   await wait(250);
   assert.equal(opened.length,afterFirstRecovery+1,'正常退出和停止的标签不随连接恢复');
 
-  await clickText('打开终端');
+  assert.ok(await evaluate("document.querySelector('.server-terminal-tab-panel:not([hidden]) [data-testid=terminal-ended-actions]')?.textContent.includes('退出码 1')"));
+  await snapshot('terminal-ended-actions.png');
+  const manualBefore=opened.length;
+  terminalOpenDelay=150;
+  await evaluate("(() => { const button=document.querySelector('.server-terminal-tab-panel:not([hidden]) [data-testid=terminal-ended-actions] button'); button.click(); button.click(); })()");
   await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent==='人工会话'",'显式打开新会话');
+  terminalOpenDelay=0;
+  assert.equal(opened.length,manualBefore+1,'重复点击只建立一个新会话');
+  assert.ok(await evaluate("document.activeElement?.classList.contains('xterm-helper-textarea')"),'手动重连完成后可直接输入');
+  assert.equal(openRequests.at(-1).recoveryOf,undefined,'手动重连创建新会话');
+  await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) .xterm-rows')?.textContent.includes('退出码 1')",'手动重连保留退出历史');
+  for (const reason of ['channel-error','input-timeout']) {
+    const beforeError=opened.length;
+    interruptTerminals(reason);
+    await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [data-testid=terminal-ended-actions]')",'非网络错误显示手动操作');
+    await wait(200);
+    assert.equal(opened.length,beforeError,'未确认网络故障的错误不自动重连');
+    await reconnectTerminal();
+    await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [data-session-status=open]')",'用户选择后才重开');
+  }
+  interruptTerminals('channel-error');
+  await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [data-testid=terminal-ended-actions]')",'手动重试失败场景');
+  manualOpenFailures=1;
+  const beforeManualFailure=opened.length;
+  await reconnectTerminal();
+  await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=alert]')?.textContent.includes('模拟终端打开失败')",'终端打开失败显示原因');
+  assert.equal(opened.length,beforeManualFailure,'失败不创建会话');
+  await reconnectTerminal();
+  await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [data-session-status=open]')",'失败后仍可重新连接');
   const beforeFailures=opened.length;
   recoveryOpenFailures=2;
-  interruptTerminals('channel-error');
+  interruptTerminals();
   await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent.includes('已重新连接')",'通道恢复失败后有界重试成功');
   assert.equal(opened.length,beforeFailures+1);
   assert.equal(connectionRequests.length,connections,'通道故障不重连整个 SSH');
 
   await clickText('结束会话');
-  await clickText('打开终端');
+  await reconnectTerminal();
   await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent==='人工会话'",'重置人工打开意图');
   terminalOpenDelay=600;
   const beforeStopped=opened.length;
-  interruptTerminals('channel-error');
+  interruptTerminals();
   await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent.includes('正在恢复终端')",'模拟恢复请求在途');
   await clickText('停止恢复');
   await wait(750);
@@ -1652,7 +1685,7 @@ async function testTerminalRecovery() {
   assert.equal(opened.length,beforeStopped,'停止恢复使迟到的打开请求失效');
   assert.ok(await evaluate("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent.includes('会话已结束')"));
 
-  await clickText('打开终端');
+  await reconnectTerminal();
   await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent==='人工会话'",'耗尽测试终端');
   interruptTerminals();
   publishRecovery(false,'exhausted');
@@ -1662,7 +1695,7 @@ async function testTerminalRecovery() {
   assert.equal(connectionRequests.length,connections+1,'人工重试只有一个连接动作');
 
   await clickText('结束会话');
-  await clickText('打开终端');
+  await reconnectTerminal();
   await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent==='人工会话'",'事件乱序测试终端');
   const uncertain=terminalSessions.get(opened.at(-1));
   uncertain.status='closed';uncertain.closeReason='channel-closed';uncertain.recoverable=false;
@@ -1677,47 +1710,50 @@ async function testTerminalRecovery() {
   assert.equal(opened.length,beforeUncertain+1);
 
   await clickText('结束会话');
-  await clickText('打开终端');
+  await reconnectTerminal();
   await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent==='人工会话'",'连续失败测试终端');
   const beforeExhaustion=openRequests.length;
   recoveryOpenFailures=10;
-  interruptTerminals('channel-error');
+  interruptTerminals();
   await until("document.querySelector('.server-terminal-tab-panel:not([hidden])')?.textContent.includes('终端连续恢复失败')",'终端重试耗尽后停止');
   assert.equal(openRequests.length,beforeExhaustion+3);
   await wait(300);
   assert.equal(openRequests.length,beforeExhaustion+3,'连续失败不无限循环');
   recoveryOpenFailures=0;
-  await clickText('打开终端');
+  await reconnectTerminal();
   await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent==='人工会话'",'关闭标签测试终端');
-  // 主动断开保持等待，只有用户重新连接才恢复；停止过的其他标签始终保持结束。
+  // 主动断开后每个标签等待用户选择，服务器恢复不会顺带复活终端。
   const beforeManualWrites=writes.length;
-  for (let cycle=0;cycle<4;cycle++) {
+  for (let cycle=0;cycle<2;cycle++) {
     const beforeManual=opened.length;
     const requestsBefore=connectionRequests.length;
-    const source=opened.at(-1);
     await clickText('断开连接');
-    await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent.includes('等待服务器连接')",'主动断开后终端等待连接');
+    await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [data-testid=terminal-ended-actions]')",'主动断开显示手动操作');
     await wait(150);
     assert.equal(opened.length,beforeManual,'断开期间不创建终端');
-    assert.equal(connectionRequests.length,requestsBefore+1,'断开期间不自动重连服务器');
-    await clickText('重新连接');
-    await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent.includes('已重新连接')",'重新连接后恢复原终端');
-    assert.equal(opened.length,beforeManual+1,'仅恢复活动标签，多次手动重连不会耗尽恢复次数');
-    assert.equal(openRequests.at(-1).recoveryOf,source);
-    assert.equal(connectionRequests.length,requestsBefore+2,'重新连接仅触发用户指定的一个连接动作');
-    assert.ok(await evaluate("document.querySelector('.server-terminal-tab-panel[hidden] [role=status]')?.textContent.includes('会话已结束')"),'停止过的标签不会复活');
+    if (cycle===0) {
+      connectionRetryFailures=1;
+      await reconnectTerminal();
+      await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=alert]')?.textContent.includes('模拟服务器连接失败')",'服务器重连失败保留重试入口');
+      assert.equal(opened.length,beforeManual,'服务器重连失败不创建终端');
+    }
+    await reconnectTerminal();
+    await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [data-session-status=open]')",'原标签一键重连服务器及终端');
+    assert.equal(opened.length,beforeManual+1,'仅重开用户选择的标签');
+    assert.equal(openRequests.at(-1).recoveryOf,undefined);
+    assert.equal(connectionRequests.length,requestsBefore+2+(cycle===0?1:0),'连接次数只包含用户点击的操作');
+    assert.ok(await evaluate("document.querySelector('.server-terminal-tab-panel[hidden] [role=status]')?.textContent.includes('会话已结束')"),'其他已结束标签不会复活');
   }
   assert.equal(writes.length,beforeManualWrites,'主动重连不重放历史输入');
   await clickText('断开连接');
-  await until("document.querySelector('.server-terminal-tab-panel:not([hidden])')?.textContent.includes('停止恢复')",'断开期间可以停止恢复');
-  await clickText('停止恢复');
+  await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [data-testid=terminal-ended-actions]')",'等待用户选择');
   const beforeManualStop=opened.length;
   await clickText('重新连接');
-  await until("!document.querySelector('[data-testid=server-connection-notice]')",'停止恢复后服务器仍可连接');
+  await until("!document.querySelector('[data-testid=server-connection-notice]')",'仅重连服务器');
   await wait(200);
-  assert.equal(opened.length,beforeManualStop,'断开期间停止恢复后不再打开终端');
-  await clickText('打开终端');
-  await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent==='人工会话'",'手动打开后允许再次恢复');
+  assert.equal(opened.length,beforeManualStop,'服务器重连不会自动打开非网络原因结束的终端');
+  await reconnectTerminal();
+  await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [data-session-status=open]')",'手动打开后允许再次恢复');
   await clickText('结束会话');
   const beforeEnded=opened.length;
   await clickText('断开连接');
@@ -1726,17 +1762,30 @@ async function testTerminalRecovery() {
   await until("!document.querySelector('[data-testid=server-connection-notice]')",'结束后重新连接服务器');
   await wait(200);
   assert.equal(opened.length,beforeEnded,'单独结束的终端不会因手动重连而复活');
-  await clickText('打开终端');
+  await reconnectTerminal();
   await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent==='人工会话'",'恢复关闭标签测试终端');
   terminalOpenDelay=600;
   const beforeClosed=opened.length;
-  interruptTerminals('channel-error');
+  interruptTerminals();
   await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [role=status]')?.textContent.includes('正在恢复终端')",'关闭恢复中的标签');
   await click('[aria-label="关闭终端 1"]');
   await wait(750);
   terminalOpenDelay=0;
   assert.equal(opened.length,beforeClosed,'关闭标签后迟到恢复不会创建新会话');
   assert.equal(await evaluate("document.querySelectorAll('.server-terminal-tab-panel').length"),1);
+  await clickText('断开连接');
+  await until("document.querySelector('[data-testid=server-connection-notice]')",'验证手动连接过程中关闭标签');
+  const beforeButtonClose=opened.length;
+  connectionRetryDelay=600;
+  await reconnectTerminal();
+  await until("document.querySelector('.server-terminal-tab-panel:not([hidden]) [data-testid=terminal-ended-actions]')?.textContent.includes('正在连接')",'服务器连接请求在途');
+  await clickText('关闭终端');
+  await until("document.querySelectorAll('.server-terminal-tab-panel').length===0",'底部关闭按钮移除已结束标签');
+  await until("!document.querySelector('[data-testid=server-connection-notice]')",'共享连接独立完成');
+  connectionRetryDelay=100;
+  await wait(150);
+  assert.equal(opened.length,beforeButtonClose,'关闭后迟到服务器连接结果不创建会话');
+  assert.equal(connected,true,'关闭终端保持共享连接');
 
 }
 
@@ -1758,7 +1807,7 @@ async function testWorkspaceConveniences() {
   };
   const activeText=panel+" [role=status]";
   if(await evaluate("document.querySelector("+JSON.stringify(activeText)+")?.textContent.includes('会话已结束')")) {
-    await clickText('打开终端');
+    await reconnectTerminal();
     await until("document.querySelector("+JSON.stringify(activeText)+")?.textContent==='人工会话'",'搜索测试终端就绪');
   }
   const initialOpens=opened.length;
@@ -1942,7 +1991,9 @@ async function testWorkspaceConveniences() {
   await expectCount(3);
   await click('[aria-label="关闭终端搜索"]');
   await clickText('重新连接');
-  await until("document.querySelector("+JSON.stringify(activeText)+")?.textContent.includes('已重新连接')",'重连兼容搜索扩展');
+  await until("!document.querySelector('[data-testid=server-connection-notice]')",'恢复服务器连接');
+  await reconnectTerminal();
+  await until("document.querySelector("+JSON.stringify(activeText)+")?.textContent==='人工会话'",'手动重连兼容搜索扩展');
   await openSearch();
   await setInput(searchInput,'中文查找');
   await expectCount(3);

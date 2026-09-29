@@ -407,7 +407,10 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose, onDirtyC
         <ResizablePanel id={`${panelId}-console`} minSize="280px">
           <ServerFilePreviews api={api} scope={scope} connected={connected} visible={visible} request={previewRequest} onStale={invalidatePreviewPath} targetLabel={`${entry.projectName} / ${entry.environmentName} / ${entry.plugin.displayName} · ${sshIdentity}`} onEditState={setFileEditing} onSaved={refreshEditedFile} onLocate={locateFile}>
             {files => <ServerTerminalTabs onActiveSessionChange={setActiveTerminalSessionId} onActiveTerminalLabel={setActiveTerminalLabel} onActiveFileChange={setActiveFilePath} api={api} scope={scope} visible={visible} connected={connected} connection={terminalState} maximized={maximized} onMaximize={() => setMaximized(value => !value)} layoutControls={`${panelId}-files`} pathDrag={pathDrag}
-              dockerTabs={dockerTabs} activeDocker={activeDocker} onDockerSelect={setActiveDocker} onDockerClose={closeContainer} binding={dockerBinding} files={files} />}
+              connectionError={connection.state.error?.message ?? ""} connectionPending={Boolean(connection.state.operation || connection.state.challenge)} onReconnectServer={async () => {
+                reconnectFocusRef.current = document.activeElement as HTMLElement | null
+                await connection.retry()
+              }} dockerTabs={dockerTabs} activeDocker={activeDocker} onDockerSelect={setActiveDocker} onDockerClose={closeContainer} binding={dockerBinding} files={files} />}
           </ServerFilePreviews>
         </ResizablePanel>
       </ResizablePanelGroup>

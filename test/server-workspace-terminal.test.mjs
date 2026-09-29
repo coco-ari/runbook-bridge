@@ -658,7 +658,7 @@ test('恢复打开失败保留原恢复资格，重试可成功且不会增加�
 test('恢复中停止原终端会关闭迟到的通道，不影响同服务器其他终端', async (t) => {
   const { manager, runtime, channels } = fixture(t);
   const session = await manager.openTerminal(1, scope);
-  channels[0].emit('error', new Error('模拟终端通道错误'));
+  runtime.emit('lifecycle', { ...scope, type:'lost' });
   const unaffected = await manager.openTerminal(1, { ...scope, tabId:'unaffected' });
   let release;
   runtime.openTerminal = () => new Promise(resolve => { release = resolve; });
@@ -697,7 +697,7 @@ test('未知关闭已经稳定后，未来无关断线不能重新获得恢复�
   await assert.rejects(manager.openTerminal(1, { ...scope, recoveryOf:session.sessionId }), { code:'TERMINAL_RECOVERY_STOPPED' });
 });
 
-test('主动断开服务器后等待重新连接，只恢复原来活动的终端', async (t) => {
+test('主动断开服务器后不自动恢复，用户可在原标签手动创建新会话', async (t) => {
   for (const reason of ['user', 'user-plugin-disconnect']) {
     await t.test(reason, async (child) => {
       const { manager, runtime, state, channels } = fixture(child);
@@ -715,13 +715,14 @@ test('主动断开服务器后等待重新连接，只恢复原来活动的终�
       runtime.emit('lifecycle', { ...scope, type:'disconnected', reason });
       const closed = await manager.readTerminal(1, { ...scope, sessionId:active.sessionId });
       assert.equal(closed.closeReason, 'user-disconnected');
-      assert.equal(closed.recoverable, true);
+      assert.equal(closed.recoverable, false);
       await assert.rejects(manager.openTerminal(1, { ...scope, tabId:'active', recoveryOf:active.sessionId }), { code:'SSH_NOT_CONNECTED' });
       assert.equal(channels.length, 4);
       state.connected = true;
       state.generation++;
       runtime.emit('lifecycle', { ...scope, type:'connected', generation:state.generation });
-      const next = await manager.openTerminal(1, { ...scope, tabId:'active', recoveryOf:active.sessionId });
+      await assert.rejects(manager.openTerminal(1, { ...scope, tabId:'active', recoveryOf:active.sessionId }), { code:'TERMINAL_RECOVERY_STOPPED' });
+      const next = await manager.openTerminal(1, { ...scope, tabId:'active' });
       assert.notEqual(next.sessionId, active.sessionId);
       assert.equal(channels[4].writes.length, 0);
       for (const [session, tabId] of [[stopped,'stopped'],[exited,'exited'],[unknown,'unknown']]) {
@@ -752,14 +753,14 @@ test('主动断开期间停止恢复或修改配置，重连后不再恢复旧�
   }
 });
 
-test('主动断开可关联同轮通道关闭事件，但其他系统断开不获得恢复资格', async (t) => {
+test('主动断开和其他非网络系统断开均不获得自动恢复资格', async (t) => {
   for (const reason of ['user-plugin-disconnect', 'configuration-change', 'stale-connect-result', 'app-exit']) {
     await t.test(reason, async (child) => {
       const { manager, runtime, channels } = fixture(child);
       const session = await manager.openTerminal(1, scope);
       channels[0].emit('end');
       runtime.emit('lifecycle', { ...scope, type:'disconnected', reason });
-      assert.equal((await manager.readTerminal(1, { ...scope, sessionId:session.sessionId })).recoverable, reason === 'user-plugin-disconnect');
+      assert.equal((await manager.readTerminal(1, { ...scope, sessionId:session.sessionId })).recoverable, false);
     });
   }
 });
@@ -805,4 +806,38 @@ test('终端命令独立写入用户操作记录，记录失败反馈给界面',
   await manager.writeTerminal(1,{...payload,data:'pwd\r'});
   await delay(10);
   assert.equal((await manager.readTerminal(1,payload)).commandAudit,'failed');
+});
+
+
+test('非零退出和未确认网络故障的通道错误不自动恢复', async t => {
+  for (const reason of ['remote-exit', 'channel-error', 'input-timeout']) await t.test(reason, async child => {
+    const { manager, channels, runtime } = fixture(child);
+    const session = await manager.openTerminal(1, scope);
+    if (reason === 'remote-exit') { channels[0].emit('exit', 1); channels[0].emit('end'); }
+    else if (reason === 'channel-error') channels[0].emit('error', new Error('模拟通道错误'));
+    else manager.finish(manager.sessions.get(session.sessionId), reason);
+    const closed = await manager.readTerminal(1, { ...scope, sessionId:session.sessionId });
+    assert.equal(closed.recoverable, false);
+    assert.equal(closed.closeReason, reason);
+    if (reason === 'remote-exit') assert.equal(closed.exitCode, 1);
+    await assert.rejects(manager.openTerminal(1, { ...scope, recoveryOf:session.sessionId }), { code:'TERMINAL_RECOVERY_STOPPED' });
+    await new Promise(resolve => setImmediate(resolve));
+    runtime.emit('lifecycle', { ...scope, type:'lost' });
+    assert.equal((await manager.readTerminal(1, { ...scope, sessionId:session.sessionId })).recoverable, false);
+    const next = await manager.openTerminal(1, scope);
+    assert.notEqual(next.sessionId, session.sessionId);
+    assert.equal(channels.length, 2);
+    assert.equal(channels[1].writes.length, 0);
+  });
+});
+
+test('通道错误同轮收到网络丢失通知后才允许自动恢复', async t => {
+  const { manager, channels, runtime } = fixture(t);
+  const session = await manager.openTerminal(1, scope);
+  channels[0].emit('error', new Error('模拟网络导致的通道错误'));
+  assert.equal((await manager.readTerminal(1, { ...scope, sessionId:session.sessionId })).recoverable, false);
+  runtime.emit('lifecycle', { ...scope, type:'lost' });
+  const closed = await manager.readTerminal(1, { ...scope, sessionId:session.sessionId });
+  assert.equal(closed.closeReason, 'connection-lost');
+  assert.equal(closed.recoverable, true);
 });

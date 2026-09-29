@@ -10,7 +10,8 @@ const OUTPUT_HIGH_WATER = 512 * 1024;
 const OUTPUT_LOW_WATER = 128 * 1024;
 const INPUT_QUEUE_BYTES = 256 * 1024;
 const MAX_SESSIONS = 8;
-const RECOVERABLE_CLOSE_REASONS = new Set(['connection-lost', 'channel-error', 'input-timeout', 'user-disconnected']);
+const RECOVERABLE_CLOSE_REASONS = new Set(['connection-lost']);
+const UNCERTAIN_CLOSE_REASONS = new Set(['channel-closed', 'channel-error', 'input-timeout']);
 const MANUAL_DISCONNECT_REASONS = new Set(['user', 'user-plugin-disconnect']);
 const NETWORK_RECONNECT_REASONS = new Set(['network-change', 'network-interface-change', 'system-resume']);
 
@@ -387,7 +388,7 @@ export class ServerWorkspaceManager {
     if (record.status === 'closed') return;
     record.status = 'closed';
     record.closeReason = reason;
-    if (reason === 'channel-closed') {
+    if (UNCERTAIN_CLOSE_REASONS.has(reason)) {
       // 只关联同一轮关闭事件，避免未来断线复活早已结束但没有退出码的 Shell。
       record.pendingConnectionLoss = true;
       record.closeSettlement = setImmediate(() => { record.pendingConnectionLoss = false; record.closeSettlement = null; });
@@ -423,7 +424,7 @@ export class ServerWorkspaceManager {
         // SSH 关闭与通道关闭的事件顺序不固定；只保留活动或待恢复会话，不能复活已经退出或主动结束的终端。
         const resumable = RECOVERABLE_CLOSE_REASONS.has(reason);
         if (resumable && !record.remoteExited
-          && (this.canRecover(record) || (record.closeReason === 'channel-closed' && record.pendingConnectionLoss))) record.closeReason = reason;
+          && (this.canRecover(record) || (UNCERTAIN_CLOSE_REASONS.has(record.closeReason) && record.pendingConnectionLoss))) record.closeReason = reason;
         if (!resumable && record.status === 'closed') record.closeReason = reason;
         this.finish(record, reason);
       }

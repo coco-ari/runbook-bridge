@@ -5,7 +5,7 @@ import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import { SearchAddon } from "@xterm/addon-search"
 import { TerminalSearch, type TerminalSearchHandle, type TerminalSearchEngine } from "./TerminalSearch"
-import { Copy, ClipboardText, Plus, Stop, TerminalWindow } from "@phosphor-icons/react"
+import { ArrowClockwise, Copy, ClipboardText, Plus, Stop, TerminalWindow, X } from "@phosphor-icons/react"
 import type { AiOpsV2Api, PluginScope } from "@/bridge/ai-ops-v2"
 import { useTheme } from "@/app/theme-provider"
 import { Button } from "@/components/ui/button"
@@ -42,9 +42,13 @@ export interface ServerTerminalProps {
   readonly connected: boolean
   readonly connection: TerminalConnection
   readonly pathDrag: WorkspacePathDrag
+  readonly onClose: () => void
+  readonly onReconnectServer: () => Promise<void>
+  readonly connectionPending: boolean
+  readonly connectionError: string
 }
 
-export function ServerTerminal({ tabId, api, scope, visible, focused = true, connected, connection, pathDrag, onSessionChange }: ServerTerminalProps) {
+export function ServerTerminal({ tabId, api, scope, visible, focused = true, connected, connection, pathDrag, onSessionChange, onClose, onReconnectServer, connectionPending, connectionError }: ServerTerminalProps) {
   const focusedRef = useRef(focused)
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
@@ -80,6 +84,9 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
   const [colorHelp, setColorHelp] = useState(false)
   const [colorPlatform, setColorPlatform] = useState("linux")
   const [error, setError] = useState("")
+  const [closedMessage, setClosedMessage] = useState("")
+  const [serverReconnect, setServerReconnect] = useState<"requesting" | "waiting" | null>(null)
+  const manualReconnectRef = useRef(false)
   const [paste, setPaste] = useState("")
   const [hasSelection, setHasSelection] = useState(false)
   const [pathDragOver, setPathDragOver] = useState(false)
@@ -150,6 +157,7 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
     writeChainRef.current = Promise.resolve()
     recoveryRef.current = recoveryEnabledRef.current && (connectionRef.current.allowRecovery || connectionRef.current.pauseRecovery) ? recovery : null
     setStatus(recoveryRef.current?.eligible ? "waiting" : "closed")
+    setClosedMessage(message)
     setPaste("")
     if (terminalRef.current) {
       terminalRef.current.options.disableStdin = true
@@ -158,6 +166,8 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
   }, [])
 
   const stop = useCallback(() => {
+    manualReconnectRef.current = false
+    setServerReconnect(null)
     const sessionId = sessionRef.current ?? recoveryRef.current?.sessionId
     const recovering = Boolean(recoveryRef.current)
     recoveryEnabledRef.current = false
@@ -216,7 +226,7 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
       resize()
       setReconnected(automatic)
       // 自动恢复不改变焦点；手动打开也不抢走等待期间用户移到其他控件的焦点。
-      if (!automatic && connectedRef.current && visibleRef.current && focusedRef.current && document.activeElement === focusAtStart) terminal.focus()
+      if (!automatic && connectedRef.current && visibleRef.current && focusedRef.current && (document.activeElement === focusAtStart || document.activeElement === document.body)) terminal.focus()
       window.clearTimeout(stableTimerRef.current)
       stableTimerRef.current = window.setTimeout(() => {
         if (generation === generationRef.current && sessionRef.current === session.sessionId) recoveryAttemptsRef.current = 0
@@ -229,11 +239,10 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
         if (chunk.data.byteLength) await new Promise<void>((resolve) => terminal.write(new Uint8Array(chunk.data), resolve))
         if (!mountedRef.current || generation !== generationRef.current) break
         if (chunk.status === "closed") {
-          const recovery = chunk.recoverable || chunk.closeReason === "channel-closed"
+          const recovery = chunk.recoverable || ["channel-closed", "channel-error", "input-timeout"].includes(chunk.closeReason ?? "")
             ? { sessionId: session.sessionId, eligible: chunk.recoverable === true } : null
           if (chunk.closeReason === "user-disconnected") recoveryAttemptsRef.current = 0
-          finish(chunk.recoverable && chunk.closeReason === "user-disconnected" ? "服务器已断开，重新连接后将恢复此终端；未发送的输入不会重放。"
-            : chunk.recoverable ? "连接中断，保留历史并等待恢复；未发送的输入不会重放。"
+          finish(chunk.recoverable ? "连接中断，保留历史并等待恢复；未发送的输入不会重放。"
             : "终端会话已结束" + (chunk.exitCode == null ? "" : "（退出码 " + chunk.exitCode + "）") + "。", recovery)
           break
         }
@@ -261,6 +270,35 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
       }
     }
   }, [api, finish, resize, scope, tabId])
+
+  const reconnect = async () => {
+    if (manualReconnectRef.current || openingRef.current || sessionRef.current) return
+    if (connectedRef.current) { void open(); return }
+    // 手动请求只属于当前标签；共享 SSH 连接成功后才创建新的 Shell。
+    manualReconnectRef.current = true
+    recoveryRef.current = null
+    setServerReconnect("requesting")
+    setError("")
+    try { await onReconnectServer() }
+    catch (failure) {
+      if (mountedRef.current && manualReconnectRef.current) setError(workspaceErrorMessage(failure))
+    } finally {
+      if (mountedRef.current && manualReconnectRef.current) setServerReconnect("waiting")
+    }
+  }
+
+  useEffect(() => {
+    if (!serverReconnect || !manualReconnectRef.current) return
+    if (connected) {
+      manualReconnectRef.current = false
+      setServerReconnect(null)
+      void open()
+    } else if (serverReconnect === "waiting" && !connectionPending && (connectionError || !["waiting", "connecting"].includes(connection.phase))) {
+      manualReconnectRef.current = false
+      setServerReconnect(null)
+      setError(connectionError || "服务器尚未连接，请检查连接提示后重试。")
+    }
+  }, [connected, connection.phase, connectionError, connectionPending, open, serverReconnect])
 
   useEffect(() => {
     const container = containerRef.current
@@ -345,6 +383,7 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
     const initialOpen = window.setTimeout(() => { void open() }, 0)
     return () => {
       mountedRef.current = false
+      manualReconnectRef.current = false
       generationRef.current += 1
       openingRef.current = false
       const sessionId = sessionRef.current ?? recoveryRef.current?.sessionId
@@ -376,7 +415,7 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
       if (terminalRef.current) terminalRef.current.options.disableStdin = true
     }
     if (!connection.allowRecovery) {
-      // 主动断开仅暂停恢复，等待用户重新连接；结束会话和停止恢复仍由各标签单独控制。
+      // 连接主动断开期间不尝试恢复；终端关闭事件会撤销自动恢复资格。
       if (connection.pauseRecovery) {
         recoveryAttemptsRef.current = 0
         return
@@ -466,7 +505,7 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
           <Button size="sm" variant="ghost" onClick={() => { setDefaultColors(readDefaultColors()); setColorHelp(true) }}>目录配色</Button>
           {status === "open" ? <Button size="sm" variant="ghost" onClick={stop}><Stop />结束会话</Button>
             : status === "waiting" || (status === "opening" && recoveryRef.current) ? <Button size="sm" variant="ghost" onClick={stop}><Stop />停止恢复</Button>
-            : <Button size="sm" variant="ghost" disabled={!connected || status === "opening"} onClick={() => { void open() }}><Plus />打开终端</Button>}
+            : status !== "closed" ? <Button size="sm" variant="ghost" disabled={!connected || status === "opening"} onClick={() => { void open() }}><Plus />打开终端</Button> : null}
         </div>
       </div>
       {status === "open" && commandAudit ? <p className="shrink-0 px-3 py-1 text-xs text-muted-foreground" data-terminal-command-audit={commandAudit}>{commandAudit === "available" ? "命令完成后记录脱敏摘要和退出码" : commandAudit === "failed" ? "命令记录写入失败，请检查本地审计存储。" : "当前 Shell 未提供逐条命令记录，仅记录会话活动。"}</p> : null}
@@ -494,6 +533,14 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
           <ContextMenuItem disabled={status !== "open" || !connected} onSelect={() => { void clipboardAction("paste") }}>粘贴</ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+      {status === "closed" ? <div className="flex shrink-0 flex-wrap items-center gap-3 border-t border-border px-3 py-2" data-testid="terminal-ended-actions">
+        <div className="min-w-0 flex-1 text-xs text-muted-foreground">
+          <p>{serverReconnect ? "正在重新连接服务器…" : closedMessage || "终端会话已结束。"}</p>
+          <p>重新连接将建立新会话，保留历史显示，不重放旧命令。</p>
+        </div>
+        <Button size="sm" variant="outline" disabled={Boolean(serverReconnect) || (!connected && connectionPending)} onClick={() => { void reconnect() }}><ArrowClockwise />{serverReconnect ? "正在连接…" : "重新连接"}</Button>
+        <Button size="sm" variant="ghost" onClick={onClose}><X />关闭终端</Button>
+      </div> : null}
       <Dialog open={colorHelp} onOpenChange={setColorHelp}>
         <DialogContent onCloseAutoFocus={(event) => { event.preventDefault(); if (visibleRef.current) terminalRef.current?.focus() }}>
           <DialogHeader><DialogTitle>终端目录配色</DialogTitle><DialogDescription>新终端自动设置目录颜色并提供 ll 命令；支持的 Bash 同时使用深青底、浅色字显示粘贴内容。配置仅影响当前会话。</DialogDescription></DialogHeader>

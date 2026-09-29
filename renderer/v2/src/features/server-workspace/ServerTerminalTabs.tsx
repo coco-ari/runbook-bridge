@@ -30,7 +30,7 @@ interface ContentProps {
   readonly files: FileDocuments
 }
 
-export function ServerTerminalTabs({ onActiveSessionChange, onActiveTerminalLabel, onActiveFileChange, dockerTabs, activeDocker, onDockerSelect, onDockerClose, binding, files, maximized, onMaximize, layoutControls, ...props }: Omit<ServerTerminalProps, "tabId" | "onSessionChange"> & ContentProps) {
+export function ServerTerminalTabs({ onActiveSessionChange, onActiveTerminalLabel, onActiveFileChange, dockerTabs, activeDocker, onDockerSelect, onDockerClose, binding, files, maximized, onMaximize, layoutControls, ...props }: Omit<ServerTerminalProps, "tabId" | "onSessionChange" | "onClose"> & ContentProps) {
   const groupId = useId()
   const sequence = useRef(1)
   const [tabs, setTabs] = useState([{ id: "default", label: "终端 1", title: "终端 1" }])
@@ -126,7 +126,7 @@ export function ServerTerminalTabs({ onActiveSessionChange, onActiveTerminalLabe
           style={shown ? { gridArea: view.layout === "vertical" ? `${index * 2 + 1} / 1` : `1 / ${index * 2 + 1}` } : undefined}
           onFocusCapture={() => { if (shown && !focused) select(item.id) }} onPointerDownCapture={() => { if (shown && !focused) select(item.id) }}>
           {view.layout !== "single" ? <div className="server-terminal-pane-heading">{item.icon}<strong>{item.label}</strong><span>{focused ? "当前窗格" : "点击切换"}</span></div> : null}
-          {item.kind === "terminal" ? <ServerTerminal {...props} onSessionChange={onSessionChange} tabId={item.id} focused={focused} visible={props.visible && shown} />
+          {item.kind === "terminal" ? <ServerTerminal {...props} onClose={() => close(item.id)} onSessionChange={onSessionChange} tabId={item.id} focused={focused} visible={props.visible && shown} />
             : item.kind === "file" ? files.items.find(file => file.id === item.id)?.content
             : <ServerDockerContainer api={props.api} scope={props.scope} container={dockerTabs.find(container => "docker:" + container.id === item.id)!} connected={props.connected} visible={props.visible && shown} binding={binding} />}
         </div>
