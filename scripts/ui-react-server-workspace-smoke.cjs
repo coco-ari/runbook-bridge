@@ -32,7 +32,8 @@ const writes = [];
 const resizes = [];
 const directoryReads = [];
 const mixedReadPressure = process.env.RUNBOOK_BRIDGE_MIXED_READ_PRESSURE_SMOKE === '1';
-const directoryScenario = mixedReadPressure ? './server-mixed-read-pressure-ui.cjs' : process.env.RUNBOOK_BRIDGE_DIRECTORY_PRESSURE_SMOKE === '1' ? './server-directory-pressure-ui.cjs' : process.env.RUNBOOK_BRIDGE_DIRECTORY_LIFECYCLE_SMOKE === '1' ? './server-directory-lifecycle-ui.cjs' : null;
+const treeScrollSmoke = process.env.RUNBOOK_BRIDGE_TREE_SCROLL_SMOKE === '1';
+const directoryScenario = treeScrollSmoke ? './server-tree-scroll-ui.cjs' : mixedReadPressure ? './server-mixed-read-pressure-ui.cjs' : process.env.RUNBOOK_BRIDGE_DIRECTORY_PRESSURE_SMOKE === '1' ? './server-directory-pressure-ui.cjs' : process.env.RUNBOOK_BRIDGE_DIRECTORY_LIFECYCLE_SMOKE === '1' ? './server-directory-lifecycle-ui.cjs' : null;
 const directoryLifecycle = directoryScenario ? require(directoryScenario).createHarness() : null;
 const directoryState = { requests: [], delay: 0, fail: false };
 const previewReads = [];
@@ -701,7 +702,7 @@ async function run() {
   await app.whenReady();
   if (mixedReadPressure) for (const key of ['RUNBOOK_BRIDGE_VISIBLE_RESPONSE_PROBE', 'RUNBOOK_BRIDGE_LIVE_DIRECTORY_PROBE', 'RUNBOOK_BRIDGE_LIVE_FILE_UI_PROBE', 'RUNBOOK_BRIDGE_LIVE_TRANSFER_UI_PROBE', 'RUNBOOK_BRIDGE_LIVE_TERMINAL_UI_PROBE']) assert.notEqual(process.env[key], '1', '混合读取专项禁止可见窗口与真实连接');
   const { createTransferExitGuard } = await import('../src/desktop-transfer-exit-guard.mjs');
-  if (!mixedReadPressure && process.env.RUNBOOK_BRIDGE_LIVE_TERMINAL_UI_PROBE !== '1') savedClipboard = { text: clipboard.readText(), html: clipboard.readHTML(), rtf: clipboard.readRTF(), image: clipboard.readImage() };
+  if (!mixedReadPressure && !treeScrollSmoke && process.env.RUNBOOK_BRIDGE_LIVE_TERMINAL_UI_PROBE !== '1') savedClipboard = { text: clipboard.readText(), html: clipboard.readHTML(), rtf: clipboard.readRTF(), image: clipboard.readImage() };
   const { ServerWorkspaceFiles } = await import('../src/server-workspace-files.mjs');
   workspaceFiles = new ServerWorkspaceFiles({ workspaceStore: { getPlugin: async () => plugin }, serverRuntime: { status: () => ({ connected, generation: 1 }), statRemotePath: async (_plugin, target) => fixtureStat(target) }, serverOperations: {} });
   if (process.env.RUNBOOK_BRIDGE_FILE_EDITOR_SMOKE === '1') {
