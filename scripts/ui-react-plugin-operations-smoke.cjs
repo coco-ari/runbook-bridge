@@ -1630,7 +1630,7 @@ async function assertPluginWorkspaceNavigation(win,otherPluginId) {
 }
 
 async function selectRuntimeHostKeyEntry(win,entry) {
-  if (entry.kind === 'environment') {
+  if (entry.kind === 'environment' || entry.environmentDetails) {
     const selected = await win.webContents.executeJavaScript(`document.querySelector('[data-testid="environment-trigger-${ENVIRONMENT_ID}"]')?.getAttribute('aria-current') === 'page'`,true);
     if (!selected) await viewEnvironmentDetails(win,'select the exact environment for host-key verification');
     await waitFor(win,`document.querySelector('#detail-main')?.getAttribute('data-selection-kind') === 'environment'`,'environment selection for host-key verification');
@@ -1706,6 +1706,7 @@ async function assertRuntimeHostKeyGovernance(win) {
   await setExactViewport(win,1280,820);
 
   const entries = [
+    {name:'environment-plugin-row',kind:'plugin',environmentDetails:true,panel:true,trigger:`[data-testid="environment-plugin-connection-${SERVER_ID}"]`,dialog:'[data-testid="resource-host-key-confirmation"]'},
     {name:'plugin-panel',kind:'plugin',panel:true,trigger:'[data-testid="plugin-connection-primary"]',dialog:'[data-testid="runtime-host-key-confirmation"]'},
     {name:'environment-panel',kind:'environment',panel:true,trigger:'[data-testid="environment-connection-primary"]',dialog:'[data-testid="environment-host-key-confirmation"]'},
     {name:'environment-row',kind:'environment',panel:false,trigger:`[data-testid="environment-connection-${ENVIRONMENT_ID}"]`,dialog:'[data-testid="resource-host-key-confirmation"]'},
@@ -1784,7 +1785,7 @@ async function assertRuntimeHostKeyGovernance(win) {
 
   // A legitimate external workspace refresh can remove a resource while its
   // challenge is visible. The removed row must not remain a focus destination.
-  const rowEntry = entries[3];
+  const rowEntry = entries.find(entry => entry.name === 'plugin-row');
   currentStep = 'host-key:removed-owner';
   await selectRuntimeHostKeyEntry(win,rowEntry);
   const removedChallenge = await openRuntimeHostKeyChallenge(win,rowEntry);
@@ -1803,9 +1804,9 @@ async function assertRuntimeHostKeyGovernance(win) {
   win.webContents.send('v2:environment-status-changed',clone(state.runtime));
   win.webContents.send('v2:workspace-changed',{projectId:PROJECT_ID,environmentId:ENVIRONMENT_ID});
   state.runtimeHostKeyMode = false;
-  assert.equal(calls('v2:connection-intent').length,initialIntentCount+13,'host-key governance uses exactly thirteen explicit connection requests');
-  assert.equal(calls('v2:connection-challenge-confirm').length,initialConfirmCount+8,'host-key governance uses exactly eight explicitly approved confirmation attempts');
-  assert.equal(mutationCalls.length,initialMutationCount+21,'host-key cases must not add hidden mutations outside the reviewed intent/confirmation calls');
+  assert.equal(calls('v2:connection-intent').length,initialIntentCount+16,'环境详情插件行与既有入口共发送十六次显式连接请求');
+  assert.equal(calls('v2:connection-challenge-confirm').length,initialConfirmCount+10,'包含环境详情插件行的十次显式主机指纹确认尝试');
+  assert.equal(mutationCalls.length,initialMutationCount+26,'主机指纹用例不得附带连接和确认之外的隐式修改');
 }
 
 async function assertDeferredHostKeyDialogs(win) {
@@ -2472,15 +2473,15 @@ async function run() {
     assert.equal(mutationCalls.length,41,'original plugin save strategies and workspace lifecycle retain the exact forty-one-call baseline');
     process.stdout.write('Plugin save strategies and workspace lifecycle passed (41 exact scoped calls)\n');
     await assertRuntimeHostKeyGovernance(win);
-    assert.equal(mutationCalls.length,62,'host-key governance adds only twenty-one reviewed calls to the original plugin baseline');
-    process.stdout.write('Runtime host-key entry coverage passed (62 exact scoped calls)\n');
+    assert.equal(mutationCalls.length,67,'环境详情插件入口加入后只增加二十六次显式连接与确认调用');
+    process.stdout.write('Runtime host-key entry coverage passed (67 exact scoped calls)\n');
     await assertDeferredHostKeyDialogs(win);
-    assert.equal(mutationCalls.length,65,'late challenge queue coverage adds only three explicit connection requests to the sixty-two-call baseline');
-    process.stdout.write('Deferred host-key queue passed (65 exact scoped calls)\n');
+    assert.equal(mutationCalls.length,70,'late challenge queue coverage adds only three explicit connection requests to the sixty-seven-call baseline');
+    process.stdout.write('Deferred host-key queue passed (70 exact scoped calls)\n');
 
     await assertConnectionTooltipHandoff(win);
-    assert.equal(mutationCalls.length,97,'keyboard tooltip handoff adds thirty-two scoped requests after the complete sixty-five-call plugin baseline');
-    process.stdout.write('Connection tooltip handoff passed (97 exact scoped calls)\n');
+    assert.equal(mutationCalls.length,102,'keyboard tooltip handoff adds thirty-two scoped requests after the complete seventy-call plugin baseline');
+    process.stdout.write('Connection tooltip handoff passed (102 exact scoped calls)\n');
     await assertEnvironmentDetailsLifecycle(win);
     process.stdout.write('Environment detail lifecycle passed\n');
     await assertFirstPluginAfterDeletion(win);

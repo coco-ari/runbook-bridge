@@ -15,7 +15,7 @@ import { MYSQL_TABLE_DRAG_TYPE, mysqlCompletionContext, mysqlSqlDiagnostic, quot
 interface MysqlSqlEditorProps {
   readonly tables: readonly MysqlTableSummary[]
   readonly getSchema: (table: string) => Promise<MysqlTableDescription>
-  readonly onTableDrop: (data: string) => void
+  readonly onTableDrop: (data: string) => string | null
   readonly active?: boolean
   readonly value: string
   readonly loading: boolean
@@ -143,6 +143,23 @@ export function MysqlSqlEditor({ active = true, value, loading, collapsed, onCha
     }
   }
 
+  function dropTable(data: string) {
+    if (!active || loading) return
+    const snippet = onTableDrop(data)
+    if (!snippet) return
+    // 分号独占一行，避免原 SQL 末尾的行注释吞掉语句分隔符。
+    const next = value + (value.trim() ? "\n;\n\n" : "") + snippet
+    onChange(next)
+    setChoices([])
+    window.setTimeout(() => {
+      const editor = editorRef.current
+      if (!editor) return
+      editor.focus()
+      editor.setSelectionRange(next.length, next.length)
+      syncCursor()
+    }, 0)
+  }
+
   return (
     <section aria-label="SQL 编辑器" className={`mysql-sql-editor-panel ${collapsed ? "is-collapsed" : ""}`} data-testid={active ? "mysql-query-editor-panel" : undefined}>
       <div className="mysql-editor-toolbar">
@@ -160,7 +177,7 @@ export function MysqlSqlEditor({ active = true, value, loading, collapsed, onCha
         <p className="sr-only" id={`${uniqueId}-hint`}>支持查询、增删改和批量脚本。Ctrl / ⌘ + Enter 执行当前或选中语句，Shift + Ctrl / ⌘ + Enter 执行全部。{mode === "atomic" ? "自动事务：本次语句全部成功后自动提交，失败则自动回滚本次写入。" : mode === "manual" ? "手动事务：点击提交保存更改，或点击回滚撤销未提交的更改。" : "逐条自动提交：每条成功立即生效，遇错停止，之前已提交的更改保留。"}</p>
         <span className="mysql-editor-dialect">MySQL</span>
       </div>
-      <div className="mysql-editor-code" onDragOver={(event) => { if (event.dataTransfer.types.includes(MYSQL_TABLE_DRAG_TYPE)) { event.preventDefault(); event.dataTransfer.dropEffect = "copy" } }} onDrop={(event) => { if (event.dataTransfer.types.includes(MYSQL_TABLE_DRAG_TYPE)) { event.preventDefault(); if (!loading) onTableDrop(event.dataTransfer.getData(MYSQL_TABLE_DRAG_TYPE)) } }}>
+      <div className="mysql-editor-code" onDragOver={(event) => { if (event.dataTransfer.types.includes(MYSQL_TABLE_DRAG_TYPE)) { event.preventDefault(); event.dataTransfer.dropEffect = "copy" } }} onDrop={(event) => { if (event.dataTransfer.types.includes(MYSQL_TABLE_DRAG_TYPE)) { event.preventDefault(); dropTable(event.dataTransfer.getData(MYSQL_TABLE_DRAG_TYPE)) } }}>
         <div aria-hidden="true" className="mysql-editor-line-numbers" ref={numbersRef}>{Array.from({ length: lineCount }, (_, index) => <span className={currentDiagnostic?.line === index + 1 ? "mysql-sql-error-line" : undefined} title={currentDiagnostic?.line === index + 1 ? currentDiagnostic.message : undefined} key={index}>{index + 1}</span>)}</div>
         <div className="mysql-editor-layers">
           <pre aria-hidden="true" className="mysql-editor-highlight" ref={highlightRef}>{highlighted}</pre>

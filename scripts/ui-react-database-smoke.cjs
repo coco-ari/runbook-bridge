@@ -901,6 +901,7 @@ async function run() {
     await require('./database-sql-ui.cjs').assertSqlExecutionUi({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID,setExactViewport,returnToDetails,openDatabaseWorkspace});
     await require('./database-tabs-ui.cjs')({win,fill,click,waitFor,textContains,testId,screenshot,state,databaseCalls,PRIMARY_ID,clipboard,openRowDetail});
     await require('./database-reconnect-ui.cjs')({win,fill,click,waitFor,textContains,testId,state,databaseCalls,PRIMARY_ID,plugins,runtime,assessment,queryResult,scope});
+    await require('./environment-workspace-ui.cjs')({win,click,fill,waitFor,textContains,testId,screenshot,databaseCalls,PRIMARY_ID,OTHER_ID,OFFLINE_ID,ENVIRONMENT_ID,returnToDetails,setExactViewport});
     await assertNoPersistence(win);
     assert.deepEqual(forbiddenCalls,[],'数据库工作区不得调用未授权通道。');
     assert.deepEqual(externalRequests,[],'数据库 UI 测试不得发起外部网络请求。');

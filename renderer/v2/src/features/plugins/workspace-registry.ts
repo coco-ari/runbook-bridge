@@ -13,6 +13,7 @@ export interface PluginWorkspaceEntry {
   readonly connected: boolean
   readonly dirty: boolean
   readonly connectionEpoch: number
+  readonly returnFocusTestId?: string
 }
 
 export interface PluginWorkspaceProps {

@@ -1,0 +1,47 @@
+const assert = require('node:assert/strict');
+
+module.exports = async function assertEnvironmentWorkspaceUi({win,click,fill,waitFor,textContains,testId,screenshot,databaseCalls,PRIMARY_ID,OTHER_ID,OFFLINE_ID,ENVIRONMENT_ID,returnToDetails,setExactViewport}) {
+  const evaluate = source => win.webContents.executeJavaScript(source,true);
+  const entry = id => testId('environment-plugin-workspace-'+id);
+  await returnToDetails(win);
+  await click(win,testId('environment-trigger-'+ENVIRONMENT_ID));
+  await waitFor(win,"document.querySelector('#detail-main')?.dataset.selectionKind === 'environment'",'选择环境详情');
+  await waitFor(win,`document.querySelector('${entry(PRIMARY_ID)}')?.disabled === false`,'环境详情直接工作区入口就绪');
+  const before = databaseCalls.length;
+  assert.equal(await evaluate(`document.querySelector('${entry(OFFLINE_ID)}').disabled`),true,'离线插件禁止进入工作区');
+  await evaluate(`document.querySelector('${entry(OFFLINE_ID)}').click()`);
+  assert.equal(databaseCalls.length,before,'浏览环境详情与点击离线入口不会访问数据库');
+  const size=win.getContentSize();
+  await setExactViewport(win,1680,980);
+  await screenshot(win,'environment-workspace-entry-wide');
+  await setExactViewport(win,960,640);
+  const geometry = await evaluate(`(() => {
+    const panel=document.querySelector('[data-testid=environment-plugin-list]'),bounds=panel.getBoundingClientRect();
+    return [...panel.querySelectorAll('button')].filter(e=>e.getClientRects().length).every(e=>{const r=e.getBoundingClientRect();return r.left>=bounds.left && r.right<=bounds.right});
+  })()`);
+  assert.equal(geometry,true,'窄环境详情的连接和工作区按钮不得溢出');
+  await screenshot(win,'environment-workspace-entry-narrow');
+  await setExactViewport(win,...size);
+  await click(win,entry(PRIMARY_ID));
+  await textContains(win,'mysql-table-list','orders');
+  await waitFor(win,"document.querySelector('[data-testid=mysql-full-window-workspace]')?.getClientRects().length > 0",'直接打开 MySQL 工作区');
+  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-workspace-back]').getAttribute('aria-label')"),'返回环境详情');
+  assert.equal(await evaluate("document.querySelector('#detail-main')?.dataset.selectionKind"),'environment','打开工作区不切换底层插件详情');
+  const sql='SELECT 1 AS environment_entry_draft';
+  await fill(win,testId('mysql-sql-editor'),sql);
+  await returnToDetails(win);
+  await waitFor(win,`document.activeElement === document.querySelector('${entry(PRIMARY_ID)}')`,'返回后焦点恢复到原工作区按钮');
+  await textContains(win,'environment-plugin-workspace-'+PRIMARY_ID,'继续工作区');
+  const beforeResume=databaseCalls.length;
+  await click(win,entry(PRIMARY_ID));
+  await waitFor(win,"document.querySelector('[data-testid=mysql-full-window-workspace]')?.getClientRects().length > 0",'继续原工作区');
+  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-sql-editor]').value"),sql,'返回环境详情保留原 SQL');
+  assert.equal(databaseCalls.length,beforeResume,'继续原工作区不会重新读取表列表');
+  await returnToDetails(win);
+  await click(win,entry(OTHER_ID));
+  await textContains(win,'mysql-table-list','reports');
+  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-sql-editor]').value.includes('environment_entry_draft')"),false,'环境详情的不同插件工作区不串用 SQL');
+  await returnToDetails(win);
+  assert.equal(await evaluate("document.querySelector('#detail-main')?.dataset.selectionKind"),'environment');
+  process.stdout.write('环境详情工作区入口通过：离线禁用、直接进入、返回焦点、SQL 保留、跨插件隔离与窄屏布局。\n');
+};

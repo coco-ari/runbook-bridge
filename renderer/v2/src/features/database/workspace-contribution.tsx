@@ -7,7 +7,7 @@ function MysqlWorkspaceContribution({ api, entry, visible, onBack, onClose, onDi
     <MysqlDatabaseWorkspace api={api} scope={entry.scope} plugin={entry.plugin}
       projectName={entry.projectName} environmentName={entry.environmentName}
       connected={entry.connected} runtime={entry.runtime} connectionEpoch={entry.connectionEpoch} onEditingChange={onDirtyChange}
-      onBack={onBack} onClose={onClose} />
+      backLabel={entry.returnFocusTestId?.startsWith("environment-") ? "返回环境详情" : "返回数据库详情"} onBack={onBack} onClose={onClose} />
   </div>
 }
 

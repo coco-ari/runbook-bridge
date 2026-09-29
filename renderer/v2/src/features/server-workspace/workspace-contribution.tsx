@@ -6,7 +6,7 @@ const ServerWorkspace = lazy(() => import("./ServerWorkspace").then((module) => 
 
 function ServerWorkspaceContribution({ api, entry, visible, onBack, onClose, onDirtyChange }: PluginWorkspaceProps) {
   return <Suspense fallback={visible ? <div className="absolute inset-0 z-30 grid place-items-center bg-background text-sm text-muted-foreground">正在打开服务器工作区…</div> : null}>
-    <ServerWorkspace api={api} entry={entry} visible={visible} onBack={onBack} onClose={onClose} onDirtyChange={onDirtyChange} />
+    <ServerWorkspace backLabel={entry.returnFocusTestId?.startsWith("environment-") ? "返回环境详情" : "返回服务器详情"} api={api} entry={entry} visible={visible} onBack={onBack} onClose={onClose} onDirtyChange={onDirtyChange} />
   </Suspense>
 }
 

@@ -47,6 +47,7 @@ interface Props {
   readonly connectionEpoch?: number
   readonly onDirtyChange?: (dirty: boolean) => void
   readonly onBack: () => void
+  readonly backLabel?: string
   readonly onClose: () => void
 }
 async function copy(value: string) {
@@ -124,7 +125,7 @@ function KeyDocument({ connected, tab, refresh, more, field, clearField, actions
 
 const ignoreDirty = (_dirty: boolean) => {}
 
-export function RedisWorkspace({ api, scope, runtime, plugin, projectName, environmentName, visible, onBack, onClose, connected = true, connectionEpoch = 0, onDirtyChange = ignoreDirty }: Props) {
+export function RedisWorkspace({ backLabel = "返回 Redis 详情", api, scope, runtime, plugin, projectName, environmentName, visible, onBack, onClose, connected = true, connectionEpoch = 0, onDirtyChange = ignoreDirty }: Props) {
   const state = useRedisWorkspace(api, scope, plugin, visible, connected, connectionEpoch)
   const connection = usePluginConnection({ api, plugin: scope, runtime })
   const reconnectFocus = useRef<HTMLElement | null>(null)
@@ -180,7 +181,7 @@ export function RedisWorkspace({ api, scope, runtime, plugin, projectName, envir
     }
   }}>
     <header className="redis-workspace-header">
-      <WorkspaceBackButton label="返回 Redis 详情" testId="redis-workspace-back" onClick={onBack} />
+      <WorkspaceBackButton label={backLabel} testId="redis-workspace-back" onClick={onBack} />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold">{plugin.displayName}</h1><EnvironmentTypeBadge /><StatusIndicator appearance="badge" status={connected ? "connected" : "disconnected"} /></div>
         <p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName}>{projectName} / {environmentName} · DB {String(plugin.target?.db ?? 0)}</p>

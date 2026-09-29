@@ -39,6 +39,7 @@ export interface ServerWorkspaceEntry {
 const UPLOAD_STATUS_LABELS: Record<ServerUploadJob["status"], string> = { queued: "等待传输", running: "正在传输", verifying: "正在校验", completed: "已完成", cancelled: "已取消", error: "传输失败", interrupted: "已中断", pausing: "正在暂停", paused: "已暂停" }
 
 interface ServerWorkspaceProps {
+  readonly backLabel?: string
   readonly api: AiOpsV2Api
   readonly entry: ServerWorkspaceEntry
   readonly visible: boolean
@@ -47,7 +48,7 @@ interface ServerWorkspaceProps {
   readonly onDirtyChange?: (dirty: boolean) => void
 }
 
-export function ServerWorkspace({ api, entry, visible, onBack, onClose, onDirtyChange }: ServerWorkspaceProps) {
+export function ServerWorkspace({ backLabel = "返回服务器详情", api, entry, visible, onBack, onClose, onDirtyChange }: ServerWorkspaceProps) {
   const panelId = useId()
   const scope = useMemo<PluginScope>(() => ({ projectId: entry.plugin.projectId, environmentId: entry.plugin.environmentId, pluginInstanceId: entry.plugin.pluginInstanceId }), [entry.plugin.projectId, entry.plugin.environmentId, entry.plugin.pluginInstanceId])
   const draft = useMemo(() => pluginDraftFromRecord(entry.plugin), [entry.plugin])
@@ -381,7 +382,7 @@ export function ServerWorkspace({ api, entry, visible, onBack, onClose, onDirtyC
 
   return <div className="server-workspace" hidden={!visible} data-testid="server-workspace" data-workspace-key={serverWorkspaceKey(scope)}>
     <header className="server-workspace-header">
-      <WorkspaceBackButton label="返回服务器详情" testId="server-workspace-back" onClick={onBack} />
+      <WorkspaceBackButton label={backLabel} testId="server-workspace-back" onClick={onBack} />
       <span className="h-5 w-px bg-border" />
       <div className="server-workspace-heading"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold">{entry.plugin.displayName}</h1><EnvironmentTypeBadge /><StatusIndicator appearance="badge" status={connected ? "connected" : terminalState.phase === "waiting" || terminalState.phase === "connecting" ? "connecting" : terminalState.phase === "action-required" ? "blocked" : "disconnected"} label={connected ? "已连接" : terminalState.phase === "waiting" || terminalState.phase === "connecting" ? "正在重连" : terminalState.phase === "action-required" ? "需要处理" : "已断开"} /></div><p className="truncate text-xs text-muted-foreground">{entry.projectName} / {entry.environmentName}<span className="server-workspace-identity"> · {sshIdentity}</span></p></div>
       <ServerMetrics api={api} scope={scope} connected={connected} visible={visible} />

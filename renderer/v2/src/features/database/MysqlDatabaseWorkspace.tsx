@@ -47,6 +47,7 @@ export interface MysqlDatabaseWorkspaceProps {
   readonly connected: boolean
   readonly onClose: () => void
   readonly onBack: () => void
+  readonly backLabel?: string
   readonly projectName: string
   readonly environmentName: string
 }
@@ -63,7 +64,7 @@ function ReadLoading({ label }: { readonly label: string }) {
   return <div aria-busy="true" aria-label={label} className="space-y-3 p-4" role="status"><p className="text-xs text-muted-foreground">{label}</p><Skeleton className="h-8 w-full" /><Skeleton className="h-24 w-full" /></div>
 }
 
-function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, environmentName, api, scope, runtime }: MysqlDatabaseWorkspaceProps) {
+function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, environmentName, api, scope, runtime, backLabel = "返回数据库详情" }: MysqlDatabaseWorkspaceProps) {
   const database = mysqlDatabaseName(plugin)
   const editing = useMysqlEditingGuard()
   const connection = usePluginConnection({ api, plugin: scope, runtime })
@@ -81,7 +82,7 @@ function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, envi
   }
   return <>
     <header className="mysql-workspace-header">
-      <WorkspaceBackButton label="返回数据库详情" testId="mysql-workspace-back" onClick={() => editing.protect(onBack, undefined, { preserveTransactions: true })} />
+      <WorkspaceBackButton label={backLabel} testId="mysql-workspace-back" onClick={() => editing.protect(onBack, undefined, { preserveTransactions: true })} />
       <span className="mysql-workspace-header-divider" />
       <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold" title={plugin.displayName}>{plugin.displayName}</h1><EnvironmentTypeBadge /><StatusIndicator appearance="badge" status={connected ? "connected" : "disconnected"} /><Badge variant="outline"><ShieldCheck className="size-3" />Agent 只读</Badge></div><p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName + " · " + database}>{projectName} / {environmentName} · {database}</p></div>
       <WorkspaceHeaderActions connected={connected} busy={disconnecting} onDisconnect={() => editing.protect(() => void disconnect())} onClose={() => setClosing(true)} prefix="mysql-workspace" closeLabel="关闭数据库工作区" closeTitle="关闭工作区并清除查询" />
@@ -155,8 +156,12 @@ function MysqlConnectedWorkspace({ api, scope, plugin, projectName, environmentN
     selectDocument(id)
     window.setTimeout(() => document.querySelector<HTMLTextAreaElement>('[data-testid="mysql-sql-editor"]')?.focus(), 0)
   }
-  function dropTable(data: string) {
-    try { const payload = JSON.parse(data); if (payload.scope === dragScope && typeof payload.table === "string") generateQuery(payload.table) } catch { /* 忽略其他窗口或非工作区的拖放内容。 */ }
+  function dropTable(data: string): string | null {
+    try {
+      const payload = JSON.parse(data)
+      if (payload.scope === dragScope && typeof payload.table === "string" && state.tables.some(table => table.name === payload.table && table.queryable)) return mysqlSelectSnippet(payload.table)
+    } catch { /* 忽略其他窗口或非工作区的拖放内容。 */ }
+    return null
   }
 
   function closeQuery(id: string) { editing.protect(() => { void closeQueryNow(id).catch(error => toast.error(error instanceof Error ? error.message : "关闭 SQL 标签失败")) }, [id, mysqlSqlGuardKey(id)]) }

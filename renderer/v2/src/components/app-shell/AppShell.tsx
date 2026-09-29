@@ -1,3 +1,5 @@
+import { pluginWorkspaces } from "@/features/plugins/workspace-contributions"
+import { workspaceScopeMatches } from "@/features/plugins/workspace-registry"
 import { PluginWorkspaceHost } from "@/features/plugins/PluginWorkspaceHost"
 import { CloudConfigProvider, useCloudConfig } from "@/features/cloud-config/CloudConfigProvider"
 import { usePluginWorkspaceSessions, useSelectedPluginWorkspace } from "@/features/plugins/use-plugin-workspaces"
@@ -138,6 +140,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
     environmentId: selection.environmentId,
   })
   const [commandOpen, setCommandOpen] = useState(false)
+  const [environmentWorkspaceTarget, setEnvironmentWorkspaceTarget] = useState<{ projectId: string; environmentId: string; pluginInstanceId: string } | null>(null)
   const workspaceSessions = usePluginWorkspaceSessions(api)
   const removePluginWorkspaces = workspaceSessions.removeScope
   const [detailTab, setDetailTab] = useState("overview")
@@ -329,17 +332,36 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       (plugin) => plugin.pluginInstanceId === selection.pluginInstanceId,
     ) ?? null,
   )
-  const selectedWorkspaceScope = selectedProject && selectedEnvironment && selectedPluginRecord
-    ? { projectId:selectedProject.projectId, environmentId:selectedEnvironment.environmentId, pluginInstanceId:selectedPluginRecord.pluginInstanceId }
+  // 从环境详情打开时单独记录工作区目标，保持导航选择和详情滚动位置不变。
+  const workspacePluginRecord = selectedPluginRecord ?? (!selection.pluginInstanceId
+    && environmentWorkspaceTarget?.projectId === selectedProject?.projectId
+    && environmentWorkspaceTarget?.environmentId === selectedEnvironment?.environmentId
+    ? supportedPlugin(scopedPluginRecords.find(plugin => plugin.pluginInstanceId === environmentWorkspaceTarget?.pluginInstanceId) ?? null) : null)
+  const selectedWorkspaceScope = selectedProject && selectedEnvironment && workspacePluginRecord
+    ? { projectId:selectedProject.projectId, environmentId:selectedEnvironment.environmentId, pluginInstanceId:workspacePluginRecord.pluginInstanceId }
     : null
   const pluginWorkspace = useSelectedPluginWorkspace(workspaceSessions, {
-    plugin:selectedPluginRecord, scope:selectedWorkspaceScope,
+    plugin:workspacePluginRecord, scope:selectedWorkspaceScope,
     connected:Boolean(selectedWorkspaceScope && !environmentStatus.error
       && scopedRuntime?.plugins.find((plugin) => plugin.pluginInstanceId === selectedWorkspaceScope.pluginInstanceId)?.status === "connected"),
     projectName:selectedProject?.name ?? "", environmentName:selectedEnvironment?.name ?? "", runtime:rawRuntime,
   })
   useEffect(() => { if (pluginWorkspace.visible) setCommandOpen(false) }, [pluginWorkspace.visible])
   const workspaceVisible = pluginWorkspace.visible
+  const environmentWorkspaceActions = Object.fromEntries(navigationPlugins.flatMap(plugin => {
+    const definition = pluginWorkspaces.get(plugin.pluginType)
+    if (!definition) return []
+    const record = supportedPlugin(scopedPluginRecords.find(item => item.pluginInstanceId === plugin.pluginInstanceId) ?? null)
+    const scope = selectedScope ? { ...selectedScope, pluginInstanceId: plugin.pluginInstanceId } : null
+    const key = record ? JSON.stringify([definition.type, definition.sessionKey(record)]) : null
+    return [[plugin.pluginInstanceId, {
+      enabled: Boolean(record && scope && workspaceScopeMatches(scope, record) && definition.canOpen(record)
+        && plugin.configState === "ready" && !pluginList.loading && !pluginList.error && !environmentStatus.error
+        && scopedRuntime?.plugins.find(item => item.pluginInstanceId === plugin.pluginInstanceId)?.status === "connected"),
+      retained: pluginWorkspace.state.entries.some(entry => entry.key === key),
+    }]]
+  }))
+
   const pluginsByEnvironment = useMemo(() => {
     const result = new Map<string, readonly WorkspacePluginReadModel[]>()
     if (selectedEnvironment && scopedPlugins) {
@@ -602,6 +624,23 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       return target?.isConnected && target.getClientRects().length ? target : document.getElementById("detail-main")
     })
   }, [pluginWorkMode, restoreEditorLayout, scheduleWorkspaceFocus])
+
+  function openEnvironmentWorkspace(pluginInstanceId: string) {
+    const record = supportedPlugin(scopedPluginRecords.find(plugin => plugin.pluginInstanceId === pluginInstanceId) ?? null)
+    const definition = record ? pluginWorkspaces.get(record.pluginType) : null
+    if (!record || !definition || !selectedScope || !selectedProject || !selectedEnvironment
+      || !environmentWorkspaceActions[pluginInstanceId]?.enabled) return
+    const scope = { ...selectedScope, pluginInstanceId }
+    requestNavigation(() => {
+      setEnvironmentWorkspaceTarget(scope)
+      workspaceSessions.open({
+        key: JSON.stringify([definition.type, definition.sessionKey(record)]), type: definition.type,
+        scope, plugin: record, projectName: selectedProject.name, environmentName: selectedEnvironment.name,
+        runtime: rawRuntime, connected: true, dirty: false, connectionEpoch: 0,
+        returnFocusTestId: `environment-plugin-workspace-${pluginInstanceId}`,
+      })
+    })
+  }
 
   const selectProject = useCallback((projectId: string) => {
     requestNavigation(() => {
@@ -978,6 +1017,8 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
           ) : <WorkspaceDetail onOpenEnvironment={selectEnvironment}
             onOpenWorkspace={pluginWorkspace.openSelected}
             workspaceRetained={pluginWorkspace.retained}
+            environmentWorkspaceActions={environmentWorkspaceActions}
+            onOpenEnvironmentWorkspace={openEnvironmentWorkspace}
             activeTab={detailTab}
             api={api}
             collapsed={layoutState.detailCollapsed}

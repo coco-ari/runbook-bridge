@@ -68,7 +68,7 @@ export function usePluginWorkspaceSessions(api: AiOpsV2Api) {
     previousActive.current = entry
     const definition = pluginWorkspaces.get((entry ?? previous)?.type ?? "")
     if (!definition || entry?.key === previous?.key) return
-    const testId = entry ? definition.focusTestId : definition.returnFocusTestId
+    const testId = entry ? definition.focusTestId : previous?.returnFocusTestId ?? definition.returnFocusTestId
     const timer = window.setTimeout(() => focusWorkspaceElement(document.querySelector<HTMLElement>(`[data-testid="${testId}"]`)), 0)
     return () => window.clearTimeout(timer)
   }, [state.activeKey])
@@ -77,14 +77,15 @@ export function usePluginWorkspaceSessions(api: AiOpsV2Api) {
     const definition = pluginWorkspaces.get(entry.type)
     if (!definition || !definition.canOpen(entry.plugin) || !workspaceScopeMatches(entry.scope, entry.plugin)
       || (definition.requiresConnection && !entry.connected)) return
-    const retained = current.current.entries.find((item) => item.key === entry.key)
-    if (!retained && current.current.entries.filter((item) => item.type === entry.type).length >= definition.maxSessions) {
+    const reconciled = reconcileWorkspaceSelection(current.current, entry, pluginWorkspaces)
+    const retained = reconciled.entries.find((item) => item.key === entry.key)
+    if (!retained && reconciled.entries.filter((item) => item.type === entry.type).length >= definition.maxSessions) {
       toast.error(`最多保留 ${definition.maxSessions} 个同类工作区，请先关闭一个工作区。`)
       return
     }
     const scopeKey = JSON.stringify([entry.scope.projectId, entry.scope.environmentId])
     sequences.current.set(scopeKey, Math.max(sequences.current.get(scopeKey) ?? -1, entry.runtime?.sequence ?? -1))
-    setState((value) => openWorkspaceSession(value, entry, pluginWorkspaces))
+    setState((value) => openWorkspaceSession(reconcileWorkspaceSelection(value, entry, pluginWorkspaces), entry, pluginWorkspaces))
   }, [])
   const back = useCallback(() => setState((value) => ({ ...value, activeKey:null })), [])
   const close = useCallback((key: string) => setState((value) => ({

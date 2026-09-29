@@ -49,6 +49,7 @@ import {
 } from "@/components/detail-workspace/detail-navigation"
 import { AuditFeature } from "@/features/audit/AuditFeature"
 import { ConfirmationsFeature, type ConfirmationScope } from "@/features/confirmations/ConfirmationsFeature"
+import type { EnvironmentWorkspaceAction } from "@/features/connections/EnvironmentPluginRow"
 import { EnvironmentConnectionPanel } from "@/features/connections/EnvironmentConnectionPanel"
 import { EnvironmentOverview } from "@/features/environments/EnvironmentOverview"
 import { PluginOverview } from "@/features/plugins/PluginOverview"
@@ -79,6 +80,8 @@ export type WorkspaceDetailAction =
 
 export interface WorkspaceDetailProps {
   readonly onOpenWorkspace: () => void
+  readonly onOpenEnvironmentWorkspace: (pluginInstanceId: string) => void
+  readonly environmentWorkspaceActions: Readonly<Record<string, EnvironmentWorkspaceAction>>
   readonly workspaceRetained: boolean
   readonly activeTab: string
   readonly api: AiOpsV2Api
@@ -223,6 +226,8 @@ function SelectionActions({
 
 export function WorkspaceDetail({
   onOpenWorkspace,
+  onOpenEnvironmentWorkspace,
+  environmentWorkspaceActions,
   workspaceRetained,
   api,
   activeTab,
@@ -563,6 +568,8 @@ export function WorkspaceDetail({
                   onReload={onReloadEnvironment}
                   connectionPanel={(
                     <EnvironmentConnectionPanel
+                      onOpenWorkspace={onOpenEnvironmentWorkspace}
+                      workspaceActions={environmentWorkspaceActions}
                       api={api}
                       environment={environment}
                       onOpenPlugin={(pluginInstanceId) => onOpenPlugin(environment.projectId, environment.environmentId, pluginInstanceId)}

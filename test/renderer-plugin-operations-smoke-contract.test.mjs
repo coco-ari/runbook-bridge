@@ -247,11 +247,11 @@ test('runtime host-key prompts preserve explicit approval, exact correlation and
     'removed host-key trigger restores the stable detail-workspace fallback',
     'removing the challenge owner must not trust a host key',
     'original plugin save strategies and workspace lifecycle retain the exact forty-one-call baseline',
-    'host-key governance adds only twenty-one reviewed calls to the original plugin baseline',
+    '环境详情插件入口加入后只增加二十六次显式连接与确认调用',
   ]) assert.ok(source.includes(expectation),`missing host-key governance assertion: ${expectation}`);
   assert.match(source,/assert\.equal\(mutationCalls\.length,41,/u);
-  assert.match(source,/assert\.equal\(mutationCalls\.length,62,/u);
-  assert.match(source,/assert\.equal\(mutationCalls\.length,initialMutationCount\+21,/u);
+  assert.match(source,/assert\.equal\(mutationCalls\.length,67,/u);
+  assert.match(source,/assert\.equal\(mutationCalls\.length,initialMutationCount\+26,/u);
   assert.ok(source.indexOf('await assertRuntimeHostKeyGovernance(win);') > source.indexOf('await assertPluginWorkspaceNavigation(win,'));
 });
 
@@ -272,7 +272,7 @@ test('late and simultaneous host-key challenges queue behind the active short di
     'single and simultaneous late host-key responses must never stack active modal surfaces',
     'queued dialogs must not save metadata or cause hidden mutations',
   ]) assert.ok(source.includes(expectation),`missing late-challenge assertion: ${expectation}`);
-  assert.match(source,/assert\.equal\(mutationCalls\.length,65,/u);
+  assert.match(source,/assert\.equal\(mutationCalls\.length,70,/u);
   assert.match(source,/assert\.equal\(mutationCalls\.length,initialMutationCount\+3,/u);
   assert.ok(source.indexOf('await assertDeferredHostKeyDialogs(win);') > source.indexOf('await assertRuntimeHostKeyGovernance(win);'));
 });
@@ -316,9 +316,9 @@ test('connection tooltip handoff is a mandatory native-focus regression after th
   assert.match(handoff,/assert\.equal\(calls\('v2:connection-challenge-confirm'\)\.length,initialConfirmCount,/u);
   assert.match(handoff,/assert\.equal\(mutationCalls\.length,initialMutationCount\+32,/u);
   assert.doesNotMatch(handoff,/process\.env|new FocusEvent|settleAnimations/u,'handoff coverage must always run with native focus and ordinary tooltip dismissal timing');
-  for (const count of [41,62,65,97]) {
+  for (const count of [41,67,70,102]) {
     assert.match(source,new RegExp(`assert\\.equal\\(mutationCalls\\.length,${count},`,'u'));
   }
   assert.ok(source.indexOf('await assertConnectionTooltipHandoff(win);') > source.indexOf('await assertDeferredHostKeyDialogs(win);'));
-  assert.ok(source.indexOf('assert.equal(mutationCalls.length,97,') > source.indexOf('await assertConnectionTooltipHandoff(win);'));
+  assert.ok(source.indexOf('assert.equal(mutationCalls.length,102,') > source.indexOf('await assertConnectionTooltipHandoff(win);'));
 });

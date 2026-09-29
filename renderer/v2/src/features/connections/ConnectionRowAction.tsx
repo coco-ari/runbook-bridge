@@ -212,6 +212,7 @@ export function PluginConnectionRowAction({
   ready,
   runtime,
   scopeLabel,
+  testId,
 }: {
   readonly api: AiOpsV2Api
   readonly fallbackStatus: WorkspaceReadStatus
@@ -221,6 +222,7 @@ export function PluginConnectionRowAction({
   readonly ready: boolean
   readonly runtime: EnvironmentRuntime | null
   readonly scopeLabel: string
+  readonly testId?: string
 }) {
   const connection = usePluginConnection({
     api,
@@ -237,7 +239,7 @@ export function PluginConnectionRowAction({
       ready={ready}
       scope={{ projectId: plugin.projectId, environmentId: plugin.environmentId }}
       scopeLabel={`插件“${scopeLabel}”`}
-      testId={`plugin-connection-${plugin.pluginInstanceId}`}
+      testId={testId ?? `plugin-connection-${plugin.pluginInstanceId}`}
     />
   )
 }

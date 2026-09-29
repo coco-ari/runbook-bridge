@@ -1,4 +1,5 @@
 import { DiagnosticDetails } from "./DiagnosticDetails"
+import { EnvironmentPluginRow, type EnvironmentWorkspaceAction } from "./EnvironmentPluginRow"
 import {
   ArrowClockwise,
   LinkBreak,
@@ -11,7 +12,6 @@ import {
 import { useRef } from "react"
 
 import type { AiOpsV2Api, EnvironmentRuntime } from "@/bridge/ai-ops-v2"
-import { StatusIndicator } from "@/components/app-shell/StatusIndicator"
 import {
   Alert,
   AlertDescription,
@@ -22,20 +22,6 @@ import { Button } from "@/components/ui/button"
 import { ButtonGroup } from "@/components/ui/button-group"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
-import {
-  Item,
-  ItemContent,
-  ItemDescription,
-  ItemGroup,
-} from "@/components/ui/item"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 import { RuntimeHostKeyDialog } from "@/features/connections/RuntimeHostKeyDialog"
 import {
   summarizeConnectionActions,
@@ -43,7 +29,6 @@ import {
 import { useEnvironmentConnection } from "@/features/connections/use-environment-connection"
 import { buildEnvironmentDetailModel } from "@/features/environments/environment-detail-model"
 import {
-  pluginTypeLabel,
   type WorkspaceEnvironmentReadModel,
   type WorkspacePluginReadModel,
 } from "@/features/workspace/workspace-read-model"
@@ -52,6 +37,8 @@ export interface EnvironmentConnectionPanelProps {
   readonly api: AiOpsV2Api
   readonly environment: WorkspaceEnvironmentReadModel
   readonly plugins: readonly WorkspacePluginReadModel[] | null
+  readonly onOpenWorkspace: (pluginInstanceId: string) => void
+  readonly workspaceActions: Readonly<Record<string, EnvironmentWorkspaceAction>>
   readonly onOpenPlugin: (pluginInstanceId: string) => void
   readonly runtime?: EnvironmentRuntime | null
   readonly onRuntime?: (runtime: EnvironmentRuntime) => void
@@ -73,6 +60,8 @@ export function EnvironmentConnectionPanel({
   environment,
   plugins,
   onOpenPlugin,
+  onOpenWorkspace,
+  workspaceActions,
   runtime = null,
   onRuntime,
 }: EnvironmentConnectionPanelProps) {
@@ -129,7 +118,7 @@ export function EnvironmentConnectionPanel({
             }
           : ["error", "blocked", "partial"].includes(connection.state.phase)
             ? {
-                label: "重试连接",
+                label: connection.state.phase === "partial" ? "连接剩余" : "重试连接",
                 icon: ArrowClockwise,
                 run: connection.retry,
                 variant: "default" as const,
@@ -148,66 +137,28 @@ export function EnvironmentConnectionPanel({
 
   return (
     <section aria-labelledby="environment-connection-title" className="space-y-4 @container/environment-connection" data-testid="environment-connection-panel">
-      <Card size="sm">
-        <CardHeader className="gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <CardTitle id="environment-connection-title">环境连接</CardTitle>
+      <Card size="sm" className="gap-0">
+        <CardContent className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0 space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-medium" id="environment-connection-title" title="打开详情和刷新状态不会自动连接">环境连接</h3>
               <Badge aria-live="polite" role="status" variant={phase.variant}>{phase.label}</Badge>
             </div>
-            <div aria-label="环境连接操作" className="flex flex-wrap items-center gap-2" role="group">
-              <ButtonGroup aria-label="连接与断开">
-                <Button
-                  data-testid="environment-connection-primary"
-                  disabled={primaryAction.disabled}
-                  onClick={(event) => {
-                    connectionTriggerRef.current = event.currentTarget
-                    void primaryAction.run()
-                  }}
-                  size="sm"
-                  type="button"
-                  variant={primaryAction.variant}
-                >
-                  {primaryAction.pending ? <SpinnerGap className="animate-spin" /> : <PrimaryIcon />}
-                  {primaryAction.label}
-                </Button>
-                {detail.summary.connected > 0 && ["partial", "blocked", "error"].includes(connection.state.phase) ? (
-                  <Button disabled={busy} onClick={() => void connection.disconnect()} size="sm" type="button" variant="outline">
-                    <LinkBreak />断开全部
-                  </Button>
-                ) : null}
-              </ButtonGroup>
-              <Button
-                data-testid="environment-connection-refresh"
-                disabled={busy || connection.state.phase === "connecting" || connection.state.phase === "disconnecting"}
-                onClick={() => void connection.refresh()}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                <ArrowClockwise />刷新
-              </Button>
-            </div>
+            <dl aria-label="环境连接摘要" className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground" data-testid="environment-connection-summary">
+              <div className="flex gap-1"><dt>插件</dt><dd>{detail.summary.total}</dd></div>
+              <div className="flex gap-1"><dt>已连接</dt><dd>{detail.summary.connected}/{detail.summary.total}</dd></div>
+              {([["待完善", detail.summary.draft], ["等待依赖", dependencyCount], ["错误", detail.summary.error]] as const).filter(([, count]) => count > 0).map(([label, count]) => <div className="flex gap-1" key={label}><dt>{label}</dt><dd>{count}</dd></div>)}
+            </dl>
           </div>
-          <p className="text-xs leading-5 text-muted-foreground">
-            按依赖连接当前环境中配置完整的插件。打开详情和刷新状态不会自动连接。
-          </p>
-        </CardHeader>
-        <CardContent>
-          <dl aria-label="环境连接摘要" className="flex flex-wrap gap-x-8 gap-y-3 border-t pt-3" data-testid="environment-connection-summary">
-            {[
-              ["插件总数", detail.summary.total],
-              ["已连接", detail.summary.connected],
-              ["待完善", detail.summary.draft],
-              ["等待依赖", dependencyCount],
-              ["错误", detail.summary.error],
-            ].map(([label, value]) => (
-              <div className="flex items-baseline gap-2" key={label}>
-                <dt className="text-xs text-muted-foreground">{label}</dt>
-                <dd className="font-mono text-base font-medium tabular-nums">{value}</dd>
-              </div>
-            ))}
-          </dl>
+          <div aria-label="环境连接操作" className="flex flex-wrap items-center gap-2" role="group">
+            <ButtonGroup aria-label="连接与断开">
+              <Button data-testid="environment-connection-primary" disabled={primaryAction.disabled} onClick={(event) => { connectionTriggerRef.current = event.currentTarget; void primaryAction.run() }} size="sm" type="button" variant={primaryAction.variant}>
+                {primaryAction.pending ? <SpinnerGap className="animate-spin" /> : <PrimaryIcon />}{primaryAction.label}
+              </Button>
+              {detail.summary.connected > 0 && ["partial", "blocked", "error"].includes(connection.state.phase) ? <Button disabled={busy} onClick={() => void connection.disconnect()} size="sm" type="button" variant="outline"><LinkBreak />断开全部</Button> : null}
+            </ButtonGroup>
+            <Button data-testid="environment-connection-refresh" disabled={busy || connection.state.phase === "connecting" || connection.state.phase === "disconnecting"} onClick={() => void connection.refresh()} size="sm" type="button" variant="outline"><ArrowClockwise />刷新</Button>
+          </div>
         </CardContent>
       </Card>
 
@@ -249,7 +200,7 @@ export function EnvironmentConnectionPanel({
       <Card data-testid="environment-plugin-list" size="sm">
         <CardHeader className="border-b">
           <CardTitle>插件</CardTitle>
-          <p className="text-xs leading-5 text-muted-foreground">点击插件名称查看详情、管理单个连接或修改配置。</p>
+          <p className="text-xs leading-5 text-muted-foreground">直接连接插件或进入工作区；点击名称查看配置与详情。</p>
           {detail.partial ? (
             <p className="text-xs leading-5 text-muted-foreground">部分插件信息或运行状态尚未读取，列表保留上次已知状态。</p>
           ) : null}
@@ -264,60 +215,8 @@ export function EnvironmentConnectionPanel({
           </Empty>
         ) : (
           <CardContent>
-            <ItemGroup aria-label="环境插件状态" className="gap-2 @xl/environment-connection:hidden">
-              {detail.rows.map((row) => (
-                <Item className="min-w-0" key={row.plugin.pluginInstanceId} role="listitem" size="xs" variant="outline">
-                  <ItemContent className="min-w-0">
-                    <div className="flex w-full items-start justify-between gap-2">
-                      <Button
-                        aria-label={`查看插件 ${row.plugin.displayName} 的详情`}
-                        className="h-auto min-w-0 flex-1 shrink justify-start whitespace-normal break-all p-0 text-left text-sm"
-                        data-testid={`environment-plugin-detail-${row.plugin.pluginInstanceId}`}
-                        onClick={() => onOpenPlugin(row.plugin.pluginInstanceId)}
-                        type="button"
-                        variant="link"
-                      >{row.plugin.displayName}</Button>
-                      <StatusIndicator appearance="badge" status={row.status} />
-                    </div>
-                    <ItemDescription>{pluginTypeLabel(row.plugin.pluginType)} · {row.description}</ItemDescription>
-                    {row.providerName ? <ItemDescription>依赖：{row.providerName}</ItemDescription> : null}
-                  </ItemContent>
-                </Item>
-              ))}
-            </ItemGroup>
-            <div className="hidden @xl/environment-connection:block">
-              <Table aria-label="环境插件状态" className="table-fixed">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-[30%]">插件</TableHead>
-                    <TableHead className="w-20">类型</TableHead>
-                    <TableHead className="w-28">状态</TableHead>
-                    <TableHead>连接说明</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {detail.rows.map((row) => (
-                    <TableRow key={row.plugin.pluginInstanceId}>
-                      <TableCell className="whitespace-normal">
-                        <Button
-                          aria-label={`查看插件 ${row.plugin.displayName} 的详情`}
-                          className="h-auto max-w-full justify-start whitespace-normal break-all p-0 text-left text-sm"
-                          data-testid={`environment-plugin-detail-${row.plugin.pluginInstanceId}`}
-                          onClick={() => onOpenPlugin(row.plugin.pluginInstanceId)}
-                          type="button"
-                          variant="link"
-                        >{row.plugin.displayName}</Button>
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{pluginTypeLabel(row.plugin.pluginType)}</TableCell>
-                      <TableCell><StatusIndicator appearance="badge" status={row.status} /></TableCell>
-                      <TableCell className="whitespace-normal text-xs leading-5 text-muted-foreground">
-                        <p>{row.description}</p>
-                        {row.providerName ? <p className="break-all">依赖：{row.providerName}</p> : null}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+            <div aria-label="环境插件状态" className="divide-y divide-border" role="list">
+              {detail.rows.map(row => <EnvironmentPluginRow key={row.plugin.pluginInstanceId} api={api} environment={environment} row={row} runtime={connection.state.runtime} onRuntime={onRuntime} onOpenPlugin={onOpenPlugin} onOpenWorkspace={onOpenWorkspace} workspace={workspaceActions[row.plugin.pluginInstanceId]} />)}
             </div>
           </CardContent>
         )}

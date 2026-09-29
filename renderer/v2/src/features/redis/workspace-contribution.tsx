@@ -7,7 +7,7 @@ function RedisWorkspaceContribution({ api, entry, visible, onBack, onClose, onDi
     <RedisWorkspace api={api} scope={entry.scope} plugin={entry.plugin}
       projectName={entry.projectName} environmentName={entry.environmentName} visible={visible}
       runtime={entry.runtime} connected={entry.connected} connectionEpoch={entry.connectionEpoch} onDirtyChange={onDirtyChange}
-      onBack={onBack} onClose={onClose} />
+      backLabel={entry.returnFocusTestId?.startsWith("environment-") ? "返回环境详情" : "返回 Redis 详情"} onBack={onBack} onClose={onClose} />
   </div>
 }
 

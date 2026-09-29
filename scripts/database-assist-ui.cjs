@@ -22,10 +22,53 @@ async function assertSqlAssistanceAndBrowse({win,fill,click,waitFor,textContains
   await waitFor(win,"document.querySelector('[data-testid=mysql-sql-editor]').value === 'SELECT o.`id` FROM orders o'",'别名字段补全插入');
   await textContains(win,'mysql-sql-diagnostic','基础语法通过');
   const original = await evaluate("document.querySelector('[data-testid=mysql-sql-editor]').value");
-  await evaluate("(() => { const transfer=new DataTransfer(); document.querySelector('[data-table-name=orders]').dispatchEvent(new DragEvent('dragstart',{dataTransfer:transfer,bubbles:true})); document.querySelector('.mysql-editor-code').dispatchEvent(new DragEvent('drop',{dataTransfer:transfer,bubbles:true,cancelable:true})); })()");
-  await waitFor(win,"document.querySelector('[data-testid=mysql-sql-editor]').value.includes('FROM `orders`') && document.querySelector('[data-testid=mysql-sql-editor]').value.includes('LIMIT 20')",'拖表生成查询');
+  const tabIds = () => evaluate("[...document.querySelectorAll('[role=tab][data-query-id]')].map(tab=>tab.dataset.queryId)");
+  const currentId = () => evaluate("document.querySelector('[role=tab][data-query-id][aria-selected=true]').dataset.queryId");
+  const editorValue = () => evaluate("document.querySelector('[data-testid=mysql-sql-editor]').value");
+  const dropTable = (override) => evaluate(`(() => {
+    const transfer=new DataTransfer();
+    document.querySelector('[data-testid=mysql-table-item][data-table-name=orders]').dispatchEvent(new DragEvent('dragstart',{dataTransfer:transfer,bubbles:true}));
+    const type='application/x-runbook-mysql-table';
+    const override=${JSON.stringify(override ?? null)};
+    if(override) transfer.setData(type,JSON.stringify({...JSON.parse(transfer.getData(type)),...override}));
+    document.querySelector('[data-testid=mysql-sql-editor]').dispatchEvent(new DragEvent('drop',{dataTransfer:transfer,bubbles:true,cancelable:true}));
+  })()`);
+  const snippet = 'SELECT *\nFROM `orders`\nLIMIT 20';
+  const beforeDrop = databaseCalls.length;
+  const originalTabs = await tabIds();
+  const originalId = await currentId();
+  await dropTable();
+  await waitFor(win,`document.querySelector('[data-testid=mysql-sql-editor]').value === ${JSON.stringify(original+'\n;\n\n'+snippet)}`,'拖表在原 SQL 末尾追加查询');
+  assert.deepEqual(await tabIds(),originalTabs,'已有 SQL 时拖表不得新建执行区');
+  assert.equal(await currentId(),originalId,'拖表保持当前查询标签');
+  await dropTable();
+  assert.equal(await editorValue(),original+'\n;\n\n'+snippet+'\n;\n\n'+snippet,'连续拖表保留全部已有 SQL');
+  await waitFor(win,"(() => {const editor=document.querySelector('[data-testid=mysql-sql-editor]');return document.activeElement===editor && editor.selectionStart===editor.value.length && editor.selectionEnd===editor.value.length})()",'追加后光标定位到末尾');
+  for (const sql of ['', 'SELECT 1;', 'SELECT 1 -- 保留末尾注释;', 'SELECT 1 # 保留末尾注释']) {
+    await fill(win,testId('mysql-sql-editor'),sql);
+    await dropTable();
+    assert.equal(await editorValue(),sql+(sql ? '\n;\n\n' : '')+snippet,'空白、分号和行注释场景正确追加');
+    await textContains(win,'mysql-sql-diagnostic','基础语法通过');
+  }
+  const beforeInvalidDrop = await editorValue();
+  await dropTable({scope:'another-workspace'});
+  await dropTable({table:'not-in-current-workspace'});
+  assert.equal(await editorValue(),beforeInvalidDrop,'拒绝跨范围或未知表的拖放');
+  assert.equal(databaseCalls.length,beforeDrop,'拖表只编辑 SQL，不自动访问数据库');
+  while ((await tabIds()).length < 6) await click(win,testId('mysql-query-new'));
+  const fullTabs = await tabIds();
+  const lastId = await currentId();
+  await fill(win,testId('mysql-sql-editor'),'SELECT 2');
+  await dropTable();
+  assert.deepEqual(await tabIds(),fullTabs,'达到查询标签上限仍在当前执行区追加');
+  assert.equal(await currentId(),lastId);
+  assert.equal(await editorValue(),'SELECT 2\n;\n\n'+snippet);
   await click(win,testId('mysql-sql-tab'));
-  assert.equal(await evaluate("document.querySelector('[data-testid=mysql-sql-editor]').value"),original,'拖表不会覆盖已有 SQL');
+  assert.equal(await editorValue(),beforeInvalidDrop,'拖入其他标签不能修改原标签');
+  for (const id of fullTabs.filter(id=>!originalTabs.includes(id))) {
+    await click(win,'[data-testid=mysql-query-close][data-query-id="'+id+'"]');
+    await waitFor(win,`!document.querySelector('[role=tab][data-query-id="${id}"]')`,'关闭拖放测试标签');
+  }
   await fill(win,testId('mysql-sql-editor'),'SELECT sort_probe FROM orders');
   await click(win,testId('mysql-query-run'));
   await click(win,'[data-testid=mysql-query-sort][data-column=id]');

@@ -422,7 +422,8 @@ test('React connection controllers use only explicit, correlated intent APIs',as
   assert.match(environmentPanel,/environment-dependency-state/u);
   assert.match(environmentPanel,/environment-host-key-confirmation/u);
   assert.match(environmentPanel,/RuntimeHostKeyDialog/u);
-  assert.match(environmentPanel,/TableBody/u);
+  assert.match(environmentPanel,/EnvironmentPluginRow/u);
+  assert.match(environmentPanel,/onOpenWorkspace=\{onOpenWorkspace\}/u);
   assert.match(environmentPanel,/打开详情和刷新状态不会自动连接/u);
 
   for (const surface of [rowAction,pluginPanel,environmentPanel]) {
