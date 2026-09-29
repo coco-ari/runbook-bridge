@@ -256,3 +256,82 @@ test('状态刷新保留当前插件公共错误且拒绝其它范围或无效�
   h.update({pluginInstanceId:undefined,runtime:runtime(7,'failed',{plugins:{mysql:{phase:'error',error}}})});
   assert.equal(h.current.state.error,null,'环境面板不能借用任意插件的错误作为环境错误');
 });
+
+
+test('隧道服务器断开后取消残留重连状态会刷新当前范围，不发送无归属取消',async () => {
+  for (const pluginInstanceId of ['mysql','redis']) {
+    const reads = [];
+    const writes = [];
+    const published = [];
+    const snapshot = (sequence,phase) => runtime(sequence,'disconnected',{
+      desiredConnected:false,
+      plugins:{
+        server:{phase:'disconnected'},
+        [pluginInstanceId]:{phase,providerPluginInstanceId:'server',operationId:null},
+      },
+    });
+    const h = await harness({pluginInstanceId,runtime:snapshot(10,'reconnecting'),api:{
+      environmentStatus:async payload => { reads.push(payload); return ok(snapshot(11,'disconnected')); },
+      requestConnectionIntent:async payload => { writes.push(payload); throw new Error('不应取消其它任务'); },
+    },onRuntime:value => published.push(value)});
+    assert.equal(h.current.state.phase,'connecting');
+    await h.current.cancel();
+    assert.equal(reads.length,1);
+    assert.equal(reads[0].projectId,scope.projectId);
+    assert.equal(reads[0].environmentId,scope.environmentId);
+    assert.deepEqual(writes,[]);
+    assert.equal(h.current.state.phase,'disconnected');
+    assert.equal(h.current.state.error,null);
+    assert.equal(published[0].sequence,11);
+  }
+});
+
+test('无归属取消的刷新不能覆盖切换后的环境或新发起的连接',async () => {
+  for (const change of ['scope','connect']) {
+    const read = deferred();
+    const request = deferred();
+    let payload;
+    const h = await harness({runtime:runtime(10,'reconnecting'),api:{
+      environmentStatus:() => read.promise,
+      requestConnectionIntent:value => { payload = value; return request.promise; },
+    }});
+    const cancel = h.current.cancel();
+    let connecting;
+    if (change === 'scope') {
+      h.update({environmentId:'next-environment',runtime:runtime(1,'connected',{environmentId:'next-environment'})});
+    } else {
+      connecting = h.current.connect();
+    }
+    read.resolve(ok(runtime(11,'reconnecting')));
+    await cancel;
+    assert.equal(h.current.state.error,null);
+    if (change === 'scope') {
+      assert.equal(h.current.state.phase,'connected');
+      assert.equal(h.current.state.runtime.environmentId,'next-environment');
+    } else {
+      assert.equal(h.current.state.operation.intent,'connect');
+      request.resolve(ok(result(payload,runtime(12))));
+      await connecting;
+      assert.equal(h.current.state.phase,'connected');
+    }
+  }
+});
+
+
+test('无归属取消保留刷新失败原因，且不会伪造断开或越权取消',async () => {
+  for (const failed of [false,true]) {
+    const error = {code:'STATUS_UNAVAILABLE',message:'状态读取失败'};
+    let reads = 0;
+    let writes = 0;
+    const h = await harness({runtime:runtime(10,'reconnecting'),api:{
+      environmentStatus:async () => { reads++; return failed ? {ok:false,error} : ok(runtime(11,'reconnecting')); },
+      requestConnectionIntent:async () => { writes++; throw new Error('不应发送取消'); },
+    }});
+    await h.current.cancel();
+    assert.equal(reads,1);
+    assert.equal(writes,0);
+    assert.equal(h.current.state.phase,failed ? 'error' : 'connecting');
+    assert.equal(h.current.state.error.code,failed ? error.code : 'CONNECTION_OPERATION_NOT_OWNED');
+    assert.equal(h.current.state.operation,null);
+  }
+});

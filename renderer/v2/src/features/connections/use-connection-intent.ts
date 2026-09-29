@@ -289,7 +289,11 @@ export function useConnectionIntentController({
       sequence: ++sequenceRef.current,
     })
     if (!operation) {
-      setState((current) => ({
+      // 上游断开后，面板可能仍持有旧的重连状态；只刷新当前范围，不扩大取消范围。
+      await refresh()
+      if (ownerRef.current !== ownerKey || operationRef.current
+        || connectionPhaseFromRuntime(runtimeRef.current, pluginInstanceId) !== "connecting") return
+      setState((current) => current.phase !== "connecting" ? current : ({
         ...current,
         error: {
           code: "CONNECTION_OPERATION_NOT_OWNED",
@@ -320,7 +324,7 @@ export function useConnectionIntentController({
     } catch (error) {
       fail(operation, error)
     }
-  }, [api, environmentId, fail, finish, pluginInstanceId, projectId, source])
+  }, [api, environmentId, fail, finish, ownerKey, pluginInstanceId, projectId, refresh, source])
 
   const trustHostKey = useCallback(async () => {
     const challenge = state.challenge
