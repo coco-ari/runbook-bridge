@@ -566,15 +566,16 @@ export class ConnectionIntentCoordinator {
         {signal:operation.controller.signal},
       );
       runtimeConnected = true;
-      if (operation.controller.signal.aborted || this.operations.get(operation.key) !== operation) return false;
+      if (operation.controller.signal.aborted || this.operations.get(operation.key) !== operation) {
+        throw new AppError('CONNECT_CANCELLED','连接结果已经失效。');
+      }
       const latest = await this.manager.workspaceStore.getPlugin(
         operation.projectId,
         operation.environmentId,
         operation.pluginInstanceId,
       );
       if (operation.controller.signal.aborted || this.operations.get(operation.key) !== operation) {
-        await this.manager.disconnectRuntime(operation.plugin,'stale-connect-result');
-        return false;
+        throw new AppError('CONNECT_CANCELLED','连接结果已经失效。');
       }
       if (pluginConnectionFingerprint(latest) !== operation.connectionFingerprint) {
         await this.manager.disconnectRuntime(operation.plugin,'plugin-revision-changed');
@@ -614,6 +615,8 @@ export class ConnectionIntentCoordinator {
 
   publishOperationCancelled(operation) {
     const state = structuredClone(this.manager.state(operation.projectId,operation.environmentId));
+    // 掉线、重连或手动断开已接管状态时，旧取消结果不能覆盖新意图。
+    if (state.plugins[operation.pluginInstanceId]?.operationId !== operation.operationId) return;
     state.plugins[operation.pluginInstanceId] = runtimePluginState(operation.plugin,'disconnected',{
       reason:'CONNECT_CANCELLED',operationId:null,planId:null,
       generation:operation.generation,digest:operation.digest,
@@ -634,6 +637,7 @@ export class ConnectionIntentCoordinator {
     const value = toPublicError(error);
     operation.error = value;
     const state = structuredClone(this.manager.state(operation.projectId,operation.environmentId));
+    if (state.plugins[operation.pluginInstanceId]?.operationId !== operation.operationId) return;
     state.plugins[operation.pluginInstanceId] = runtimePluginState(operation.plugin,'error',{
       reason:value.code,
       retryable:!terminalConnectionError(error),

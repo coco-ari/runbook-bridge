@@ -556,21 +556,30 @@ export class EnvironmentConnectionManager extends EventEmitter {
 
   pluginLost(projectId, environmentId, pluginInstanceId, error = null) {
     return this.enqueue(projectId, environmentId, async () => {
+      const current = this.state(projectId, environmentId);
+      if (!current.desiredConnected || current.manualDisconnected?.[pluginInstanceId]) return structuredClone(current);
+      const plugins = this.rememberPlugins(projectId,environmentId,await this.workspaceStore.listPlugins(projectId, environmentId));
       const state = structuredClone(this.state(projectId, environmentId));
       if (!state.desiredConnected || state.manualDisconnected?.[pluginInstanceId]) return state;
-      const plugins = await this.workspaceStore.listPlugins(projectId, environmentId);
       const plugin = plugins.find((item) => item.pluginInstanceId === pluginInstanceId);
       if (!plugin) return state;
       const value = toPublicError(error ?? new AppError('ROUTE_UNAVAILABLE', '连接意外中断。'));
       state.plugins[pluginInstanceId] = pluginState(plugin, 'error', { reason:value.code, retryable:isRetryable(error), error:value });
-      for (const dependent of plugins.filter((item) => item.transport?.serverPluginInstanceId === pluginInstanceId)) {
-        await this.disconnectRuntime(dependent, 'provider-lost').catch(() => undefined);
+      const dependents = plugins.filter((item) => item.transport?.kind === 'serverTunnel'
+        && item.transport.serverPluginInstanceId === pluginInstanceId);
+      for (const dependent of dependents) {
+        if (state.manualDisconnected?.[dependent.pluginInstanceId]) continue;
         state.plugins[dependent.pluginInstanceId] = pluginState(dependent, 'blocked', { reason:'TUNNEL_PROVIDER_UNAVAILABLE', retryable:true });
       }
+      // 先撤销失效连接的可用状态，再中止同一依赖范围内的旧任务；慢清理不持有可回写的旧快照。
       this.aggregate(state, plugins);
       this.publish(state);
+      this.connectionIntentCoordinator.abortScope(projectId,environmentId,{pluginInstanceId,force:true});
+      for (const dependent of dependents) {
+        await this.disconnectRuntime(dependent, 'provider-lost').catch(() => undefined);
+      }
       if (isRetryable(error)) this.scheduleReconnect(projectId, environmentId, 0);
-      return structuredClone(state);
+      return this.snapshot(projectId,environmentId);
     });
   }
 
@@ -879,23 +888,24 @@ export class EnvironmentConnectionManager extends EventEmitter {
   }
 
   async disconnectForReconnect(projectId, environmentId, reason) {
-    this.connectionIntentCoordinator.abortScope(projectId,environmentId,{force:true});
     return this.enqueue(projectId, environmentId, async () => {
+      if (!this.state(projectId,environmentId).desiredConnected) return this.snapshot(projectId,environmentId);
+      const plugins = await this.workspaceStore.listPlugins(projectId, environmentId);
       const state = structuredClone(this.state(projectId, environmentId));
       if (!state.desiredConnected) return state;
       state.phase = 'reconnecting';
       state.connectAttemptId = crypto.randomUUID();
       state.networkEpoch = this.networkEpoch;
-      this.publish(state);
-      const plugins = await this.workspaceStore.listPlugins(projectId, environmentId);
       const reconnectable = (plugin) => !state.manualDisconnected?.[plugin.pluginInstanceId]
         && state.plugins[plugin.pluginInstanceId]?.reason !== 'MANUAL_RECONNECT_REQUIRED';
-      await this.disconnectPluginsInDependencyOrder(plugins, reason, reconnectable);
       for (const plugin of plugins.filter(reconnectable)) {
         state.plugins[plugin.pluginInstanceId] = pluginState(plugin, 'reconnecting', { reason: 'NETWORK_RECONNECTING', retryable: true });
       }
+      // 在取消旧任务前发布新重连状态，避免旧取消清除连接意图与重试计时器。
       this.publish(state);
-      return state;
+      this.connectionIntentCoordinator.abortScope(projectId,environmentId,{force:true});
+      await this.disconnectPluginsInDependencyOrder(plugins, reason, reconnectable);
+      return this.snapshot(projectId,environmentId);
     });
   }
 
