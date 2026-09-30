@@ -7,9 +7,12 @@ const COMMANDS = new Set(['SCAN', 'TYPE', 'TTL', 'STRLEN', 'GETRANGE', 'HLEN', '
 const protocolError = () => new AppError('REDIS_REPLY_INVALID', 'Redis 返回的数据格式无效。');
 const limitError = () => new AppError('REDIS_REPLY_TOO_LARGE', '内容超过 1 MiB 读取限制，请缩小读取范围。');
 
+export class RedisReplyError extends AppError {}
+
 // 增量解析 RESP2；在分配正文及数组前检查声明长度，不接收任意大回复。
 export class BoundedRespDecoder {
-  constructor() {
+  constructor({ errorReplies = false } = {}) {
+    this.errorReplies = errorReplies;
     this.buffer = Buffer.alloc(0);
     this.bytes = 0;
     this.stack = [];
@@ -63,7 +66,11 @@ export class BoundedRespDecoder {
             : /^NOPERM\b/u.test(text) ? 'REDIS_PERMISSION_DENIED' : 'REDIS_READ_FAILED';
         const message = code === 'REDIS_TYPE_CHANGED' ? 'Key 类型已经变化，请重新读取。'
           : code === 'REDIS_PERMISSION_DENIED' ? '当前 Redis 账号没有此读取权限。' : 'Redis 读取失败，请检查连接及账号权限。';
-        throw new AppError(code, message);
+        const replyCode = /^ERR (?:syntax error|unknown command)\b/u.test(text) ? 'REDIS_COMMAND_UNSUPPORTED' : code;
+        const error = new RedisReplyError(replyCode, replyCode === 'REDIS_COMMAND_UNSUPPORTED' ? 'Redis 不支持本次命令或选项，请检查服务端版本。' : message);
+        if (!this.errorReplies) throw error;
+        // 写入通道必须收齐整个回复后才能把服务器拒绝与断线区分开。
+        accept(error);
       } else if ([36, 42, 58].includes(kind)) {
         if (!/^-?(?:0|[1-9]\d*)$/u.test(text)) throw protocolError();
         const number = Number(text);
@@ -120,7 +127,8 @@ export class RedisWorkspaceReader {
         if (pending.decoder.push(chunk)) {
           this.pending = null;
           clearTimeout(pending.timer);
-          pending.resolve(pending.decoder.value);
+          if (pending.decoder.value instanceof RedisReplyError) pending.reject(pending.decoder.value);
+          else pending.resolve(pending.decoder.value);
         }
       } catch (error) { this.close(error); }
     });
@@ -161,10 +169,12 @@ export class RedisWorkspaceReader {
       return Promise.reject(error);
     }
     return new Promise((resolve, reject) => {
-      this.pending = { resolve, reject, decoder: new BoundedRespDecoder(), timer: this.timer(deadline) };
+      this.pending = { resolve, reject, decoder: this.createDecoder(), timer: this.timer(deadline) };
       this.socket.write(encode(args));
     });
   }
+
+  createDecoder() { return new BoundedRespDecoder(); }
 
   close(error = new AppError('REDIS_WORKSPACE_STALE', 'Redis 读取通道已关闭，请重新读取。')) {
     if (this.closed) return;

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 import { AppError } from './errors.mjs';
 import { findRedisPattern, redisKeyAllowed } from './redis-plugin-runtime.mjs';
+import { RedisReplyError } from './redis-workspace-reader.mjs';
 
 const SCOPE=['projectId','environmentId','pluginInstanceId'];
 const FIELDS={open:['patternId','key','mode'],prepare:['editId','value','format','expiry'],commit:['editId','planId'],status:['editId','planId'],release:['editId']};
@@ -61,7 +62,7 @@ export class DesktopRedisEditor {
         value=raw.toString('utf8');
       }
       assertOwner();if(session!==this.runtime.require(plugin))throw stale();
-      const edit={id:crypto.randomUUID(),owner,identity:identity(plugin),plugin:structuredClone(plugin),session,connection,key:payload.key,mode:payload.mode,type,maxBytes,expiresAt:this.now()+LIFETIME,plan:null};
+      const edit={id:crypto.randomUUID(),owner,identity:identity(plugin),plugin:structuredClone(plugin),session,connection,key:payload.key,mode:payload.mode,type,ttl,maxBytes,expiresAt:this.now()+LIFETIME,plan:null};
       edit.timer=setTimeout(()=>this.close(edit),LIFETIME);edit.timer.unref?.();this.edits.set(edit.id,edit);
       return {editId:edit.id,key:edit.key,type,value,ttlMilliseconds:ttl,maxBytes,expiresAt:edit.expiresAt};
     }catch(error){connection.close();throw error;}finally{this.opening--;}
@@ -79,7 +80,8 @@ export class DesktopRedisEditor {
       if(payload.format==='json')try{JSON.parse(payload.value);}catch{throw fail('REDIS_EDIT_VALUE_INVALID','JSON 格式无效，请修正后保存。');}
       const expiry=payload.expiry;
       if(!expiry||typeof expiry!=='object'||Array.isArray(expiry)||Object.keys(expiry).some(name=>!['mode','milliseconds'].includes(name))||!['keep','persistent','relative'].includes(expiry.mode)|| (edit.mode==='create'&&expiry.mode==='keep') || (expiry.mode==='relative'? !Number.isSafeInteger(expiry.milliseconds)||expiry.milliseconds<1||expiry.milliseconds>315360000000 : expiry.milliseconds!==undefined))throw fail('INVALID_ARGUMENT','过期设置无效，请输入有效时长。');
-      args=['SET',edit.key,payload.value,edit.mode==='create'?'NX':'XX',...(expiry.mode==='keep'?['KEEPTTL']:expiry.mode==='relative'?['PX',String(expiry.milliseconds)]:[])];
+      // 不过期的 Key 无需 KEEPTTL；WATCH 仍会阻止其他客户端改动过期设置。
+      args=['SET',edit.key,payload.value,edit.mode==='create'?'NX':'XX',...(expiry.mode==='keep'&&edit.ttl!==-1?['KEEPTTL']:expiry.mode==='relative'?['PX',String(expiry.milliseconds)]:[])];
     }
     edit.plan={id:crypto.randomUUID(),status:'prepared',args,expiresAt:this.now()+PLAN_MS};
     return {planId:edit.plan.id,editId:edit.id,key:edit.key,type:edit.type,mode:edit.mode,expiresAt:edit.plan.expiresAt};
@@ -102,12 +104,18 @@ export class DesktopRedisEditor {
       if(text(await command(plan.args))!=='QUEUED')throw fail('REDIS_EDIT_FAILED','Redis 未接受本次写入计划。');
       assertOwner();this.get(owner,plugin,edit.id);attempted=true;
       const result=await command(['EXEC']);
+      if(result!==null && (!Array.isArray(result)||result.length!==1))throw fail('REDIS_REPLY_INVALID','Redis 返回的数据格式无效。');
+      if(result?.[0] instanceof RedisReplyError)throw result[0];
+      if(result===null || (edit.mode==='delete'?result[0]===0:result[0]===null)){attempted=false;throw conflict();}
+      if(edit.mode==='delete'?result[0]!==1:text(result[0])!=='OK')throw fail('REDIS_REPLY_INVALID','Redis 返回的数据格式无效。');
       attempted=false;
-      if(result===null || !Array.isArray(result)||result.length!==1 || (edit.mode==='delete'? result[0]!==1:text(result[0])!=='OK'))throw conflict();
       plan.status='success';plan.result={key:edit.key,mode:edit.mode};
     }catch(error){
+      // 本事务只有一条写命令，完整的错误回复可以确定写入被拒绝。
+      if(error instanceof RedisReplyError)attempted=false;
       plan.status=attempted?'unknown':'failed';
       plan.error=attempted?{code:'REDIS_EDIT_OUTCOME_UNKNOWN',message:'提交期间连接中断，结果不确定。请重新读取核实，勿重复提交。'}:error instanceof AppError?{code:error.code,message:error.message}:{code:'REDIS_EDIT_FAILED',message:'写入失败，请检查连接和账号权限。'};
+      if(error instanceof RedisReplyError)plan.error={code:error.code,message:error.code==='REDIS_COMMAND_UNSUPPORTED'?'内容未保存：Redis 不支持本次写入选项；保留有效期需要 Redis 6.0.9 或更高版本。':error.code==='REDIS_PERMISSION_DENIED'?'内容未保存：当前 Redis 账号没有此写入权限。':'内容未保存：Redis 拒绝了本次写入，请检查服务端状态及账号权限。'};
     }finally{this.close(edit);plan.args=[];}
     const auditFailed=await this.store.appendAudit(plugin.projectId,{...base,type:'plugin-operation',result:plan.status==='success'?'success':plan.status==='unknown'?'unknown':'error',errorCode:plan.error?.code}).then(()=>false,()=>true);
     if(auditFailed&&plan.result)plan.result.auditWarning=true;

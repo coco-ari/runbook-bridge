@@ -8,7 +8,6 @@ module.exports = async function ({win,click,fill,waitFor,testId,active,openKey,m
   const offline = async () => { publish('disconnected');await waitFor(win,"document.querySelector('[data-testid=redis-workspace-disconnected]')",'断线保留工作区'); };
   const online = async () => { publish('connected');await waitFor(win,"!document.querySelector('[data-testid=redis-workspace-disconnected]')",'重连同步保留工作区'); };
   const refresh = async () => { await click(win,active('redis-refresh-key'));await waitFor(win,"!document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-key-stale]')",'重新读取当前 Key'); };
-  const button = async label => { await evaluate(`[...document.querySelectorAll('button')].find(e=>e.getClientRects().length&&e.textContent===${JSON.stringify(label)}).click()`);await pause(70); };
   const tabKeys = () => evaluate("[...document.querySelectorAll('[data-testid=redis-key-tab]')].map(e=>e.title)");
   await connectionButton({connected:false});
   await click(win,testId('redis-workspace-reconnect'));
@@ -106,7 +105,7 @@ module.exports = async function ({win,click,fill,waitFor,testId,active,openKey,m
   releaseScan();await pause(100);
   assert.equal(await evaluate("document.body.textContent.includes('late-old-scan')"),false);
 
-  // 手动断开保留草稿，离线修改只留在内存；新连接仍须重新核对。
+  // 手动断开保留草稿，离线修改只留在内存；用户保存时自动建立新基准。
   await click(win,testId('redis-create-key'));
   await fill(win,'[aria-label="新增 Key 名称"]','cache:retained-draft');
   await fill(win,'[aria-label="Redis Value"]','{"draft":1}');
@@ -115,9 +114,8 @@ module.exports = async function ({win,click,fill,waitFor,testId,active,openKey,m
   assert.equal(await evaluate("document.querySelector('[aria-label=\"Redis Value\"]').value"),'{"draft":1}');
   await fill(win,'[aria-label="Redis Value"]','{"draft":2}');
   await online();
-  assert.equal(await evaluate("document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-save-value]').disabled"),true);
+  assert.equal(await evaluate("document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-save-value]').disabled"),false);
   assert.equal(writeValues.has('cache:retained-draft'),false);
-  await button('重新核对');
   const prepareHold={operation:'prepare'};state.writeHold=prepareHold;
   const beforePrepare=state.writeCommits;
   await click(win,active('redis-save-value'));
@@ -126,11 +124,34 @@ module.exports = async function ({win,click,fill,waitFor,testId,active,openKey,m
   await waitFor(win,"document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-save-value]')?.getAttribute('aria-busy')==='false'",'迟到准备响应结束');
   assert.equal(state.writeCommits,beforePrepare,'断线前准备响应不能提交');
   assert.equal(await evaluate("document.querySelector('[aria-label=\"Redis Value\"]').value"),'{"draft":2}');
-  await button('重新核对');
   await click(win,active('redis-save-value'));
   await waitFor(win,"!document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]')",'明确保存成功');
   await waitFor(win,"document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-delete-key]')?.disabled===false",'保存后读取新内容');
   assert.equal(writeValues.get('cache:retained-draft').value,'{"draft":2}');
+
+  // 原值没变时直接保存；其他客户端改值时必须停下来让用户对比。
+  await click(win,active('redis-edit-value'));
+  await fill(win,'[aria-label="Redis Value"]','{"draft":"after-reconnect"}');
+  await offline();await online();
+  await click(win,active('redis-save-value'));
+  await waitFor(win,"!document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]')",'重连后原值未变无需手动核对');
+  assert.equal(writeValues.get('cache:retained-draft').value,'{"draft":"after-reconnect"}');
+  await waitFor(win,"document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-edit-value]')?.disabled===false",'成功保存后可继续编辑');
+  await click(win,active('redis-edit-value'));
+  await fill(win,'[aria-label="Redis Value"]','{"draft":"local"}');
+  await offline();
+  writeValues.set('cache:retained-draft',{value:'{"draft":"external"}',ttl:-1});
+  await online();
+  const beforeConflict=state.writeCommits;
+  await click(win,active('redis-save-value'));
+  await waitFor(win,"document.querySelector('[role=dialog]')?.textContent.includes('核对当前值')",'原值变化才显示冲突对比');
+  assert.equal(state.writeCommits,beforeConflict,'未确认冲突时不覆盖外部更改');
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"Redis Value\"]').value"),'{"draft":"local"}');
+  await evaluate("[...document.querySelectorAll('[role=dialog] button')].find(e=>e.textContent==='已核对，保留草稿继续编辑').click()");
+  await click(win,active('redis-save-value'));
+  await waitFor(win,"!document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]')",'确认冲突后显式保存草稿');
+  await waitFor(win,"document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-delete-key]')?.disabled===false",'冲突处理后刷新完成');
+  assert.equal(writeValues.get('cache:retained-draft').value,'{"draft":"local"}');
 
   // 删除确认在断线时作废，重连不能消费旧授权。
   await click(win,active('redis-delete-key'));
@@ -159,10 +180,7 @@ module.exports = async function ({win,click,fill,waitFor,testId,active,openKey,m
   await click(win,active('redis-save-value'));
   await until(()=>commitHold.release,'写入提交已挂起');
   await offline();await online();commitHold.release();
-  await waitFor(win,"document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-check-save]')",'提交应答丢失仍保留核实入口');
-  assert.equal(state.writeCommits,beforeDelete+1,'重连不重复写入');
-  await click(win,active('redis-check-save'));
-  await waitFor(win,"!document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]')",'核实结果后恢复浏览');
+  await waitFor(win,"!document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]')",'提交应答丢失自动确认结果后恢复浏览');
   assert.equal(state.writeCommits,beforeDelete+1);
   await click(win,testId('redis-workspace-close'));
   await click(win,testId('redis-workspace-confirm-close'));

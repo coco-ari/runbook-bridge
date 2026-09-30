@@ -125,12 +125,13 @@ function mocks(redisKeySearch) {
       writePlans.set(plan.planId,plan);return ok(plan);
     }
     const plan=writePlans.get(payload.planId);assert.ok(plan);
-    if(operation==='status'&&state.failWriteStatus){state.failWriteStatus=false;return fail('READ_FAILED','模拟状态查询失败');}
+    if(operation==='status'&&state.failWriteStatus){state.failWriteStatus--;return fail('READ_FAILED','模拟状态查询失败');}
     if(operation==='commit'&&plan.status==='prepared'){
       state.writeCommits++;
       if(session.mode==='delete'){state.deletedKeys.add(session.key);writeValues.delete(session.key);const index=keys.indexOf(session.key);if(index>=0)keys.splice(index,1);}
       else {writeValues.set(session.key,{value:plan.value,ttl:plan.expiry.mode==='relative'?plan.expiry.milliseconds/1000:plan.expiry.mode==='keep'?(writeValues.get(session.key)?.ttl??-1):-1});if(!keys.includes(session.key))keys.push(session.key);}
       plan.status='success';
+      if(state.unknownWrite){state.unknownWrite=false;plan.status='unknown';return ok({planId:plan.planId,status:'unknown'});}
       if(state.loseWriteReply){state.loseWriteReply=false;return fail('REPLY_LOST','模拟保存回复丢失');}
     }
     return ok({planId:plan.planId,status:plan.status,result:{key:session.key,mode:session.mode}});
@@ -664,7 +665,7 @@ async function run() {
     win.webContents.setZoomFactor(1);
 
     const beforeCommitCount=state.writeCommits;
-    state.loseWriteReply=true;state.failWriteStatus=true;state.writeDelays.commit=6200;
+    state.loseWriteReply=true;state.failWriteStatus=1;state.writeDelays.commit=6200;state.failReload=true;
     await click(win,active('redis-save-value'));
     await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-save-value] [data-operation-spinner]")','提交原位转圈');
     assert.deepEqual(await editorGeometry(),stableEditor,'保存等待不得移动组件');
@@ -672,25 +673,43 @@ async function run() {
     assert.deepEqual(await editorGeometry(),stableEditor,'长等待提示不改变布局');
     await shot(win,'redis-slow-save');
     state.writeDelays.commit=0;
-    await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-check-save]")','保存回复丢失后检查状态');
-    for(const zoom of [1,1.25,1.5]){
-      win.webContents.setZoomFactor(zoom);await wait(120);
-      assert.equal(await win.webContents.executeJavaScript('(()=>{const root=document.querySelector(".redis-tab-panel:not([hidden]) .redis-edit-actions"),r=root.getBoundingClientRect(),buttons=[...root.querySelectorAll("button")];return buttons.every((e,i)=>{const b=e.getBoundingClientRect(),next=buttons[i+1]?.getBoundingClientRect();return b.left>=r.left-1&&b.right<=r.right+1&&(!next||b.right<=next.left+1)})})()',true),true,'待核实按钮在缩放下可见且不重叠');
-    }
-    win.webContents.setZoomFactor(1);
-    await shot(win,'redis-save-uncertain');
-    await click(win,active('redis-check-save'));
-    await text(win,'.redis-tab-panel:not([hidden]) .redis-edit-error','模拟状态查询失败');
-    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-save-value]").disabled',true),true,'状态查询失败不能解锁重复提交');
-    state.failReload=true;
-    await click(win,active('redis-check-save'));
-    await waitFor(win,'!document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]")','编辑保存完成');
-    assert.equal(state.writeCommits,beforeCommitCount+1,'检查状态不重复提交写入');
+    await waitFor(win,'!document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]")','回复丢失且状态查询短暂失败后自动完成保存');
+    assert.equal(state.writeCommits,beforeCommitCount+1,'自动确认不重复提交写入');
     assert.equal(writeValues.get('cache:ui-created').value,'{"edited":true}');
     await text(win,active('redis-key-error'),'已修改 Key');
     await text(win,active('redis-key-error'),'刷新失败');
     await click(win,active('redis-refresh-key'));
     await waitFor(win,'!document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-delete-key]")?.disabled','重新读取只刷新显示');
+    await click(win,active('redis-edit-value'));
+    await fill(win,'[aria-label="Redis Value"]','{"recovered":true}');
+    const beforeRecovery=state.writeCommits;
+    state.loseWriteReply=true;state.failWriteStatus=3;
+    await click(win,active('redis-save-value'));
+    await text(win,'.redis-tab-panel:not([hidden]) .redis-edit-error','模拟状态查询失败');
+    assert.equal(state.failWriteStatus,0,'自动状态查询有界重试三次');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-save-value]").disabled',true),true,'查询失败保持禁止重复写入');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) .redis-edit-textarea").value',true),'{"recovered":true}','恢复失败不丢草稿');
+    for(const zoom of [1,1.25,1.5]){
+      win.webContents.setZoomFactor(zoom);await wait(120);
+      assert.equal(await win.webContents.executeJavaScript('(()=>{const root=document.querySelector(".redis-tab-panel:not([hidden]) .redis-edit-actions"),r=root.getBoundingClientRect(),buttons=[...root.querySelectorAll("button")];return buttons.every((e,i)=>{const b=e.getBoundingClientRect(),next=buttons[i+1]?.getBoundingClientRect();return b.left>=r.left-1&&b.right<=r.right+1&&(!next||b.right<=next.left+1)})})()',true),true,'恢复入口在缩放下可见且不重叠');
+    }
+    win.webContents.setZoomFactor(1);
+    await click(win,active('redis-verify-save'));
+    await waitFor(win,'!document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]")','单一恢复入口自动处理成功结果');
+    assert.equal(state.writeCommits,beforeRecovery+1,'多次状态查询始终只有一次提交');
+    await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-edit-value]")?.disabled===false','保存后内容刷新完成');
+    await click(win,active('redis-edit-value'));
+    await fill(win,'[aria-label="Redis Value"]','{"unknown":true}');
+    const beforeUnknown=state.writeCommits;
+    state.unknownWrite=true;
+    await click(win,active('redis-save-value'));
+    await waitFor(win,'document.querySelector("[data-testid=redis-finish-verification]")','未知保存结果自动读取当前值');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector("[role=dialog] .redis-review-value").value',true),'{"unknown":true}');
+    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]"))',true),true,'当前值相同不能自动宣称此前提交成功');
+    assert.equal(state.writeCommits,beforeUnknown+1);
+    await click(win,testId('redis-finish-verification'));
+    await waitFor(win,'!document.querySelector("[role=dialog]")','明确结束本次未知结果核实');
+    await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-delete-key]")?.disabled===false','核实后刷新完成');
     state.writeDelays.open=700;
     await click(win,active('redis-delete-key'));
     await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-delete-key] [data-operation-spinner]")','读取删除目标也有转圈反馈');
@@ -701,20 +720,20 @@ async function run() {
     // 等待入场动画结束再建立尺寸基线，避免将初始缩放误判为状态提示导致的布局变化。
     await waitFor(win,'document.querySelector(".redis-delete-dialog").getAnimations().every(animation=>animation.playState!=="running")','删除弹窗入场动画结束');
     const beforeDelete=await dialogGeometry();
-    state.loseWriteReply=true;state.writeDelays.commit=900;
+    state.unknownWrite=true;state.writeDelays.commit=900;
     await click(win,testId('redis-confirm-delete'));
     await waitFor(win,'document.querySelector("[data-testid=redis-confirm-delete] [data-operation-spinner]")','删除中原位转圈');
     assert.deepEqual(await dialogGeometry(),beforeDelete,'删除等待不能改变弹窗尺寸');
-    await waitFor(win,'document.querySelector("[data-testid=redis-check-delete]")','删除回复丢失保留结果');
-    assert.deepEqual(await dialogGeometry(),beforeDelete,'删除错误不能撑高弹窗');
+    await waitFor(win,'document.querySelector("[data-testid=redis-finish-verification]")','未知删除结果自动读取服务器数据');
     await shot(win,'redis-delete-uncertain');
     state.writeDelays.commit=0;
+    await win.webContents.executeJavaScript('[...document.querySelectorAll("[role=dialog] button")].find(e=>e.textContent==="保留待核实").click()',true);
     await win.webContents.executeJavaScript('[...document.querySelectorAll("[role=dialog] button")].find(e=>e.textContent==="暂不处理").click()',true);
     await waitFor(win,'!document.querySelector("[role=dialog]")','暂时关闭提示');
     assert.ok(writeSessions.size>0,'暂不处理不能释放结果记录');
     await click(win,testId('redis-resume-delete'));
     await waitFor(win,'document.querySelector("[data-testid=redis-check-delete]")','底栏恢复结果跟踪');
-    await click(win,testId('redis-verify-delete'));
+    await click(win,testId('redis-check-delete'));
     await waitFor(win,'document.querySelector("[data-testid=redis-finish-verification]")','只读核实结果');
     await click(win,testId('redis-finish-verification'));
     await waitFor(win,'!document.querySelector("[role=dialog]")','确认核实后结束操作');

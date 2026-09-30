@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import net from 'node:net';
 import { DesktopRedisEditor, prepareRedisEditRequest } from '../src/desktop-redis-editor.mjs';
 import { RedisEditConnection } from '../src/redis-edit-connection.mjs';
 import { RedisWorkspaceReader } from '../src/redis-workspace-reader.mjs';
+import { redisProtocolFixture } from './fixtures/redis-workspace-server.mjs';
 
 const scope={projectId:'fixture-project',environmentId:'fixture-env',pluginInstanceId:'fixture-redis'};
 const plugin={...scope,revision:1,displayName:'测试 Redis',target:{db:3},patterns:[{patternId:'allowed',pattern:'fixture:*'}],limits:{timeoutMs:1000,maxValueBytes:65536}};
@@ -103,4 +105,53 @@ test('独立写入连接不扩大只读通道或任意命令入口',()=>{
   const reader=new RedisWorkspaceReader({}),writer=new RedisEditConnection({});reader.ready=true;writer.ready=true;
   assert.throws(()=>reader.command(['SET','fixture:key','value'],Date.now()+1000),{code:'POLICY_DENIED'});
   for(const command of ['FLUSHDB','EVAL','DEL','KEYS','SELECT'])assert.throws(()=>writer.command([command],Date.now()+1000),{code:'POLICY_DENIED'});
+});
+
+test('真实 RESP 写入区分服务器拒绝、事务冲突和提交断线，不泄露错误正文',async t=>{
+  const cases=[
+    {name:'永久 Key 无需 KEEPTTL',ttl:-1,reply:'*1\r\n+OK\r\n',status:'success'},
+    {name:'有效期保留',ttl:10000,reply:'*1\r\n+OK\r\n',status:'success'},
+    {name:'旧服务端拒绝选项',ttl:10000,reply:'*1\r\n-ERR syntax error private-value\r\n',status:'failed',code:'REDIS_COMMAND_UNSUPPORTED'},
+    {name:'写入权限不足',ttl:-1,reply:'*1\r\n-NOPERM private-value\r\n',status:'failed',code:'REDIS_PERMISSION_DENIED'},
+    {name:'事务被拒绝',ttl:-1,reply:'-EXECABORT private-value\r\n',status:'failed'},
+    {name:'事务冲突',ttl:-1,reply:'*-1\r\n',status:'failed',code:'REDIS_EDIT_CONFLICT'},
+    {name:'回复不完整',ttl:-1,reply:'*1\r\n-ERR private-value',status:'unknown'},
+    {name:'畸形回复',ttl:-1,reply:'*2\r\n-ERR private-value\r\n+OK\r\n',status:'unknown'},
+    {name:'意外单项回复',ttl:-1,reply:'*1\r\n+unexpected\r\n',status:'unknown'},
+  ];
+  for(const entry of cases)await t.test(entry.name,async t=>{
+    const fixture=await redisProtocolFixture((args,socket)=>{
+      if(args[0]==='WATCH'||args[0]==='MULTI')return 'OK';
+      if(args[0]==='TYPE')return 'string';
+      if(args[0]==='PTTL')return entry.ttl;
+      if(args[0]==='STRLEN')return 8;
+      if(args[0]==='GETRANGE')return 'original';
+      if(args[0]==='SET'){
+        assert.equal(args.includes('KEEPTTL'),entry.ttl!==-1);
+        return 'QUEUED';
+      }
+      if(args[0]==='EXEC'){socket.end(entry.reply);return;}
+      throw new Error('未登记测试命令');
+    });
+    const session={},audits=[];
+    const editor=new DesktopRedisEditor({require:()=>session,desktopEditConnection:()=>new RedisEditConnection({socket:{host:'127.0.0.1',port:fixture.port},database:0})},{appendAudit:async(_project,event)=>audits.push(event)});
+    t.after(async()=>{editor.dispose();await fixture.close();});
+    const edit=await editor.open('window-a',plugin,{patternId:'allowed',key:'fixture:key',mode:'update'});
+    const plan=editor.prepare('window-a',plugin,{editId:edit.editId,value:'changed',format:'text',expiry:{mode:'keep'}});
+    const result=await editor.commit('window-a',plugin,{editId:edit.editId,planId:plan.planId});
+    assert.equal(result.status,entry.status);
+    if(entry.code)assert.equal(result.error.code,entry.code);
+    assert.doesNotMatch(JSON.stringify([result,audits]),/private-value|original|changed/u);
+    await editor.commit('window-a',plugin,{editId:edit.editId,planId:plan.planId});
+    assert.equal(fixture.calls.filter(args=>args[0]==='EXEC').length,1);
+  });
+});
+
+test('编辑通道认证拒绝不会被当作已连接',async t=>{
+  const server=net.createServer(socket=>socket.once('data',()=>socket.end('-WRONGPASS private-value\r\n')));
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const connection=new RedisEditConnection({socket:{host:'127.0.0.1',port:server.address().port},password:'fixture-only-password',database:0});
+  t.after(async()=>{connection.close();await new Promise(resolve=>server.close(resolve));});
+  await assert.rejects(connection.open(Date.now()+1000),{code:'AUTHENTICATION_FAILED'});
+  assert.equal(connection.ready,false);
 });
