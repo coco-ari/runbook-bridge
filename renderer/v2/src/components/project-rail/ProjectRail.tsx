@@ -604,8 +604,16 @@ export function ProjectRail({
           </nav>
         </SidebarContent>
 
-        <WorkspaceSwitcherButton className="mx-2 mb-1 justify-start" />
-        <SettingsButton className="mx-2 mb-2 h-10 justify-start gap-2 rounded-lg border border-sidebar-border bg-surface-inset px-2.5 text-muted-foreground shadow-none transition-colors duration-150 hover:text-foreground" />
+        <div className="shrink-0 space-y-2 px-2 pt-2">
+          <WorkspaceSwitcherButton
+            className="h-10 w-full justify-start gap-2 rounded-lg px-3 text-xs font-medium leading-4 text-foreground shadow-none transition-colors duration-150 [&_svg]:text-muted-foreground"
+            variant="outline"
+          />
+          <SettingsButton
+            className="h-10 w-full justify-start gap-2 rounded-lg px-3 text-xs font-medium leading-4 text-foreground shadow-none transition-colors duration-150 [&_svg]:text-muted-foreground"
+            variant="outline"
+          />
+        </div>
 
         <SidebarFooter
           className={cn(
@@ -619,14 +627,14 @@ export function ProjectRail({
               <Button
                 aria-keyshortcuts="Control+N Meta+N"
                 aria-label="新增项目"
-                className="h-10 w-full justify-start gap-2 rounded-lg px-2.5 shadow-none transition-colors duration-150"
+                className="h-10 w-full justify-start gap-2 rounded-lg px-3 text-xs font-medium leading-4 text-foreground shadow-none transition-colors duration-150 [&_svg]:text-muted-foreground"
                 data-testid="add-project-footer"
                 onClick={() => onAction({ type: "create-project" })}
                 size="default"
                 type="button"
                 variant="outline"
               >
-                <Plus className="text-muted-foreground" size={14} />
+                <Plus aria-hidden="true" size={16} />
                 <span className="truncate text-xs font-medium leading-4">新增项目</span>
               </Button>
             </TooltipTrigger>

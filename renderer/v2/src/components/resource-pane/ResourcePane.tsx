@@ -31,7 +31,6 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   ContextMenu,
@@ -661,16 +660,12 @@ export function ResourcePane({
         <div className="min-w-0 flex-1">
           <p className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
             环境与插件
+            {project ? <span className="ml-2 tracking-normal">· {project.environments.length}</span> : null}
           </p>
           <h2 className="truncate text-sm font-semibold tracking-tight" title={project?.name}>
             {project?.name ?? "未选择项目"}
           </h2>
         </div>
-        {project ? (
-          <Badge className="h-5 px-1.5 font-mono text-xs" variant="outline">
-            {project.environments.length}
-          </Badge>
-        ) : null}
       </header>
 
       {loading && !project ? (
@@ -798,20 +793,15 @@ export function ResourcePane({
             data-testid="resource-actions-footer"
           >
             <Button
-              className="group h-10 w-full justify-between rounded-lg px-2.5 shadow-none transition-colors duration-150"
+              className="h-10 w-full justify-start gap-2 rounded-lg px-3 text-xs font-medium leading-4 text-foreground shadow-none transition-colors duration-150 [&_svg]:text-muted-foreground"
               data-testid="add-environment-footer"
               onClick={() => onAction({ type: "create-environment", project })}
               size="default"
               type="button"
               variant="outline"
             >
-              <span className="flex min-w-0 items-center gap-2">
-                <Plus className="text-muted-foreground" size={14} />
-                <span className="truncate text-xs font-medium">新增环境</span>
-              </span>
-              <Badge className="border-border bg-muted/50 font-mono text-xs text-muted-foreground" variant="outline">
-                {project.environments.length} 个
-              </Badge>
+              <Plus aria-hidden="true" size={16} />
+              <span className="truncate text-xs font-medium leading-4">新增环境</span>
             </Button>
           </div>
         </>
