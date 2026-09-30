@@ -609,7 +609,7 @@ export function ProjectRail({
 
         <SidebarFooter
           className={cn(
-            "shrink-0 border-t border-sidebar-border bg-sidebar/95",
+            "shrink-0 bg-sidebar/95",
             "gap-0 px-2 py-2",
           )}
           data-testid="project-actions-footer"

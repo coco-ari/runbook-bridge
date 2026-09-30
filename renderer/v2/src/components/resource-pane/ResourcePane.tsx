@@ -794,7 +794,7 @@ export function ResourcePane({
             </ScrollArea>
           </nav>
           <div
-            className="shrink-0 border-t border-border bg-surface/95 px-2 py-2"
+            className="shrink-0 bg-surface/95 px-2 py-2"
             data-testid="resource-actions-footer"
           >
             <Button

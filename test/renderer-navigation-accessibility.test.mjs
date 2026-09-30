@@ -92,7 +92,7 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(projectRail,/按项目名或描述搜索项目/u);
   assert.match(projectRail,/data-testid="project-actions-footer"/u);
   assert.match(projectRail,/className="h-10 w-full justify-start gap-2/u);
-  assert.match(projectRail,/"shrink-0 border-t border-sidebar-border bg-sidebar\/95"/u);
+  assert.match(projectRail,/"shrink-0 bg-sidebar\/95"/u);
   assert.match(projectRail,/"gap-0 px-2 py-2"/u);
   assert.match(projectRail,/data-testid="project-list-scroll"/u);
   assert.ok(
@@ -156,7 +156,7 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(resourceFooterButton,/data-testid="add-environment-footer"/u);
   assert.match(resourceFooterButton,/variant="outline"/u);
   assert.doesNotMatch(resourceFooterButton,/bg-primary|text-primary-foreground/u);
-  assert.match(resourcePane,/className="shrink-0 border-t border-border bg-surface\/95 px-2 py-2"/u);
+  assert.match(resourcePane,/className="shrink-0 bg-surface\/95 px-2 py-2"/u);
   assert.match(resourcePane,/data-testid=\{`environment-actions-/u);
   assert.match(resourcePane,/data-testid=\{`plugin-actions-/u);
   assert.match(resourcePane,/from "@\/components\/ui\/item"/u);
