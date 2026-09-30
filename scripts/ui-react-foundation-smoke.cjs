@@ -690,7 +690,7 @@ async function assertRendererKeyboardFocus(win) {
   const focus = await win.webContents.executeJavaScript(`(() => {
     const previous = document.activeElement;
     const candidates = [
-      document.querySelector('[data-testid="add-project-footer"]'),
+      document.querySelector('[data-testid="add-project-header"]'),
       document.querySelector('[data-project-id="project-operations"]'),
     ];
     const target = candidates.find((element) => element instanceof HTMLElement && element !== previous);
@@ -836,19 +836,19 @@ async function assertThemeControlGeometry(win,{compact = false} = {}) {
   const snapshot = await win.webContents.executeJavaScript(`(() => {
     const rail = document.querySelector('[data-testid="project-rail"]');
     const trigger = document.querySelector('[data-testid="settings-open"]');
-    const footer = document.querySelector('[data-testid="add-project-footer"]');
+    const footer = document.querySelector('[data-testid="project-utility-navigation"]');
     const rect = trigger?.getBoundingClientRect();
     const railRect = rail?.getBoundingClientRect();
     const hit = rect && document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);
     return {width:railRect?.width,visible:Boolean(rect && rect.width > 0 && rect.height > 0
       && rect.left >= railRect.left && rect.right <= railRect.right+1 && rect.top >= 0 && rect.bottom <= innerHeight
       && hit && trigger.contains(hit) && !trigger.closest('[inert],[aria-hidden="true"]')),
-      aboveFooter:Boolean(rect && footer && rect.bottom <= footer.getBoundingClientRect().top+1),
+      insideToolbar:Boolean(footer?.contains(trigger)),
       noOverflow:Boolean(rail && rail.scrollWidth <= rail.clientWidth+1
         && document.documentElement.scrollWidth <= document.documentElement.clientWidth+1)};
   })()`,true);
   assert.equal(snapshot.visible,true,'theme control remains visible and reachable in the project rail');
-  assert.equal(snapshot.aboveFooter,true,'theme has its own row above the existing project footer');
+  assert.equal(snapshot.insideToolbar,true,'设置入口与其他全局工具共用底部一行');
   assert.equal(snapshot.noOverflow,true,'theme control does not introduce horizontal overflow');
   if (compact) assert.ok(Math.abs(snapshot.width-128) <= 1,'theme entry is usable in the real 128px rail');
 }
@@ -1099,7 +1099,7 @@ async function captureLongProjectListEvidence(win,theme) {
     const title = rail.querySelector('[data-slot="sidebar-group-label"]');
     const search = rail.querySelector('[data-slot="input-group"]');
     const viewport = rail.querySelector('[data-slot="scroll-area-viewport"]');
-    const footer = rail.querySelector('[data-testid="project-actions-footer"]');
+    const footer = rail.querySelector('[data-testid="project-utility-navigation"]');
     const rect = (node) => { const box = node.getBoundingClientRect(); return {top:box.top,bottom:box.bottom,left:box.left,right:box.right,height:box.height}; };
     const text = Array.from(title.childNodes).find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.includes('项目'));
     const range = document.createRange();
@@ -1291,7 +1291,7 @@ async function assertCompactProjectRail(win,theme) {
     const rail = document.querySelector('[data-testid="project-rail"]');
     const selectors = ['[data-slot="sidebar-header"]','[data-testid="project-search"]',
       '[data-slot="sidebar-group-label"]','[data-testid="confirmation-center"]',
-      '[data-testid="add-project-footer"]',...Array.from(rail.querySelectorAll('[data-project-id]'))
+      '[data-testid="add-project-header"]',...Array.from(rail.querySelectorAll('[data-project-id]'))
         .flatMap((row) => ['[data-project-id="' + row.dataset.projectId + '"]',
           '[data-project-id="' + row.dataset.projectId + '"] [data-project-name]',
           '[data-project-id="' + row.dataset.projectId + '"] [data-project-status-badge]',
@@ -1303,7 +1303,7 @@ async function assertCompactProjectRail(win,theme) {
       const rect = node.getBoundingClientRect();
       return {selector,node,top:rect.top,height:rect.height,structure:structure(node)};
     });
-    window.__projectActionAppearance = ['add-project-footer','add-environment-footer'].map((id) => {
+    window.__projectActionAppearance = ['add-project-header','add-environment-header'].map((id) => {
       const button = document.querySelector('[data-testid="' + id + '"]');
       if (!button) throw new Error('navigation action missing: ' + id);
       const style = getComputedStyle(button);
@@ -1317,12 +1317,12 @@ async function assertCompactProjectRail(win,theme) {
       return {
         headerToggleReady:Boolean(rail.querySelector('[data-slot="sidebar-header"] [data-project-rail-toggle][aria-controls="project-panel"][aria-expanded="' + (rail.dataset.collapsed !== 'true') + '"]')),
         rowHeights:Array.from(rail.querySelectorAll('[data-project-id]')).map((row) => row.getBoundingClientRect().height),
-        actions:['add-project-footer','add-environment-footer'].map((id,index) => {
+        actions:['add-project-header','add-environment-header'].map((id,index) => {
           const button = document.querySelector('[data-testid="' + id + '"]');
           const style = getComputedStyle(button);
           const appearance = {color:style.color,background:style.backgroundColor,border:style.borderTopColor};
           return {id,appearance,sameAppearance:JSON.stringify(appearance) === JSON.stringify(window.__projectActionAppearance[index]),
-            outlined:parseFloat(style.borderTopWidth) === 1,
+            borderless:parseFloat(style.borderTopWidth) === 0,
             transparent:style.backgroundColor === 'rgba(0, 0, 0, 0)',
             noInlineShortcut:!button.querySelector('[data-slot="kbd"]'),height:button.getBoundingClientRect().height};
         }),
@@ -1339,8 +1339,8 @@ async function assertCompactProjectRail(win,theme) {
     })()`,true);
     assert.equal(snapshot.headerToggleReady,true,'顶部收起按钮应关联项目面板并反映展开状态');
     assert.ok(snapshot.rowHeights.every((height) => Math.abs(height - 32) <= 1),'展开与紧凑项目行均保持 32px 高');
-    assert.ok(snapshot.actions.every((action) => action.sameAppearance && action.outlined && action.transparent && action.noInlineShortcut && Math.abs(action.height - 40) <= 1),
-      `${label}: 新增入口保持统一的描边按钮样式: ${JSON.stringify(snapshot.actions)}`);
+    assert.ok(snapshot.actions.every((action) => action.sameAppearance && action.borderless && action.transparent && action.noInlineShortcut && Math.abs(action.height - 32) <= 1),
+      `${label}: 新增入口保持统一的加号图标样式: ${JSON.stringify(snapshot.actions)}`);
     assert.deepEqual(snapshot.actions[0].appearance,snapshot.actions[1].appearance,'project and environment add actions use the same neutral colors');
     assert.ok(snapshot.nodes.every((node) => node.sameNode && node.connected && node.sameStructure && node.sameTop && node.sameHeight),
       `${label}: project rail changes structure or vertical placement: ${JSON.stringify(snapshot)}`);
@@ -1373,10 +1373,9 @@ async function assertCompactProjectRail(win,theme) {
       `compact project rail viewport ${width}x${height}`);
     await captureRenderedFrame(win);
     await assertRendererKeyboardFocus(win);
-    // Resizing can move a footer button under the stationary native pointer.
-    // Compare the neutral appearance only after hover has left both add actions.
+    // 调整窗口可能使新增按钮移动到鼠标下，先移开鼠标再比较默认样式。
     win.webContents.sendInputEvent({type:'mouseMove',x:width-24,y:8});
-    await waitFor(win,`['add-project-footer','add-environment-footer'].every((id) => {
+    await waitFor(win,`['add-project-header','add-environment-header'].every((id) => {
       const button = document.querySelector('[data-testid="' + id + '"]');
       return button && !button.matches(':hover') && getComputedStyle(button).backgroundColor === 'rgba(0, 0, 0, 0)';
     })`,'neutral navigation actions after viewport resize');
@@ -1492,21 +1491,12 @@ async function assertCompactProjectRail(win,theme) {
           disabled:button.getAttribute('aria-disabled') === 'true',
         };
       });
-      const footer = rail.querySelector('[data-testid="project-actions-footer"]');
-      const add = rail.querySelector('[data-testid="add-project-footer"]');
+      const footer = rail.querySelector('[data-testid="project-utility-navigation"]');
+      const add = rail.querySelector('[data-testid="add-project-header"]');
       const addStyle = add && getComputedStyle(add);
-      const addLabel = add && [...add.querySelectorAll('span')].find((element) => element.textContent?.trim() === '新增项目');
       const confirmation = rail.querySelector('[data-testid="confirmation-center"]');
       const confirmationLabel = confirmation && [...confirmation.querySelectorAll('span')]
         .find((element) => element.textContent?.trim() === '操作确认');
-      const labelFits = (label,button) => {
-        if (!label || !button || !label.getClientRects().length) return false;
-        const rect = label.getBoundingClientRect();
-        const buttonRect = button.getBoundingClientRect();
-        return label.scrollWidth <= label.clientWidth+1 && rect.width > 0 && rect.height > 0
-          && rect.left >= buttonRect.left && rect.right <= buttonRect.right
-          && rect.top >= buttonRect.top && rect.bottom <= buttonRect.bottom;
-      };
       const viewport = rail.querySelector('[data-slot="scroll-area-viewport"]');
       const before = footer?.getBoundingClientRect();
       const previousScrollTop = viewport?.scrollTop;
@@ -1516,14 +1506,14 @@ async function assertCompactProjectRail(win,theme) {
       const railRect = rail.getBoundingClientRect();
       return {
         width:rail.getBoundingClientRect().width, rows,
-        confirmation:{label:confirmationLabel?.textContent?.trim(),labelFits:labelFits(confirmationLabel,confirmation)},
+        confirmation:{label:confirmation.getAttribute('aria-label'),labelHidden:confirmationLabel?.getClientRects().length === 0},
         footer:{
-          height:add?.getBoundingClientRect().height,
-          label:add?.textContent?.trim(),outlined:Boolean(addStyle && parseFloat(addStyle.borderTopWidth) === 1),
-          labelFits:labelFits(addLabel,add),
+          height:before?.height,
           visible:Boolean(before && before.top >= railRect.top && before.bottom <= railRect.bottom+1),
           fixed:Boolean(before && after && Math.abs(before.top - after.top) <= 1),
         },
+        add:{height:add?.getBoundingClientRect().height,label:add?.getAttribute('aria-label'),
+          iconOnly:add?.textContent?.trim() === '',borderless:Boolean(addStyle && parseFloat(addStyle.borderTopWidth) === 0)},
         selected:rail.querySelector('[data-project-id][aria-current="page"]')?.dataset.projectId,
         tabStops:rail.querySelectorAll('[data-project-id][tabindex="0"]').length,
         footerToggle:rail.querySelector('[data-slot="sidebar-footer"] [data-project-rail-toggle],[data-slot="sidebar-footer"] [data-testid="project-expand"]') !== null,
@@ -1544,8 +1534,10 @@ async function assertCompactProjectRail(win,theme) {
     assert.equal(snapshot.rows.length,workspaceProjects.length);
     assert.equal(snapshot.tabStops,1);
     assert.equal(snapshot.footerToggle,false);
-    assert.deepEqual(snapshot.confirmation,{label:'操作确认',labelFits:true},'compact confirmation label must be fully visible');
-    assert.deepEqual(snapshot.footer,{height:40,label:'新增项目',outlined:true,labelFits:true,visible:true,fixed:true});
+    assert.match(snapshot.confirmation.label,/操作确认，\d+ 项待处理/u);
+    assert.equal(snapshot.confirmation.labelHidden,true,'窄栏保留可访问名称并收起工具文字');
+    assert.deepEqual(snapshot.footer,{height:46,visible:true,fixed:true});
+    assert.deepEqual(snapshot.add,{height:32,label:'新增项目',iconOnly:true,borderless:true});
     if (snapshot.overflow && screenshotRoot) fs.writeFileSync(path.join(screenshotRoot,`compact-rail-overflow-${theme}.png`),(await captureRenderedFrame(win)).toPNG());
     assert.equal(snapshot.overflow,false,`compact rail overflow: ${JSON.stringify(snapshot.overflowDetails)}`);
     assert.deepEqual(snapshot.unlabeled,[]);
@@ -2490,7 +2482,7 @@ async function assertEscapeFocusRestore(win,{containerSelector,label,restoreSele
 
 async function openCreateProjectDialog(win) {
   const opened = await win.webContents.executeJavaScript(`(() => {
-    const trigger = document.querySelector('[data-testid="add-project-footer"]');
+    const trigger = document.querySelector('[data-testid="add-project-header"]');
     if (!(trigger instanceof HTMLElement)) return false;
     trigger.focus();
     trigger.click();
@@ -2906,7 +2898,7 @@ async function assertEnvironmentShortSurfaces(win,theme) {
   for (const kind of ['create','settings','delete']) {
     const testId = kind === 'create' ? 'create-environment-dialog'
       : kind === 'settings' ? 'environment-settings-dialog' : 'delete-environment-dialog';
-    const opener = kind === 'create' ? '[data-testid="add-environment-footer"]'
+    const opener = kind === 'create' ? '[data-testid="add-environment-header"]'
       : '[data-testid="environment-trigger-env-production-east"]';
     await win.webContents.executeJavaScript(`(() => {
       const trigger = document.querySelector(${JSON.stringify(opener)});
@@ -3055,8 +3047,8 @@ async function assertZoomedShell(win,zoomFactor,stage) {
       document.querySelector('[data-testid="detail-workspace"]'),
     ];
     const ctas = [
-      document.querySelector('[data-testid="add-project-footer"]'),
-      document.querySelector('[data-testid="add-environment-footer"]'),
+      document.querySelector('[data-testid="add-project-header"]'),
+      document.querySelector('[data-testid="add-environment-header"]'),
     ];
     const insideViewport = (rect) => (
       rect.left >= -1 && rect.top >= -1
@@ -3256,23 +3248,24 @@ async function assertViewport(win,width,height,theme,capture) {
         fixed:Math.abs(before.top - after.top) <= 1 && Math.abs(before.bottom - after.bottom) <= 1,
       };
     };
-    const footerOpticalAlignment = (() => {
-      const projectFooter = document.querySelector('[data-testid="project-actions-footer"]');
-      const resourceFooter = document.querySelector('[data-testid="resource-actions-footer"]');
-      const projectButton = document.querySelector('[data-testid="add-project-footer"]');
-      const resourceButton = document.querySelector('[data-testid="add-environment-footer"]');
-      if (!projectFooter || !resourceFooter || !projectButton || !resourceButton) return null;
-      const projectFooterRect = projectFooter.getBoundingClientRect();
-      const resourceFooterRect = resourceFooter.getBoundingClientRect();
-      const projectButtonRect = projectButton.getBoundingClientRect();
-      const resourceButtonRect = resourceButton.getBoundingClientRect();
+    const headerActionGeometry = (pane,scrollTestId,buttonTestId,headerSelector) => {
+      const button = pane?.querySelector('[data-testid="' + buttonTestId + '"]');
+      const viewport = pane?.querySelector('[data-testid="' + scrollTestId + '"] [data-slot="scroll-area-viewport"]');
+      const header = pane?.querySelector(headerSelector);
+      if (!button || !viewport || !header) return null;
+      const before = button.getBoundingClientRect();
+      const oldScroll = viewport.scrollTop;
+      viewport.scrollTop = viewport.scrollHeight;
+      const after = button.getBoundingClientRect();
+      viewport.scrollTop = oldScroll;
       return {
-        footerTopAligned:Math.abs(projectFooterRect.top - resourceFooterRect.top) <= 1,
-        footerHeightAligned:Math.abs(projectFooterRect.height - resourceFooterRect.height) <= 1,
-        buttonTopAligned:Math.abs(projectButtonRect.top - resourceButtonRect.top) <= 1,
-        buttonHeightAligned:Math.abs(projectButtonRect.height - resourceButtonRect.height) <= 1,
+        inHeader:header.contains(button),
+        aboveViewport:before.bottom <= viewport.getBoundingClientRect().top + 1,
+        fixed:Math.abs(before.top - after.top) <= 1,
+        iconOnly:button.textContent.trim() === '' && Boolean(button.getAttribute('aria-label')),
+        square:Math.abs(before.width - 32) <= 1 && Math.abs(before.height - 32) <= 1,
       };
-    })();
+    };
     const environmentRows = [...document.querySelectorAll('[data-testid^="environment-row-"]')].map((row) => {
       const trigger = row.querySelector('[data-testid^="environment-trigger-"]');
       const actions = row.querySelector('[data-testid^="environment-actions-"]');
@@ -3446,11 +3439,12 @@ async function assertViewport(win,width,height,theme,capture) {
         projectRect.left < resourceRect.left && resourceRect.left < detailRect.left
       ),
       projectRows,
-      projectFooterHintRemoved:!document.querySelector('[data-testid="project-actions-footer"]')
+      projectFooterHintRemoved:!document.querySelector('[data-testid="project-utility-navigation"]')
         ?.textContent?.includes('项目范围彼此隔离'),
-      projectFooter:footerGeometry(project,'project-list-scroll','project-actions-footer'),
-      resourceFooter:footerGeometry(resources,'resource-list-scroll','resource-actions-footer'),
-      footerOpticalAlignment,
+      projectFooter:footerGeometry(project,'project-list-scroll','project-utility-navigation'),
+      projectAdd:headerActionGeometry(project,'project-list-scroll','add-project-header','[data-slot="sidebar-group-label"]'),
+      environmentAdd:headerActionGeometry(resources,'resource-list-scroll','add-environment-header','header'),
+      resourceViewportFillsPane:Math.abs(resources.querySelector('[data-testid="resource-list-scroll"]').getBoundingClientRect().bottom - resourceRect.bottom) <= 1,
       environmentRows,
       pluginRows,
       environmentConnectionButtons:document.querySelectorAll('[data-testid^="environment-connection-"]').length,
@@ -3501,13 +3495,11 @@ async function assertViewport(win,width,height,theme,capture) {
   }
   assert.deepEqual(snapshot.projectFooter,{insidePane:true,belowViewport:true,fixed:true});
   assert.equal(snapshot.projectFooterHintRemoved,true,`${width}x${height} project footer hint remains`);
-  assert.deepEqual(snapshot.resourceFooter,{insidePane:true,belowViewport:true,fixed:true});
-  assert.deepEqual(snapshot.footerOpticalAlignment,{
-    footerTopAligned:true,
-    footerHeightAligned:true,
-    buttonTopAligned:true,
-    buttonHeightAligned:true,
-  },`${width}x${height} project and environment footer optical alignment`);
+  for (const action of [snapshot.projectAdd,snapshot.environmentAdd]) {
+    assert.deepEqual(action,{inHeader:true,aboveViewport:true,fixed:true,iconOnly:true,square:true},
+      `${width}x${height} 项目与环境新增入口固定在标题区`);
+  }
+  assert.equal(snapshot.resourceViewportFillsPane,true,`${width}x${height} 环境列表延伸到面板底部`);
   assert.ok(snapshot.environmentRows.length >= 3,`${width}x${height} environment rows missing`);
   assert.ok(snapshot.environmentRows.some((row) => row.expanded),`${width}x${height} expanded environment missing`);
   assert.ok(snapshot.environmentRows.some((row) => !row.expanded),`${width}x${height} collapsed environment missing`);
@@ -3688,8 +3680,7 @@ async function run() {
         const group = document.querySelector('[data-testid="project-utility-navigation"]');
         const confirmation = document.querySelector('[data-testid="confirmation-center"]');
         const viewport = document.querySelector('[data-testid="project-list-scroll"]');
-        const add = document.querySelector('[data-testid="add-project-footer"]');
-        const buttons = group && add ? [...group.querySelectorAll('button'),add] : [];
+        const buttons = group ? [...group.querySelectorAll('button')] : [];
         const styles = buttons.map(button => {
           const style = getComputedStyle(button);
           const rect = button.getBoundingClientRect();
@@ -3702,26 +3693,28 @@ async function run() {
           order:buttons.map(button => button.dataset.testid),
           belowProjects:Boolean(group && viewport && group.getBoundingClientRect().top >= viewport.getBoundingClientRect().bottom - 1),
           confirmationInGroup:Boolean(group?.contains(confirmation)),
-          consistent:styles.length === 4 && styles.every(style => JSON.stringify(style) === JSON.stringify(styles[0])),
-          evenSpacing:buttons.slice(1).every((button,index) => Math.abs(button.getBoundingClientRect().top - buttons[index].getBoundingClientRect().bottom - 8) <= 1),
-          height:styles[0]?.height,borderWidth:styles[0]?.borderWidth,
+          singleRow:buttons.length === 3 && buttons.every(button => Math.abs(button.getBoundingClientRect().top - buttons[0].getBoundingClientRect().top) <= 1),
+          noOverlap:buttons.slice(1).every((button,index) => button.getBoundingClientRect().left >= buttons[index].getBoundingClientRect().right),
+          compact:styles.every(style => style.height === 32 && style.borderWidth === '0px'),
+          height:group?.getBoundingClientRect().height,
+          emptyWorkspaceCountHidden:!group.querySelector('[data-testid="workspace-switcher"] [data-utility-count]'),
         };
       })(),
-      addProjectBelowProjects:(() => {
-        const add = document.querySelector('[data-testid="add-project-footer"]');
+      addProjectAboveProjects:(() => {
+        const add = document.querySelector('[data-testid="add-project-header"]');
         const last = [...document.querySelectorAll('[data-project-id]')].at(-1);
         return Boolean(
           add && last &&
-          (add.compareDocumentPosition(last) & Node.DOCUMENT_POSITION_PRECEDING)
+          (add.compareDocumentPosition(last) & Node.DOCUMENT_POSITION_FOLLOWING)
         );
       })(),
     }))()`,true);
     assert.equal(initial.selected,'project-operations');
     assert.deepEqual(initial.utilityNavigation,{
-      order:['confirmation-center','workspace-switcher','settings-open','add-project-footer'],belowProjects:true,
-      confirmationInGroup:true,consistent:true,evenSpacing:true,height:40,borderWidth:'1px',
-    },'底部全局工具统一为清晰的描边按钮');
-    assert.equal(initial.addProjectBelowProjects,true);
+      order:['confirmation-center','workspace-switcher','settings-open'],belowProjects:true,
+      confirmationInGroup:true,singleRow:true,noOverlap:true,compact:true,height:46,emptyWorkspaceCountHidden:true,
+    },'底部全局工具使用单行入口，空工作区不显示零角标');
+    assert.equal(initial.addProjectAboveProjects,true);
     if (app.commandLine.hasSwitch('settings-regression-only')) {
       const states = { configured: '已配置', available: '尚未配置', outdated: '配置需要更新', conflict: '需要手动处理', error: '暂时无法检测' };
       if (screenshotRoot) fs.mkdirSync(screenshotRoot, { recursive: true });
@@ -4102,7 +4095,7 @@ async function run() {
     await assertEscapeFocusRestore(win,{
       containerSelector:'[data-testid="create-project-dialog"]',
       label:'create-project Dialog',
-      restoreSelector:'[data-testid="add-project-footer"]',
+      restoreSelector:'[data-testid="add-project-header"]',
     });
 
     for (const zoomFactor of [1.25,1.5]) {
@@ -4117,7 +4110,7 @@ async function run() {
       await assertEscapeFocusRestore(win,{
         containerSelector:'[data-testid="create-project-dialog"]',
         label:`create-project Dialog at ${zoomFactor}x zoom`,
-        restoreSelector:'[data-testid="add-project-footer"]',
+        restoreSelector:'[data-testid="add-project-header"]',
       });
     }
     await setZoomFactorAndWait(win,1,{width:1280,height:820});

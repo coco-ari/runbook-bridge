@@ -122,7 +122,7 @@ export function EnvironmentMutationSurfaces({
 
   const resolveRestoreTarget = useCallback(() => {
     if (action?.kind === "create") {
-      const createTarget = document.querySelector<HTMLElement>('[data-testid="add-environment-footer"]')
+      const createTarget = document.querySelector<HTMLElement>('[data-testid="add-environment-header"]')
       if (createTarget?.isConnected) return createTarget
     }
     if (action && action.kind !== "create") {
@@ -134,7 +134,7 @@ export function EnvironmentMutationSurfaces({
       && requestedTarget !== document.body
       && requestedTarget !== document.documentElement) return requestedTarget
     return document.querySelector<HTMLElement>(
-      '[data-testid="add-environment-footer"], [data-shell-nav-item][aria-current="page"], [data-shell-nav-item]',
+      '[data-testid="add-environment-header"], [data-shell-nav-item][aria-current="page"], [data-shell-nav-item]',
     )
   }, [action, restoreFocusRef])
 

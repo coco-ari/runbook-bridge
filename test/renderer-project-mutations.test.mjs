@@ -146,7 +146,7 @@ test('project mutations use compact Radix Dialogs and standalone typed delete wi
   assert.match(surface,/projectDeleteConfirmationMatches/u);
   assert.match(surface,/onCloseAutoFocus/u);
   assert.match(surface,/restoreFocusRef/u);
-  assert.match(surface,/if \(action\?\.kind === "create"\) \{\s+const createTarget = document\.querySelector<HTMLElement>\('\[data-testid="add-project-footer"\]'\)/u,
+  assert.match(surface,/if \(action\?\.kind === "create"\) \{\s+const createTarget = document\.querySelector<HTMLElement>\('\[data-testid="add-project-header"\]'\)/u,
     'creation always returns to the stable project footer after a Command handoff');
   assert.match(surface,/requestedTarget !== document\.body/u,'Command handoff must restore an actionable footer, not body');
   assert.match(surface,/requestedTarget !== document\.documentElement/u);

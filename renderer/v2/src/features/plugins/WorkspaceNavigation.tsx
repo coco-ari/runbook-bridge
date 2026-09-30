@@ -61,12 +61,15 @@ export function WorkspaceNavigationProvider({entries, activeKey, onSelect, onCon
 export function WorkspaceSwitcherButton({className, variant = "ghost", labelLayout = variant === "outline" ? "split" : "inline"}: {
   readonly className?: string
   readonly variant?: "ghost" | "outline"
-  readonly labelLayout?: "inline" | "split"
+  readonly labelLayout?: "inline" | "split" | "compact"
 }) {
   const navigation = useContext(NavigationContext)
-  return navigation ? <Button className={className} size="sm" variant={variant} data-testid="workspace-switcher" aria-label="管理已打开的工作区" title="查看、切换或关闭已打开的工作区" onClick={navigation.manage}>
+  return navigation ? <Button className={className} size="sm" variant={variant} type="button" data-testid="workspace-switcher" aria-label={`管理已打开的工作区，${navigation.entries.length} 项`} title={`查看、切换或关闭已打开的工作区，当前 ${navigation.entries.length} 项`} onClick={navigation.manage}>
     <Stack aria-hidden="true" />
-    {labelLayout === "split" ? <><span className="min-w-0 flex-1 truncate text-left">工作区</span><span className="min-w-4 shrink-0 text-center tabular-nums text-muted-foreground">{navigation.entries.length}</span></> : <span className="truncate">工作区 {navigation.entries.length}</span>}
+    {labelLayout === "compact" ? <>
+      <span data-utility-label>工作区</span>
+      {navigation.entries.length > 0 ? <span aria-hidden="true" className="min-w-3.5 shrink-0 rounded-sm bg-muted px-0.5 text-center text-[10px] leading-4 text-muted-foreground tabular-nums" data-utility-count>{navigation.entries.length > 9 ? "9+" : navigation.entries.length}</span> : null}
+    </> : labelLayout === "split" ? <><span className="min-w-0 flex-1 truncate text-left">工作区</span><span className="min-w-4 shrink-0 text-center tabular-nums text-muted-foreground">{navigation.entries.length}</span></> : <span className="truncate">工作区 {navigation.entries.length}</span>}
   </Button> : null
 }
 

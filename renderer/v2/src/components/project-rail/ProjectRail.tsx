@@ -17,7 +17,6 @@ import {
 } from "@phosphor-icons/react"
 
 import { StatusIndicator, statusLabel } from "@/components/app-shell/StatusIndicator"
-import { navigationActionClassName } from "@/components/app-shell/navigation-action-styles"
 import { WorkspaceSwitcherButton } from "@/features/plugins/WorkspaceNavigation"
 import { SettingsButton } from "@/features/settings/SettingsButton"
 import {
@@ -86,6 +85,7 @@ import { useRovingNavigation } from "@/hooks/use-roving-navigation"
 import { useMenuHandoff } from "@/hooks/use-menu-handoff"
 import { cn } from "@/lib/utils"
 import { PROJECT_RAIL_COLLAPSED_SIZE } from "@/state/layout-state"
+import "./project-rail.css"
 
 const ISOLATED_PROJECT_MESSAGE = "项目配置已隔离，无法选择、排序或新增环境"
 
@@ -273,7 +273,7 @@ export function ProjectRail({
   })
   const confirmationCount = pendingConfirmationCount
   const toggleDisabled = collapsed && expandDisabled
-  const utilityButtonClassName = navigationActionClassName(collapsed)
+  const utilityButtonClassName = "project-utility-button relative h-8 gap-0.5 px-0.5 text-xs leading-4 [&_svg]:size-4"
 
   useEffect(() => {
     if (shortcutsDisabled) return
@@ -325,7 +325,7 @@ export function ProjectRail({
     >
       <Sidebar
         aria-label="项目栏"
-        className="h-full w-full overflow-hidden border-0"
+        className="project-rail h-full w-full overflow-hidden border-0"
         collapsible="none"
         data-collapsed={collapsed}
         data-testid="project-rail"
@@ -385,13 +385,36 @@ export function ProjectRail({
                 : `共 ${displayedProjects.length} 个项目`}
             </p>
           </div>
-          <SidebarGroupLabel className="mx-4 mt-3 mb-2 h-6 px-0 text-xs leading-4 tracking-normal">
+          <SidebarGroupLabel className="mx-2 mt-2 mb-1 h-8 shrink-0 gap-1 px-0 text-xs leading-4 tracking-normal">
             项目
-            <span aria-hidden="true" className={cn("ml-2 text-xs font-normal text-muted-foreground", (!projectDrag.enabled || collapsed) && "hidden")}>拖动排序</span>
-            {cloudRepositories.length > 0 ? <Button aria-label="检测云仓库更新" title={cloudChecking ? "正在检测云端配置更新" : "检测云端配置更新，不会自动下载"} size="icon-xs" variant="ghost" className="ml-auto mr-1" disabled={cloudChecking} onClick={onCheckCloud}><ArrowClockwise className={cloudChecking ? "animate-spin" : undefined} /></Button> : null}
-            <span className="ml-auto font-mono tabular-nums">
+            <span className="min-w-0 truncate font-mono tabular-nums" data-testid="project-list-count">
               {normalizedProjectQuery ? `${visibleProjects.length}/${displayedProjects.length}` : displayedProjects.length}
             </span>
+            <div className="ml-auto flex shrink-0 items-center">
+              {cloudRepositories.length > 0 ? <Button aria-label="检测云仓库更新" title={cloudChecking ? "正在检测云端配置更新" : "检测云端配置更新，不会自动下载"} size="icon-xs" variant="ghost" disabled={cloudChecking} onClick={onCheckCloud}><ArrowClockwise className={cloudChecking ? "animate-spin" : undefined} /></Button> : null}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    aria-keyshortcuts="Control+N Meta+N"
+                    aria-label="新增项目"
+                    className="text-foreground"
+                    data-testid="add-project-header"
+                    onClick={() => onAction({ type: "create-project" })}
+                    size="icon-sm"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Plus aria-hidden="true" size={16} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="right">
+                  新增项目
+                  <Kbd className="border border-background/20 bg-background/10 px-1.5 py-0.5 font-mono text-xs leading-none">
+                    {shortcutLabel("N")}
+                  </Kbd>
+                </TooltipContent>
+              </Tooltip>
+            </div>
           </SidebarGroupLabel>
           <p className="sr-only" id="project-order-help">拖动项目调整顺序，也可按 Alt + 上下方向键排序。顺序保存在本机。</p>
           <nav
@@ -602,7 +625,7 @@ export function ProjectRail({
           </nav>
         </SidebarContent>
 
-        <div aria-label="全局工具" className="flex shrink-0 flex-col gap-2 border-t border-sidebar-border px-2 pt-2" data-testid="project-utility-navigation" role="group">
+        <SidebarFooter aria-label="全局工具" className="project-utility-navigation h-[46px] shrink-0 flex-row items-center gap-0.5 border-t border-sidebar-border bg-sidebar px-1.5 py-1.5" data-testid="project-utility-navigation" role="group">
           <Button
             aria-label={"操作确认，" + confirmationCount + " 项待处理"}
             className={utilityButtonClassName}
@@ -611,60 +634,22 @@ export function ProjectRail({
             size="sm"
             title={`操作确认中心，${confirmationCount} 项待处理`}
             type="button"
-            variant="outline"
+            variant="ghost"
           >
             <ShieldWarning aria-hidden="true" className={confirmationCount > 0 ? "text-warning" : undefined} />
-            <span className="min-w-0 flex-1 truncate text-left text-xs leading-4">操作确认</span>
-            <span aria-hidden="true" className={cn(
-              "min-w-4 shrink-0 text-center text-xs tabular-nums",
-              confirmationCount > 0 && "rounded-sm bg-warning/15 px-1 font-medium text-warning",
-            )}>
+            <span data-utility-label>操作确认</span>
+            {confirmationCount > 0 ? <span aria-hidden="true" className="min-w-3.5 shrink-0 rounded-sm bg-warning/15 px-0.5 text-center text-[10px] font-medium leading-4 text-warning tabular-nums" data-utility-count>
               {confirmationCount > 9 ? "9+" : confirmationCount}
-            </span>
+            </span> : null}
           </Button>
           <WorkspaceSwitcherButton
             className={utilityButtonClassName}
-            labelLayout="split"
-            variant="outline"
+            labelLayout="compact"
           />
           <SettingsButton
-            className={utilityButtonClassName}
-            variant="outline"
+            className="ml-auto shrink-0 text-muted-foreground"
+            iconOnly
           />
-        </div>
-
-        <SidebarFooter
-          className={cn(
-            "shrink-0 bg-sidebar/95",
-            "gap-0 px-2 py-2",
-          )}
-          data-testid="project-actions-footer"
-        >
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                aria-keyshortcuts="Control+N Meta+N"
-                aria-label="新增项目"
-                className={utilityButtonClassName}
-                data-testid="add-project-footer"
-                onClick={() => onAction({ type: "create-project" })}
-                size="default"
-                type="button"
-                variant="outline"
-              >
-                <Plus aria-hidden="true" size={16} />
-                <span className="truncate text-xs leading-4">新增项目</span>
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              新增项目
-              <Kbd
-                className="border border-background/20 bg-background/10 px-1.5 py-0.5 font-mono text-xs leading-none"
-              >
-                {shortcutLabel("N")}
-              </Kbd>
-            </TooltipContent>
-          </Tooltip>
         </SidebarFooter>
       </Sidebar>
     </SidebarProvider>

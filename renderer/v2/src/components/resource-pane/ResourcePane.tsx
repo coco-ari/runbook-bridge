@@ -20,7 +20,6 @@ import type {
   EnvironmentRuntime,
 } from "@/bridge/ai-ops-v2"
 import { StatusIndicator } from "@/components/app-shell/StatusIndicator"
-import { navigationActionClassName } from "@/components/app-shell/navigation-action-styles"
 import {
   Alert,
   AlertDescription,
@@ -667,6 +666,20 @@ export function ResourcePane({
             {project?.name ?? "未选择项目"}
           </h2>
         </div>
+        {project && !project.isolated ? (
+          <Button
+            aria-label="新增环境"
+            className="text-foreground"
+            data-testid="add-environment-header"
+            onClick={() => onAction({ type: "create-environment", project })}
+            size="icon-sm"
+            title={`在「${project.name}」下新增环境`}
+            type="button"
+            variant="ghost"
+          >
+            <Plus aria-hidden="true" size={16} />
+          </Button>
+        ) : null}
       </header>
 
       {loading && !project ? (
@@ -789,22 +802,6 @@ export function ResourcePane({
               )}
             </ScrollArea>
           </nav>
-          <div
-            className="shrink-0 bg-surface/95 px-2 py-2"
-            data-testid="resource-actions-footer"
-          >
-            <Button
-              className={navigationActionClassName()}
-              data-testid="add-environment-footer"
-              onClick={() => onAction({ type: "create-environment", project })}
-              size="default"
-              type="button"
-              variant="outline"
-            >
-              <Plus aria-hidden="true" size={16} />
-              <span className="truncate text-xs leading-4">新增环境</span>
-            </Button>
-          </div>
         </>
       )}
     </aside>

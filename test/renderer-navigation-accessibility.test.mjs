@@ -90,18 +90,15 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(projectRail,/data-testid="project-search-empty-state"/u);
   assert.match(projectRail,/没有匹配项目/u);
   assert.match(projectRail,/按项目名或描述搜索项目/u);
-  assert.match(projectRail,/data-testid="project-actions-footer"/u);
-  assert.match(projectRail,/navigationActionClassName\(collapsed\)/u);
-  assert.match(projectRail,/"shrink-0 bg-sidebar\/95"/u);
-  assert.match(projectRail,/"gap-0 px-2 py-2"/u);
+  assert.match(projectRail,/data-testid="project-utility-navigation"/u);
   assert.match(projectRail,/data-testid="project-list-scroll"/u);
   assert.ok(
     projectRail.indexOf('data-testid="project-search"') < projectRail.indexOf('<nav'),
     'project search stays outside roving project navigation',
   );
   assert.ok(
-    projectRail.lastIndexOf('</ScrollArea>') < projectRail.indexOf('data-testid="add-project-footer"'),
-    'add-project action stays outside the scroll area',
+    projectRail.indexOf('data-testid="add-project-header"') < projectRail.indexOf('<nav'),
+    '新增项目位于列表标题区，独立于滚动和方向键导航',
   );
   assert.doesNotMatch(projectRail,/项目范围彼此隔离|<Kbd[\s\S]*?>[\s\S]*?Ctrl K[\s\S]*?<\/Kbd>/u);
   assert.doesNotMatch(projectRail,/<(?:button|details|summary|select)\b/u);
@@ -120,7 +117,9 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(projectRail,/<SidebarContent[^>]*id="project-navigation-content"/u);
   assert.doesNotMatch(footer,/project-expand|project-rail-toggle|CaretRight/u);
   const footerButton = footer.slice(footer.indexOf('<Button'),footer.indexOf('</Button>'));
-  assert.match(footerButton,/variant="outline"/u);
+  assert.match(footerButton,/variant="ghost"/u);
+  assert.match(footerButton,/data-testid="confirmation-center"/u);
+  assert.match(footerButton,/confirmationCount > 0 \?/u);
   assert.doesNotMatch(footerButton,/<Kbd|\bcollapsed\b/u);
   assert.doesNotMatch(projectRail,/AvatarFallback|data-project-monogram|data-project-short-name|buildProjectRailIdentities/u);
   assert.match(projectRail,/data-project-compact-name>\s*\{project.name\}/u);
@@ -156,12 +155,13 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(resourcePane,/aria-current=\{selected \? "page" : undefined\}/u);
   assert.match(resourcePane,/data-testid="isolated-project-resource-state"/u);
   assert.match(resourcePane,/data-testid="resource-list-scroll"/u);
-  assert.match(resourcePane,/data-testid="resource-actions-footer"/u);
-  const resourceFooterButton = resourcePane.slice(resourcePane.lastIndexOf('<Button'),resourcePane.lastIndexOf('</Button>'));
-  assert.match(resourceFooterButton,/data-testid="add-environment-footer"/u);
-  assert.match(resourceFooterButton,/variant="outline"/u);
-  assert.doesNotMatch(resourceFooterButton,/bg-primary|text-primary-foreground/u);
-  assert.match(resourcePane,/className="shrink-0 bg-surface\/95 px-2 py-2"/u);
+  assert.doesNotMatch(resourcePane,/data-testid="resource-actions-footer"/u);
+  const resourceHeader = resourcePane.slice(resourcePane.indexOf('<header'),resourcePane.indexOf('</header>'));
+  assert.match(resourceHeader,/data-testid="add-environment-header"/u);
+  assert.match(resourceHeader,/project && !project\.isolated/u);
+  assert.match(resourceHeader,/aria-label="新增环境"/u);
+  assert.match(resourceHeader,/size="icon-sm"/u);
+  assert.match(resourceHeader,/variant="ghost"/u);
   assert.match(resourcePane,/data-testid=\{`environment-actions-/u);
   assert.match(resourcePane,/data-testid=\{`plugin-actions-/u);
   assert.match(resourcePane,/from "@\/components\/ui\/item"/u);
@@ -184,8 +184,8 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.doesNotMatch(`${projectRail}\n${resourcePane}`,/0_-12px_24px/u);
   assert.doesNotMatch(resourcePane,/hover:-translate|hover:shadow|ring-1 ring-primary|<(?:button|details|summary|select)\b/u);
   assert.ok(
-    resourcePane.lastIndexOf('</ScrollArea>') < resourcePane.indexOf('data-testid="resource-actions-footer"'),
-    'add-environment action stays outside the scroll area',
+    resourcePane.indexOf('data-testid="add-environment-header"') < resourcePane.indexOf('data-testid="resource-list-scroll"'),
+    '新增环境位于固定标题中，不占用列表底部空间',
   );
   assert.doesNotMatch(resourcePane,/aria-selected=/u);
   assert.match(styles,/\[aria-current="page"\]/u);

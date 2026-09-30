@@ -128,7 +128,7 @@ test('production React shell composes shadcn/Radix with the typed desktop bridge
   assert.match(projectRail,/ContextMenu/u);
   assert.match(projectRail,/Empty/u);
   assert.match(projectRail,/data-testid="confirmation-center"/u);
-  assert.match(projectRail,/data-testid="add-project-footer"/u);
+  assert.match(projectRail,/data-testid="add-project-header"/u);
   assert.ok(
     projectRail.lastIndexOf('data-testid="confirmation-center"') >
       projectRail.lastIndexOf('</SidebarContent>'),
@@ -141,7 +141,7 @@ test('production React shell composes shadcn/Radix with the typed desktop bridge
   assert.match(resourcePane,/DropdownMenu/u);
   assert.match(resourcePane,/ScrollArea/u);
   assert.match(resourcePane,/Empty/u);
-  assert.match(resourcePane,/data-testid="add-environment-footer"/u);
+  assert.match(resourcePane,/data-testid="add-environment-header"/u);
 
   assert.match(workspaceDetail,/TabsList/u);
   assert.match(workspaceDetail,/variant="navigation"/u);

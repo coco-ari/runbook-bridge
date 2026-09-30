@@ -52,10 +52,10 @@ test('React production smoke exercises real read-only workspace integration',asy
   assert.match(smoke,/selected plugin outside resource viewport/u);
   assert.match(smoke,/project row overlap/u);
   assert.match(smoke,/project truncation/u);
-  assert.match(smoke,/projectFooter:footerGeometry\(project,'project-list-scroll','project-actions-footer'\)/u);
-  assert.match(smoke,/resourceFooter:footerGeometry\(resources,'resource-list-scroll','resource-actions-footer'\)/u);
-  assert.match(smoke,/footerOpticalAlignment/u);
-  assert.match(smoke,/project and environment footer optical alignment/u);
+  assert.match(smoke,/projectFooter:footerGeometry\(project,'project-list-scroll','project-utility-navigation'\)/u);
+  assert.match(smoke,/headerActionGeometry/u);
+  assert.match(smoke,/项目与环境新增入口固定在标题区/u);
+  assert.match(smoke,/环境列表延伸到面板底部/u);
   assert.match(smoke,/environment action overlap/u);
   assert.match(smoke,/environment is not one accordion container/u);
   assert.match(smoke,/environment outer glow remains/u);

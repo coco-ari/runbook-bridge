@@ -660,23 +660,22 @@ async function assertThemeControlGeometry(cdp, compact) {
   }
   const snapshot = await cdp.evaluate(`(() => {
     const trigger = document.querySelector('[data-testid="settings-open"]');
-    const label = trigger?.querySelector('span');
     const rail = document.querySelector('[data-testid="project-rail"]');
-    const footer = document.querySelector('[data-testid="add-project-footer"]');
+    const footer = document.querySelector('[data-testid="project-utility-navigation"]');
     const rect = trigger?.getBoundingClientRect();
     const railRect = rail?.getBoundingClientRect();
     const hit = rect && document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);
     return {width:railRect?.width,visible:Boolean(rect && rect.width > 0 && rect.height > 0 && railRect
       && rect.left >= railRect.left && rect.right <= railRect.right+1 && rect.bottom <= innerHeight
       && hit && trigger.contains(hit) && !trigger.closest('[inert],[aria-hidden="true"]')),
-      aboveFooter:Boolean(rect && footer && rect.bottom <= footer.getBoundingClientRect().top+1),
-      labelFits:Boolean(label && label.clientWidth > 0 && label.scrollWidth <= label.clientWidth+1),
+      insideToolbar:Boolean(footer?.contains(trigger)),
+      accessibleName:trigger?.getAttribute('aria-label'),
       noOverflow:Boolean(rail && rail.scrollWidth <= rail.clientWidth+1
         && document.documentElement.scrollWidth <= document.documentElement.clientWidth+1)};
   })()`);
   assert.equal(snapshot.visible, true, 'packaged theme entry stays visible and reachable');
-  assert.equal(snapshot.aboveFooter, true, 'packaged theme entry stays above the project footer');
-  assert.equal(snapshot.labelFits, true, 'packaged theme mode label remains fully readable without truncation');
+  assert.equal(snapshot.insideToolbar, true, '打包后的设置入口位于底部工具栏');
+  assert.equal(snapshot.accessibleName, '应用设置', '齿轮图标保留可访问名称');
   assert.equal(snapshot.noOverflow, true, 'packaged theme entry introduces no horizontal overflow');
   if (compact) assert.ok(Math.abs(snapshot.width-128) <= 1, 'packaged theme entry fits the actual 128px rail');
 }

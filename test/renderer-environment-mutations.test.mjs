@@ -113,7 +113,7 @@ test('environment compact Dialogs and standalone deletion preserve Radix, busy, 
   assert.match(surface,/max-h-\[calc\(100dvh-2rem\)\] overflow-y-auto/u);
   assert.match(surface,/assessEnvironmentDeletion/u);
   assert.match(surface,/onCloseAutoFocus/u);
-  assert.match(surface,/if \(action\?\.kind === "create"\) \{\s+const createTarget = document\.querySelector<HTMLElement>\('\[data-testid="add-environment-footer"\]'\)/u,
+  assert.match(surface,/if \(action\?\.kind === "create"\) \{\s+const createTarget = document\.querySelector<HTMLElement>\('\[data-testid="add-environment-header"\]'\)/u,
     'creation always returns to the stable environment footer after a Command handoff');
   assert.match(surface,/requestedTarget !== document\.body/u,'Command handoff must restore an actionable footer, not body');
   assert.match(surface,/requestedTarget !== document\.documentElement/u);

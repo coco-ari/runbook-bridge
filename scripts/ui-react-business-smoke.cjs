@@ -399,7 +399,7 @@ async function assertRendererKeyboardFocus(win) {
   const focus = await win.webContents.executeJavaScript(`(() => {
     const previous = document.activeElement;
     const target = [
-      document.querySelector('[data-testid="add-project-footer"]'),
+      document.querySelector('[data-testid="add-project-header"]'),
       document.querySelector('[data-project-id="project-alpha"]'),
     ].find((element) => element instanceof HTMLElement && element !== previous);
     if (!(target instanceof HTMLElement)) throw new Error('business keyboard focus probe target missing');
@@ -1317,7 +1317,7 @@ async function assertScopedMutationModal(win,testId,role) {
     if (!(surface instanceof HTMLElement)) return null;
     const visibleModals = [...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')]
       .filter((candidate) => candidate.getClientRects().length > 0);
-    const backgroundRegions = [...document.querySelectorAll('[data-project-id],[data-testid="add-project-footer"],[data-testid="resource-panel"],[data-testid="detail-panel"]')]
+    const backgroundRegions = [...document.querySelectorAll('[data-project-id],[data-testid="add-project-header"],[data-testid="resource-panel"],[data-testid="detail-panel"]')]
       .filter((element) => element.getClientRects().length > 0);
     const interactiveSelector = 'button,input,textarea,select,a[href],[tabindex]:not(main):not([role="tabpanel"]),[contenteditable="true"]';
     const backgroundControls = [...new Set(backgroundRegions.flatMap((element) => [
@@ -1354,7 +1354,7 @@ async function assertScopedMutationModal(win,testId,role) {
   assert.equal(geometry.focusedInside,true,`${testId} must receive focus: ${JSON.stringify(geometry)}`);
   const escapedFocus = await win.webContents.executeJavaScript(`(() => {
     const surface = document.querySelector('[data-testid="${testId}"]');
-    const targets = [...document.querySelectorAll('[data-testid="add-project-footer"],#detail-main,[data-testid="detail-panel"] [role="tabpanel"]')]
+    const targets = [...document.querySelectorAll('[data-testid="add-project-header"],#detail-main,[data-testid="detail-panel"] [role="tabpanel"]')]
       .filter((element) => element instanceof HTMLElement && element.getClientRects().length > 0);
     if (!targets.length) return true;
     return targets.some((target) => {
@@ -1491,7 +1491,7 @@ async function assertScopedDialogOverflow(win) {
     await click(win,`[data-project-id="${projectId}"]`,'select long-name fixture project');
     await click(win,`[data-testid="environment-trigger-${environmentId}"]`,'select long-name fixture environment');
 
-    await click(win,'[data-testid="add-environment-footer"]','create under long project name');
+    await click(win,'[data-testid="add-environment-header"]','create under long project name');
     await waitFor(win,`document.querySelector('[data-testid="create-environment-dialog"]') !== null`,'create environment in long-name project');
     await assertDialogLongContent(win,'create-environment-dialog',projectName);
     await clickText(win,'取消','[data-testid="create-environment-dialog"]');
@@ -1698,7 +1698,7 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
   win.webContents.send('v2:workspace-changed',{type:'plugin-deleted',...scope,pluginInstanceId:'mock-server'});
   await activateTab(win,'overview');
   const beforeCreate = mutationCalls.length;
-  await click(win,'[data-testid="add-environment-footer"]','add lifecycle environment');
+  await click(win,'[data-testid="add-environment-header"]','add lifecycle environment');
   await clickText(win,'创建环境','[data-testid="create-environment-dialog"]');
   await waitFor(win,`document.querySelector('#new-environment-name')?.getAttribute('aria-invalid') === 'true'`,'blank environment name reports form error');
   assert.equal(mutationCalls.length,beforeCreate,'invalid environment form cannot reach IPC');
@@ -1731,7 +1731,7 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
   await openScopedDelete(win,{actionText:'删除环境',resourceSelector:`[data-testid="environment-trigger-${createdEnvironment.environmentId}"]`,testId:'delete-environment-dialog'});
   await clickText(win,'确认删除','[data-testid="delete-environment-dialog"]');
   await waitFor(win,`document.querySelector('[data-environment-id="${createdEnvironment.environmentId}"]') === null && document.querySelector('[data-testid="delete-environment-dialog"]') === null`,'environment removal updates selection and closes dialog');
-  await click(win,'[data-testid="add-environment-footer"]','recreate deleted environment');
+  await click(win,'[data-testid="add-environment-header"]','recreate deleted environment');
   await fill(win,'#new-environment-name','重建验证新名称');
   await clickText(win,'创建环境','[data-testid="create-environment-dialog"]');
   await waitFor(win,`document.querySelector('[data-testid="create-environment-dialog"]') === null`,'environment recreated after deletion');
@@ -1749,7 +1749,7 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
   await clickText(win,'永久删除','[data-testid="delete-project-dialog"]');
   await waitFor(win,`document.querySelector('[data-project-id="${projectId}"]') === null && document.querySelector('[data-testid="delete-project-dialog"]') === null`,'project removed from workspace');
   const beforeProjectCreate = mutationCalls.length;
-  await click(win,'[data-testid="add-project-footer"]','recreate deleted project');
+  await click(win,'[data-testid="add-project-header"]','recreate deleted project');
   await clickText(win,'创建项目','[data-testid="create-project-dialog"]');
   await waitFor(win,`document.querySelector('#new-project-name')?.getAttribute('aria-invalid') === 'true'`,'blank project name reports form error');
   assert.equal(mutationCalls.length,beforeProjectCreate,'invalid project form cannot reach IPC');
@@ -1870,7 +1870,7 @@ async function run() {
       return;
     }
 
-    await click(win,'[data-testid="add-project-footer"]','add project');
+    await click(win,'[data-testid="add-project-header"]','add project');
     await waitFor(
       win,
       `document.querySelector('[data-testid="create-project-dialog"]') !== null`,
@@ -2004,7 +2004,7 @@ async function run() {
         && document.activeElement === document.querySelector('[data-testid="environment-trigger-env-production"]')`,
       'blocked environment deletion restores the environment trigger');
 
-    await click(win,'[data-testid="add-environment-footer"]','add environment');
+    await click(win,'[data-testid="add-environment-header"]','add environment');
     await waitFor(
       win,
       `document.querySelector('[data-testid="create-environment-dialog"]') !== null`,

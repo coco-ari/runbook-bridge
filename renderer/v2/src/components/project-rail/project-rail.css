@@ -1,0 +1,27 @@
+.project-rail {
+  container-name: project-rail;
+  container-type: inline-size;
+}
+
+/* 按项目栏实际宽度收起文字，拖动分栏和紧凑模式共用一套入口。 */
+@container project-rail (max-width: 215px) {
+  .project-utility-navigation {
+    gap: 6px;
+  }
+
+  .project-utility-button {
+    width: 32px;
+    padding-inline: 0;
+    gap: 0;
+  }
+
+  .project-utility-button [data-utility-label] {
+    display: none;
+  }
+
+  .project-utility-button [data-utility-count] {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+  }
+}
