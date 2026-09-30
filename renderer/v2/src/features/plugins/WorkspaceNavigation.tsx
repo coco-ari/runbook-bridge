@@ -58,14 +58,15 @@ export function WorkspaceNavigationProvider({entries, activeKey, onSelect, onCon
   </NavigationContext.Provider>
 }
 
-export function WorkspaceSwitcherButton({className, variant = "ghost"}: {
+export function WorkspaceSwitcherButton({className, variant = "ghost", labelLayout = variant === "outline" ? "split" : "inline"}: {
   readonly className?: string
   readonly variant?: "ghost" | "outline"
+  readonly labelLayout?: "inline" | "split"
 }) {
   const navigation = useContext(NavigationContext)
   return navigation ? <Button className={className} size="sm" variant={variant} data-testid="workspace-switcher" aria-label="管理已打开的工作区" title="查看、切换或关闭已打开的工作区" onClick={navigation.manage}>
     <Stack aria-hidden="true" />
-    {variant === "outline" ? <><span className="min-w-0 flex-1 truncate text-left">工作区</span><span className="shrink-0 text-muted-foreground">{navigation.entries.length}</span></> : <span className="truncate">工作区 {navigation.entries.length}</span>}
+    {labelLayout === "split" ? <><span className="min-w-0 flex-1 truncate text-left">工作区</span><span className="min-w-4 shrink-0 text-center tabular-nums text-muted-foreground">{navigation.entries.length}</span></> : <span className="truncate">工作区 {navigation.entries.length}</span>}
   </Button> : null
 }
 

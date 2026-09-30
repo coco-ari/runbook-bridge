@@ -20,6 +20,7 @@ import type {
   EnvironmentRuntime,
 } from "@/bridge/ai-ops-v2"
 import { StatusIndicator } from "@/components/app-shell/StatusIndicator"
+import { navigationActionClassName } from "@/components/app-shell/navigation-action-styles"
 import {
   Alert,
   AlertDescription,
@@ -793,7 +794,7 @@ export function ResourcePane({
             data-testid="resource-actions-footer"
           >
             <Button
-              className="h-10 w-full justify-start gap-2 rounded-lg px-3 text-xs font-medium leading-4 text-foreground shadow-none transition-colors duration-150 [&_svg]:text-muted-foreground"
+              className={navigationActionClassName()}
               data-testid="add-environment-footer"
               onClick={() => onAction({ type: "create-environment", project })}
               size="default"
@@ -801,7 +802,7 @@ export function ResourcePane({
               variant="outline"
             >
               <Plus aria-hidden="true" size={16} />
-              <span className="truncate text-xs font-medium leading-4">新增环境</span>
+              <span className="truncate text-xs leading-4">新增环境</span>
             </Button>
           </div>
         </>

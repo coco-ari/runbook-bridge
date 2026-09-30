@@ -248,7 +248,7 @@ async function readProjectRail(cdp) {
       railRight: rail?.getBoundingClientRect().right ?? 0,
       panelWidth,
       collapsed: rail?.dataset.collapsed,
-      noTopToggle: Boolean(rail && !rail.querySelector('[data-project-rail-toggle], [data-testid="project-expand"], [data-testid="project-collapse"], button[aria-label="展开项目栏"], button[aria-label="折叠项目栏"]')),
+      headerToggleReady: Boolean(rail?.querySelector('[data-slot="sidebar-header"] [data-project-rail-toggle][aria-controls="project-panel"][aria-expanded="' + (rail.dataset.collapsed !== 'true') + '"]')),
       resizerRole: resizer?.getAttribute('role'),
       controls: resizer?.getAttribute('aria-controls'),
       valueNow: Number(resizer?.getAttribute('aria-valuenow')),
@@ -482,7 +482,7 @@ async function waitForProjectRail(cdp, collapsed, label, { persisted = true } = 
       && Math.abs(snapshot.valueNow - snapshot.panelShare) <= 0.2
       && (!persisted || snapshot.savedCollapsed === collapsed)
     ) {
-      assert.equal(snapshot.noTopToggle, true, `${label}: no top project collapse button is rendered`);
+      assert.equal(snapshot.headerToggleReady, true, `${label}: 顶部收起按钮与项目栏状态保持一致`);
       assert.equal(snapshot.resizerRole, 'separator', `${label}: project resizer retains its native separator role`);
       assert.equal(snapshot.controls, 'project-panel', `${label}: project resizer controls the first panel`);
       assert.equal(snapshot.disabled, false, `${label}: project resizer remains available`);

@@ -141,7 +141,7 @@ test('packaged React smoke verifies compact rail geometry and process-restart pe
   assert.doesNotMatch(smoke,/backgroundThrottling|force-device-scale-factor|Emulation\.setDeviceMetricsOverride/u);
   assert.match(smoke,/Math\.abs\(snapshot\.panelWidth - snapshot\.width\) <= 1/u);
   assert.match(smoke,/snapshot\.collapsed === String\(collapsed\)/u);
-  assert.match(smoke,/assert\.equal\(snapshot\.noTopToggle, true/u);
+  assert.match(smoke,/assert\.equal\(snapshot\.headerToggleReady, true/u);
   assert.match(smoke,/Math\.abs\(snapshot\.valueNow - snapshot\.panelShare\) <= 0\.2/u);
   assert.match(smoke,/assert\.equal\(snapshot\.controls, 'project-panel'/u);
   assert.match(smoke,/assert\.equal\(snapshot\.noPageOverflow, true/u);

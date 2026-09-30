@@ -10,11 +10,14 @@ import {
   MagnifyingGlass,
   Plus,
   ShieldWarning,
+  SidebarSimple,
+  StackSimple,
   Trash,
   WarningCircle,
 } from "@phosphor-icons/react"
 
 import { StatusIndicator, statusLabel } from "@/components/app-shell/StatusIndicator"
+import { navigationActionClassName } from "@/components/app-shell/navigation-action-styles"
 import { WorkspaceSwitcherButton } from "@/features/plugins/WorkspaceNavigation"
 import { SettingsButton } from "@/features/settings/SettingsButton"
 import {
@@ -270,6 +273,7 @@ export function ProjectRail({
   })
   const confirmationCount = pendingConfirmationCount
   const toggleDisabled = collapsed && expandDisabled
+  const utilityButtonClassName = navigationActionClassName(collapsed)
 
   useEffect(() => {
     if (shortcutsDisabled) return
@@ -326,36 +330,30 @@ export function ProjectRail({
         data-collapsed={collapsed}
         data-testid="project-rail"
       >
-        <SidebarHeader className="gap-2 px-3 py-2">
-          <div className="flex h-10 min-w-0 items-center gap-2.5">
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold tracking-tight">AI 运维工具</p>
-              <p className="truncate text-xs text-muted-foreground">本地三栏工作台</p>
-            </div>
+        <SidebarHeader className="px-3 py-3">
+          <div className="flex h-10 min-w-0 items-center justify-between gap-2">
+            <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+              <StackSimple className="size-5" />
+            </span>
+            <p className={cn("min-w-0 flex-1 truncate text-sm font-semibold tracking-tight", collapsed && "sr-only")}>AI 运维工具</p>
+            <Button
+              aria-controls="project-panel"
+              aria-expanded={!collapsed}
+              aria-keyshortcuts="Control+B Meta+B"
+              aria-label={collapsed ? "展开项目栏" : "收起项目栏"}
+              className="shrink-0 text-muted-foreground hover:text-foreground"
+              data-project-rail-toggle
+              data-testid="project-rail-toggle"
+              disabled={toggleDisabled}
+              onClick={onToggleCollapsed}
+              size="icon-xs"
+              title={toggleDisabled ? "窗口较窄，暂时无法展开项目栏" : `${collapsed ? "展开" : "收起"}项目栏 (${shortcutLabel("B")})`}
+              type="button"
+              variant="ghost"
+            >
+              <SidebarSimple aria-hidden="true" />
+            </Button>
           </div>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                aria-label={"操作确认，" + confirmationCount + " 项待处理"}
-                className="h-8 w-full justify-start gap-1 px-1.5"
-                data-testid="confirmation-center"
-                onClick={() => onAction({ type: "open-confirmations" })}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                <ShieldWarning className={confirmationCount > 0 ? "text-warning" : undefined} size={14} />
-                <span className="min-w-0 flex-1 truncate text-left text-xs leading-4">操作确认</span>
-                {confirmationCount > 0 ? (
-                  <span aria-hidden="true" className="min-w-3.5 shrink-0 rounded-sm bg-warning/15 px-0.5 text-center font-mono text-xs font-semibold leading-3.5 text-warning">
-                    {confirmationCount > 9 ? "9+" : confirmationCount}
-                  </span>
-                ) : null}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="right">操作确认中心，{confirmationCount} 项待处理</TooltipContent>
-          </Tooltip>
         </SidebarHeader>
 
         <SidebarSeparator />
@@ -604,13 +602,33 @@ export function ProjectRail({
           </nav>
         </SidebarContent>
 
-        <div className="shrink-0 space-y-2 px-2 pt-2">
+        <div aria-label="全局工具" className="flex shrink-0 flex-col gap-2 border-t border-sidebar-border px-2 pt-2" data-testid="project-utility-navigation" role="group">
+          <Button
+            aria-label={"操作确认，" + confirmationCount + " 项待处理"}
+            className={utilityButtonClassName}
+            data-testid="confirmation-center"
+            onClick={() => onAction({ type: "open-confirmations" })}
+            size="sm"
+            title={`操作确认中心，${confirmationCount} 项待处理`}
+            type="button"
+            variant="outline"
+          >
+            <ShieldWarning aria-hidden="true" className={confirmationCount > 0 ? "text-warning" : undefined} />
+            <span className="min-w-0 flex-1 truncate text-left text-xs leading-4">操作确认</span>
+            <span aria-hidden="true" className={cn(
+              "min-w-4 shrink-0 text-center text-xs tabular-nums",
+              confirmationCount > 0 && "rounded-sm bg-warning/15 px-1 font-medium text-warning",
+            )}>
+              {confirmationCount > 9 ? "9+" : confirmationCount}
+            </span>
+          </Button>
           <WorkspaceSwitcherButton
-            className="h-10 w-full justify-start gap-2 rounded-lg px-3 text-xs font-medium leading-4 text-foreground shadow-none transition-colors duration-150 [&_svg]:text-muted-foreground"
+            className={utilityButtonClassName}
+            labelLayout="split"
             variant="outline"
           />
           <SettingsButton
-            className="h-10 w-full justify-start gap-2 rounded-lg px-3 text-xs font-medium leading-4 text-foreground shadow-none transition-colors duration-150 [&_svg]:text-muted-foreground"
+            className={utilityButtonClassName}
             variant="outline"
           />
         </div>
@@ -627,7 +645,7 @@ export function ProjectRail({
               <Button
                 aria-keyshortcuts="Control+N Meta+N"
                 aria-label="新增项目"
-                className="h-10 w-full justify-start gap-2 rounded-lg px-3 text-xs font-medium leading-4 text-foreground shadow-none transition-colors duration-150 [&_svg]:text-muted-foreground"
+                className={utilityButtonClassName}
                 data-testid="add-project-footer"
                 onClick={() => onAction({ type: "create-project" })}
                 size="default"
@@ -635,7 +653,7 @@ export function ProjectRail({
                 variant="outline"
               >
                 <Plus aria-hidden="true" size={16} />
-                <span className="truncate text-xs font-medium leading-4">新增项目</span>
+                <span className="truncate text-xs leading-4">新增项目</span>
               </Button>
             </TooltipTrigger>
             <TooltipContent side="right">

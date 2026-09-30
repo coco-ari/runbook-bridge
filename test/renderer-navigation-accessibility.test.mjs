@@ -91,7 +91,7 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(projectRail,/没有匹配项目/u);
   assert.match(projectRail,/按项目名或描述搜索项目/u);
   assert.match(projectRail,/data-testid="project-actions-footer"/u);
-  assert.match(projectRail,/className="h-10 w-full justify-start gap-2/u);
+  assert.match(projectRail,/navigationActionClassName\(collapsed\)/u);
   assert.match(projectRail,/"shrink-0 bg-sidebar\/95"/u);
   assert.match(projectRail,/"gap-0 px-2 py-2"/u);
   assert.match(projectRail,/data-testid="project-list-scroll"/u);
@@ -109,9 +109,14 @@ test('project and resource navigation expose one visible roving tab stop and val
 
   const header = projectRail.slice(projectRail.indexOf('<SidebarHeader'),projectRail.indexOf('</SidebarHeader>'));
   const footer = projectRail.slice(projectRail.indexOf('<SidebarFooter'));
-  assert.doesNotMatch(header,/data-project-rail-toggle|project-expand|project-collapse|CaretLeft|CaretRight|\bcollapsed\b/u);
+  assert.match(header,/data-project-rail-toggle/u);
+  assert.match(header,/StackSimple/u);
+  assert.match(header,/SidebarSimple/u);
+  assert.match(header,/aria-controls="project-panel"/u);
+  assert.match(header,/aria-expanded=\{!collapsed\}/u);
+  assert.match(header,/onClick=\{onToggleCollapsed\}/u);
   assert.match(header,/AI 运维工具/u);
-  assert.match(header,/本地三栏工作台/u);
+  assert.doesNotMatch(header,/本地三栏工作台|confirmation-center/u);
   assert.match(projectRail,/<SidebarContent[^>]*id="project-navigation-content"/u);
   assert.doesNotMatch(footer,/project-expand|project-rail-toggle|CaretRight/u);
   const footerButton = footer.slice(footer.indexOf('<Button'),footer.indexOf('</Button>'));
@@ -251,7 +256,7 @@ test('project rail shortcuts and responsive expansion target the desktop panel w
   assert.match(rail,/\[role="dialog"\], \[role="alertdialog"\], \[role="menu"\]/u);
   assert.match(rail,/if \(modalOpen\) return/u);
   assert.match(rail,/if \(!toggleDisabled\) onToggleCollapsed\(\)/u);
-  assert.doesNotMatch(rail,/data-project-rail-toggle|project-expand|project-collapse/u);
+  assert.match(rail,/data-testid="project-rail-toggle"[\s\S]*?disabled=\{toggleDisabled\}/u);
   assert.match(shell,/expandDisabled=\{viewportWidth < 720\}/u);
   assert.match(shell,/collapsed=\{compactProjectRail\}/u);
   assert.match(shell,/setProjectCollapsed\(!compactProjectRail\)/u);

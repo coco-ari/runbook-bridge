@@ -1315,14 +1315,14 @@ async function assertCompactProjectRail(win,theme) {
       const rail = document.querySelector('[data-testid="project-rail"]');
       const structure = (element) => Array.from(element.querySelectorAll('*')).map((child) => child.tagName + ':' + (child.dataset.slot || '')).join('|');
       return {
-        noToggle:!rail.querySelector('[data-project-rail-toggle],[data-testid="project-expand"],[data-testid="project-collapse"]'),
+        headerToggleReady:Boolean(rail.querySelector('[data-slot="sidebar-header"] [data-project-rail-toggle][aria-controls="project-panel"][aria-expanded="' + (rail.dataset.collapsed !== 'true') + '"]')),
         rowHeights:Array.from(rail.querySelectorAll('[data-project-id]')).map((row) => row.getBoundingClientRect().height),
         actions:['add-project-footer','add-environment-footer'].map((id,index) => {
           const button = document.querySelector('[data-testid="' + id + '"]');
           const style = getComputedStyle(button);
           const appearance = {color:style.color,background:style.backgroundColor,border:style.borderTopColor};
           return {id,appearance,sameAppearance:JSON.stringify(appearance) === JSON.stringify(window.__projectActionAppearance[index]),
-            outlined:parseFloat(style.borderTopWidth) >= 1 && style.borderTopStyle === 'solid',
+            outlined:parseFloat(style.borderTopWidth) === 1,
             transparent:style.backgroundColor === 'rgba(0, 0, 0, 0)',
             noInlineShortcut:!button.querySelector('[data-slot="kbd"]'),height:button.getBoundingClientRect().height};
         }),
@@ -1337,10 +1337,10 @@ async function assertCompactProjectRail(win,theme) {
         }),
       };
     })()`,true);
-    assert.equal(snapshot.noToggle,true,'project rail has no top collapse arrow');
+    assert.equal(snapshot.headerToggleReady,true,'顶部收起按钮应关联项目面板并反映展开状态');
     assert.ok(snapshot.rowHeights.every((height) => Math.abs(height - 32) <= 1),'展开与紧凑项目行均保持 32px 高');
     assert.ok(snapshot.actions.every((action) => action.sameAppearance && action.outlined && action.transparent && action.noInlineShortcut && Math.abs(action.height - 40) <= 1),
-      `${label}: navigation add actions must retain neutral outline appearance: ${JSON.stringify(snapshot.actions)}`);
+      `${label}: 新增入口保持统一的描边按钮样式: ${JSON.stringify(snapshot.actions)}`);
     assert.deepEqual(snapshot.actions[0].appearance,snapshot.actions[1].appearance,'project and environment add actions use the same neutral colors');
     assert.ok(snapshot.nodes.every((node) => node.sameNode && node.connected && node.sameStructure && node.sameTop && node.sameHeight),
       `${label}: project rail changes structure or vertical placement: ${JSON.stringify(snapshot)}`);
@@ -1382,6 +1382,18 @@ async function assertCompactProjectRail(win,theme) {
     })`,'neutral navigation actions after viewport resize');
     await rememberStableRail();
     await assertStableRail('expanded baseline');
+    if (width === 1280) {
+      await clickThemeControl(win,'project-rail-toggle');
+      await waitCollapsed(true,'顶部按钮收起项目栏并保存状态');
+      await win.webContents.executeJavaScript(`document.querySelector('[data-testid="project-rail-toggle"]').focus({preventScroll:true})`,true);
+      win.focus();
+      win.webContents.focus();
+      win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});
+      win.webContents.sendInputEvent({type:'char',keyCode:'\r'});
+      win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});
+      await waitCollapsed(false,'顶部按钮支持键盘展开项目栏');
+      await assertStableRail('顶部按钮切换后保持导航结构与位置');
+    }
     if (width === 960) await assertProjectMenuStatusHandoff(false);
     await focusSeparator();
     await toggleWithShortcut();
@@ -1507,8 +1519,7 @@ async function assertCompactProjectRail(win,theme) {
         confirmation:{label:confirmationLabel?.textContent?.trim(),labelFits:labelFits(confirmationLabel,confirmation)},
         footer:{
           height:add?.getBoundingClientRect().height,
-          label:add?.textContent?.trim(),outlined:Boolean(addStyle && parseFloat(addStyle.borderTopWidth) >= 1
-            && addStyle.borderTopStyle === 'solid'),
+          label:add?.textContent?.trim(),outlined:Boolean(addStyle && parseFloat(addStyle.borderTopWidth) === 1),
           labelFits:labelFits(addLabel,add),
           visible:Boolean(before && before.top >= railRect.top && before.bottom <= railRect.bottom+1),
           fixed:Boolean(before && after && Math.abs(before.top - after.top) <= 1),
@@ -3673,13 +3684,28 @@ async function run() {
 
     const initial = await win.webContents.executeJavaScript(`(() => ({
       selected:document.querySelector('[data-project-id][aria-current="page"]')?.dataset.projectId ?? null,
-      confirmationAboveProjects:(() => {
+      utilityNavigation:(() => {
+        const group = document.querySelector('[data-testid="project-utility-navigation"]');
         const confirmation = document.querySelector('[data-testid="confirmation-center"]');
-        const project = document.querySelector('[data-project-id]');
-        return Boolean(
-          confirmation && project &&
-          confirmation.getBoundingClientRect().bottom <= project.getBoundingClientRect().top
-        );
+        const viewport = document.querySelector('[data-testid="project-list-scroll"]');
+        const add = document.querySelector('[data-testid="add-project-footer"]');
+        const buttons = group && add ? [...group.querySelectorAll('button'),add] : [];
+        const styles = buttons.map(button => {
+          const style = getComputedStyle(button);
+          const rect = button.getBoundingClientRect();
+          const icon = button.querySelector('svg').getBoundingClientRect();
+          return {height:rect.height,left:rect.left,width:rect.width,fontSize:style.fontSize,fontWeight:style.fontWeight,color:style.color,
+            padding:style.padding,borderWidth:style.borderTopWidth,borderRadius:style.borderRadius,
+            iconWidth:icon.width,iconLeft:icon.left};
+        });
+        return {
+          order:buttons.map(button => button.dataset.testid),
+          belowProjects:Boolean(group && viewport && group.getBoundingClientRect().top >= viewport.getBoundingClientRect().bottom - 1),
+          confirmationInGroup:Boolean(group?.contains(confirmation)),
+          consistent:styles.length === 4 && styles.every(style => JSON.stringify(style) === JSON.stringify(styles[0])),
+          evenSpacing:buttons.slice(1).every((button,index) => Math.abs(button.getBoundingClientRect().top - buttons[index].getBoundingClientRect().bottom - 8) <= 1),
+          height:styles[0]?.height,borderWidth:styles[0]?.borderWidth,
+        };
       })(),
       addProjectBelowProjects:(() => {
         const add = document.querySelector('[data-testid="add-project-footer"]');
@@ -3691,7 +3717,10 @@ async function run() {
       })(),
     }))()`,true);
     assert.equal(initial.selected,'project-operations');
-    assert.equal(initial.confirmationAboveProjects,true);
+    assert.deepEqual(initial.utilityNavigation,{
+      order:['confirmation-center','workspace-switcher','settings-open','add-project-footer'],belowProjects:true,
+      confirmationInGroup:true,consistent:true,evenSpacing:true,height:40,borderWidth:'1px',
+    },'底部全局工具统一为清晰的描边按钮');
     assert.equal(initial.addProjectBelowProjects,true);
     if (app.commandLine.hasSwitch('settings-regression-only')) {
       const states = { configured: '已配置', available: '尚未配置', outdated: '配置需要更新', conflict: '需要手动处理', error: '暂时无法检测' };

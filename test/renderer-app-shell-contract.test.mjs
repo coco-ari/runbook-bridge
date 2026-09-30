@@ -121,8 +121,7 @@ test('production React shell composes shadcn/Radix with the typed desktop bridge
   assert.match(projectRail,/data-project-compact-status/u);
   assert.match(projectRail,/data-project-name/u);
   assert.match(projectRail,/data-project-status-badge/u);
-  assert.doesNotMatch(projectRail,/data-project-rail-toggle|data-testid="project-(?:collapse|expand)"/u,
-    'the project rail header has no separate collapse arrow');
+  assert.match(projectRail,/data-testid="project-rail-toggle"/u);
   assert.match(appShell,/aria-describedby="project-rail-resize-help"/u);
   assert.match(projectRail,/Tooltip/u);
   assert.match(projectRail,/DropdownMenu/u);
@@ -131,9 +130,9 @@ test('production React shell composes shadcn/Radix with the typed desktop bridge
   assert.match(projectRail,/data-testid="confirmation-center"/u);
   assert.match(projectRail,/data-testid="add-project-footer"/u);
   assert.ok(
-    projectRail.lastIndexOf('data-testid="confirmation-center"') <
-      projectRail.lastIndexOf('<SidebarContent'),
-    'global confirmation belongs above the project list',
+    projectRail.lastIndexOf('data-testid="confirmation-center"') >
+      projectRail.lastIndexOf('</SidebarContent>'),
+    '全局操作确认放在项目列表下方的工具导航中',
   );
 
   assert.match(resourcePane,/WorkspaceEnvironmentReadModel/u);
