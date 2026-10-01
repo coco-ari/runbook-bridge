@@ -74,6 +74,7 @@ import type { WorkspaceLeaveRequest } from "@/components/detail-workspace/detail
 import { PluginEditorConfirmations } from "@/features/plugins/PluginEditorConfirmations"
 import { PluginValidationProgress } from "@/features/plugins/PluginValidationProgress"
 import { CredentialMigrationNotice } from "@/features/plugins/CredentialMigrationNotice"
+import { StoredCredentialViewer } from "@/features/plugins/StoredCredentialViewer"
 import type { PluginSaveOutcome } from "@/features/plugins/plugin-editor-model"
 import {
   PLUGIN_KIND_LABELS,
@@ -571,8 +572,18 @@ export function PluginEditorWorkspace({
                           type="password"
                           value={state.credentials.primary}
                         />
+                        {plugin && state.credentialStatus?.fields.primary && (plugin.pluginType !== "server" || draft.auth.type === plugin.auth?.type) ? (
+                          <StoredCredentialViewer
+                            key={`${plugin.projectId}/${plugin.environmentId}/${plugin.pluginInstanceId}/${plugin.revision}/${draft.auth.type}`}
+                            api={api}
+                            disabled={saveBlocked || collapsed}
+                            field={plugin.pluginType === "server" && plugin.auth?.type === "privateKey" ? "privateKeyPassphrase" : "password"}
+                            label={plugin.pluginType === "server" && plugin.auth?.type === "privateKey" ? "私钥口令" : "密码"}
+                            scope={plugin}
+                          />
+                        ) : null}
                         <FieldDescription id="plugin-primary-credential-description">
-                          已保存值不会显示。留空表示保持不变，只有明确输入的非空值会发送。
+                          已保存值不会自动填入，可主动查看。留空表示保持不变，只有明确输入的非空值会发送。
                         </FieldDescription>
                         <FieldError id="plugin-primary-credential-error">
                           {issueFor(state.issues, "primaryCredential")}
@@ -694,6 +705,9 @@ export function PluginEditorWorkspace({
                       </Field>
                       {draft.pluginType === "server" ? (
                         <ServerUplinkFields
+                          api={api}
+                          plugin={plugin}
+                          revealDisabled={saveBlocked || collapsed}
                           draft={draft}
                           errors={fieldErrors}
                           onChange={(uplink) => editor.updateDraft((current) => ({ ...current, uplink }))}
@@ -944,6 +958,9 @@ export function PluginEditorWorkspace({
 }
 
 interface ServerUplinkFieldsProps {
+  readonly api: AiOpsV2Api
+  readonly plugin: PluginConfigurationRecord | null
+  readonly revealDisabled: boolean
   readonly draft: PluginFormDraft
   readonly errors: Readonly<Record<string, string>>
   readonly proxyCredential: string
@@ -953,6 +970,9 @@ interface ServerUplinkFieldsProps {
 }
 
 function ServerUplinkFields({
+  api,
+  plugin,
+  revealDisabled,
   draft,
   errors,
   proxyCredential,
@@ -1029,8 +1049,18 @@ function ServerUplinkFields({
               type="password"
               value={proxyCredential}
             />
+            {plugin && proxyStored && uplink.type === plugin.uplink?.type ? (
+              <StoredCredentialViewer
+                key={`${plugin.projectId}/${plugin.environmentId}/${plugin.pluginInstanceId}/${plugin.revision}/${uplink.type}`}
+                api={api}
+                disabled={revealDisabled}
+                field="proxyPassword"
+                label="代理密码"
+                scope={plugin}
+              />
+            ) : null}
             <FieldDescription id="plugin-proxy-credential-description">
-              已保存值不会显示或自动填入。
+              已保存值不会自动填入，可主动查看。
             </FieldDescription>
           </Field>
         </>

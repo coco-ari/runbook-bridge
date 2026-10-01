@@ -20,6 +20,9 @@ let heldProbeReply = null;
 let failNextCreate = false;
 let failNextProbeCancel = false;
 let failNextDelete = false;
+let holdCredentialReveal = false;
+let releaseCredentialReveal = null;
+let failNextCredentialReveal = false;
 const LONG_DIALOG_ERROR = `模拟操作失败：${'ContinuousFixtureDiagnostic'.repeat(60)}`;
 const ok = (data) => ({ok:true,data});
 const safeScope = (payload) => ({projectId:payload.projectId,environmentId:payload.environmentId});
@@ -191,6 +194,22 @@ async function installMatrixApi(win) {
     const saved = fixtureCredentials.get(payload.pluginInstanceId) ?? {};
     return {saved:Object.keys(saved).length > 0,fields:{primary:Boolean(saved.password || saved.privateKeyPassphrase),proxy:Boolean(saved.proxyPassword)},legacyAvailable:false};
   });
+  replace('v2:plugin-credential-reveal',async (payload) => {
+    assertScope(payload);
+    assert.deepEqual(Object.keys(payload).sort(),['environmentId','field','pluginInstanceId','projectId']);
+    if (failNextCredentialReveal) {
+      failNextCredentialReveal = false;
+      throw new AppError('CREDENTIAL_DECRYPT_FAILED','模拟本机凭据无法解密。');
+    }
+    const value = fixtureCredentials.get(payload.pluginInstanceId)?.[payload.field];
+    if (!value) throw new AppError('CREDENTIAL_NOT_FOUND','该密码尚未保存。');
+    if (holdCredentialReveal) {
+      const gate = deferred();
+      releaseCredentialReveal = () => gate.resolve({value});
+      return gate.promise;
+    }
+    return {value};
+  });
   return {probe,edits,AppError};
 }
 
@@ -298,6 +317,87 @@ async function serverMatrix(win) {
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'saved credential edit closes');
   assert.equal(fixtureCredentials.get(savedId).password === savedValue,true,'cleared temporary credentials must not overwrite the stored fixture');
   runtimeBehavior = null;
+}
+
+async function credentialViewMatrix(win) {
+  process.stdout.write('Plugin matrix: explicit local credential viewing, cleanup and late-result isolation\n');
+  const dialog = '[data-testid="stored-credential-dialog"]';
+  const valueSelector = '[data-testid="stored-credential-value"]';
+  const viewButton = field => `[data-testid="stored-credential-view-${field}"]`;
+  const closeView = async () => {
+    await clickText(win,'隐藏并关闭',dialog);
+    await waitFor(win,`document.querySelector(${JSON.stringify(valueSelector)}) === null`,'viewed credential cleared');
+    await waitFor(win,`document.querySelector(${JSON.stringify(dialog)}) === null`,'credential dialog closed');
+    await waitFor(win,`document.activeElement?.getAttribute('data-testid')?.startsWith('stored-credential-view-') === true`,'credential view trigger regains keyboard focus');
+  };
+  for (const [kind,auth,field] of [
+    ['Server','password','password'],['Server','privateKey','privateKeyPassphrase'],
+    ['MySQL','password','password'],['Redis','password','password'],
+  ]) {
+    await openNew(win,kind);
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-testid^="stored-credential-view-"]') === null`,true),true,'新插件不能查看尚未保存的密码');
+    if (auth === 'privateKey') {
+      await chooseSelectOption(win,'[aria-label="SSH 认证方式"]','私钥');
+      await fill(win,'#plugin-private-key','C:\\matrix-fixture\\id_ed25519');
+    }
+    if (kind === 'MySQL') await fill(win,'#plugin-database','orders');
+    const value = randomBytes(24).toString('hex');
+    await fill(win,'#plugin-primary-credential',value);
+    let proxyValue;
+    if (kind === 'Server') {
+      await advanced(win);
+      await chooseSelectOption(win,'[aria-label="SSH 上行方式"]','SOCKS5 代理');
+      await fill(win,'#plugin-proxy-host','proxy.matrix.invalid');
+      proxyValue = randomBytes(24).toString('hex');
+      await fill(win,'#plugin-proxy-credential',proxyValue);
+    }
+    const id = await saveAndClose(win);
+    const beforeViews = calls.filter(call => call.channel === 'v2:plugin-credential-reveal').length;
+    await editPlugin(win,id);
+    await waitFor(win,`document.querySelector(${JSON.stringify(viewButton(field))}) !== null`,'saved credential view button');
+    assert.equal(calls.filter(call => call.channel === 'v2:plugin-credential-reveal').length,beforeViews,'打开编辑器不自动获取明文');
+    await click(win,viewButton(field),'explicit saved credential view');
+    await waitFor(win,`document.querySelector(${JSON.stringify(valueSelector)})?.value === ${JSON.stringify(value)}`,'correct saved credential displayed');
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(valueSelector)}).readOnly && document.querySelector('#plugin-primary-credential').value === ''`,true),true,'只读查看不填入替换字段');
+    await closeView();
+    if (proxyValue) {
+      await advanced(win);
+      await click(win,viewButton('proxyPassword'),'explicit proxy credential view');
+      await waitFor(win,`document.querySelector(${JSON.stringify(valueSelector)})?.value === ${JSON.stringify(proxyValue)}`,'correct proxy credential displayed');
+      assert.equal(await win.webContents.executeJavaScript(`document.querySelector('#plugin-proxy-credential').value === ''`,true),true);
+      await closeView();
+    }
+    if (kind === 'Redis') {
+      failNextCredentialReveal = true;
+      await click(win,viewButton(field),'unreadable saved credential');
+      await waitFor(win,`document.querySelector(${JSON.stringify(dialog)})?.querySelector('[role="alert"]') !== null`,'safe credential view failure');
+      assert.equal(await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(valueSelector)}) === null`,true),true);
+      await closeView();
+      for (const reason of ['close','blur']) {
+        holdCredentialReveal = true;
+        releaseCredentialReveal = null;
+        await click(win,viewButton(field),'deferred credential view');
+        await waitUntil(() => releaseCredentialReveal !== null,'held credential request');
+        if (reason === 'close') await closeView();
+        else {
+          await win.webContents.executeJavaScript('window.dispatchEvent(new Event("blur"))',true);
+          await waitFor(win,`document.querySelector(${JSON.stringify(dialog)}) === null`,'backgrounded credential hidden');
+        }
+        releaseCredentialReveal();
+        holdCredentialReveal = false;
+        await wait(120);
+        assert.equal(await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(dialog)}) === null && document.querySelector(${JSON.stringify(valueSelector)}) === null`,true),true,'迟到明文不得重新显示');
+      }
+      await click(win,viewButton(field),'timed credential view');
+      await waitFor(win,`document.querySelector(${JSON.stringify(valueSelector)}) !== null`,'credential timer starts');
+      await waitFor(win,`document.querySelector(${JSON.stringify(dialog)}) === null && document.querySelector(${JSON.stringify(valueSelector)}) === null`,'credential timeout clears plaintext',35000);
+    }
+    await checkPassed(win);
+    assert.equal(calls.at(-1).credentialFields.length,0,'查看不会把已保存明文作为临时凭据发送');
+    await click(win,'[data-testid="plugin-editor-cancel"]','close unchanged credential viewer editor');
+    await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'viewing leaves editor clean');
+    assert.equal(fixtureCredentials.get(id)[field] === value,true,'查看不会覆盖凭据');
+  }
 }
 
 async function discoveryMatrix(win) {
@@ -717,6 +817,14 @@ async function deletionMatrix(win) {
 
 async function matrix(win) {
   const {probe,edits,AppError} = await installMatrixApi(win);
+  if (app.commandLine.hasSwitch('credential-view-only')) {
+    await credentialViewMatrix(win);
+    assert.equal(probe.requests.size,0);
+    assert.equal(edits.sessions.size,0);
+    for (const call of calls) assertNoSensitivePayload(call,'credential view evidence');
+    process.stdout.write('Desktop credential view regression passed\n');
+    return;
+  }
   if (app.commandLine.hasSwitch('dialog-content-only')) {
     await longContentMatrix(win);
     assert.equal(probe.requests.size,0);
@@ -725,6 +833,7 @@ async function matrix(win) {
     return;
   }
   await serverMatrix(win);
+  await credentialViewMatrix(win);
   await discoveryMatrix(win);
   await cancellationMatrix(win,{probe,edits,AppError});
   await recoveryMatrix(win,{AppError});

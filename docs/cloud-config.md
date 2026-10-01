@@ -89,6 +89,8 @@ docker compose -p runbook-cloud -f services/cloud-config/compose.internal.yaml u
 
 下载解密在 Electron 主进程完成，凭据重新加密存入目标机器的凭据库。SSH 文件私钥上传时只读取已明确配置的普通文件（不超过 1 MiB）；导入设置 `auth.privateKeySource: vault`，私钥内容在凭据库中，由连接运行时直接使用。Server 的自定义 `target.dockerSocket` 随配置同步；原有 `privateKeyPath` 配置继续兼容，省略来源字段等同于 `file`；编辑器允许切回本机文件。
 
+忘记项目连接密码时，进入本地项目的环境，选择插件并打开“编辑连接配置”，点击密码字段下的“查看已保存密码”。Server 私钥口令和高级连接设置中的代理密码也可主动查看；云端导入与本机保存的凭据使用同一入口。查看结果只在独立的只读弹窗中显示，不会填入替换密码字段；关闭弹窗、窗口失焦或打开满 30 秒后清除显示内容。未保存或无法解密的凭据不能查看，SSH 私钥正文与仓库解锁密码不在此入口的查看范围内。
+
 系统 VPN、SSH Agent 和硬件密钥仍依赖目标机器；未保存的密码需要在目标机器补充。仓库同步不保证网络可达。原有 SSH 主机指纹校验不变，首次信任仍需确认，指纹改变仍被拒绝。MySQL 固定数据库、Redis 范围及操作审批继续生效。
 
 云配置不增加 MCP 工具，不向 Agent 返回凭据。桌面 IPC `v2:cloud-config` 仅允许受信任 Renderer 主框架调用；动作包括 `status/backups/bind/create/unbind/catalog/prepare/confirm/prepareRestore/check/visibility/preferences/sync/renameRepository/projectHistory/prepareProjectOperation/confirmProjectOperation`；`backups` 接受非负整数 `offset` 和 1–50 的 `limit`，仅返回本机备份摘要、当前页跳过数量及下一页位置；普通 `status` 不读取或返回备份。`sync` 按仓库和单项目执行上传或更新，只有下载允许省略项目以更新整库。管理确认和同步确认隔离，不能互换令牌或追加待写入参数。目录、检测状态及确认摘要不包含凭据值。Renderer 的 `connect-src 'none'` 保持不变，云服务请求由主进程发起并拒绝重定向。

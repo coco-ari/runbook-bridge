@@ -752,12 +752,41 @@ export function registerV2Ipc(ipcMain, services) {
       return {imported:true,preserved:true,...(auditWarning ? {auditWarning:true} : {})};
     })
   ));
-  handle('plugin-credential-reveal', async ({ projectId, environmentId, pluginInstanceId, field }) => {
+  handleWithEvent('plugin-credential-reveal', async (event, payload) => {
+    const assertTrustedViewer = () => {
+      const sender = event?.sender;
+      if (!sender || sender.isDestroyed?.() || !sender.mainFrame || event.senderFrame !== sender.mainFrame || services.isWorkspaceRenderer?.(sender) !== true) {
+        throw new AppError('ACCESS_DENIED','已保存凭据只能由当前桌面主窗口查看。');
+      }
+    };
+    assertTrustedViewer();
+    const allowedKeys = new Set(['projectId','environmentId','pluginInstanceId','field']);
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+      || Object.keys(payload).some(key => !allowedKeys.has(key))
+      || [...allowedKeys].some(key => typeof payload[key] !== 'string' || !payload[key].trim())) {
+      throw new AppError('INVALID_ARGUMENT','凭据查看请求参数无效。');
+    }
+    const { projectId, environmentId, pluginInstanceId, field } = payload;
+    assertProjectAvailable(projectId);
+    configTransactionJournal?.assertPluginAvailable(projectId,environmentId,pluginInstanceId);
     const plugin = await store.getPlugin(projectId, environmentId, pluginInstanceId);
     const primaryKey = plugin.pluginType === 'server' && plugin.auth?.type === 'privateKey' ? 'privateKeyPassphrase' : 'password';
-    const allowed = new Set(plugin.pluginType === 'server' ? [primaryKey, 'proxyPassword'] : [primaryKey]);
+    const allowed = new Set(plugin.pluginType === 'server'
+      ? [...(plugin.auth?.type === 'agent' ? [] : [primaryKey]),'proxyPassword']
+      : ['mysql','redis'].includes(plugin.pluginType) ? [primaryKey] : []);
     if (!allowed.has(field)) throw new AppError('INVALID_ARGUMENT', '该插件不支持显示此凭据。');
-    const secrets = await credentialVault.load(plugin) ?? {};
+    let secrets;
+    try {
+      secrets = await credentialVault.load(plugin) ?? {};
+    } catch (error) {
+      // 只保留已知凭据错误代码，避免解密器或存储异常把秘密带入错误结果。
+      const code = new Set(['CREDENTIAL_BINDING_MISMATCH','CREDENTIAL_ENCRYPTION_UNAVAILABLE','CREDENTIAL_DECRYPT_FAILED','CREDENTIAL_STORE_INVALID']).has(error?.code)
+        ? error.code : 'CREDENTIAL_REVEAL_FAILED';
+      throw new AppError(code,'无法查看已保存凭据，请检查本机安全存储。');
+    }
+    assertTrustedViewer();
+    assertProjectAvailable(projectId);
+    configTransactionJournal?.assertPluginAvailable(projectId,environmentId,pluginInstanceId);
     if (!secrets[field]) throw new AppError('CREDENTIAL_NOT_FOUND', '该密码尚未保存。');
     return { value: secrets[field] };
   });

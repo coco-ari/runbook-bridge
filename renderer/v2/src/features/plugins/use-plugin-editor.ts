@@ -913,7 +913,7 @@ export function usePluginEditor({
 }
 
 export const PLUGIN_EDITOR_SECURITY_CONTRACT = Object.freeze({
-  revealsStoredCredentials: false,
+  revealsStoredCredentials: "explicit-desktop-view-only",
   sendsOnlyExplicitNonEmptySecrets: true,
   defaultAfterCommit: "stay-disconnected",
   automaticallyConnects: false,

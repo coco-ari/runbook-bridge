@@ -546,6 +546,15 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
       assert.equal(plugin.displayName, `Edited ${pluginType}`);
       const status = await success('credentialStatus', {...scope,pluginInstanceId:plugin.pluginInstanceId});
       assert.equal(status.saved, true);
+      // 在 Renderer 内比较合成密码，只返回布尔证据，避免明文进入测试诊断。
+      const credentialView = await cdp.evaluate(`(async () => {
+        const scope = ${JSON.stringify({...scope,pluginInstanceId:plugin.pluginInstanceId})};
+        const revealed = await window.aiOps.v2.revealCredential({...scope,field:'password'});
+        const forbidden = await window.aiOps.v2.revealCredential({...scope,field:'privateKeyPem'});
+        const forged = await window.aiOps.v2.revealCredential({...scope,field:'password',extra:true});
+        return {matches:revealed.ok && revealed.data.value === ${JSON.stringify(fixture.replacement)},forbidden:forbidden.error?.code,forged:forged.error?.code};
+      })()`);
+      assert.deepEqual(credentialView,{matches:true,forbidden:'INVALID_ARGUMENT',forged:'INVALID_ARGUMENT'});
       const deleted = await success('deletePlugin', {...scope,pluginInstanceId:plugin.pluginInstanceId});
       assert.equal(deleted.credentialsPreserved, true);
       assert.equal((await success('listPlugins', scope)).length, 0);
@@ -561,7 +570,7 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
       assert.equal(emptied.phase, 'disconnected', 'deleting the final plugin clears aggregate connection state');
       assert.equal(emptied.desiredConnected, false, 'an empty environment retains no reconnect intent');
     }
-    // Inspect bytes, never output operational text, and do not call revealCredential.
+    // 只检查落盘字节，不输出运行文本或任何合成凭据。
     let encryptedVaultFiles = 0;
     const visit = async (directory) => {
       for (const entry of await fs.readdir(directory, {withFileTypes:true})) {

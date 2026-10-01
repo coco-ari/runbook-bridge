@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { registerV2Ipc } from '../src/ipc-v2.mjs';
 import { AppError } from '../src/errors.mjs';
 import { ServerPluginRuntime } from '../src/server-plugin-runtime.mjs';
+import { randomBytes } from 'node:crypto';
 
 function createHarness() {
   const handlers = new Map();
@@ -105,4 +106,95 @@ test('server form diagnostics use the in-memory configuration without looking up
   assert.equal(storeReads,0);
   await runtime.disconnect(plugin,'diagnostic-complete');
   assert.equal(runtime.adapter.overrides.size,0);
+});
+
+function createRevealHarness({pluginType = 'mysql',authType = 'password',load} = {}) {
+  const handlers = new Map();
+  const plugin = {projectId:'p1',environmentId:'e1',pluginInstanceId:'plugin-1',pluginType,auth:{type:authType}};
+  const sender = {id:1,mainFrame:{},isDestroyed:() => false};
+  const event = {sender,senderFrame:sender.mainFrame};
+  let loads = 0;
+  registerV2Ipc({handle:(name,handler) => handlers.set(name,handler),on:() => undefined},{
+    workspaceStore:{getPlugin:async (projectId,environmentId,pluginInstanceId) => {
+      if (projectId !== plugin.projectId || environmentId !== plugin.environmentId || pluginInstanceId !== plugin.pluginInstanceId) {
+        throw new AppError('PLUGIN_NOT_FOUND','插件不存在。');
+      }
+      return plugin;
+    }},
+    connectionManager:{on:() => undefined},confirmationManager:{on:() => undefined},contextManager:{},pluginManager:{},
+    credentialVault:{load:async (record) => {loads += 1; assert.equal(record,plugin); return load?.();}},
+    isWorkspaceRenderer:(candidate) => candidate === sender,
+  });
+  return {
+    event,sender,getLoads:() => loads,
+    invoke:(input = {},caller = event) => handlers.get('v2:plugin-credential-reveal')(caller,{
+      projectId:'p1',environmentId:'e1',pluginInstanceId:'plugin-1',field:'password',...input,
+    }),
+  };
+}
+
+test('desktop credential viewing supports only saved password fields for the exact plugin', async () => {
+  const value = randomBytes(24).toString('hex');
+  for (const [pluginType,authType,field] of [
+    ['mysql','password','password'],['redis','password','password'],
+    ['server','password','password'],['server','privateKey','privateKeyPassphrase'],
+    ['server','agent','proxyPassword'],
+  ]) {
+    const harness = createRevealHarness({pluginType,authType,load:() => ({[field]:value})});
+    const result = await harness.invoke({field});
+    assert.equal(result.ok,true);
+    assert.equal(result.data.value === value,true,'仅在受信任桌面请求中返回指定字段');
+    assert.deepEqual(Object.keys(result.data),['value']);
+    assert.equal(harness.getLoads(),1);
+  }
+});
+
+test('desktop credential viewing denies untrusted senders and subframes before loading secrets', async () => {
+  const harness = createRevealHarness();
+  for (const event of [{},{sender:harness.sender,senderFrame:{}},{sender:{...harness.sender},senderFrame:harness.sender.mainFrame}]) {
+    const result = await harness.invoke({},event);
+    assert.equal(result.ok,false);
+    assert.equal(result.error.code,'ACCESS_DENIED');
+  }
+  assert.equal(harness.getLoads(),0);
+});
+
+test('desktop credential viewing rejects extra parameters, wrong scopes and non-password material', async () => {
+  const harness = createRevealHarness();
+  for (const input of [{field:'privateKeyPem'},{field:'proxyPassword'},{field:'clientKeyPem'},{extra:true},{projectId:''}]) {
+    const result = await harness.invoke(input);
+    assert.equal(result.error.code,'INVALID_ARGUMENT');
+  }
+  for (const input of [{projectId:'p2'},{environmentId:'e2'},{pluginInstanceId:'plugin-2'}]) {
+    assert.equal((await harness.invoke(input)).error.code,'PLUGIN_NOT_FOUND');
+  }
+  assert.equal(harness.getLoads(),0);
+  for (const [pluginType,authType,field] of [['server','agent','password'],['server','privateKey','password'],['unknown','password','password']]) {
+    const other = createRevealHarness({pluginType,authType});
+    assert.equal((await other.invoke({field})).error.code,'INVALID_ARGUMENT');
+    assert.equal(other.getLoads(),0);
+  }
+});
+
+test('desktop credential viewing fails safely for missing or unreadable credentials', async () => {
+  const value = randomBytes(24).toString('hex');
+  assert.equal((await createRevealHarness().invoke()).error.code,'CREDENTIAL_NOT_FOUND');
+  for (const code of ['CREDENTIAL_BINDING_MISMATCH','CREDENTIAL_DECRYPT_FAILED','UNEXPECTED']) {
+    const harness = createRevealHarness({load:() => {throw new AppError(code,value,{value});}});
+    const result = await harness.invoke();
+    assert.equal(result.error.code,code === 'UNEXPECTED' ? 'CREDENTIAL_REVEAL_FAILED' : code);
+    assert.equal(JSON.stringify(result).includes(value),false,'错误结果不得包含凭据或原始异常详情');
+  }
+});
+
+test('desktop credential viewing discards decrypted results after the trusted frame changes', async () => {
+  let finish;
+  const harness = createRevealHarness({load:() => new Promise(resolve => {finish = resolve;})});
+  const pending = harness.invoke();
+  while (!finish) await new Promise(resolve => setImmediate(resolve));
+  harness.sender.mainFrame = {};
+  finish({password:randomBytes(24).toString('hex')});
+  const result = await pending;
+  assert.equal(result.error.code,'ACCESS_DENIED');
+  assert.equal(result.data,undefined);
 });

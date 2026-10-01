@@ -16,6 +16,7 @@ const PLUGIN_SOURCES = [
   'renderer/v2/src/features/plugins/PluginMetadataDialog.tsx',
   'renderer/v2/src/features/plugins/PluginDeleteDialog.tsx',
   'renderer/v2/src/features/plugins/CredentialMigrationNotice.tsx',
+  'renderer/v2/src/features/plugins/StoredCredentialViewer.tsx',
 ];
 
 test('terminal plugin validation cannot be replaced by late progress',async () => {
@@ -242,7 +243,7 @@ test('React plugin features preserve scope, credential, and edit-session boundar
   assert.match(editor,/PluginEditorConfirmations/u);
   assert.match(editor,/type="password"/u);
   assert.match(editor,/autoComplete="new-password"/u);
-  assert.match(editor,/已保存值不会显示/u);
+  assert.match(editor,/已保存值不会自动填入，可主动查看/u);
   assert.match(editor,/留空表示保持不变/u);
   assert.match(editor,/保存但不连接/u);
   assert.match(editor,/添加但不连接/u);
@@ -326,7 +327,7 @@ test('React plugin features preserve scope, credential, and edit-session boundar
   assert.doesNotMatch(all,/localStorage|sessionStorage|indexedDB/u);
   assert.doesNotMatch(all,/console\./u);
   assert.doesNotMatch(all,/dangerouslySetInnerHTML/u);
-  assert.doesNotMatch(all,/revealCredential/u);
+  assert.doesNotMatch(controller,/revealCredential/u,'查看凭据不进入编辑事务');
   assert.doesNotMatch(all,/connectPlugin|disconnectPlugin/u);
   assert.doesNotMatch(all,/ipcRenderer|contextBridge/u);
   assert.doesNotMatch(all,/https?:\/\//u);
