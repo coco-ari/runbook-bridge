@@ -148,7 +148,7 @@ export function ProjectOverview({
                     <ItemContent>
                       <ItemTitle className="flex w-full min-w-0 gap-2"><Button size="xs" variant="link" className="h-auto min-w-0 truncate p-0" onClick={() => onSelectEnvironment?.(environment.environmentId)}>{environment.name}</Button><EnvironmentTypeBadge type={environment.environmentType} /></ItemTitle>
                       <ItemDescription className="font-mono">
-                        {environment.readyPluginCount}/{environment.pluginCount} 个插件就绪
+                        配置完成 {environment.readyPluginCount}/{environment.pluginCount}
                       </ItemDescription>
                     </ItemContent>
                     <ItemActions className="ml-auto">
@@ -162,7 +162,7 @@ export function ProjectOverview({
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="h-8 text-xs">环境</TableHead>
-                      <TableHead className="h-8 text-right text-xs">插件</TableHead>
+                      <TableHead className="h-8 text-right text-xs">配置完成</TableHead>
                       <TableHead className="h-8 text-right text-xs">状态</TableHead>
                     </TableRow>
                   </TableHeader>

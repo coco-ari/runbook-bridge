@@ -47,6 +47,7 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   await selectPlugin(win,PRIMARY_ID);
   await click(win,'[data-testid=mysql-table-item][data-table-name=orders]');
   await enter();
+  await require('./database-grid-keyboard-ui.cjs')({win,prefix:'mysql-preview',editable:true,waitFor});
   assert.equal(await current(cell(1,'id')),'9007199254740993');
   assert.equal(await current('[data-testid=mysql-row-toolbar]'),'','操作栏仅显示图标');
   const copyHintPoint=await point('[data-testid=mysql-copy-row]');
@@ -169,6 +170,9 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   fixture.network.delays.commit=6200;fixture.network.loseCommitReply=true;
   await click(win,testId('mysql-edit-save'));
   await waitFor(win,'document.querySelector("[data-testid=mysql-edit-save] [data-operation-spinner]")','保存中显示原位转圈');
+  const selectedBeforeLocked=await evaluate('document.querySelectorAll("[data-testid=mysql-data-editor] tr[data-selected]").length');
+  await evaluate('(()=>{const cell=document.querySelector("[data-testid=mysql-data-editor] [data-edit-column]");cell.focus({preventScroll:true});cell.dispatchEvent(new KeyboardEvent("keydown",{key:" ",bubbles:true,cancelable:true}))})()');
+  assert.equal(await evaluate('document.querySelectorAll("[data-testid=mysql-data-editor] tr[data-selected]").length'),selectedBeforeLocked,'保存锁定时 Space 不改变行勾选');
   sameGeometry(await geometry(),beforeWaiting,'等待提示不能改变表格位置');
   await evaluate('document.querySelector("[data-testid=mysql-edit-save]").click()');
   await waitFor(win,'document.querySelector("[data-testid=mysql-edit-message]")?.textContent.includes("响应较慢")','长等待显示耗时');

@@ -80,6 +80,23 @@ let reviewReadDelay = 0;
 const cancelledReviews = [];
 const uploadRevisions = [];
 const uploadImports = [];
+let uploadClipboardFixture = null;
+let uploadClipboardReads = 0;
+// 仅上传输入专项可临时提供本套临时文件；真实读取器与其他剪贴板入口保持独立。
+const fileClipboardControl = {
+  reads: () => uploadClipboardReads,
+  activateFixture: localPaths => {
+    assert.equal(uploadClipboardFixture, null, '文件剪贴板夹具不能重叠');
+    assert.deepEqual(localPaths, ['发布 包.jar', '说明.txt'].map(name => path.join(temporaryRoot, name)), '夹具只能使用固定临时文件');
+    assert.ok(localPaths.every(file => fs.statSync(file).isFile()), '夹具仅接收已创建的普通文件');
+    const fixture = { localPaths:[...localPaths], empty:false };
+    uploadClipboardFixture = fixture;
+    return {
+      setEmpty: () => { assert.equal(uploadClipboardFixture, fixture); fixture.empty = true; },
+      restore: () => { assert.equal(uploadClipboardFixture, fixture); uploadClipboardFixture = null; },
+    };
+  },
+};
 let preparationRuns = 0;
 const makePreparation = (target, names, failure = false) => {
   preparationRuns += 1;
@@ -107,6 +124,16 @@ function reviewResult(item) {
 let savedClipboard;
 let clipboardDelay = 0;
 let clipboardReads = 0;
+const clipboardCopies = [];
+let clipboardMode = 'native';
+let fixtureClipboardText = '';
+let reportedClipboardMode = null;
+// 夹具只接管本套终端 IPC，不替换 Electron 的全局剪贴板或文件剪贴板入口。
+const terminalClipboard = {
+  readText: () => clipboardMode === 'fixture' ? fixtureClipboardText : clipboard.readText(),
+  writeText: text => { if (clipboardMode === 'fixture') fixtureClipboardText = text; else clipboard.writeText(text); },
+};
+let reportNativePasteFailure = null;
 let completed = false;
 let workspaceFiles;
 let liveDirectoryProbe;
@@ -302,9 +329,9 @@ function register() {
   handle('server-terminal-clipboard', async (input) => {
     scoped(input);
     assert.ok(terminalSessions.has(input.sessionId));
-    if (input.action === 'copy') { clipboard.writeText(input.text); return {}; }
+    if (input.action === 'copy') { clipboardCopies.push(input); terminalClipboard.writeText(input.text); return {}; }
     clipboardReads += 1;
-    const text = clipboard.readText();
+    const text = terminalClipboard.readText();
     if (clipboardDelay) await wait(clipboardDelay);
     if (Buffer.byteLength(text) > 65536) throw Object.assign(new Error('粘贴内容超过 64 KB，请分批操作。'), { code: 'CLIPBOARD_TOO_LARGE' });
     return { text };
@@ -386,8 +413,15 @@ function register() {
   handle('server-workspace-paste-upload', async input => {
     scoped(input);
     assert.deepEqual(Object.keys(input).sort(), [...Object.keys(scope),'path'].sort(), '原生粘贴接口不接受 Renderer 提供本地路径');
-    const { readWindowsClipboardFiles } = await import('../src/desktop-file-clipboard.mjs');
-    const localPaths = await readWindowsClipboardFiles();
+    uploadClipboardReads += 1;
+    let localPaths;
+    if (uploadClipboardFixture) {
+      if (uploadClipboardFixture.empty) throw Object.assign(new Error('剪贴板中没有本地文件，请先在资源管理器中复制文件，或拖入文件上传。'), {code:'UPLOAD_SOURCE_UNAVAILABLE'});
+      localPaths = [...uploadClipboardFixture.localPaths];
+    } else {
+      const { readWindowsClipboardFiles } = await import('../src/desktop-file-clipboard.mjs');
+      localPaths = await readWindowsClipboardFiles();
+    }
     uploadImports.push({...input,localPaths,source:'clipboard'});
     makePreparation(input.path, localPaths.map(file => path.basename(file)));
     uploadPreparation.files = uploadPreparation.files.map((file,index) => ({...file,localPath:localPaths[index]}));
@@ -395,6 +429,7 @@ function register() {
   });
   handle('server-workspace-import-upload', input => {
     scoped(input);
+    assert.deepEqual(Object.keys(input).sort(), [...Object.keys(scope),'path','localPaths'].sort(), '文件导入仅接受精确作用域、目录和 preload 解析路径');
     uploadImports.push(input);
     makePreparation(input.path, input.localPaths.map(file => path.basename(file)));
     uploadPreparation.files = uploadPreparation.files.map((file,index) => ({...file, localPath:input.localPaths[index]}));
@@ -476,6 +511,7 @@ async function until(source, label) {
     const diagnostic = await evaluate("({width:innerWidth,theme:document.documentElement.className,workspaces:[...document.querySelectorAll('[data-testid=server-workspace]')].map(item=>({hidden:item.hidden,visible:Boolean(item.getClientRects().length)})),panels:[...document.querySelectorAll('.server-directory-bookmarks')].map(item=>({state:item.getAttribute('data-state'),visible:Boolean(item.getClientRects().length)})),triggers:[...document.querySelectorAll('button[aria-label=常用目录]')].map(item=>({state:item.getAttribute('data-state'),expanded:item.getAttribute('aria-expanded')})),focus:document.activeElement?.className})");
     process.stderr.write('收藏布局诊断：' + JSON.stringify(diagnostic) + '\n');
   }
+  if (reportNativePasteFailure && ['剪贴板多行预览','真实快捷键读取剪贴板'].includes(label)) await reportNativePasteFailure();
   throw Error('等待超时：' + label);
 }
 async function click(selector) { assert.ok(await evaluate(`(() => { const element = [...document.querySelectorAll(${JSON.stringify(selector)})].find(item => item.getClientRects().length); if (!element || element.disabled) return false; element.click(); return true })()`), selector); await wait(70); }
@@ -500,14 +536,64 @@ async function reconnectTerminal() { await click('.server-terminal-tab-panel:not
 async function key(key, keyCode, ctrlKey = false) { await evaluate(`document.querySelector('.server-workspace:not([hidden]) .server-terminal-tab-panel:not([hidden]) .xterm-helper-textarea').dispatchEvent(new KeyboardEvent('keydown', { key:${JSON.stringify(key)}, code:${JSON.stringify(key === 'Enter' ? 'Enter' : 'Key' + key.toUpperCase())}, keyCode:${keyCode}, which:${keyCode}, ctrlKey:${ctrlKey}, bubbles:true, cancelable:true }))`); await wait(80); }
 async function paste(text) { await evaluate(`(() => { const data = new DataTransfer(); data.setData('text/plain', ${JSON.stringify(text)}); document.querySelector('.server-workspace:not([hidden]) .server-terminal-tab-panel:not([hidden]) .xterm-helper-textarea').dispatchEvent(new ClipboardEvent('paste', { clipboardData:data, bubbles:true, cancelable:true })) })()`); await wait(80); }
 async function nativePaste(text, shortcut = false) {
-  clipboard.writeText(text);
-  await evaluate("document.querySelector('.server-terminal-tab-panel:not([hidden]) .xterm-helper-textarea').focus()");
-  if (shortcut) {
-    const modifiers = process.platform === 'darwin' ? ['meta'] : ['control', 'shift'];
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers });
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers });
-  } else win.webContents.paste();
-  await wait(100);
+  if (clipboardMode === 'native') {
+    const deadline = Date.now()+1000;
+    let matches = false;
+    try {
+      clipboard.writeText(text);
+      matches = clipboard.readText()===text;
+      while (!matches && Date.now()<deadline) { await wait(25); matches = clipboard.readText()===text; }
+    } catch { /* 系统能力探测失败只决定夹具模式，不记录宿主内容或错误正文。 */ }
+    if (!matches) { clipboardMode = 'fixture'; fixtureClipboardText = text; }
+  } else terminalClipboard.writeText(text);
+  if (reportedClipboardMode !== clipboardMode) {
+    reportedClipboardMode = clipboardMode;
+    process.stdout.write(JSON.stringify({clipboardMode,osClipboardRoundTrip:clipboardMode==='native',osClipboardIntegration:clipboardMode==='fixture'?'unverified':'pending'})+'\n');
+  }
+  const target = '.server-workspace:not([hidden]) .server-terminal-tab-panel:not([hidden]) .xterm-helper-textarea';
+  const eventType = shortcut ? 'keydown' : 'paste';
+  let eventState = {received:false,trusted:false,defaultPrevented:false,targetMatches:false};
+  reportNativePasteFailure = async () => {
+    const focus = await evaluate("({documentFocused:document.hasFocus(),activeTag:document.activeElement?.tagName,terminalId:document.activeElement?.closest('.server-terminal-tab-panel')?.dataset.terminalId??null})");
+    process.stderr.write('终端粘贴诊断：' + JSON.stringify({...focus,hostFocused:win.webContents.isFocused(),clipboardMode,clipboardMatches:terminalClipboard.readText()===text,event:eventState}) + '\n');
+  };
+  try {
+    assert.ok(terminalClipboard.readText()===text,'当前剪贴板适配器与本次粘贴夹具一致');
+    // 隐藏窗口也须先聚焦宿主，再聚焦终端输入，才能接收系统粘贴事件。
+    win.webContents.focus();
+    await evaluate(`(() => {
+      const target=document.querySelector(${JSON.stringify(target)});
+      target.focus();
+      window.__nativeTerminalPasteEvent=null;
+      window.__nativeTerminalPasteTarget=target;
+      window.__nativeTerminalPasteListener=event=>{window.__nativeTerminalPasteEvent=event;};
+      document.addEventListener(${JSON.stringify(eventType)},window.__nativeTerminalPasteListener,{capture:true,once:true});
+    })()`);
+    assert.ok(await evaluate(`document.activeElement===document.querySelector(${JSON.stringify(target)})`),'原生粘贴目标必须是当前终端输入');
+    assert.ok(terminalClipboard.readText()===text,'发送粘贴前适配器内容仍与夹具一致');
+    if (shortcut) {
+      const modifiers = process.platform === 'darwin' ? ['meta'] : ['control', 'shift'];
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers });
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers });
+    } else if (clipboardMode === 'native') win.webContents.paste();
+    else await paste(text);
+    await until('Boolean(window.__nativeTerminalPasteEvent)','剪贴板粘贴事件到达终端');
+    eventState = await evaluate("({received:Boolean(window.__nativeTerminalPasteEvent),trusted:window.__nativeTerminalPasteEvent.isTrusted,defaultPrevented:window.__nativeTerminalPasteEvent.defaultPrevented,targetMatches:window.__nativeTerminalPasteEvent.target===window.__nativeTerminalPasteTarget})");
+    assert.equal(eventState.targetMatches,true,'原生粘贴事件进入当前终端');
+    assert.equal(eventState.trusted,shortcut || clipboardMode === 'native','快捷键保留原生事件，标准粘贴按声明的系统或夹具模式验证');
+    assert.equal(eventState.defaultPrevented,true,'终端原生粘贴由受控处理器接管');
+    await wait(100);
+  } catch (error) {
+    await reportNativePasteFailure();
+    throw error;
+  } finally {
+    await evaluate(`(() => {
+      if(window.__nativeTerminalPasteListener) document.removeEventListener(${JSON.stringify(eventType)},window.__nativeTerminalPasteListener,true);
+      delete window.__nativeTerminalPasteListener;
+      delete window.__nativeTerminalPasteEvent;
+      delete window.__nativeTerminalPasteTarget;
+    })()`);
+  }
 }
 async function setViewport(width, height) {
   if (win.isVisible()) { app.focus({steal:true}); win.focus(); win.webContents.focus(); }
@@ -619,13 +705,34 @@ async function exerciseUploadReview() {
   assert.ok(await evaluate(buttonDisabled), '检查期间禁止上传');
   assert.ok(await evaluate("document.querySelector('[data-testid=upload-review-progress]')?.textContent.includes('校验文件')"), '检查进度可见');
   await snapshot('upload-review-checking.png');
-  for (const [label, expected] of [
-    ['复制 release.tar 的本地路径', uploadPreparation.files[0].localPath],
-    ['复制 release.tar 的目标目录', '/srv'],
-  ]) {
-    clipboard.writeText('fixture-before-path-copy');
-    await click('[aria-label="' + label + '"]');
-    assert.equal(clipboard.readText(), expected, '复制完整路径到系统剪贴板');
+  const fixturePathCopy = clipboardMode === 'fixture';
+  if (fixturePathCopy) await evaluate(`(() => {
+    window.__uploadPathClipboardDescriptor=Object.getOwnPropertyDescriptor(navigator,'clipboard');
+    window.__uploadPathClipboardWrites=[];
+    Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.__uploadPathClipboardWrites.push(text);}}});
+  })()`);
+  try {
+    for (const [label, expected] of [
+      ['复制 release.tar 的本地路径', uploadPreparation.files[0].localPath],
+      ['复制 release.tar 的目标目录', '/srv'],
+    ]) {
+      const beforeCopy = fixturePathCopy ? await evaluate('window.__uploadPathClipboardWrites.length') : 0;
+      if (!fixturePathCopy) clipboard.writeText('fixture-before-path-copy');
+      await click('[aria-label="' + label + '"]');
+      if (fixturePathCopy) {
+        await until(`window.__uploadPathClipboardWrites.length===${beforeCopy+1}`,'路径复制仅调用一次局部剪贴板适配器');
+        assert.ok(await evaluate(`window.__uploadPathClipboardWrites[${beforeCopy}]===${JSON.stringify(expected)}`),'路径复制保留准确的完整夹具路径');
+      } else assert.ok(clipboard.readText()===expected,'复制完整路径到系统剪贴板');
+    }
+    if (fixturePathCopy) assert.equal(await evaluate('window.__uploadPathClipboardWrites.length'),2,'两个路径动作分别仅复制一次');
+  } finally {
+    // 仅在两个路径复制动作中安装夹具，随后恢复导航器原有能力描述。
+    if (fixturePathCopy) await evaluate(`(() => {
+      if(window.__uploadPathClipboardDescriptor) Object.defineProperty(navigator,'clipboard',window.__uploadPathClipboardDescriptor);
+      else delete navigator.clipboard;
+      delete window.__uploadPathClipboardDescriptor;
+      delete window.__uploadPathClipboardWrites;
+    })()`);
   }
   reviewHeld=false;
   await until("!document.querySelector('[data-testid=upload-review-progress]') && !document.querySelector('[role=dialog] [role=checkbox]').disabled", '检查完成后允许确认覆盖');
@@ -982,7 +1089,7 @@ async function run() {
   }
   if (process.env.RUNBOOK_BRIDGE_UPLOAD_INPUT_SMOKE === '1') {
     releaseRootMetadata();
-    await require('./workspace-upload-input-ui.cjs')({evaluate,click,clickText,until,wait,win,temporaryRoot,imports:uploadImports,writes,confirmCount:()=>uploadConfirmCalls,snapshot});
+    await require('./workspace-upload-input-ui.cjs')({evaluate,click,clickText,until,wait,win,temporaryRoot,scope,fileClipboardControl,imports:uploadImports,writes,uploadCount:()=>uploads.length,confirmCount:()=>uploadConfirmCalls,snapshot});
     await require('./workspace-file-actions-ui.cjs')({evaluate,click,clickText,until,wait,win,fileActionCalls,uploadRevisions,selectUploads:names=>{uploadSelection=names;},confirmCount:()=>uploadConfirmCalls,snapshot});
     completed = true;
     process.stdout.write(JSON.stringify({ok:true,uploadInputs:true,fileActions:true})+'\n');
@@ -1081,12 +1188,36 @@ async function run() {
   await click('[role="treeitem"][title^="/bin →"]');
   await until(`document.querySelector('[role="treeitem"][title="/bin/apt"]')`, '目录链接直接展开');
   const beforeLocate = directoryReads.length;
+  assert.equal(await evaluate("document.activeElement?.title.split(' →')[0]"), '/bin', '滚动前目录本身是活动键盘节点');
+  const locateTreeState = `(() => {
+    const tree=document.querySelector('.server-tree-scroll'), target=tree.querySelector('[role="treeitem"][title^="/bin →"]');
+    const viewportTop=tree.getBoundingClientRect().top+tree.clientTop, viewportBottom=viewportTop+tree.clientHeight;
+    const items=[...tree.querySelectorAll('[role="treeitem"]')], rowHeight=items[0].getBoundingClientRect().height;
+    const start=Math.max(0,Math.floor(tree.scrollTop/rowHeight)-8), end=Math.ceil((tree.scrollTop+tree.clientHeight)/rowHeight)+8;
+    const retained=items.filter(item=>Number(item.dataset.treeIndex)<start||Number(item.dataset.treeIndex)>=end);
+    const rect=target?.getBoundingClientRect();
+    return { scrollTop:tree.scrollTop, outside:!rect||rect.bottom<=viewportTop||rect.top>=viewportBottom,
+      fullyVisible:Boolean(rect&&rect.top>=viewportTop-1&&rect.bottom<=viewportBottom+1),
+      mounted:items.length, bound:Math.ceil(tree.clientHeight/rowHeight)+18,
+      tabStops:items.filter(item=>item.tabIndex===0).length,
+      retained:retained.map(item=>({path:item.title.split(' →')[0],active:item===document.activeElement,tabIndex:item.tabIndex})) };
+  })()`;
   await evaluate("(() => { const tree=document.querySelector('.server-tree-scroll'); tree.scrollTop=2000; tree.dispatchEvent(new Event('scroll')); })()");
   await wait(100);
-  assert.equal(await evaluate("document.querySelector('[role=treeitem][title^=" + JSON.stringify('/bin →') + " ]') !== null"), false, '定位前目录位于虚拟列表视口之外');
+  const beforeLocateViewport = await evaluate(locateTreeState);
+  assert.ok(beforeLocateViewport.outside, '定位前目录几何位置位于虚拟列表视口之外');
+  // 活动节点可额外挂载一行保留焦点，不能用 DOM 是否存在代替真实可见性。
+  assert.deepEqual(beforeLocateViewport.retained, [{path:'/bin',active:true,tabIndex:0}], '虚拟窗口之外仅保留当前活动目录');
+  assert.equal(beforeLocateViewport.tabStops, 1, '屏外活动目录仍是唯一树条目键盘入口');
+  assert.ok(beforeLocateViewport.mounted<=beforeLocateViewport.bound, '屏外焦点保留不扩大虚拟列表 DOM 上限');
   await click('[title="定位到 /bin"]');
   await until("document.querySelector('[role=treeitem][aria-selected=true]')?.textContent.includes('bin')", '面包屑定位并高亮目录本身');
-  await until("document.activeElement?.getAttribute('role') === 'treeitem'", '定位后目录获得键盘焦点');
+  await until("document.activeElement?.getAttribute('role') === 'treeitem' && document.activeElement?.title.split(' →')[0] === '/bin'", '定位后目标目录获得键盘焦点');
+  await until(`(${locateTreeState}).fullyVisible`, '定位后目标目录完整进入真实视口');
+  const afterLocateViewport = await evaluate(locateTreeState);
+  assert.ok(afterLocateViewport.scrollTop<beforeLocateViewport.scrollTop, '定位向上滚动到目标目录');
+  assert.equal(afterLocateViewport.tabStops, 1, '定位后保持唯一树条目键盘入口');
+  assert.ok(afterLocateViewport.mounted<=afterLocateViewport.bound, '定位后虚拟列表 DOM 仍保持有界');
   assert.ok(await evaluate("document.querySelector('[role=treeitem][title=" + JSON.stringify('/app') + " ]') !== null"), '定位保留父级中的同级目录');
   assert.ok(await evaluate("document.querySelector('[role=treeitem][title=" + JSON.stringify('/bin/tool.conf') + " ]') !== null"), '定位保留已展开的子目录');
   assert.equal(directoryReads.length, beforeLocate, '定位已缓存目录不重新请求');
@@ -1292,7 +1423,7 @@ async function run() {
   const pasted = 'cat <<EOF\r\n  第一行\r\n\r\n第二行\r\nEOF';
   const beforePaste = writes.length;
   await nativePaste(pasted);
-  await until(`document.querySelector('[role="dialog"]')?.textContent.includes('确认粘贴')`, '系统剪贴板多行预览');
+  await until(`document.querySelector('[role="dialog"]')?.textContent.includes('确认粘贴')`, '剪贴板多行预览');
   assert.equal(writes.length, beforePaste, '预览前不发送任何一行');
   assert.equal(await evaluate("getComputedStyle(document.querySelector('[role=dialog] pre')).fontSize"), '14px', '多行预览使用可读字号');
   await snapshot('terminal-paste-preview.png');
@@ -1325,12 +1456,16 @@ async function run() {
   await wait(70);
   win.webContents.sendInputEvent({type:'mouseUp', x:Math.round(box.x+box.w-5), y:Math.round(box.y+35), button:'left', clickCount:1});
   await wait(100);
+  const copiesBefore = clipboardCopies.length;
   await clickText('复制');
-  assert.ok(clipboard.readText().includes('\n'), '终端多行选中内容复制到系统剪贴板');
-  const copiedText = clipboard.readText();
+  assert.equal(clipboardCopies.length,copiesBefore+1,'复制选中内容仅调用一次限定范围的终端 IPC');
+  assert.ok(clipboardCopies.at(-1).text.includes('\n'),'终端实际选择覆盖多行内容');
+  const copiedText = clipboardCopies.at(-1).text;
+  assert.ok(terminalClipboard.readText()===copiedText,'剪贴板适配器保留终端复制的准确原文');
   terminalSessions.get(sessionId).chunks.push(Buffer.from('\x1b]52;c;dGVzdA==\x07'));
   await wait(200);
-  assert.equal(clipboard.readText(), copiedText, '远端 OSC 52 不能改写剪贴板');
+  assert.ok(terminalClipboard.readText()===copiedText, '远端 OSC 52 不能改写剪贴板');
+  assert.equal(clipboardCopies.length,copiesBefore+1,'远端 OSC 52 不触发额外复制 IPC');
   await snapshot('terminal-multiline-paste.png');
   const beforeLargePaste = writes.length;
   await paste('中'.repeat(30000));
@@ -1583,10 +1718,10 @@ async function run() {
   await require('./workspace-metrics-ui.cjs')({evaluate,click,clickText,until,wait,win,setViewport,snapshot,metricsState,writes,errors});
   await require('./workspace-file-interactions-ui.cjs')({evaluate,click,doubleClick,clickText,until,wait,win,previewReads,writes,opened,terminalSessions,errors});
   await require('./workspace-location-ui.cjs')({evaluate,click,until,wait,win,setViewport,snapshot,terminalSessions,directoryState,writes,previewReads,errors});
-  await require('./workspace-upload-input-ui.cjs')({evaluate,click,clickText,until,wait,win,temporaryRoot,imports:uploadImports,writes,confirmCount:()=>uploadConfirmCalls,snapshot});
+  await require('./workspace-upload-input-ui.cjs')({evaluate,click,clickText,until,wait,win,temporaryRoot,scope,fileClipboardControl,imports:uploadImports,writes,uploadCount:()=>uploads.length,confirmCount:()=>uploadConfirmCalls,snapshot});
   await require('./workspace-file-actions-ui.cjs')({evaluate,click,clickText,until,wait,win,fileActionCalls,uploadRevisions,selectUploads:names=>{uploadSelection=names;},confirmCount:()=>uploadConfirmCalls,snapshot});
   completed = true;
-  process.stdout.write(JSON.stringify({ ok: true, terminalSessions: opened.length, writes: writes.length, directoryReads: directoryReads.length, resizes: resizes.length, screenshotRoot: process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR ?? null }) + '\n');
+  process.stdout.write(JSON.stringify({ ok: true, clipboardMode, osClipboardIntegration:clipboardMode==='native'?'passed':'unverified', terminalSessions: opened.length, writes: writes.length, directoryReads: directoryReads.length, resizes: resizes.length, screenshotRoot: process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR ?? null }) + '\n');
 }
 
 async function testTerminalRecovery() {
@@ -1829,13 +1964,48 @@ async function testWorkspaceConveniences() {
     await evaluate("(() => { const input=document.querySelector("+JSON.stringify(selector)+"); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,"+JSON.stringify(value)+"); input.dispatchEvent(new Event('input',{bubbles:true})); })()");
   };
   const expectCount=async count=>until("document.querySelector("+JSON.stringify(searchCount)+")?.textContent.endsWith("+JSON.stringify(' / '+count)+")",'搜索匹配数量 '+count);
+  const searchFocusDiagnostics=async stage=>({stage,hostFocused:win.webContents.isFocused(),...await evaluate(`(() => {
+    const active=document.activeElement,input=document.querySelector(${JSON.stringify(searchInput)}),pane=document.querySelector(${JSON.stringify(panel)});
+    const label=active?.getAttribute('aria-label'),knownLabels=['搜索终端内容','搜索终端','关闭终端搜索','下一个匹配','上一个匹配','区分大小写'];
+    const key=window.__terminalSearchShortcutEvent,menuClick=window.__terminalSearchMenuClick,target=window.__terminalSearchMenuTarget;
+    const box=target?.getBoundingClientRect(),x=box?Math.round(box.left+box.width/2):0,y=box?Math.round(box.top+box.height/2):0;
+    return {documentFocused:document.hasFocus(),activeTag:active?.tagName??null,activeLabel:knownLabels.includes(label)?label:null,
+      activeWithinPanel:Boolean(pane?.contains(active)),activeIsTerminal:Boolean(active?.classList.contains('xterm-helper-textarea')),
+      searchPresent:Boolean(input),searchFocused:active===input,selectionStart:input?.selectionStart??null,selectionEnd:input?.selectionEnd??null,
+      fullSelection:Boolean(input&&input.selectionStart===0&&input.selectionEnd===input.value.length),
+      menuPresent:Boolean(document.querySelector('[data-slot=context-menu-content][role=menu]')),
+      menuItem:target?{fixedLabel:target.textContent.trim()==='查找内容',visible:Boolean(target.getClientRects().length),disabled:target.hasAttribute('data-disabled'),
+        left:box.left,top:box.top,width:box.width,height:box.height,hit:target.contains(document.elementFromPoint(x,y))}:null,
+      shortcut:key?{trusted:key.isTrusted,defaultPrevented:key.defaultPrevented,targetMatches:key.target===window.__terminalSearchShortcutTarget}:null,
+      menuClick:menuClick?{inputMode:'dom-menu-selection',trusted:menuClick.isTrusted,targetMatches:menuClick.target===target||target?.contains(menuClick.target)}:null};
+  })()`)});
   const openSearch=async (selector=panel+" .xterm-helper-textarea") => {
-    await evaluate("document.querySelector("+JSON.stringify(selector)+").focus()");
-    win.webContents.focus();
-    const modifiers=process.platform==='darwin'?['meta']:['control'];
-    win.webContents.sendInputEvent({type:'keyDown',keyCode:'F',modifiers});
-    win.webContents.sendInputEvent({type:'keyUp',keyCode:'F',modifiers});
-    await until("document.activeElement?.getAttribute('aria-label')==='搜索终端内容' && document.activeElement.selectionStart===0 && document.activeElement.selectionEnd===document.activeElement.value.length",'标准快捷键聚焦搜索并选中关键词');
+    try {
+      // 先聚焦宿主再聚焦控件，确认真实目标后才发键；不靠重复聚焦掩盖菜单交接问题。
+      win.webContents.focus();
+      await evaluate(`(() => {
+        const target=document.querySelector(${JSON.stringify(selector)});target.focus();
+        window.__terminalSearchShortcutEvent=null;window.__terminalSearchShortcutTarget=target;
+        window.__terminalSearchShortcutListener=event=>{if(event.key.toLowerCase()==='f')window.__terminalSearchShortcutEvent=event;};
+        document.addEventListener('keydown',window.__terminalSearchShortcutListener,true);
+      })()`);
+      await until(`document.hasFocus()&&document.activeElement===document.querySelector(${JSON.stringify(selector)})`,'查找快捷键发送目标获得焦点');
+      const modifiers=process.platform==='darwin'?['meta']:['control'];
+      win.webContents.sendInputEvent({type:'keyDown',keyCode:'F',modifiers});
+      win.webContents.sendInputEvent({type:'keyUp',keyCode:'F',modifiers});
+      await until('Boolean(window.__terminalSearchShortcutEvent)','真实查找快捷键进入当前终端');
+      const event=await evaluate("({trusted:window.__terminalSearchShortcutEvent.isTrusted,defaultPrevented:window.__terminalSearchShortcutEvent.defaultPrevented,targetMatches:window.__terminalSearchShortcutEvent.target===window.__terminalSearchShortcutTarget})");
+      assert.deepEqual(event,{trusted:true,defaultPrevented:true,targetMatches:true},'查找快捷键由当前终端受控处理器接管');
+      await until("document.activeElement?.getAttribute('aria-label')==='搜索终端内容' && document.activeElement.selectionStart===0 && document.activeElement.selectionEnd===document.activeElement.value.length",'标准快捷键聚焦搜索并选中关键词');
+    } catch(error) {
+      process.stderr.write('终端查找焦点诊断：'+JSON.stringify(await searchFocusDiagnostics('native-shortcut-failed'))+'\n');
+      throw error;
+    } finally {
+      await evaluate(`(() => {
+        if(window.__terminalSearchShortcutListener)document.removeEventListener('keydown',window.__terminalSearchShortcutListener,true);
+        delete window.__terminalSearchShortcutListener;delete window.__terminalSearchShortcutEvent;delete window.__terminalSearchShortcutTarget;
+      })()`);
+    }
   };
   const activeText=panel+" [role=status]";
   // 恢复用例可能关闭全部终端，搜索用例需独立准备可用会话。
@@ -1851,9 +2021,37 @@ async function testWorkspaceConveniences() {
   const sessionId=opened.at(-1);
   terminalSessions.get(sessionId).chunks.push(Buffer.from('\r\nsearch-example Alpha alpha\r\n中文查找 中文查找\r\n'+'wrapped'+('x'.repeat(160))+'end\r\n'));
   await until("document.querySelector("+JSON.stringify(panel+" .xterm-rows")+")?.textContent.includes('中文查找')",'搜索中文输出');
-  assert.equal(await evaluate("document.querySelector('[aria-label=搜索终端]')"),null,'工具栏不再显示搜索入口');
+  assert.ok(await evaluate("document.querySelector("+JSON.stringify(panel+" [aria-label='搜索终端']")+")?.getClientRects().length>0"),'终端查找有可见入口');
   const beforeSearchWrites=writes.length;
-  await openSearch();
+  await click(panel+" [aria-label='搜索终端']");
+  await until("document.activeElement?.getAttribute('aria-label')==='搜索终端内容'",'点击查找聚焦当前终端搜索');
+  await click(panel+" [aria-label='关闭终端搜索']");
+  const searchMenuPoint=await evaluate("(() => {const box=document.querySelector("+JSON.stringify(panel+" .server-terminal-container")+").getBoundingClientRect();return {x:Math.round(box.left+20),y:Math.round(box.top+20)};})()");
+  win.webContents.sendInputEvent({type:'mouseDown',button:'right',clickCount:1,...searchMenuPoint});
+  win.webContents.sendInputEvent({type:'mouseUp',button:'right',clickCount:1,...searchMenuPoint});
+  await until("[...document.querySelectorAll('[role=menuitem]')].some(item=>item.textContent.trim()==='查找内容')",'终端右键提供同一查找入口');
+  try {
+    // 菜单选择沿用既有 DOM 模型输入，焦点验收经过真实 Radix 关闭链；不宣称原生指针集成。
+    await evaluate(`(() => {
+      const target=[...document.querySelectorAll('[role=menuitem]')].find(item=>item.textContent.trim()==='查找内容');
+      window.__terminalSearchMenuClick=null;window.__terminalSearchMenuTarget=target;
+      target.addEventListener('click',event=>{window.__terminalSearchMenuClick=event;},{capture:true,once:true});
+      target.click();
+    })()`);
+    assert.ok(await evaluate('window.__terminalSearchMenuClick?.target===window.__terminalSearchMenuTarget'),'模型输入确实选择当前终端查找菜单');
+    await until("!document.querySelector('[data-slot=context-menu-content][role=menu]')",'查找菜单完成关闭');
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+    await until(`(() => {const input=document.querySelector(${JSON.stringify(searchInput)});return input&&document.activeElement===input&&input.selectionStart===0&&input.selectionEnd===input.value.length;})()`,'右键查找在菜单关闭后保留搜索焦点和完整选区');
+    const closedFocus=await searchFocusDiagnostics('context-menu-closed');
+    process.stdout.write('终端菜单查找焦点：'+JSON.stringify(closedFocus)+'\n');
+    assert.ok(closedFocus.searchFocused&&closedFocus.fullSelection,'右键查找在菜单关闭后保留搜索焦点和完整选区');
+    assert.equal(writes.length,beforeSearchWrites,'点击和右键查找都不发送 Shell 输入');
+  } catch(error) {
+    process.stderr.write('终端查找焦点诊断：'+JSON.stringify(await searchFocusDiagnostics('context-menu-failed'))+'\n');
+    throw error;
+  } finally {
+    await evaluate('delete window.__terminalSearchMenuClick;delete window.__terminalSearchMenuTarget');
+  }
   await setInput(searchInput,'Alpha');
   await expectCount(2);
   await openSearch(searchInput);

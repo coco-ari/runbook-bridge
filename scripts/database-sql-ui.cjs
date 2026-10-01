@@ -135,6 +135,8 @@ async function assertSqlExecutionUi({win,fill,click,waitFor,textContains,testId,
   const id=await currentId();
   const selectionScript='SELECT * FROM orders;\nSELECT * FROM orders WHERE 1 = 0';
   await fill(win,testId('mysql-sql-editor'),selectionScript);
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-testid=mysql-query-editor-panel] .mysql-editor-toolbar [role=group]')].map(e=>e.getAttribute('aria-label'))"),['SQL 执行','SQL 事务','SQL 工具'],'当前 SQL 标签的执行、事务、工具分组稳定可辨认');
+  assert.match(await evaluate("document.querySelector('[data-testid=mysql-query-commit]').getAttribute('aria-description')"),/自动提交.*没有待提交事务/u,'禁用提交说明当前事务原因');
   await evaluate(`document.querySelector('[data-testid=mysql-sql-editor]').setSelectionRange(${selectionScript.indexOf('\n')+1},${selectionScript.length})`);
   await evaluate("document.querySelector('[data-testid=mysql-query-run-menu]').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))");
   await click(win,testId('mysql-query-run-selection'));

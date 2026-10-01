@@ -120,7 +120,8 @@ test('business keyboard checks use real Chromium focus and native key input',asy
   assert.match(source,/must restore attempted background focus into its modal/u);
   assert.match(source,/must trap real/u);
   assert.match(source,/assert\.equal\(mutationCalls\.length,13/u);
-  assert.match(source,/clearing the last entry focuses the surviving refresh action/u);
+  assert.match(source,/清除确认关闭后焦点回到稳定的管理入口/u);
+  assert.match(source,/audit-management-trigger/u);
   assert.match(source,/sendInputEvent\(\{type:'keyDown',keyCode,modifiers\}\)/u);
   assert.match(source,/focus\.focusInCount,1/u);
   assert.match(source,/focus\.trustedFocusInCount,1/u);

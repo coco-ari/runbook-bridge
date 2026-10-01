@@ -73,6 +73,8 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-input: var(--input);
+  --color-control-border: var(--control-border);
+  --color-scrollbar-thumb: var(--scrollbar-thumb);
   --color-ring: var(--ring);
   --color-border: var(--border);
   --color-surface: var(--surface);
@@ -141,6 +143,8 @@
   --accent-foreground: #075a41;
   --destructive: oklch(0.54 0.2 25);
   --input: oklch(0.84 0.012 260);
+  --control-border: oklch(0.59 0.016 264);
+  --scrollbar-thumb: var(--control-border);
   --ring: var(--primary);
   --border: oklch(0.855 0.011 260);
   --surface: oklch(0.984 0.003 260);
@@ -148,13 +152,14 @@
   --surface-raised: oklch(0.921 0.011 260);
   --surface-hover: oklch(0.91 0.014 260);
   --surface-selected: #e0f0e8;
-  --text-faint: oklch(0.59 0.016 264);
-  --success: var(--primary);
-  --warning: oklch(0.58 0.135 76);
-  --danger: var(--destructive);
+  --text-faint: oklch(0.50 0.016 264);
+  /* 状态文字单独校准，保留主按钮与实心危险按钮的原有颜色。 */
+  --success: #075a41;
+  --warning: oklch(0.46 0.12 76);
+  --danger: oklch(0.47 0.18 25);
   --danger-solid: var(--destructive);
   --danger-foreground: oklch(0.985 0.004 260);
-  --info: oklch(0.53 0.145 240);
+  --info: oklch(0.45 0.13 240);
   --sidebar: oklch(0.978 0.005 260);
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
@@ -183,6 +188,8 @@
   --accent-foreground: var(--foreground);
   --destructive: #f16d75;
   --input: #34343e;
+  --control-border: #72727e;
+  --scrollbar-thumb: var(--control-border);
   --ring: var(--primary);
   --border: #282831;
   --surface: #111116;
@@ -191,7 +198,7 @@
   --surface-hover: #202027;
   --surface-selected: #17372b;
   --folder-color: #ebc65d;
-  --text-faint: #72727e;
+  --text-faint: #8a8a96;
   --success: var(--primary);
   --warning: #f0b84b;
   --danger: var(--destructive);
@@ -210,7 +217,7 @@
 
 /* 基础继承放入基础层，避免覆盖组件的字号、字重和语义边框。 */
 @layer base {
-  * { border-color: var(--border); scrollbar-width: thin; scrollbar-color: var(--input) transparent; }
+  * { border-color: var(--border); scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent; }
   html, body, #root { height: 100%; min-height: 100%; overflow: hidden; }
   body { margin: 0; min-width: 320px; background: var(--background); color: var(--foreground); font-family: var(--font-sans); font-size: var(--text-sm); line-height: var(--text-sm--line-height); font-variant-numeric: tabular-nums; text-rendering: optimizeLegibility; }
   button, input, textarea, select { font: inherit; }
@@ -257,6 +264,11 @@
 }
 
 @media (forced-colors: active) {
+  /* 系统强制填充会让滑块与轨道同色，轮廓保留开关位置的辨识。 */
+  [data-slot="switch-thumb"] {
+    border: 1px solid ButtonText;
+  }
+
   :focus-visible {
     outline: 2px solid Highlight !important;
     outline-offset: 2px;

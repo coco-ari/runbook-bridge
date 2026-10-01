@@ -48,6 +48,15 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { redactConfirmationText as safeText, shellConfirmationPresentation } from "@/features/confirmations/confirmation-presentation-model"
+import {
+  confirmationQueueFailed,
+  confirmationQueueForScope,
+  confirmationQueueInitial,
+  confirmationQueuePresentation,
+  confirmationQueueReading,
+  confirmationQueueReceived,
+} from "@/features/confirmations/confirmation-queue-read-model"
 import {
   applyConfirmationExecution,
   boundedConfirmationItems,
@@ -107,21 +116,6 @@ function asRecord(value: unknown): UnknownRecord {
   return value !== null && typeof value === "object"
     ? (value as UnknownRecord)
     : {}
-}
-
-function safeText(value: unknown, fallback = ""): string {
-  const text = typeof value === "string" || typeof value === "number"
-    ? String(value)
-    : fallback
-  return text
-    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^@\s/]+@/giu, "$1[已隐藏]@")
-    .replace(/(\b(?:Bearer|Basic)\s+)[A-Za-z0-9._~+/=\-]{8,}/giu, "$1[已隐藏]")
-    .replace(
-      /(\b(?:password|passwd|pwd|api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key|secret)\b["']?\s*[:=：]\s*)[^\s,;]+/giu,
-      "$1[已隐藏]",
-    )
-    .replace(/-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*/giu, "[私钥内容已隐藏]")
-    .slice(0, 4_000)
 }
 
 function normalizeExpiresAt(value: unknown): number {
@@ -226,10 +220,7 @@ function presentationRows(item: ConfirmationItem): readonly { label: string; val
   const value = item.presentation ?? {}
   const kind = safeText(value.kind)
   if (kind === "shell") return [
-    { label: "完整命令", value: safeText(value.command, item.summary), mono: true },
-    ...(value.workingDirectory
-      ? [{ label: "工作目录", value: safeText(value.workingDirectory), mono: true }]
-      : []),
+    { label: "工作目录", value: value.workingDirectory ? safeText(value.workingDirectory, "", Number.POSITIVE_INFINITY) : "使用服务器默认工作目录（未指定）", mono: Boolean(value.workingDirectory) },
   ]
   if (kind === "file-transfer") return [
     { label: "本地文件", value: safeText(value.source), mono: true },
@@ -308,11 +299,14 @@ export function ConfirmationsFeature({
   onLocateScope,
   onOpenAudit,
 }: ConfirmationsFeatureProps) {
+  const scopeKey = JSON.stringify([projectId, environmentId, scopeMode, pluginInstanceId])
   const [items, setItems] = useState<readonly ConfirmationItem[]>([])
   const [filter, setFilter] = useState<ConfirmationFilter>(
     scopeMode === "plugin" ? "plugin" : "environment",
   )
-  const [loading, setLoading] = useState(true)
+  const [queueRead, setQueueRead] = useState(() => confirmationQueueInitial(scopeKey))
+  const currentRead = confirmationQueueForScope(queueRead, scopeKey)
+  const loading = currentRead.loading
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set())
   const [acknowledged, setAcknowledged] = useState<ReadonlySet<string>>(new Set())
   const [feedback, setFeedback] = useState<ConfirmationFeedback | null>(null)
@@ -361,22 +355,25 @@ export function ConfirmationsFeature({
 
   const refresh = useCallback(async () => {
     const generation = ++loadGenerationRef.current
-    setLoading(true)
+    setQueueRead((current) => confirmationQueueReading(current, scopeKey))
     setError(null)
     try {
       const value = unwrap(
         await getAiOpsV2().listConfirmations() as unknown as IpcResult<unknown>,
       )
       if (generation !== loadGenerationRef.current) return
+      if (!Array.isArray(value)) throw new Error("确认队列响应无效")
       rememberItems(normalizeConfirmations(value).filter(matchesCurrentScope))
+      setQueueRead(confirmationQueueReceived(scopeKey))
     } catch (caught) {
-      if (generation === loadGenerationRef.current) setError(errorMessage(caught))
-    } finally {
-      if (generation === loadGenerationRef.current) setLoading(false)
+      if (generation === loadGenerationRef.current) {
+        setQueueRead((current) => confirmationQueueFailed(current, scopeKey, errorMessage(caught)))
+      }
     }
-  }, [matchesCurrentScope, rememberItems])
+  }, [matchesCurrentScope, rememberItems, scopeKey])
 
   useEffect(() => {
+    let active = true
     feedbackRef.current = null
     knownItemsRef.current = new Map()
     executionCacheRef.current = new Map()
@@ -384,13 +381,16 @@ export function ConfirmationsFeature({
     setAcknowledged(new Set())
     setFeedback(null)
     setFilter(scopeMode === "plugin" ? "plugin" : "environment")
+    setQueueRead(confirmationQueueInitial(scopeKey))
     void refresh()
     const timer = window.setInterval(() => setNow(Date.now()), 1_000)
     const api = getAiOpsV2()
     const unsubscribeConfirmations = api.onConfirmations((pending) => {
+      if (!active || !Array.isArray(pending)) return
       loadGenerationRef.current += 1
       rememberItems(normalizeConfirmations(pending).filter(matchesCurrentScope))
-      setLoading(false)
+      setQueueRead(confirmationQueueReceived(scopeKey))
+      setError(null)
     })
     const unsubscribeWorkspace = api.onWorkspaceChanged((change: WorkspaceChange) => {
       const event = normalizeConfirmationExecution(change)
@@ -413,23 +413,26 @@ export function ConfirmationsFeature({
       })
     })
     return () => {
+      active = false
       window.clearInterval(timer)
       unsubscribeConfirmations()
       unsubscribeWorkspace()
       loadGenerationRef.current += 1
     }
-  }, [matchesCurrentScope, refresh, rememberItems, scopeMode])
+  }, [matchesCurrentScope, refresh, rememberItems, scopeKey, scopeMode])
 
-  const pending = useMemo(() => items
+  const pending = useMemo(() => (currentRead.hasSnapshot ? items : [])
     .filter(matchesCurrentScope)
     .filter((item) => item.expiresAt > now)
     .sort((left, right) => {
       const order: Record<string, number> = { critical: 0, destructive: 1, service: 2, write: 3 }
       return (order[left.riskLevel] ?? 9) - (order[right.riskLevel] ?? 9)
         || new Date(left.createdAt ?? 0).getTime() - new Date(right.createdAt ?? 0).getTime()
-    }), [items, matchesCurrentScope, now])
-  const scopedItemCount = items.filter(matchesCurrentScope).length
+    }), [currentRead.hasSnapshot, items, matchesCurrentScope, now])
+  const scopedItemCount = currentRead.hasSnapshot ? items.filter(matchesCurrentScope).length : 0
   const expiredCount = scopedItemCount - pending.length
+  const queuePresentation = confirmationQueuePresentation(currentRead, pending.length)
+  const displayedError = currentRead.error ?? (queueRead.scopeKey === scopeKey ? error : null)
   const visible = pending.filter((item) => itemMatchesFilter(
     item,
     filter,
@@ -465,6 +468,7 @@ export function ConfirmationsFeature({
     if (!matchesCurrentScope(item)) return
     if (busyIds.has(item.requestId) || item.expiresAt <= Date.now()) return
     if (decision === "approve" && item.approvalLevel === "strong" && !acknowledged.has(item.requestId)) return
+    if (decision === "approve" && item.approvalLevel === "strong" && !shellConfirmationPresentation(item.presentation).complete) return
     setBusyIds((current) => new Set(current).add(item.requestId))
     knownItemsRef.current = new Map(boundedConfirmationItems(
       [...knownItemsRef.current.values(), item],
@@ -519,13 +523,13 @@ export function ConfirmationsFeature({
     >
       <FeatureToolbar
         actions={(
-          <Button disabled={loading} onClick={() => void refresh()} size="xs" variant="outline">
+          <Button data-testid="confirmation-queue-refresh" disabled={loading} onClick={() => void refresh()} size="xs" variant="outline">
             {loading ? <SpinnerGap className="animate-spin" /> : <Hourglass />}
-            刷新队列
+            {currentRead.error ? "重新读取" : "刷新队列"}
           </Button>
         )}
         description="每次批准只绑定一组精确参数；内容、目标或环境变化后必须重新确认。"
-        meta={<Badge variant={pending.length ? "warning" : "success"}>{pending.length} 项待处理</Badge>}
+        meta={<Badge data-queue-state={queuePresentation.phase} data-testid="confirmation-queue-count" variant={queuePresentation.variant}>{queuePresentation.label}</Badge>}
         title="操作确认"
         titleId="confirmations-feature-title"
       />
@@ -549,7 +553,7 @@ export function ConfirmationsFeature({
               {filterOptions.map(([value, label, count]) => (
                 <ToggleGroupItem className="max-w-52 gap-1.5" key={value} value={value}>
                   <span className="truncate">{label}</span>
-                  <Badge className="min-h-5 min-w-5 justify-center px-1 font-mono text-xs" variant="outline">{count}</Badge>
+                  <Badge className="min-h-5 min-w-5 justify-center px-1 font-mono text-xs" variant="outline">{currentRead.hasSnapshot ? count : "未知"}</Badge>
                 </ToggleGroupItem>
               ))}
             </ToggleGroup>
@@ -557,12 +561,18 @@ export function ConfirmationsFeature({
         </nav>
       ) : null}
 
-      {error && (
-        <Alert className="mx-3 mt-3" variant="destructive">
+      {displayedError && (
+        <Alert className="mx-3 mt-3" data-testid="confirmation-queue-error" variant="destructive">
           <Warning weight="fill" />
-          <AlertTitle>确认队列不可用</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
+          <AlertTitle>{currentRead.error ? currentRead.hasSnapshot ? "确认队列刷新失败" : "确认队列不可用" : "确认操作未完成"}</AlertTitle>
+          <AlertDescription>{displayedError}</AlertDescription>
         </Alert>
+      )}
+
+      {queuePresentation.stale && (
+        <p className="mx-3 mt-3 text-xs text-muted-foreground" data-testid="confirmation-queue-stale" role="status">
+          显示上次读取的请求；{loading ? "正在重新读取当前队列。" : "重新读取成功后更新当前队列。"}
+        </p>
       )}
 
       {expiredCount > 0 && (
@@ -573,7 +583,7 @@ export function ConfirmationsFeature({
         </Alert>
       )}
 
-      {feedback && (
+      {feedback && matchesCurrentScope(feedback.item) && (
         <Alert
           aria-live="polite"
           className="mx-3 mt-3 bg-surface-inset"
@@ -610,11 +620,24 @@ export function ConfirmationsFeature({
       )}
 
       <ScrollArea className="min-h-0 flex-1">
-        {loading && items.length === 0 ? (
+        {loading && !currentRead.hasSnapshot ? (
           <div className="space-y-3 p-4" aria-label="正在读取确认队列">
             <Skeleton className="h-40 w-full" />
             <Skeleton className="h-40 w-full" />
           </div>
+        ) : currentRead.error && visible.length === 0 ? (
+          <Empty className="min-h-56 px-6" data-testid="confirmation-queue-unavailable">
+            <EmptyHeader>
+              <EmptyMedia className="bg-warning/10 text-warning" variant="icon">
+                <Warning weight="duotone" />
+              </EmptyMedia>
+              <EmptyTitle>无法确定当前待确认操作</EmptyTitle>
+              <EmptyDescription>
+                {currentRead.hasSnapshot ? "上次读取的当前筛选没有待确认操作；当前队列读取失败，请重新读取。" : "确认队列读取失败，请重新读取后查看操作请求。"}
+              </EmptyDescription>
+            </EmptyHeader>
+            <Button disabled={loading} onClick={() => void refresh()} size="sm" variant="outline">重新读取</Button>
+          </Empty>
         ) : visible.length === 0 ? (
           <Empty className="min-h-56 px-6">
             <EmptyHeader>
@@ -622,7 +645,7 @@ export function ConfirmationsFeature({
                 <ShieldCheck weight="duotone" />
               </EmptyMedia>
               <EmptyTitle>
-              {pending.length ? "当前筛选没有待确认操作" : "当前没有待确认操作"}
+              {queuePresentation.stale ? "上次读取没有匹配的待确认操作" : pending.length ? "当前筛选没有待确认操作" : "当前没有待确认操作"}
               </EmptyTitle>
               <EmptyDescription>
                 {pending.length
@@ -641,6 +664,8 @@ export function ConfirmationsFeature({
               const busy = busyIds.has(item.requestId)
               const remaining = Math.max(0, Math.ceil((item.expiresAt - now) / 1_000))
               const acknowledgedStrong = acknowledged.has(item.requestId)
+              const shell = shellConfirmationPresentation(item.presentation)
+              const rows = presentationRows(item)
               return (
                 <article data-confirmation-id={item.requestId} key={item.requestId}>
                   <Card className={strong ? "gap-0 py-0 ring-danger/30" : "gap-0 py-0"} size="sm">
@@ -673,11 +698,25 @@ export function ConfirmationsFeature({
                     </CardHeader>
 
                     <CardContent className="space-y-3 px-3 pb-3">
+                      {item.presentation?.kind === "shell" || strong ? (
+                        shell.complete ? (
+                          <div className="space-y-1.5">
+                            <p className="text-xs font-medium">完整命令{shell.redacted ? "（敏感片段已隐藏）" : ""}</p>
+                            <pre aria-label="完整命令" className="max-h-64 overflow-auto rounded-md border bg-surface-inset p-3 font-mono text-xs whitespace-pre-wrap break-all focus-visible:outline-2 focus-visible:outline-ring" data-testid="confirmation-full-command" tabIndex={0}>{shell.command}</pre>
+                          </div>
+                        ) : (
+                          <Alert variant="destructive">
+                            <Warning aria-hidden="true" />
+                            <AlertTitle>完整命令不可用</AlertTitle>
+                            <AlertDescription>无法完整核对命令和工作目录，请让 Agent 重新发起请求。</AlertDescription>
+                          </Alert>
+                        )
+                      ) : null}
                       <ItemGroup
                         aria-label={capabilityLabel(item) + "操作参数"}
                         className="gap-1.5 @md/confirmations:hidden"
                       >
-                        {presentationRows(item).map((row, index) => (
+                        {rows.map((row, index) => (
                           <Item
                             className="min-w-0 bg-surface-inset px-2.5 py-2 ring-1 ring-inset ring-border/55"
                             key={`${row.label}:${index}`}
@@ -694,7 +733,7 @@ export function ConfirmationsFeature({
                           </Item>
                         ))}
                       </ItemGroup>
-                      <div className="hidden @md/confirmations:block">
+                      <div className={rows.length ? "hidden @md/confirmations:block" : "hidden"}>
                         <Table aria-label={capabilityLabel(item) + "操作参数"}>
                           <TableHeader>
                             <TableRow>
@@ -703,7 +742,7 @@ export function ConfirmationsFeature({
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {presentationRows(item).map((row, index) => (
+                            {rows.map((row, index) => (
                               <TableRow key={`${row.label}:${index}`}>
                                 <TableCell className="py-2 text-xs text-muted-foreground whitespace-normal">
                                   {row.label}
@@ -726,7 +765,7 @@ export function ConfirmationsFeature({
                             <Field className="mt-3" orientation="horizontal">
                               <Checkbox
                                 checked={acknowledgedStrong}
-                                disabled={busy}
+                                disabled={busy || !shell.complete}
                                 id={`confirmation-ack-${item.requestId}`}
                                 onCheckedChange={(checked) => setAcknowledged((current) => {
                                   const next = new Set(current)
@@ -757,7 +796,7 @@ export function ConfirmationsFeature({
                         </Button>
                         <Button
                           className="flex-1 @sm/confirmations:flex-none"
-                          disabled={busy || (strong && !acknowledgedStrong)}
+                          disabled={busy || (strong && (!acknowledgedStrong || !shell.complete))}
                           onClick={() => void decide(item, "approve")}
                           size="xs"
                           variant={strong ? "destructive" : "default"}

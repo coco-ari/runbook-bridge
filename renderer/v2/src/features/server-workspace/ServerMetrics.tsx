@@ -114,14 +114,14 @@ export function ServerMetrics({ api, scope, connected, visible }: {
     </TooltipTrigger><TooltipContent side="bottom"><span>内存 · {status(stale) ?? "总量减去可用内存"}<br />{memory ? <>已用 / 总量 {usage(memory.used, memory.total)}<br />可用 {capacity(memory.available)}<br /></> : null}更新于 {time(snapshot?.sampledAt)}</span></TooltipContent></Tooltip>
     <Popover open={diskOpen} onOpenChange={setDiskOpen}>
       <Tooltip><TooltipTrigger asChild><PopoverTrigger asChild>
-        <button type="button" className="server-metric server-metric-disk" data-metric="disk" data-tone={tone(disk?.percent, diskStale)} aria-label={"磁盘 " + (disk?.mount ?? "/") + "，" + label(disk?.percent, diskStale) + "，" + diskDetail + "，查看本地磁盘"} disabled={unsupported || !snapshot?.disks.length}>
+        <button type="button" className="server-metric server-metric-disk" data-metric="disk" data-tone={tone(disk?.percent, diskStale)} aria-label={"磁盘 " + (disk?.mount ?? "/") + "，" + label(disk?.percent, diskStale) + "，" + diskDetail + "，查看服务器磁盘"} disabled={unsupported || !snapshot?.disks.length}>
           <span className="server-metric-label server-metric-disk-label">disk:<span>{disk?.mount ?? "/"}</span></span><strong>{label(disk?.percent, diskStale)}</strong>
           <span className="server-metric-detail">{status(diskStale) ?? (disk ? compactUsage(disk.used, disk.total) : diskDetail)}</span>
           <CaretDown className="server-metric-caret" size={11} aria-hidden="true" />
         </button>
-      </PopoverTrigger></TooltipTrigger><TooltipContent side="bottom"><span>{disk?.mount ?? "/"} · {status(diskStale) ?? (disk ? "可用 " + capacity(disk.available) : "读取中")}<br />{disk ? <>已用 / 总量 {usage(disk.used, disk.total)}<br /></> : null}点击查看本地磁盘 · 更新于 {time(snapshot?.diskSampledAt)}</span></TooltipContent></Tooltip>
-      <PopoverContent align="center" className="server-metrics-disks" aria-label="本地磁盘用量">
-        <PopoverTitle>本地磁盘</PopoverTitle>
+      </PopoverTrigger></TooltipTrigger><TooltipContent side="bottom"><span>{disk?.mount ?? "/"} · {status(diskStale) ?? (disk ? "可用 " + capacity(disk.available) : "读取中")}<br />{disk ? <>已用 / 总量 {usage(disk.used, disk.total)}<br /></> : null}点击查看服务器磁盘 · 更新于 {time(snapshot?.diskSampledAt)}</span></TooltipContent></Tooltip>
+      <PopoverContent align="center" className="server-metrics-disks" aria-label="服务器磁盘用量">
+        <PopoverTitle>服务器磁盘</PopoverTitle>
         <p className="server-metrics-disk-time">{status(diskStale) ?? "每 30 秒更新"} · {time(snapshot?.diskSampledAt)}</p>
         <div className="server-metrics-disk-list">{snapshot?.disks.map(item =>
           <button key={item.mount} type="button" aria-pressed={item.mount === disk?.mount} onClick={() => { setMount(item.mount); setDiskOpen(false) }}>

@@ -140,6 +140,33 @@ async function run() {
   const js = expression => window.webContents.executeJavaScript(expression).catch(() => { throw new Error('UI expression failed: '+expression); });
   const idle = () => wait('document.querySelector("[data-testid=cloud-config-panel]")?.getAttribute("aria-busy") === "false"');
   const openSettings = async () => { await clickTestId('settings-open'); await wait('Boolean(document.querySelector("[data-testid=settings-cloud]"))'); await clickTestId('settings-cloud'); await idle(); };
+  const selectVisibilityAction = async (testId,activation = 'click') => {
+    const projectIds = await js('[...document.querySelectorAll("[data-testid=cloud-project-card]")].map(card => card.dataset.projectId)');
+    assert.ok(projectIds.length > 0,'批量操作必须有当前筛选匹配的项目');
+    assert.equal(await js('Boolean(document.querySelector("[data-testid=cloud-show-filtered], [data-testid=cloud-hide-filtered]"))'),false,'关闭菜单时批量动作不作为独立按钮常驻');
+    const trigger = await js('(() => {const button=document.querySelector("[data-testid=cloud-visibility-actions]"); return {name:button.textContent.trim(),disabled:button.disabled,hasPopup:button.getAttribute("aria-haspopup"),expanded:button.getAttribute("aria-expanded")};})()');
+    assert.deepEqual(trigger,{name:'批量显示',disabled:false,hasPopup:'menu',expanded:'false'},'有名菜单入口可用且表达折叠状态');
+    await js('document.querySelector("[data-testid=cloud-visibility-actions]").focus()');
+    await pressKey('Down');
+    await wait('document.querySelector("[data-testid=cloud-visibility-actions]")?.getAttribute("aria-expanded") === "true" && Boolean(document.querySelector("[data-testid=cloud-show-filtered][role=menuitem]")?.closest("[role=menu]")?.contains(document.activeElement)) && Boolean(document.querySelector("[data-testid=cloud-hide-filtered][role=menuitem]"))');
+    const menu = await js('(() => {const trigger=document.querySelector("[data-testid=cloud-visibility-actions]"), show=document.querySelector("[data-testid=cloud-show-filtered]"), hide=document.querySelector("[data-testid=cloud-hide-filtered]"), menu=show.closest("[role=menu]"); return {controls:trigger.getAttribute("aria-controls") === menu.id,focused:menu.contains(document.activeElement),items:[show,hide].map(item => ({role:item.getAttribute("role"),disabled:item.getAttribute("aria-disabled") === "true",name:item.textContent.trim(),visible:item.getBoundingClientRect().height > 0}))};})()');
+    assert.equal(menu.controls,true,'批量入口关联实际展开的菜单');
+    assert.equal(menu.focused,true,'原生 Down 将焦点移入批量菜单');
+    assert.deepEqual(menu.items,[
+      {role:'menuitem',disabled:false,name:`显示筛选结果（${projectIds.length}）`,visible:true},
+      {role:'menuitem',disabled:false,name:`隐藏筛选结果（${projectIds.length}）`,visible:true},
+    ],'两项批量动作可访问并明确当前筛选数量');
+    if (activation === 'keyboard') {
+      await js(`document.querySelector('[data-testid="${testId}"]').focus()`);
+      await pressKey('Enter');
+    } else {
+      await clickTestId(testId);
+    }
+    await wait('!document.querySelector("[data-testid=cloud-show-filtered], [data-testid=cloud-hide-filtered]")');
+    await idle();
+    assert.deepEqual(visibilityCalls.at(-1),{projectIds,visible:testId === 'cloud-show-filtered'},'菜单激活只调整当前筛选的本机显示范围');
+    return projectIds;
+  };
   const createRepository = async name => {
     await clickText('创建新仓库');
     assert.equal(await js('document.getElementById("cloud-password").value.length'),48);
@@ -305,18 +332,20 @@ async function run() {
   await store.updateProject(project.projectId,{name:'上传后的 Alpha'});
   await cardAction('upload'); await idle();
   assert.equal(service.state.repositories[0].catalog.find(p => p.projectId === cloudProjectId).name,'上传后的 Alpha');
-  await js(`document.querySelector('[data-testid=cloud-project-card][data-project-id="${cloudProjectId}"] [role=switch]').click()`);
+  await require('./ui-forced-controls-ui.cjs')({win:window,waitFor:wait,pressKey,screenshotRoot:process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR,
+    selector:`[data-testid=cloud-project-card][data-project-id="${cloudProjectId}"] [role=switch]`,type:'switch',label:'cloud',inputSelector:'#cloud-project-search',settle:idle});
   await idle(); await wait(`document.querySelector('[data-testid=cloud-project-card][data-project-id="${cloudProjectId}"] [role=switch]').getAttribute('aria-checked') === 'false'`);
   await clickTestId('settings-back');
   await wait('!document.querySelector("button[data-project-id=cloud-demo]")');
   assert.equal(await js('document.querySelector("#project-list").textContent.includes("已同步")'),false,'左侧不显示同步状态文字');
   assert.equal((await store.listProjects()).length,projectCount,'隐藏不删除配置');
-  await openSettings(); await clickTestId('cloud-show-filtered'); await idle();
+  await openSettings();
+  assert.equal((await selectVisibilityAction('cloud-show-filtered','keyboard')).length,projectCount,'批量显示恢复全部合成项目');
   await fill('cloud-project-search','上传后的 Alpha');
   await wait('document.querySelectorAll("[data-testid=cloud-project-card]").length === 1');
-  await clickTestId('cloud-hide-filtered'); await idle();
+  await selectVisibilityAction('cloud-hide-filtered');
   assert.deepEqual(visibilityCalls.at(-1),{projectIds:[cloudProjectId],visible:false},'批量隐藏仅影响筛选结果');
-  await clickTestId('cloud-show-filtered'); await idle();
+  await selectVisibilityAction('cloud-show-filtered','keyboard');
   assert.deepEqual(visibilityCalls.at(-1),{projectIds:[cloudProjectId],visible:true},'批量显示仅影响筛选结果');
   await fill('cloud-project-search','');
   await clickTestId('settings-back'); await wait('!document.querySelector("[data-testid=settings-page]")');
@@ -361,6 +390,7 @@ async function run() {
   };
   await filterCloud('有更新');
   assert.equal(await js('document.querySelectorAll("[data-testid=cloud-project-card]").length'),0);
+  assert.equal(await js('document.querySelector("[data-testid=cloud-visibility-actions]").disabled'),true,'没有筛选结果时不能批量修改显示范围');
   await filterCloud('全部项目');
   await openCloudMenu(cloudProjectId); await clickTestId('cloud-project-history');
   await wait('document.querySelectorAll("[data-testid=cloud-project-version]").length >= 2');
@@ -394,6 +424,7 @@ async function run() {
   assert.equal((await store.listProjects()).length,projectCount,'云端删除不删除本地');
   await filterCloud('已删除');
   await wait('document.querySelectorAll("[data-testid=cloud-deleted-project]").length === 1');
+  assert.equal(await js('document.querySelector("[data-testid=cloud-visibility-actions]").disabled'),true,'已删除项目不能调整本机显示');
   await capture('-deleted-projects');
   await clickTestId('cloud-restore-project'); await clickTestId('cloud-confirm-project-operation'); await idle();
   await wait('document.querySelectorAll("[data-testid=cloud-deleted-project]").length === 0');
@@ -427,6 +458,13 @@ async function run() {
   await js(`document.querySelector('[data-cloud-project-id="${copiedId}"]').click()`);
   await wait(`Boolean(document.querySelector('button[data-project-id="${copiedId}"]'))`);
   assert.equal((await store.listProjects()).length,projectCount+1);
+  // 下载完成后项目行先挂载，当前范围与延迟焦点随后提交；菜单只能绑定已稳定的选择。
+  await wait(`document.querySelector('button[data-project-id="${copiedId}"]')?.getAttribute('aria-current') === 'page'
+    && document.querySelector('#detail-main')?.dataset.selectionKind === 'project'
+    && !document.querySelector('[data-testid=settings-page], [role=menu], [role=listbox], [role=dialog], [role=alertdialog]')`);
+  await window.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
+  window.webContents.invalidate();
+  await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   if (process.env.RUNBOOK_BRIDGE_SCREENSHOT_DIR) {
     await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     await delay(200);
@@ -434,16 +472,76 @@ async function run() {
     assert.ok(!directory.startsWith(root+path.sep));
     await fs.writeFile(path.join(directory,'workbench-cloud.png'),(await window.webContents.capturePage()).toPNG());
   }
-  const openLocalDelete = async () => {
-    await js('document.querySelector("button[data-project-id=cloud-secondary]").closest("li").querySelector("[data-sidebar=menu-action]").focus()');
-    await pressKey('Down');
-    await wait('Boolean(document.querySelector("[role=menuitem]"))');
-    await js('[...document.querySelectorAll("[role=menuitem]")].find(item=>item.textContent.trim() === "删除项目").click()');
-    await wait('Boolean(document.querySelector("[data-testid=delete-project-dialog]"))');
-    await fill('delete-project-confirmation','云配置演示项目 · Beta');
+  const localDeleteTrigger='document.querySelector("button[data-project-id=cloud-secondary]")?.closest("li")?.querySelector("[data-sidebar=menu-action]")';
+  const openLocalDelete = async expectedSelectionId => {
+    const targetBefore=await store.getProject('cloud-secondary');
+    let ownMenuId=null;
+    const snapshots=[];
+    const diagnose=async stage=>{
+      const currentTarget=await store.getProject('cloud-secondary').catch(()=>null);
+      const snapshot=await js(`(() => {
+        const rect=element=>{const box=element?.getBoundingClientRect();return box?{left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width,height:box.height}:null};
+        const source=${localDeleteTrigger},menu=${ownMenuId?`document.getElementById(${JSON.stringify(ownMenuId)})`:'null'};
+        const selected=document.querySelector('button[data-project-id][aria-current=page]');
+        const active=document.activeElement,dialog=document.querySelector('[data-testid=delete-project-dialog]');
+        return {selectionMatchesExpected:selected?.dataset.projectId===${JSON.stringify(expectedSelectionId)},selectedIsDeleteTarget:selected?.dataset.projectId==='cloud-secondary',
+          projectView:document.querySelector('#detail-main')?.dataset.selectionKind==='project',hasFocus:document.hasFocus(),hidden:document.hidden,
+          source:source?{nameMatches:source.getAttribute('aria-label')==='云配置演示项目 · Beta更多操作',enabled:!source.disabled,
+            focused:active===source,hasPopup:source.getAttribute('aria-haspopup'),expanded:source.getAttribute('aria-expanded'),rect:rect(source)}:null,
+          menu:menu?{role:menu.getAttribute('role'),state:menu.dataset.state,ownerMatches:menu.getAttribute('aria-labelledby')===source?.id,
+            controlsMatches:source?.getAttribute('aria-controls')===menu.id,focused:menu.contains(active),rect:rect(menu)}:null,
+          focus:{tag:active?.tagName,role:active?.getAttribute('role'),testId:active?.dataset?.testid,insideDialog:Boolean(dialog?.contains(active))},
+          scopes:[...document.querySelectorAll('[role=menu],[role=listbox],[role=dialog],[role=alertdialog]')].map(element=>({role:element.getAttribute('role'),state:element.dataset.state,
+            visible:element.getClientRects().length>0,focused:element.contains(active)})),dialogPresent:Boolean(dialog)};
+      })()`);
+      snapshots.push({stage,...snapshot,targetExists:Boolean(currentTarget),targetRevisionChanged:currentTarget?.revision!==targetBefore.revision});
+      return snapshot;
+    };
+    try{
+      await wait(`document.querySelector('button[data-project-id="${expectedSelectionId}"]')?.getAttribute('aria-current') === 'page'
+        && !document.querySelector('[role=menu], [role=listbox], [role=dialog], [role=alertdialog]')`);
+      const initial=await diagnose('before-menu');
+      assert.equal(initial.selectionMatchesExpected,true,'本地删除菜单绑定已完成的当前选择');
+      assert.equal(initial.selectedIsDeleteTarget,expectedSelectionId==='cloud-secondary','首次保持从其他当前项目删除未选中项目的真实路径');
+      assert.ok(initial.source?.nameMatches&&initial.source.enabled&&initial.source.hasPopup==='menu'&&initial.source.expanded==='false','确切本地项目的有名菜单入口可用');
+      await js(`${localDeleteTrigger}.focus()`);
+      await wait(`document.hasFocus() && document.activeElement === ${localDeleteTrigger}`);
+      await pressKey('Down');
+      await wait(`(() => {const source=${localDeleteTrigger},menu=document.getElementById(source?.getAttribute('aria-controls'));
+        return source?.getAttribute('aria-expanded')==='true'&&menu?.getAttribute('role')==='menu'
+          &&menu.getAttribute('aria-labelledby')===source.id&&menu.getClientRects().length>0&&menu.contains(document.activeElement);})()`);
+      ownMenuId=await js(`${localDeleteTrigger}.getAttribute('aria-controls')`);
+      const opened=await diagnose('own-menu-open');
+      assert.ok(opened.selectionMatchesExpected&&opened.menu.ownerMatches&&opened.menu.controlsMatches&&opened.menu.focused,'原生Down打开并聚焦确切项目的菜单');
+      const chosen=await js(`(() => {
+        const menu=document.getElementById(${JSON.stringify(ownMenuId)});
+        const item=[...menu.querySelectorAll('[role=menuitem]')].find(candidate=>candidate.textContent.trim()==='删除项目'&&candidate.getClientRects().length>0&&candidate.getAttribute('aria-disabled')!=='true');
+        if(!item)return false;
+        item.click();return true;
+      })()`);
+      assert.equal(chosen,true,'选择当前本地项目菜单内实际可用的删除动作');
+      await diagnose('delete-item-selected');
+      await window.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
+      window.webContents.invalidate();
+      await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      await wait(`document.getElementById(${JSON.stringify(ownMenuId)}) === null && ${localDeleteTrigger}?.getAttribute('aria-expanded') === 'false'`);
+      // 驱动隐藏测试窗口的真实绘制，让正常菜单退出后的 RAF 交接完成，不重发动作。
+      await window.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
+      window.webContents.invalidate();
+      await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+      await wait('Boolean(document.querySelector("[data-testid=delete-project-dialog]"))');
+      const matchesTarget=await js(`(() => {const dialog=document.querySelector('[data-testid=delete-project-dialog]');return document.getElementById(dialog.getAttribute('aria-labelledby'))?.textContent.includes('“云配置演示项目 · Beta”');})()`);
+      assert.equal(matchesTarget,true,'删除确认绑定确切本地项目');
+      await fill('delete-project-confirmation','云配置演示项目 · Beta');
+    }catch(error){
+      // 失败只记录固定角色、范围匹配、焦点及几何，不输出项目内容、仓库地址或凭据。
+      await diagnose('local-delete-failed');
+      console.error('本地删除菜单交接诊断：'+JSON.stringify(snapshots));
+      throw error;
+    }
   };
   const confirmLocalDelete = () => js('[...document.querySelectorAll("[data-testid=delete-project-dialog] button")].find(button=>button.textContent === "永久删除").click()');
-  await openLocalDelete();
+  await openLocalDelete(copiedId);
   assert.equal(await js('document.querySelector("[data-testid=delete-project-cloud]").getAttribute("data-state")'),'unchecked');
   await confirmLocalDelete();
   await wait('!document.querySelector("[data-testid=delete-project-dialog]")');
@@ -452,7 +550,7 @@ async function run() {
   await js('document.querySelector("[data-cloud-project-id=cloud-secondary]").click()');
   await wait('document.querySelector("button[data-project-id=cloud-secondary]")?.getAttribute("aria-current") === "page"');
   localDeleteFails = true;
-  await openLocalDelete();
+  await openLocalDelete('cloud-secondary');
   await clickTestId('delete-project-cloud');
   await confirmLocalDelete();
   await wait('document.querySelector("[data-testid=delete-project-dialog]")?.textContent.includes("本地删除未完成")');

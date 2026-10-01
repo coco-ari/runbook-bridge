@@ -42,9 +42,10 @@
 .server-docker-overview dt { color:var(--muted-foreground); }
 .server-docker-overview dd { white-space:pre-wrap; overflow-wrap:anywhere; }
 .server-docker-log-panel { display:flex; flex-direction:column; flex:1; min-height:0; overflow:hidden; }
-.server-docker-log-search { display:flex; align-items:center; gap:8px; padding:6px 10px; }
-.server-docker-log-search input { max-width:320px; }
+.server-docker-log-search { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:6px 10px; }
+.server-docker-log-search input { max-width:320px; min-width:120px; flex:1; }
 .server-docker-log-search span { font-size: var(--text-xs); color:var(--muted-foreground); white-space:nowrap; }
 .server-docker-logs { margin:0; padding:8px 14px; min-height:0; flex:1; overflow:auto; font-family:var(--font-mono); font-size: var(--text-xs); line-height:1.7; white-space:pre; tab-size:4; }
+.server-docker-logs mark { background:var(--surface-selected); color:var(--foreground); text-decoration:underline; text-decoration-color:var(--primary); text-underline-offset:2px; }
 
 .server-docker-filter [data-slot="select-trigger"] { width: 100%; }

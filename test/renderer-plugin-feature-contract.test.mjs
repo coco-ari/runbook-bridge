@@ -311,6 +311,11 @@ test('React plugin features preserve scope, credential, and edit-session boundar
     assert.ok((editor.match(new RegExp(id,'gu')) ?? []).length >= 2, `${id} must connect its control and message`);
   }
   assert.match(metadata,/updatePluginMetadata/u);
+  assert.match(editor,/readOnly=\{!editor.isCreating\}/u);
+  assert.doesNotMatch(editor,/disabled=\{!editor.isCreating\}/u);
+  assert.match(editor,/在插件详情的更多操作中修改名称/u);
+  assert.match(editor,/<EnvironmentTypeBadge type=\{environmentType \?\? "unspecified"\}/u);
+  assert.doesNotMatch(editor,/独立编辑工作区/u);
   assert.match(metadata,/if \(!busy\) onOpenChange/u);
   assert.match(metadata,/onInteractOutside/u);
   assert.match(metadata,/expectedRevision/u);

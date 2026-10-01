@@ -31,7 +31,7 @@ function ScrollArea({
         data-slot="scroll-area-viewport"
         ref={viewportRef}
         className={cn(
-          "size-full rounded-[inherit] text-inherit outline-none focus-visible:ring-2 focus-visible:ring-ring/60 [&>div]:block! [&>div]:text-inherit!",
+          "size-full rounded-[inherit] text-inherit outline-none focus-visible:ring-2 focus-visible:ring-ring [&>div]:block! [&>div]:text-inherit!",
           horizontal
             ? "overflow-y-hidden! [&>div]:min-w-full! [&>div]:w-max!"
             : "overflow-x-hidden! [&>div]:min-w-0! [&>div]:w-full!",
@@ -65,7 +65,7 @@ function ScrollBar({
     >
       <ScrollAreaPrimitive.ScrollAreaThumb
         data-slot="scroll-area-thumb"
-        className="relative flex-1 rounded-full bg-input"
+        className="relative flex-1 rounded-full bg-scrollbar-thumb"
       />
     </ScrollAreaPrimitive.ScrollAreaScrollbar>
   )

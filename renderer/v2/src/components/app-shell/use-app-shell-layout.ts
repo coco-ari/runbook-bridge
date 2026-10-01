@@ -11,15 +11,22 @@ export function useAppShellLayout(editorOpen: boolean) {
   )
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const [projectPanelPixels, setProjectPanelPixels] = useState<number | null>(null)
+  const [detailCollapsed, setDetailCollapsedDisplay] = useState(layoutState.detailCollapsed)
   const [editorExpanded, setEditorExpanded] = useState(false)
-  const editorLayoutRef = useRef<Readonly<{ layout: Layout; projectCollapsed: boolean }> | null>(null)
+  const editorLayoutRef = useRef<Readonly<{ layout: Layout; viewportWidth: number }> | null>(null)
   const panelGroupRef = useGroupRef()
   const panelGroupElementRef = useRef<HTMLDivElement>(null)
   const projectPanelRef = usePanelRef()
   const detailPanelRef = usePanelRef()
   const projectResizeFrameRef = useRef(0)
   const detailResizeFrameRef = useRef(0)
+  const layoutRestoreFrameRef = useRef(0)
+  const layoutGenerationRef = useRef(0)
   const stableLayoutRef = useRef(layoutState.layout)
+  const stableNavigationPixelsRef = useRef({
+    project: layoutState.layout[APP_SHELL_PANEL_IDS.project]! / 100 * (Math.max(960, window.innerWidth) - 2),
+    resource: layoutState.layout[APP_SHELL_PANEL_IDS.resource]! / 100 * (Math.max(960, window.innerWidth) - 2),
+  })
   const latestLayoutStateRef = useRef(layoutState)
   latestLayoutStateRef.current = layoutState
   const lastProjectLayoutPercentageRef = useRef<number | null>(null)
@@ -36,50 +43,101 @@ export function useAppShellLayout(editorOpen: boolean) {
     [],
   )
 
+  const beginLayoutRestore = useCallback(() => {
+    const ticket = { generation: ++layoutGenerationRef.current, viewportWidth: window.innerWidth }
+    suppressLayoutPersistenceRef.current = true
+    cancelAnimationFrame(layoutRestoreFrameRef.current)
+    cancelAnimationFrame(detailResizeFrameRef.current)
+    return ticket
+  }, [])
+
+  const layoutTicketCurrent = useCallback((ticket: Readonly<{ generation: number; viewportWidth: number }>) => (
+    ticket.generation === layoutGenerationRef.current && ticket.viewportWidth === window.innerWidth
+  ), [])
+
+  const finishLayoutRestore = useCallback((ticket: Readonly<{ generation: number; viewportWidth: number }>, onSettled?: () => void) => {
+    layoutRestoreFrameRef.current = requestAnimationFrame(() => {
+      if (!layoutTicketCurrent(ticket)) return
+      layoutRestoreFrameRef.current = requestAnimationFrame(() => {
+        if (!layoutTicketCurrent(ticket)) return
+        setProjectPanelPixels(projectPanelRef.current?.getSize().inPixels ?? null)
+        setDetailCollapsedDisplay(detailPanelRef.current?.isCollapsed() ?? latestLayoutStateRef.current.detailCollapsed)
+        suppressLayoutPersistenceRef.current = editorLayoutRef.current !== null
+        onSettled?.()
+      })
+    })
+  }, [detailPanelRef, layoutTicketCurrent, projectPanelRef])
+
+  const rememberUserLayout = useCallback((layout: Layout) => {
+    const panelSpace = [...(panelGroupElementRef.current?.children ?? [])]
+      .reduce((total, element) => total + (element instanceof HTMLElement && element.hasAttribute("data-panel") ? element.offsetWidth : 0), 0)
+    stableLayoutRef.current = layout
+    if (panelSpace > 0) stableNavigationPixelsRef.current = {
+      project: layout[APP_SHELL_PANEL_IDS.project]! / 100 * panelSpace,
+      resource: layout[APP_SHELL_PANEL_IDS.resource]! / 100 * panelSpace,
+    }
+    commitLayoutState((current) => ({ ...current, layout }))
+  }, [commitLayoutState])
+
+  const restoreUserLayout = useCallback(() => {
+    const panelSpace = Math.max(0, window.innerWidth - 2)
+    const pixels = stableNavigationPixelsRef.current
+    // 窗口恢复只投影用户导航宽度，不改写已保存的比例；空间不足由面板库临时约束。
+    const layout = panelSpace > pixels.project + pixels.resource + 48 ? {
+      [APP_SHELL_PANEL_IDS.project]: pixels.project / panelSpace * 100,
+      [APP_SHELL_PANEL_IDS.resource]: pixels.resource / panelSpace * 100,
+      [APP_SHELL_PANEL_IDS.detail]: (panelSpace - pixels.project - pixels.resource) / panelSpace * 100,
+    } : stableLayoutRef.current
+    panelGroupRef.current?.setLayout(layout)
+    if (latestLayoutStateRef.current.projectCollapsed) projectPanelRef.current?.collapse()
+    else {
+      projectPanelRef.current?.expand()
+      if (projectPanelRef.current?.isCollapsed()) projectPanelRef.current?.resize("176px")
+    }
+    if (latestLayoutStateRef.current.detailCollapsed) detailPanelRef.current?.collapse()
+    else detailPanelRef.current?.expand()
+  }, [detailPanelRef, panelGroupRef, projectPanelRef])
+
   useEffect(() => {
+    const ticket = beginLayoutRestore()
     if (layoutState.projectCollapsed) projectPanelRef.current?.collapse()
     else if (window.innerWidth >= 720) {
       projectPanelRef.current?.expand()
       if (projectPanelRef.current?.isCollapsed()) projectPanelRef.current?.resize("176px")
     }
     if (layoutState.detailCollapsed) detailPanelRef.current?.collapse()
-    const releaseFrame = requestAnimationFrame(() => requestAnimationFrame(() => {
-      suppressLayoutPersistenceRef.current = editorLayoutRef.current !== null
-    }))
-    return () => cancelAnimationFrame(releaseFrame)
+    else detailPanelRef.current?.expand()
+    finishLayoutRestore(ticket)
+    return () => cancelAnimationFrame(layoutRestoreFrameRef.current)
     // 首次挂载恢复折叠状态，同时保留单独持久化的展开布局。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
-    let wasConstraintLimited = window.innerWidth < 960
-    let releaseFrame = 0
+    let previousWidth = window.innerWidth
 
     const syncViewport = () => {
       const width = window.innerWidth
-      const constraintLimited = width < 960
+      if (width === previousWidth) return
+      previousWidth = width
+      const ticket = beginLayoutRestore()
       setViewportWidth(width)
-
-      if (wasConstraintLimited && !constraintLimited) {
-        suppressLayoutPersistenceRef.current = true
-        cancelAnimationFrame(releaseFrame)
-        // 等待 React 更新面板宽度约束后再恢复已保存的布局。
-        releaseFrame = requestAnimationFrame(() => {
-          if (window.innerWidth >= 960 && !editorLayoutRef.current) {
-            panelGroupRef.current?.setLayout(stableLayoutRef.current)
-            if (latestLayoutStateRef.current.projectCollapsed) projectPanelRef.current?.collapse()
-            else {
-              projectPanelRef.current?.expand()
-              if (projectPanelRef.current?.isCollapsed()) projectPanelRef.current?.resize("176px")
-            }
-            if (latestLayoutStateRef.current.detailCollapsed) detailPanelRef.current?.collapse()
+      // 约束更新后恢复显示，旧尺寸回调与旧解除抑制任务均不能跨窗口代次交付。
+      layoutRestoreFrameRef.current = requestAnimationFrame(() => {
+        if (!layoutTicketCurrent(ticket)) return
+        // 先让当前绘制和面板库 ResizeObserver 更新尺寸，避免旧约束再次投影导航宽度。
+        layoutRestoreFrameRef.current = requestAnimationFrame(() => {
+          if (!layoutTicketCurrent(ticket)) return
+          if (width >= 960) {
+            if (editorLayoutRef.current) {
+              projectPanelRef.current?.collapse()
+              if (latestLayoutStateRef.current.detailCollapsed) detailPanelRef.current?.collapse()
+              else detailPanelRef.current?.resize("70%")
+            } else restoreUserLayout()
           }
-          releaseFrame = requestAnimationFrame(() => {
-            suppressLayoutPersistenceRef.current = editorLayoutRef.current !== null
-          })
+          finishLayoutRestore(ticket)
         })
-      }
-      wasConstraintLimited = constraintLimited
+      })
     }
 
     window.addEventListener("resize", syncViewport)
@@ -87,12 +145,13 @@ export function useAppShellLayout(editorOpen: boolean) {
     return () => {
       window.removeEventListener("resize", syncViewport)
       window.visualViewport?.removeEventListener("resize", syncViewport)
-      cancelAnimationFrame(releaseFrame)
+      cancelAnimationFrame(layoutRestoreFrameRef.current)
     }
-  }, [detailPanelRef, panelGroupRef, projectPanelRef])
+  }, [beginLayoutRestore, detailPanelRef, finishLayoutRestore, layoutTicketCurrent, projectPanelRef, restoreUserLayout])
 
   const setProjectCollapsed = useCallback((collapsed: boolean, resetWidth = false) => {
     if (!collapsed && window.innerWidth < 720) return
+    const ticket = beginLayoutRestore()
     if (collapsed) projectPanelRef.current?.collapse()
     else {
       projectPanelRef.current?.expand()
@@ -100,40 +159,57 @@ export function useAppShellLayout(editorOpen: boolean) {
       if (projectPanelRef.current?.isCollapsed()) projectPanelRef.current?.resize("176px")
       if (resetWidth) projectPanelRef.current?.resize("224px")
     }
-    if (editorLayoutRef.current) return
-    const layout = window.innerWidth >= 960 ? panelGroupRef.current?.getLayout() : null
-    if (layout) stableLayoutRef.current = layout
-    commitLayoutState((current) => ({ ...current, projectCollapsed: collapsed, ...(layout ? { layout } : {}) }))
-  }, [commitLayoutState, panelGroupRef, projectPanelRef])
+    if (!editorLayoutRef.current) commitLayoutState((current) => ({ ...current, projectCollapsed: collapsed }))
+    finishLayoutRestore(ticket, () => {
+      if (window.innerWidth < 960 || editorLayoutRef.current) return
+      const layout = panelGroupRef.current?.getLayout()
+      if (layout) rememberUserLayout(layout)
+    })
+  }, [beginLayoutRestore, commitLayoutState, finishLayoutRestore, panelGroupRef, projectPanelRef, rememberUserLayout])
 
-  const setDetailCollapsed = useCallback((collapsed: boolean) => {
+  const setDetailCollapsed = useCallback((collapsed: boolean, resetWidth = false) => {
+    const ticket = beginLayoutRestore()
     if (collapsed) detailPanelRef.current?.collapse()
-    else detailPanelRef.current?.expand()
+    else {
+      detailPanelRef.current?.expand()
+      if (resetWidth) detailPanelRef.current?.resize("48%")
+    }
+    setDetailCollapsedDisplay(collapsed)
     commitLayoutState((current) => ({ ...current, detailCollapsed: collapsed }))
-  }, [commitLayoutState, detailPanelRef])
+    finishLayoutRestore(ticket, () => {
+      // 双击是明确的用户重置；普通折叠按钮保留之前的展开比例。
+      if (!resetWidth || window.innerWidth < 960 || editorLayoutRef.current) return
+      const layout = panelGroupRef.current?.getLayout()
+      if (layout) rememberUserLayout(layout)
+    })
+  }, [beginLayoutRestore, commitLayoutState, detailPanelRef, finishLayoutRestore, panelGroupRef, rememberUserLayout])
 
   const syncProjectSize = useCallback((size: PanelSize) => {
+    const ticket = { generation: layoutGenerationRef.current, viewportWidth: window.innerWidth }
     cancelAnimationFrame(projectResizeFrameRef.current)
     // 在 ResizeObserver 回调周期之外提交响应式内容变化。
     projectResizeFrameRef.current = requestAnimationFrame(() => {
+      if (!layoutTicketCurrent(ticket)) return
       setProjectPanelPixels(size.inPixels)
     })
-  }, [])
+  }, [layoutTicketCurrent])
 
   const syncDetailSize = useCallback((size: PanelSize) => {
     cancelAnimationFrame(detailResizeFrameRef.current)
+    if (suppressLayoutPersistenceRef.current) return
+    const ticket = { generation: layoutGenerationRef.current, viewportWidth: window.innerWidth }
     detailResizeFrameRef.current = requestAnimationFrame(() => {
-      if (window.innerWidth < 960) return
-      const collapsed = size.inPixels <= 50
-      setLayoutState((current) => current.detailCollapsed === collapsed
-        ? current
-        : { ...current, detailCollapsed: collapsed })
+      if (!layoutTicketCurrent(ticket) || suppressLayoutPersistenceRef.current) return
+      // 约束折叠仅影响当前显示，用户偏好由明确操作或用户分隔线事件保存。
+      setDetailCollapsedDisplay(size.inPixels <= 50)
     })
-  }, [])
+  }, [layoutTicketCurrent])
 
   useEffect(() => () => {
     cancelAnimationFrame(projectResizeFrameRef.current)
     cancelAnimationFrame(detailResizeFrameRef.current)
+    cancelAnimationFrame(layoutRestoreFrameRef.current)
+    layoutGenerationRef.current++
   }, [])
 
   const handleLayoutChanged = useCallback((layout: Layout, { isUserInteraction }: LayoutChangedMeta) => {
@@ -146,42 +222,46 @@ export function useAppShellLayout(editorOpen: boolean) {
     const previousPercentage = lastProjectLayoutPercentageRef.current
     const previousPixels = previousPercentage === null ? null : previousPercentage / 100 * panelSpace
     lastProjectLayoutPercentageRef.current = percentage ?? null
-    if (suppressLayoutPersistenceRef.current) return
-    if (inPixels !== null && isUserInteraction) {
-      commitLayoutState((current) => ({
-        ...current,
-        projectCollapsed: projectCollapseIntentAfterResize(current.projectCollapsed, {
-          inPixels, previousPixels, viewportWidth: window.innerWidth, isUserInteraction,
-        }),
-      }))
+    if (suppressLayoutPersistenceRef.current || !isUserInteraction) return
+    const canSaveLayout = window.innerWidth >= 960 && panelSpace > 0
+    if (canSaveLayout) {
+      stableLayoutRef.current = layout
+      stableNavigationPixelsRef.current = {
+        project: layout[APP_SHELL_PANEL_IDS.project]! / 100 * panelSpace,
+        resource: layout[APP_SHELL_PANEL_IDS.resource]! / 100 * panelSpace,
+      }
     }
-    if (suppressLayoutPersistenceRef.current || window.innerWidth < 960) return
-    stableLayoutRef.current = layout
-    setLayoutState((current) => {
-      const next = { ...current, layout }
-      persistAppShellLayoutState(next)
-      return next
-    })
+    const detailPixels = layout[APP_SHELL_PANEL_IDS.detail]! / 100 * panelSpace
+    commitLayoutState((current) => ({
+      ...current,
+      projectCollapsed: inPixels === null ? current.projectCollapsed : projectCollapseIntentAfterResize(current.projectCollapsed, {
+        inPixels, previousPixels, viewportWidth: window.innerWidth, isUserInteraction,
+      }),
+      ...(canSaveLayout ? { layout, detailCollapsed: detailPixels <= 50 } : {}),
+    }))
   }, [commitLayoutState])
 
 
   const restoreEditorLayout = useCallback(() => {
     const previous = editorLayoutRef.current
     if (!previous) return
+    const ticket = beginLayoutRestore()
     editorLayoutRef.current = null
-    suppressLayoutPersistenceRef.current = true
-    panelGroupRef.current?.setLayout(previous.layout)
-    if (previous.projectCollapsed || window.innerWidth < 720) projectPanelRef.current?.collapse()
+    // 临时编辑器布局只恢复显示，不能作为下一次用户操作的持久化比例。
+    if (window.innerWidth >= 960 && window.innerWidth !== previous.viewportWidth) restoreUserLayout()
     else {
-      projectPanelRef.current?.expand()
-      if (projectPanelRef.current?.isCollapsed()) projectPanelRef.current?.resize("176px")
+      panelGroupRef.current?.setLayout(previous.layout)
+      if (latestLayoutStateRef.current.projectCollapsed || window.innerWidth < 720) projectPanelRef.current?.collapse()
+      else {
+        projectPanelRef.current?.expand()
+        if (projectPanelRef.current?.isCollapsed()) projectPanelRef.current?.resize("176px")
+      }
+      if (latestLayoutStateRef.current.detailCollapsed) detailPanelRef.current?.collapse()
+      else detailPanelRef.current?.expand()
     }
-    setLayoutState((current) => ({ ...current, projectCollapsed: previous.projectCollapsed, layout: previous.layout }))
     setEditorExpanded(false)
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      suppressLayoutPersistenceRef.current = editorLayoutRef.current !== null
-    }))
-  }, [panelGroupRef, projectPanelRef])
+    finishLayoutRestore(ticket)
+  }, [beginLayoutRestore, detailPanelRef, finishLayoutRestore, panelGroupRef, projectPanelRef, restoreUserLayout])
 
   useEffect(() => {
     if (!editorOpen) restoreEditorLayout()
@@ -192,19 +272,20 @@ export function useAppShellLayout(editorOpen: boolean) {
       restoreEditorLayout()
       return
     }
+    const ticket = beginLayoutRestore()
     editorLayoutRef.current = {
       layout: panelGroupRef.current?.getLayout() ?? layoutState.layout,
-      projectCollapsed: layoutState.projectCollapsed,
+      viewportWidth: window.innerWidth,
     }
-    suppressLayoutPersistenceRef.current = true
     projectPanelRef.current?.collapse()
     detailPanelRef.current?.resize("70%")
     setEditorExpanded(true)
-  }, [detailPanelRef, layoutState.layout, layoutState.projectCollapsed, panelGroupRef, projectPanelRef, restoreEditorLayout])
+    finishLayoutRestore(ticket)
+  }, [beginLayoutRestore, detailPanelRef, finishLayoutRestore, layoutState.layout, panelGroupRef, projectPanelRef, restoreEditorLayout])
 
 
   return {
-    layoutState, viewportWidth, projectPanelPixels, editorExpanded,
+    layoutState, viewportWidth, projectPanelPixels, detailCollapsed, editorExpanded,
     panelGroupRef, panelGroupElementRef, projectPanelRef, detailPanelRef,
     setProjectCollapsed, setDetailCollapsed, syncProjectSize, syncDetailSize,
     handleLayoutChanged, restoreEditorLayout, toggleEditorExpanded,

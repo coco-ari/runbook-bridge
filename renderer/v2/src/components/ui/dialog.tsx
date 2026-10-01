@@ -72,7 +72,7 @@ function DialogContent({
               className="absolute top-2 right-2"
               size="icon-sm"
             >
-              <X
+              <X aria-hidden="true"
               />
               <span className="sr-only">关闭</span>
             </Button>

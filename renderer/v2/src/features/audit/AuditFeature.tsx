@@ -1,4 +1,4 @@
-import { ArrowClockwise, ClockCounterClockwise, MagnifyingGlass, Trash, WarningCircle } from "@phosphor-icons/react"
+import { ArrowClockwise, ClockCounterClockwise, DotsThree, MagnifyingGlass, Trash, WarningCircle } from "@phosphor-icons/react"
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { focusWorkspaceElement } from "@/lib/workspace-focus"
@@ -14,6 +14,8 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/in
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { useMenuHandoff } from "@/hooks/use-menu-handoff"
 import { AuditRequestCoordinator } from "./audit-request-model"
 import { AuditOperationList } from "./AuditOperationList"
 import { actorLabels, categoryLabels, presentAudit, type AuditDisplayEntry } from "./audit-display"
@@ -89,6 +91,11 @@ export function AuditFeature({ requestId = null, projectId, environmentId, plugi
   const deferredQuery = useDeferredValue(search.trim())
   const requestCoordinatorRef = useRef(new AuditRequestCoordinator<AuditPage>())
   const scopeKey = auditScopeKey(projectId, environmentId, pluginInstanceId)
+  const managementHandoff = useMenuHandoff(scopeKey)
+  const hasFilters = Boolean(focusedRequest || query || search || resultFilter !== "all" || actorFilter !== "all" || categoryFilter !== "all" || range !== "all" || includeRedisScans)
+  const clearFilters = () => {
+    setFocusedRequest(null); setQuery(""); setSearch(""); setResultFilter("all"); setActorFilter("all"); setCategoryFilter("all"); setRange("all"); setIncludeRedisScans(false)
+  }
   const from = useMemo(() => range === "all" ? "" : new Date(Date.now() - Number(range) * 86400000).toISOString(), [range])
   const effectiveQuery = focusedRequest ? "confirmation:" + focusedRequest : deferredQuery
   const requestedKey = JSON.stringify([scopeKey, effectiveQuery, resultFilter, actorFilter, categoryFilter, from, includeRedisScans])
@@ -195,11 +202,16 @@ export function AuditFeature({ requestId = null, projectId, environmentId, plugi
 
   return (
     <section aria-labelledby="audit-feature-title" className="flex min-h-0 flex-1 flex-col @container/audit" data-feature="audit" data-scope-key={scopeKey}>
-      {focusedRequest ? <div role="status" className="flex flex-wrap items-center gap-2 border-b p-3 text-xs" data-testid="audit-focused-operation">仅显示刚才确认的操作<Button size="xs" variant="outline" onClick={() => { setFocusedRequest(null); setQuery(""); setSearch("") }}>查看全部记录</Button></div> : null}
+      {focusedRequest ? <div role="status" className="flex flex-wrap items-center gap-2 border-b p-3 text-xs" data-testid="audit-focused-operation">仅显示刚才确认的操作<Button size="xs" variant="outline" onClick={clearFilters}>查看全部记录</Button></div> : null}
       <FeatureToolbar
         actions={<ButtonGroup aria-label="操作记录管理">
           <Button aria-label="刷新操作记录" data-testid="audit-refresh-trigger" disabled={loading || clearing} onClick={refreshAudit} size="icon-xs" variant="outline"><ArrowClockwise aria-hidden="true" className={loading ? "animate-spin motion-reduce:animate-none" : ""} /></Button>
-          <Button disabled={entries.length === 0 || clearing} data-testid="audit-clear-trigger" onClick={() => { setError(null); setClearDialog(true) }} size="xs" variant="outline"><Trash aria-hidden="true" />{pluginInstanceId ? "清除插件记录" : "清除环境记录"}</Button>
+          <DropdownMenu onOpenChange={managementHandoff.onOpenChange}>
+            <DropdownMenuTrigger asChild><Button aria-label="操作记录管理" data-testid="audit-management-trigger" disabled={clearing} size="icon-xs" title="操作记录管理" variant="outline"><DotsThree aria-hidden="true" /></Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="end" onCloseAutoFocus={managementHandoff.onCloseAutoFocus}>
+              <DropdownMenuItem disabled={entries.length === 0 || clearing} data-testid="audit-clear-trigger" onSelect={() => managementHandoff.queueAction(() => { setError(null); setClearDialog(true) })} variant="destructive"><Trash aria-hidden="true" />{pluginInstanceId ? "清除插件记录" : "清除环境记录"}</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </ButtonGroup>}
         description="查看谁做了什么，以及操作结果；展开记录可查看执行过程。"
         title={`${projectName} / ${pluginInstanceId ? pluginName ?? "当前插件" : environmentName} 操作记录`} titleId="audit-feature-title"
@@ -213,6 +225,7 @@ export function AuditFeature({ requestId = null, projectId, environmentId, plugi
         <Select value={categoryFilter} onValueChange={setCategoryFilter}><SelectTrigger aria-label="筛选操作类型" className="w-28"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部类型</SelectItem>{Object.entries(categoryLabels).map(([key,label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select>
         <Select value={resultFilter} onValueChange={setResultFilter}><SelectTrigger aria-label="筛选操作结果" className="w-32"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部结果</SelectItem>{results.map(result => <SelectItem key={result} value={result}>{auditResultLabel(result)}</SelectItem>)}</SelectContent></Select>
         <Select value={range} onValueChange={setRange}><SelectTrigger aria-label="筛选记录时间" className="w-28"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部时间</SelectItem><SelectItem value="1">最近 24 小时</SelectItem><SelectItem value="7">最近 7 天</SelectItem><SelectItem value="30">最近 30 天</SelectItem></SelectContent></Select>
+        {hasFilters ? <Button data-testid="audit-clear-filters" disabled={clearing} onClick={clearFilters} size="xs" variant="ghost">清空筛选</Button> : null}
       </div>
       <label className="mb-3 flex items-center gap-2 text-xs text-muted-foreground"><Checkbox checked={includeRedisScans} onCheckedChange={value => setIncludeRedisScans(value === true)} aria-label="显示 Redis 扫描" />显示 Redis 扫描<span>（默认隐藏用户的成功扫描）</span></label>
       {hasUpdates ? <div role="status" className="mb-2 flex items-center justify-between gap-2 rounded-md bg-surface-inset px-3 py-2 text-xs"><span>操作记录有更新</span><Button size="xs" variant="outline" disabled={loading || clearing} onClick={refreshAudit}>查看最新记录</Button></div> : null}
@@ -233,7 +246,7 @@ export function AuditFeature({ requestId = null, projectId, environmentId, plugi
           onCloseAutoFocus={(event) => {
             event.preventDefault()
             requestAnimationFrame(() => requestAnimationFrame(() => {
-              const trigger = document.querySelector<HTMLElement>('[data-testid="audit-clear-trigger"]')
+              const trigger = document.querySelector<HTMLElement>('[data-testid="audit-management-trigger"]')
               if (focusWorkspaceElement(trigger)) return
               if (focusWorkspaceElement(document.querySelector<HTMLElement>('[data-testid="audit-refresh-trigger"]'))) return
               focusWorkspaceElement(document.getElementById("detail-main"))

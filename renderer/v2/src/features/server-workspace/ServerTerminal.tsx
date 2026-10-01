@@ -5,9 +5,10 @@ import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import { SearchAddon } from "@xterm/addon-search"
 import { TerminalSearch, type TerminalSearchHandle, type TerminalSearchEngine } from "./TerminalSearch"
-import { ArrowClockwise, Copy, ClipboardText, Plus, Stop, TerminalWindow, X } from "@phosphor-icons/react"
+import { ArrowClockwise, Copy, ClipboardText, MagnifyingGlass, Plus, Stop, TerminalWindow, X } from "@phosphor-icons/react"
 import type { AiOpsV2Api, PluginScope } from "@/bridge/ai-ops-v2"
 import { useTheme } from "@/app/theme-provider"
+import { useMenuHandoff } from "@/hooks/use-menu-handoff"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu"
@@ -55,6 +56,7 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
   const fitRef = useRef<FitAddon | null>(null)
   const resizeSchedulerRef = useRef<ReturnType<typeof createTerminalResizeScheduler> | null>(null)
   const searchRef = useRef<TerminalSearchHandle>(null)
+  const searchMenuHandoff = useMenuHandoff(JSON.stringify([scope.projectId, scope.environmentId, scope.pluginInstanceId, tabId, visible, focused]))
   const [searchEngine, setSearchEngine] = useState<TerminalSearchEngine | null>(null)
   const sessionRef = useRef<string | null>(null)
   const clipboardSessionRef = useRef<string | null>(null)
@@ -500,6 +502,7 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
       <div className="server-workspace-toolbar">
         <div className="flex min-w-0 items-center gap-2"><TerminalWindow size={16} className="text-primary" /><span className="font-medium">终端</span><span className="text-xs text-muted-foreground" role="status" aria-live="polite">{status === "open" ? reconnected ? "已重新连接 · 新会话" : "人工会话" : status === "opening" ? recoveryRef.current ? "正在恢复终端…" : "正在打开…" : status === "waiting" ? connected ? "等待恢复终端…" : "等待服务器连接…" : "会话已结束"}</span></div>
         <div className="flex items-center gap-1">
+          <Button size="icon-xs" variant="ghost" disabled={!searchEngine || !visible} aria-label="搜索终端" title={isMac ? "查找已加载终端内容（⌘F）" : "查找已加载终端内容（Ctrl+F）"} onClick={() => searchRef.current?.open()}><MagnifyingGlass aria-hidden="true" /></Button>
           <Button size="sm" variant="ghost" disabled={!hasSelection} title={isMac ? "复制选中内容（⌘C）" : "复制选中内容（Ctrl+Shift+C）"} onClick={() => { void clipboardAction("copy") }}><Copy />复制</Button>
           <Button size="sm" variant="ghost" disabled={status !== "open" || !connected} title={isMac ? "粘贴（⌘V）" : "粘贴（Ctrl+V / Ctrl+Shift+V）"} onClick={() => { void clipboardAction("paste") }}><ClipboardText />粘贴</Button>
           <Button size="sm" variant="ghost" onClick={() => { setDefaultColors(readDefaultColors()); setColorHelp(true) }}>目录配色</Button>
@@ -511,7 +514,7 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
       {status === "open" && commandAudit ? <p className="shrink-0 px-3 py-1 text-xs text-muted-foreground" data-terminal-command-audit={commandAudit}>{commandAudit === "available" ? "命令完成后记录脱敏摘要和退出码" : commandAudit === "failed" ? "命令记录写入失败，请检查本地审计存储。" : "当前 Shell 未提供逐条命令记录，仅记录会话活动。"}</p> : null}
       <TerminalSearch ref={searchRef} engine={searchEngine} visible={visible} theme={theme} />
       {error ? <div role="alert" className="server-workspace-error">{error}<Button size="sm" variant="ghost" aria-label="收起终端提示" onClick={() => setError("")}>收起</Button></div> : null}
-      <ContextMenu><ContextMenuTrigger asChild><div className="server-terminal-container" ref={containerRef} data-path-drag-over={pathDragOver || undefined}
+      <ContextMenu onOpenChange={searchMenuHandoff.onOpenChange}><ContextMenuTrigger asChild><div className="server-terminal-container" ref={containerRef} data-path-drag-over={pathDragOver || undefined}
         onDragOverCapture={event => {
           event.preventDefault()
           event.stopPropagation()
@@ -528,7 +531,19 @@ export function ServerTerminal({ tabId, api, scope, visible, focused = true, con
           const path = pathDrag.take(event.dataTransfer)
           if (path !== null) insertPaste(quoteRemotePath(path))
         }} /></ContextMenuTrigger>
-        <ContextMenuContent onCloseAutoFocus={(event) => { event.preventDefault(); if (visibleRef.current) terminalRef.current?.focus() }}>
+        <ContextMenuContent onCloseAutoFocus={(event) => {
+          event.preventDefault()
+          if (mountedRef.current && visibleRef.current && focusedRef.current) terminalRef.current?.focus()
+          searchMenuHandoff.onCloseAutoFocus()
+        }}>
+          <ContextMenuItem disabled={!searchEngine || !visible} onSelect={() => {
+            const epoch = interactionEpochRef.current
+            // 查找等菜单完成关闭后再聚焦，迟到动作不能返回已经切走的终端。
+            searchMenuHandoff.queueAction(() => {
+              if (!mountedRef.current || !visibleRef.current || !focusedRef.current || epoch !== interactionEpochRef.current) return
+              searchRef.current?.open()
+            })
+          }}>查找内容</ContextMenuItem>
           <ContextMenuItem disabled={!hasSelection} onSelect={() => { void clipboardAction("copy") }}>复制选中内容</ContextMenuItem>
           <ContextMenuItem disabled={status !== "open" || !connected} onSelect={() => { void clipboardAction("paste") }}>粘贴</ContextMenuItem>
         </ContextMenuContent>

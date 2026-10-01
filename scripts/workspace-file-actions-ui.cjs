@@ -1,8 +1,6 @@
 const assert = require('node:assert/strict');
-const { clipboard } = require('electron');
 
 module.exports = async function fileActionsUi({evaluate,click,clickText,until,wait,win,fileActionCalls,uploadRevisions,selectUploads,confirmCount,snapshot}) {
-  const saved = {text:clipboard.readText(),html:clipboard.readHTML(),rtf:clipboard.readRTF(),image:clipboard.readImage()};
   const row = value => '[role="treeitem"][title=' + JSON.stringify(value) + ']';
   const has = selector => 'document.querySelector(' + JSON.stringify(selector) + ')';
   const enterPath = async value => {
@@ -44,23 +42,41 @@ module.exports = async function fileActionsUi({evaluate,click,clickText,until,wa
     assert.ok(await evaluate("(() => { const item=[...document.querySelectorAll('[role=menuitem]')].find(item=>item.textContent.trim()==="+JSON.stringify(label)+"); if(!item||item.getAttribute('aria-disabled')==='true') return false; item.click(); return true; })()"), '菜单操作：'+label);
     await wait(100);
   };
-  const copied = async (expected, label) => {
-    // 复制是异步操作，菜单关闭不代表系统剪贴板写入完成；仍核对准确内容。
-    const deadline = Date.now() + 3000;
-    while (clipboard.readText() !== expected && Date.now() < deadline) await wait(20);
-    assert.ok(clipboard.readText() === expected, label);
+  const copied = async (expected, label, baseline) => {
+    await until("window.__fileActionClipboardWrites.length >= "+expected.length+" && !document.querySelector('[role=menu]')", '复制调用完成且菜单关闭');
+    assert.deepEqual(await evaluate('window.__fileActionClipboardWrites'),expected,label);
+    assert.equal(fileActionCalls.length,baseline.actions,label+'不发起文件事务');
+    assert.equal(confirmCount(),baseline.confirmations,label+'不确认文件修改');
   };
   const ready = async () => until("document.querySelector('[aria-label=\"批量处理同名文件\"]')?.disabled === false && !document.querySelector('[data-testid=upload-review-progress]') && !document.querySelector('.server-upload-review-error')", '冲突预检完成');
-  try {
+  {
     await enterPath('/srv');
     await until(has(row('/srv/example.conf')), '测试目录');
     await click(row('/srv/example.log'));
-    clipboard.writeText('等待文件菜单复制');
-    await menu('/srv/example.conf'); await choose('复制名称');
-    await until("!document.querySelector('[role=menu]')", '关闭复制菜单');
-    await copied('example.conf','复制右键所在文件名称');
-    await menu('/srv/example.conf'); await choose('复制完整路径');
-    await copied('/srv/example.conf','复制路径使用右键目标');
+    const copyBaseline = {actions:fileActionCalls.length,confirmations:confirmCount()};
+    // 当前隐藏窗口无法可靠完成系统剪贴板回环；仅接收应用实际参数，不读取或写入宿主剪贴板。
+    try {
+      await evaluate(`(() => {
+        const descriptor=Object.getOwnPropertyDescriptor(navigator,'clipboard');
+        window.__fileActionClipboardWrites=[];
+        window.__restoreFileActionClipboard=() => {
+          if(descriptor) Object.defineProperty(navigator,'clipboard',descriptor);
+          else delete navigator.clipboard;
+          delete window.__fileActionClipboardWrites;
+          delete window.__restoreFileActionClipboard;
+        };
+        Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text => {
+          window.__fileActionClipboardWrites.push(text);
+        }}});
+      })()`);
+      process.stdout.write(JSON.stringify({clipboardMode:'fixture',osClipboardIntegration:'unverified',inputMode:'dom-menu-selection'})+'\n');
+      await menu('/srv/example.conf'); await choose('复制名称');
+      await copied(['example.conf'],'复制右键所在文件名称仅调用一次',copyBaseline);
+      await menu('/srv/example.conf'); await choose('复制完整路径');
+      await copied(['example.conf','/srv/example.conf'],'复制路径使用右键目标且第二次仅调用一次',copyBaseline);
+    } finally {
+      await evaluate('window.__restoreFileActionClipboard?.()');
+    }
     await menu('/srv/example.conf'); await choose('查看属性');
     await until("document.querySelector('.server-file-properties')?.textContent.includes('256 B')", '实时属性');
     assert.equal(fileActionCalls.at(-1).path,'/srv/example.conf');
@@ -154,5 +170,5 @@ module.exports = async function fileActionsUi({evaluate,click,clickText,until,wa
     assert.equal(await evaluate("Array.from(document.querySelectorAll("+JSON.stringify(deleteDialog+" button")+")).some(item=>item.textContent.trim()==='永久删除')"),false,'预检失败没有删除按钮');
     await clickText('取消');
     assert.ok(await evaluate(has(row('/srv/config'))),'非空目录保留');
-  } finally { clipboard.write(saved); }
+  }
 };

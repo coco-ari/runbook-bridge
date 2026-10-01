@@ -264,7 +264,7 @@ export function RunbookFeature({
           )}
           </ButtonGroup>
         )}
-        description="说明保存在当前环境中，保存时使用配置修订号防止覆盖其他窗口的修改。"
+        description="说明保存在当前环境中；其他窗口已修改时会提示重新读取，避免覆盖他人的修改。"
         meta={(
           <Badge variant={tooLarge ? "danger" : "outline"}>
             {draftBytes.toLocaleString("zh-CN")} / 65,536 字节

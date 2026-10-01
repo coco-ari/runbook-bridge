@@ -12,17 +12,21 @@ const collectStyleEvidence = () => {
       root.dataset.theme = theme;
       for (const scope of ['settings', 'server-workspace', 'redis-workspace', 'mysql-workspace']) {
         probe.innerHTML = '<section class="' + scope + '" style="position:static;height:auto">'
-          + '<button class="h-8 rounded-md text-sm font-medium border border-input">配置</button>'
-          + '<input class="h-8 text-xs font-mono border border-input" />'
-          + '<span class="text-xs">辅助说明</span></section>';
-        const [button, input, hint] = probe.firstElementChild.children;
+          + '<button class="h-8 rounded-md text-sm font-medium border border-control-border">配置</button>'
+          + '<input class="h-8 text-xs font-mono border border-control-border" />'
+          + '<span class="text-xs">辅助说明</span>'
+          + '<div class="border border-border"></div></section>';
+        const [button, input, hint, decoration] = probe.firstElementChild.children;
         const buttonStyle = getComputedStyle(button);
         const inputStyle = getComputedStyle(input);
         const expected = document.createElement('span');
-        expected.style.borderColor = 'var(--input)';
+        expected.style.borderColor = 'var(--control-border)';
         expected.style.color = 'var(--primary)';
         expected.style.backgroundColor = 'var(--surface-selected)';
         probe.append(expected);
+        const expectedDecoration = document.createElement('span');
+        expectedDecoration.style.cssText = 'border-color:var(--border);transition:none';
+        probe.append(expectedDecoration);
         const expectedStyle = getComputedStyle(expected);
         results.push({
           theme, scope,
@@ -32,8 +36,11 @@ const collectStyleEvidence = () => {
           radius: buttonStyle.borderRadius,
           inputFont: inputStyle.fontSize,
           inputFamily: inputStyle.fontFamily,
-          border: buttonStyle.borderColor,
+          buttonBorder: buttonStyle.borderColor,
+          inputBorder: inputStyle.borderColor,
           expectedBorder: expectedStyle.borderColor,
+          decorativeBorder: getComputedStyle(decoration).borderColor,
+          expectedDecorativeBorder: getComputedStyle(expectedDecoration).borderColor,
           hint: getComputedStyle(hint).fontSize,
           primary: expectedStyle.color,
           selected: expectedStyle.backgroundColor,
@@ -64,7 +71,9 @@ module.exports = async function assertWorkspaceStyles(win) {
     assert.equal(result.radius, '6px', label + '：公共控件圆角一致');
     assert.equal(result.inputFont, '12px', label + '：紧凑输入字号生效');
     assert.match(result.inputFamily, /Cascadia Mono/, label + '：技术输入保留等宽字体');
-    assert.equal(result.border, result.expectedBorder, label + '：输入边框颜色不能被全局规则覆盖');
+    assert.equal(result.buttonBorder, result.expectedBorder, label + '：按钮操作边界不能被全局规则覆盖');
+    assert.equal(result.inputBorder, result.expectedBorder, label + '：输入操作边界不能被全局规则覆盖');
+    assert.equal(result.decorativeBorder, result.expectedDecorativeBorder, label + '：装饰分隔保留原有边框颜色');
     assert.equal(result.hint, '12px', label + '：辅助信息字号一致');
     const foreground = luminance(result.primary);
     const background = luminance(result.selected);

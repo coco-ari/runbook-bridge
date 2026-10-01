@@ -3,7 +3,7 @@ import { toast } from "sonner"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { DiagnosticDetails } from "@/features/connections/DiagnosticDetails"
 import { useEffect, useState } from "react"
-import { ArrowClockwise, Copy, DownloadSimple, LinkBreak, Plus, SpinnerGap, WarningCircle } from "@phosphor-icons/react"
+import { ArrowClockwise, CaretDown, Copy, DownloadSimple, LinkBreak, Plus, SpinnerGap, WarningCircle } from "@phosphor-icons/react"
 import type { AiOpsV2Api } from "@/bridge/ai-ops-v2"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -12,6 +12,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { SelectControl, SelectItem } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { useCloudConfig } from "./CloudConfigProvider"
 import { CloudProjectActions, CloudProjectIcon, cloudStatusLabels } from "./CloudProjectActions"
 import { CloudProjectMenu, useCloudProjectManagement } from "./CloudProjectManagement"
@@ -86,7 +87,13 @@ export function CloudConfigPanel({ api, onBusyChange }: { api: AiOpsV2Api; onCha
         <div className="flex shrink-0 flex-wrap items-center gap-2" data-testid="cloud-project-toolbar">
           <Input id="cloud-project-search" aria-label="搜索项目" placeholder="搜索项目" className="h-8 min-w-28 flex-1 text-xs" value={query} onChange={event => setQuery(event.target.value)} />
           <SelectControl value={filter} onValueChange={setFilter} size="sm" aria-label="筛选云项目"><SelectItem value="all">全部项目</SelectItem><SelectItem value="visible">已显示</SelectItem><SelectItem value="hidden">已隐藏</SelectItem><SelectItem value="behind">有更新</SelectItem><SelectItem value="deleted">已删除</SelectItem></SelectControl>
-          <Button size="xs" variant="ghost" disabled={cloud.busy || !visible.length || filter === "deleted"} data-testid="cloud-show-filtered" onClick={() => showAll(true)}>显示筛选结果（{filter === "deleted" ? 0 : visible.length}）</Button><Button size="xs" variant="ghost" disabled={cloud.busy || !visible.length || filter === "deleted"} data-testid="cloud-hide-filtered" onClick={() => showAll(false)}>隐藏筛选结果（{filter === "deleted" ? 0 : visible.length}）</Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild><Button size="xs" variant="ghost" disabled={cloud.busy || !visible.length || filter === "deleted"} data-testid="cloud-visibility-actions" title={filter === "deleted" ? "已删除项目不能调整本机显示" : !visible.length ? "没有匹配的项目" : "调整筛选结果在本机的显示状态"}>批量显示<CaretDown aria-hidden="true" /></Button></DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem disabled={cloud.busy || !visible.length || filter === "deleted"} data-testid="cloud-show-filtered" onSelect={() => showAll(true)}>显示筛选结果（{filter === "deleted" ? 0 : visible.length}）</DropdownMenuItem>
+              <DropdownMenuItem disabled={cloud.busy || !visible.length || filter === "deleted"} data-testid="cloud-hide-filtered" onSelect={() => showAll(false)}>隐藏筛选结果（{filter === "deleted" ? 0 : visible.length}）</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button size="xs" variant="outline" disabled={cloud.busy || cloud.checking} data-testid="cloud-check" onClick={() => void cloud.check(repository?.repositoryId)}><ArrowClockwise className={cloud.checking ? "animate-spin" : undefined} />检测更新</Button>
           <Button size="xs" disabled={cloud.busy || !repository?.unlocked} data-testid="cloud-update-all" onClick={() => { if (repository) void cloud.run({ action: "sync", repositoryId: repository.repositoryId, direction: "download" }) }}><DownloadSimple />更新整个仓库</Button>
         </div>

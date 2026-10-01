@@ -23,7 +23,11 @@ async function exerciseAuditHistory({win,scope,root,dataRoot,ipcMain,registerRea
     {...approval,type:'plugin-operation',operationId:'approved-execution',result:'error',errorCode:'SERVICE_CONTROL_FAILED',durationMs:3000});
   fs.writeFileSync(file,rows.map(row => JSON.stringify(row)).join('\n')+'\n');
   ipcMain.removeHandler('v2:audit-list');
-  registerRead('v2:audit-list',payload => history.list(file,payload,workspaceInternals.readLinesReverse));
+  const auditQueries = [];
+  registerRead('v2:audit-list',payload => {
+    auditQueries.push(structuredClone(payload));
+    return history.list(file,payload,workspaceInternals.readLinesReverse);
+  });
   await click(win,'[data-testid="audit-refresh-trigger"]');
   await waitFor(win,'document.querySelectorAll("[data-audit-operation]").length === 50','首批完整操作');
   await click(win,'[data-testid="audit-load-more"]');
@@ -78,8 +82,22 @@ async function exerciseAuditHistory({win,scope,root,dataRoot,ipcMain,registerRea
   assert.equal(await win.webContents.executeJavaScript('document.querySelector("[data-audit-layout]").textContent.includes("扫描 Redis 键")',true),false);
   await click(win,'[aria-label="显示 Redis 扫描"]');
   await waitFor(win,'document.querySelector("[data-audit-layout]")?.textContent.includes("扫描 Redis 键") === true','显示成功 Redis 扫描');
-  await click(win,'[aria-label="显示 Redis 扫描"]');
-  await waitFor(win,'document.querySelector("[data-audit-layout]")?.textContent.includes("扫描 Redis 键") === false','重新隐藏成功 Redis 扫描');
+  await fill(win,'input[aria-label="搜索操作记录"]','fixture');
+  await click(win,'[aria-label="筛选参与方"]');
+  await clickText(win,'用户','[role="listbox"]');
+  await click(win,'[aria-label="筛选操作类型"]');
+  await clickText(win,'只读操作','[role="listbox"]');
+  await click(win,'[aria-label="筛选操作结果"]');
+  await clickText(win,'失败','[role="listbox"]');
+  await click(win,'[aria-label="筛选记录时间"]');
+  await clickText(win,'最近 24 小时','[role="listbox"]');
+  await waitFor(win,'Boolean(document.querySelector("[data-testid=audit-clear-filters]"))','多个非默认筛选显示统一恢复入口');
+  await click(win,'[data-testid="audit-clear-filters"]');
+  await waitFor(win,'document.querySelectorAll("[data-audit-operation]").length === 50 && !document.querySelector("[data-testid=audit-clear-filters]")','一次清空全部筛选并恢复首批历史');
+  const lastQuery = auditQueries.at(-1);
+  assert.deepEqual({query:lastQuery.query,actor:lastQuery.actor,category:lastQuery.category,result:lastQuery.result,includeRedisScans:lastQuery.includeRedisScans,from:lastQuery.from},
+    {query:'',actor:'all',category:'all',result:'all',includeRedisScans:false,from:undefined},'清空恢复查询、参与方、类别、结果、时间和 Redis 扫描默认值');
+  assert.equal(await win.webContents.executeJavaScript('document.querySelector("[data-audit-layout]").textContent.includes("扫描 Redis 键")',true),false,'统一清空筛选恢复成功扫描默认隐藏');
 
   process.stdout.write('操作记录界面通过：来源、审批详情、历史搜索、分页、新记录提示和键盘展开。\n');
 }

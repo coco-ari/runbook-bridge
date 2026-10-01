@@ -314,9 +314,20 @@ test('busy focus remains in the current visible open dialog and cannot revive an
 test('resizable group preserves the guarded layout persistence contract',async () => {
   const shell = await source('renderer/v2/src/components/app-shell/use-app-shell-layout.ts');
   const layout = shell.slice(shell.indexOf('const handleLayoutChanged'),shell.indexOf('const restoreEditorLayout'));
-  assert.match(layout,/stableLayoutRef\.current = layout/u);
-  assert.ok(layout.includes('if (suppressLayoutPersistenceRef.current || window.innerWidth < 960) return'));
-  assert.ok(layout.includes('const next = { ...current, layout }'));
-  assert.ok(layout.includes('persistAppShellLayoutState(next)'));
-  assert.ok(!layout.includes('requestAnimationFrame'));
+  assert.match(layout,/\{ isUserInteraction \}: LayoutChangedMeta/u);
+  assert.match(layout,/if \(suppressLayoutPersistenceRef\.current \|\| !isUserInteraction\) return[\s\S]*const canSaveLayout = window\.innerWidth >= 960 && panelSpace > 0/u);
+  assert.match(layout,/if \(canSaveLayout\) \{\s*stableLayoutRef\.current = layout\s*stableNavigationPixelsRef\.current = \{/u);
+  assert.match(layout,/commitLayoutState\(\(current\) => \(\{[\s\S]*projectCollapsed: inPixels === null \? current\.projectCollapsed : projectCollapseIntentAfterResize\(current\.projectCollapsed, \{\s*inPixels, previousPixels, viewportWidth: window\.innerWidth, isUserInteraction,[\s\S]*\.\.\.\(canSaveLayout \? \{ layout, detailCollapsed: detailPixels <= 50 \} : \{\}\)/u);
+  assert.doesNotMatch(layout,/requestAnimationFrame/u);
+
+  const commit = shell.slice(shell.indexOf('const commitLayoutState'),shell.indexOf('const beginLayoutRestore'));
+  assert.match(commit,/const next = update\(current\)\s*persistAppShellLayoutState\(next\)\s*return next/u);
+  const restore = shell.slice(shell.indexOf('const restoreEditorLayout'),shell.indexOf('\n  useEffect',shell.indexOf('const restoreEditorLayout')));
+  assert.match(restore,/const ticket = beginLayoutRestore\(\)\s*editorLayoutRef\.current = null/u);
+  assert.match(restore,/window\.innerWidth >= 960 && window\.innerWidth !== previous\.viewportWidth\) restoreUserLayout\(\)/u);
+  assert.match(restore,/setLayout\(previous\.layout\)/u);
+  assert.match(restore,/latestLayoutStateRef\.current\.projectCollapsed/u);
+  assert.match(restore,/latestLayoutStateRef\.current\.detailCollapsed/u);
+  assert.match(restore,/finishLayoutRestore\(ticket\)/u);
+  assert.doesNotMatch(restore,/commitLayoutState|persistAppShellLayoutState|stableLayoutRef\.current\s*=/u);
 });

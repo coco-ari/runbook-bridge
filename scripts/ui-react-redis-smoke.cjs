@@ -175,7 +175,31 @@ async function click(win, selector) {
   await wait(60);
 }
 async function fill(win, selector, text) {
-  await win.webContents.executeJavaScript(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(e instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(text)}); e.dispatchEvent(new Event('input',{bubbles:true})); })()`, true);
+  const code = await win.webContents.executeJavaScript(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); if(e?.classList.contains('cm-content')) { e.focus(); return true; } return false; })()`, true);
+  if (code) {
+    await waitFor(win,`(() => {
+      const e=document.querySelector(${JSON.stringify(selector)});
+      return e?.closest('.redis-tab-panel')?.hidden===false && e.getAttribute('aria-readonly')==='false' && Boolean(e.cmTile?.root?.view);
+    })()`,'活动 CodeMirror 草稿已就绪且允许编辑');
+    win.webContents.focus();
+    const modifiers = [process.platform === 'darwin' ? 'meta' : 'control'];
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'A',modifiers});
+    win.webContents.sendInputEvent({type:'keyUp',keyCode:'A',modifiers});
+    // 原生全选异步进入编辑器；先核对选区再插入，避免新值拼接到旧草稿前。
+    await waitFor(win,`(() => {
+      const e=document.querySelector(${JSON.stringify(selector)}), view=e.cmTile.root.view;
+      return document.activeElement===e && view.state.selection.main.from===0 && view.state.selection.main.to===view.state.doc.length;
+    })()`,'原生全选覆盖完整 Redis 草稿');
+    const byteLimit = await win.webContents.executeJavaScript(`Number(document.querySelector(${JSON.stringify(selector)}).closest('[data-testid=redis-value-editor]').querySelector('[data-testid=redis-draft-bytes]').textContent.split('/')[1].replace(/[^0-9]/g,''))`,true);
+    assert.ok(Number.isSafeInteger(byteLimit)&&byteLimit>0,'编辑器显示有效的 UTF-8 字节预算');
+    if (text) await win.webContents.insertText(text);
+    else {
+      win.webContents.sendInputEvent({type:'keyDown',keyCode:'Backspace'});
+      win.webContents.sendInputEvent({type:'keyUp',keyCode:'Backspace'});
+    }
+    // 超限用例由编辑器拒绝并保留原文；普通输入则必须完整替换成请求文本。
+    if (text.length<=65536 && Buffer.byteLength(text,'utf8')<=byteLimit) await waitFor(win,`document.querySelector(${JSON.stringify(selector)}).cmTile.root.view.state.sliceDoc()===${JSON.stringify(text)}`,'Redis 草稿完整替换为输入原文');
+  } else await win.webContents.executeJavaScript(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(e instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(text)}); e.dispatchEvent(new Event('input',{bubbles:true})); })()`, true);
   await wait(40);
 }
 async function openMenu(win, id) {
@@ -638,14 +662,18 @@ async function run() {
     await click(win,testId('redis-create-key'));
     await fill(win,'[aria-label="新增 Key 名称"]','cache:ui-created');
     await fill(win,'[aria-label="Redis Value"]','{"id":9007199254740993}');
+    await require('./redis-editor-ui.cjs')({win,fill,click,waitFor,active,writeValues});
     await shot(win,'redis-create');
     assert.equal(writeValues.has('cache:ui-created'),false,'填写不立即写入');
-    await click(win,active('redis-save-value'));
+    await win.webContents.executeJavaScript('document.querySelector(\'[aria-label="Redis Value"]\').focus()',true);
+    const saveModifiers=[process.platform==='darwin'?'meta':'control'];
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'S',modifiers:saveModifiers});
+    win.webContents.sendInputEvent({type:'keyUp',keyCode:'S',modifiers:saveModifiers});
     await waitFor(win,'!document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]")','新增成功返回详情');
     assert.equal(writeValues.get('cache:ui-created').value,'{"id":9007199254740993}');
     await click(win,active('redis-edit-value'));
     await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]")','原位编辑值');
-    const editorGeometry=()=>win.webContents.executeJavaScript('(()=>{const root=document.querySelector(".redis-tab-panel:not([hidden])"),elements=[root.querySelector(".redis-edit-textarea"),root.querySelector(".redis-edit-footer"),root.querySelector("[data-testid=redis-save-value]")];return elements.map(e=>{const r=e.getBoundingClientRect();return [r.x,r.y,r.width,r.height]})})()',true);
+    const editorGeometry=()=>win.webContents.executeJavaScript('(()=>{const root=document.querySelector(".redis-tab-panel:not([hidden])"),elements=[root.querySelector(".redis-write-code"),root.querySelector(".redis-edit-footer"),root.querySelector("[data-testid=redis-save-value]")];return elements.map(e=>{const r=e.getBoundingClientRect();return [r.x,r.y,r.width,r.height]})})()',true);
     const stableEditor=await editorGeometry();
     await fill(win,'[aria-label="Redis Value"]','{');
     assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-save-value]").disabled',true),true,'无效 JSON 禁止保存');
@@ -668,6 +696,7 @@ async function run() {
     state.loseWriteReply=true;state.failWriteStatus=1;state.writeDelays.commit=6200;state.failReload=true;
     await click(win,active('redis-save-value'));
     await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-save-value] [data-operation-spinner]")','提交原位转圈');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) .redis-write-code .cm-content").getAttribute("contenteditable")',true),'false','提交中编辑器锁定');
     assert.deepEqual(await editorGeometry(),stableEditor,'保存等待不得移动组件');
     await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) .redis-edit-error")?.textContent.includes("响应较慢")','弱网等待有时间反馈');
     assert.deepEqual(await editorGeometry(),stableEditor,'长等待提示不改变布局');
@@ -688,7 +717,8 @@ async function run() {
     await text(win,'.redis-tab-panel:not([hidden]) .redis-edit-error','模拟状态查询失败');
     assert.equal(state.failWriteStatus,0,'自动状态查询有界重试三次');
     assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-save-value]").disabled',true),true,'查询失败保持禁止重复写入');
-    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) .redis-edit-textarea").value',true),'{"recovered":true}','恢复失败不丢草稿');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) .redis-write-code .cm-content").cmTile.root.view.state.sliceDoc()',true),'{"recovered":true}','恢复失败不丢草稿');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) .redis-write-code .cm-content").getAttribute("contenteditable")',true),'false','未知保存结果编辑器保持锁定');
     for(const zoom of [1,1.25,1.5]){
       win.webContents.setZoomFactor(zoom);await wait(120);
       assert.equal(await win.webContents.executeJavaScript('(()=>{const root=document.querySelector(".redis-tab-panel:not([hidden]) .redis-edit-actions"),r=root.getBoundingClientRect(),buttons=[...root.querySelectorAll("button")];return buttons.every((e,i)=>{const b=e.getBoundingClientRect(),next=buttons[i+1]?.getBoundingClientRect();return b.left>=r.left-1&&b.right<=r.right+1&&(!next||b.right<=next.left+1)})})()',true),true,'恢复入口在缩放下可见且不重叠');

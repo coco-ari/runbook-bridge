@@ -143,11 +143,15 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(resourcePane,/const selectedPluginIsVisible =/u);
   assert.match(resourcePane,/expandedEnvironmentIds\.includes\(selectedEnvironment\.environmentId\)/u);
   assert.match(resourcePane,/selectedEnvironment && selectedPluginIsVisible/u);
-  const environmentTrigger = resourcePane.slice(resourcePane.indexOf('<AccordionTrigger'),resourcePane.indexOf('</AccordionTrigger>'));
+  const expandTrigger = resourcePane.slice(resourcePane.indexOf('<AccordionTrigger'),resourcePane.indexOf('</AccordionTrigger>'));
+  assert.match(expandTrigger,/data-testid=\{`environment-expand-/u);
+  assert.doesNotMatch(expandTrigger,/onSelectEnvironment|data-shell-nav-item|preventDefault\(|stopPropagation\(/u,
+    '独立展开按钮保留原生折叠语义且不改变环境选择');
+  const environmentTitlePosition = resourcePane.indexOf('data-testid={`environment-trigger-');
+  const environmentTrigger = resourcePane.slice(resourcePane.lastIndexOf('<Button',environmentTitlePosition),resourcePane.indexOf('</ContextMenuTrigger>',environmentTitlePosition));
   assert.match(environmentTrigger,/if \(!environmentSelected\) onSelectEnvironment\(\)/u,
-    'an environment title returns from a selected plugin to environment details on mouse or keyboard activation');
-  assert.doesNotMatch(environmentTrigger,/preventDefault\(|stopPropagation\(/u,
-    'the environment header preserves native mouse and keyboard Accordion toggling');
+    '环境标题通过鼠标或键盘返回环境详情，独立于展开状态');
+  assert.doesNotMatch(environmentTrigger,/AccordionTrigger|setExpandedEnvironment/u);
   assert.match(resourcePane,/onValueChange=\{setExpandedEnvironmentIds\}/u);
   assert.match(resourcePane,/reconcileEnvironmentExpansion\([\s\S]*?previous\?\.target \?\? null,[\s\S]*?previous\?\.environmentIds \?\? \[\]/u,
     'refresh reconciliation distinguishes navigation from late-arriving environment data');
@@ -169,10 +173,19 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(resourcePane,/<ItemGroup/u);
   assert.match(resourcePane,/<Item\b/u);
   assert.doesNotMatch(resourcePane,/<ButtonGroup|from "@\/components\/ui\/button-group"/u);
-  assert.match(resourcePane,/group\/environment-card[\s\S]*?rounded-lg border border-border\/70/u);
+  assert.match(resourcePane,/group\/environment-card[\s\S]*?rounded-md border border-border\/35/u);
   assert.match(resourcePane,/data-testid=\{`environment-row-/u);
-  assert.match(resourcePane,/<Accordion[\s\S]*?className="gap-2 py-2"/u);
-  assert.match(resourcePane,/\[&_\[data-slot=accordion-trigger-icon\]\]:hidden/u);
+  assert.match(resourcePane,/<Accordion[\s\S]*?className="gap-1 py-1"/u);
+  assert.doesNotMatch(resourcePane,/\[&_\[data-slot=accordion-trigger-icon\]\]:hidden/u);
+  assert.match(resourcePane,/min-h-12[\s\S]*?environment-trigger-/u);
+  assert.match(resourcePane,/group\/plugin relative min-h-10/u);
+  assert.match(resourcePane,/配置完成 \$\{environment.readyPluginCount\}/u);
+  assert.match(resourcePane,/<EnvironmentTypeBadge compact type=\{environment.environmentType\}/u);
+  assert.match(projectRail,/data-testid="global-resource-search"/u);
+  assert.match(projectRail,/Control\+K Meta\+K/u);
+  assert.match(projectRail,/shortcutLabel\("K"\)/u);
+  assert.match(projectRail,/confirmationEnvironmentName/u);
+  assert.match(projectRail,/confirmationsUnavailable \? onRetryConfirmations\(\)/u);
   assert.match(resourcePane,/<ItemGroup className="gap-0">/u);
   assert.match(resourcePane,/environmentSelected && "bg-surface-selected before:bg-primary"/u);
   assert.match(resourcePane,/selected && "bg-surface-selected[^"]*before:bg-primary/u);
@@ -286,4 +299,10 @@ test('command palette values remain unique across duplicate display names and is
   assert.match(command,/if \(!\(event\.metaKey \|\| event\.ctrlKey\) \|\| event\.altKey\) return/u);
   assert.match(command,/if \(key === "n"\) \{[\s\S]*?event\.preventDefault\(\)[\s\S]*?onOpenChange\(false\)[\s\S]*?onCreateProject\(\)/u);
   assert.match(command,/aria-keyshortcuts="Control\+N Meta\+N"/u);
+  assert.match(command,/const PluginIcon = pluginIcons\[plugin.pluginType\]/u);
+  assert.match(command,/<PluginIcon aria-hidden="true"/u);
+  const icons = await read('renderer/v2/src/features/plugins/plugin-icons.ts');
+  for (const [type,icon] of [['server','TerminalWindow'],['mysql','Database'],['redis','HardDrives'],['unknown','Plugs']]) {
+    assert.ok(icons.includes(`${type}: ${icon}`));
+  }
 });

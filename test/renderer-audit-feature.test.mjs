@@ -161,6 +161,12 @@ test('React audit feature keeps scope, search, filter, clear and request contrac
   assert.match(source,/view: "operations"/u);
   assert.match(source,/audit-load-more/u);
   assert.match(source,/onWorkspaceChanged/u);
+  assert.match(source,/useMenuHandoff\(scopeKey\)/u);
+  assert.match(source,/data-testid="audit-management-trigger"/u);
+  assert.match(source,/onSelect=\{\(\) => managementHandoff\.queueAction/u);
+  assert.match(source,/data-testid="audit-clear-filters"/u);
+  const reset = source.slice(source.indexOf('const clearFilters ='),source.indexOf('const from ='));
+  for (const setter of ['setFocusedRequest(null)','setQuery("")','setSearch("")','setResultFilter("all")','setActorFilter("all")','setCategoryFilter("all")','setRange("all")','setIncludeRedisScans(false)']) assert.ok(reset.includes(setter));
   assert.match(source,/<AlertDialog/u);
   assert.match(source,/if \(clearInFlightRef\.current\) return/u);
   assert.match(source,/clearInFlightRef\.current = true/u);
@@ -170,6 +176,7 @@ test('React audit feature keeps scope, search, filter, clear and request contrac
   assert.match(confirmation,/onEscapeKeyDown=[\s\S]*if \(clearing\) event\.preventDefault\(\)/u);
   assert.match(confirmation,/<AlertTitle>记录尚未清除<\/AlertTitle>/u);
   assert.match(confirmation,/focusWorkspaceElement\(trigger\)/u);
+  assert.match(confirmation,/audit-management-trigger/u);
   assert.match(confirmation,/audit-refresh-trigger/u);
   assert.match(presentation,/safeDisplayText/u);
   assert.doesNotMatch(presentation,/includes\(entry.type\).*Agent/u);

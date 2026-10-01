@@ -146,6 +146,14 @@ function registerDatabase(channel,handler) {
 }
 
 function readQuery({pluginInstanceId,sql}) {
+    if (sql === 'SHOW COLUMNS FROM orders') return ok({
+      ...queryResult([
+        {Field:'id',Type:'bigint',Null:'NO'},
+        {Field:'label',Type:'varchar(255)',Null:'YES'},
+        {Field:'optional',Type:'text',Null:'YES'},
+      ]),
+      columns:['Field','Type','Null'].map(name => ({name,table:null,type:253})),
+    });
     if (sql === 'SELECT sort_probe FROM orders') return ok(queryResult([{id:10,label:'ten'},{id:2,label:'two'},{id:1,label:'one'}]));
     if (sql === SHOWCASE_SQL) return ok({
       ...queryResult(Array.from({length:24},(_,index) => ({
@@ -480,6 +488,7 @@ async function openRowDetail(win,selector) {
 async function assertQueryDocuments(win,originalSql) {
   await fill(win,testId('mysql-query-filter'),'模拟订单');
   await click(win,testId('mysql-query-next-page'));
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('${testId('mysql-query-result')} [data-edit-column][tabindex="0"]').length`,true),1,'翻页后单入口保持');
   await openRowDetail(win,`${testId('mysql-query-row')}[data-row-index="104"]`);
   await textContains(win,'mysql-query-row-detail','模拟订单 105');
   const editorView = await win.webContents.executeJavaScript(`(() => {
@@ -546,6 +555,32 @@ async function assertQueryDocuments(win,originalSql) {
   await textContains(win,'mysql-query-result','模拟订单 100');
 }
 
+async function assertReadonlyResultKeyboard(win) {
+  // 单条 SELECT 保留可编辑语义；SHOW 使用真实的只读结果上下文验证 Enter 查看。
+  await click(win,testId('mysql-query-new'));
+  const documentId = await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-document-tab')}[aria-selected="true"]').dataset.queryId`,true);
+  const sql = 'SHOW COLUMNS FROM orders';
+  await fill(win,testId('mysql-sql-editor'),sql);
+  const beforeQuery = databaseCalls.length;
+  await click(win,testId('mysql-query-run'));
+  await textContains(win,'mysql-query-result','varchar(255)');
+  assert.deepEqual(state.sqlFixture.executions.at(-1),{...scope(PRIMARY_ID),sql},'只读键盘场景执行限定范围的 SHOW 元数据查询');
+  const showSession = [...state.sqlFixture.sessions.values()].find(session => session.sql === sql);
+  assert.ok(showSession,'SHOW 拥有独立 SQL 会话');
+  assert.deepEqual(databaseCalls.slice(beforeQuery),[
+    {channel:'v2:mysql-sql',payload:{...scope(PRIMARY_ID),documentId:showSession.documentId,operation:'prepare',sql,mode:'atomic'}},
+    {channel:'v2:mysql-sql',payload:{...scope(PRIMARY_ID),documentId:showSession.documentId,operation:'execute',planId:showSession.plan.planId}},
+  ],'SHOW 准备与执行保留准确范围、独立会话及一次性计划绑定');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-query-result')}').closest('${testId('mysql-data-editor')}') === null`,true),true,'SHOW 结果不提供行编辑上下文');
+  assert.match(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-query-result')} [data-edit-column]').getAttribute('aria-description')`,true),/Enter 查看行详情/u,'只读结果显式说明 Enter 查看行详情');
+  const callCount = databaseCalls.length;
+  await require('./database-grid-keyboard-ui.cjs')({win,prefix:'mysql-query',editable:false,waitFor});
+  assert.equal(databaseCalls.length,callCount,'只读网格方向、复制、查看详情和 Tab 离开不发送数据库请求');
+  await click(win,`${testId('mysql-query-close')}[data-query-id="${documentId}"]`);
+  await waitFor(win,`document.querySelector('${testId('mysql-sql-tab')}')?.getAttribute('aria-selected') === 'true'`,'关闭只读验证标签回到原 SELECT');
+  await textContains(win,'mysql-query-result','模拟订单 100');
+}
+
 async function assertResultDetails(win) {
   const callCount = databaseCalls.length;
   await openRowDetail(win,`${testId('mysql-query-row')}[data-row-index="0"]`);
@@ -560,6 +595,7 @@ async function assertResultDetails(win) {
   await click(win,testId('mysql-query-close-detail'));
   await fill(win,testId('mysql-query-filter'),'模拟订单 105');
   await waitFor(win,`document.querySelectorAll('${testId('mysql-query-row')}').length === 1`,'返回数据本地筛选');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('${testId('mysql-query-result')} [data-edit-column][tabindex="0"]').length`,true),1,'筛选后单入口保持');
   assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-query-row')}').dataset.rowIndex`,true),'104','筛选结果应保留返回数组的行索引。');
   assert.equal(databaseCalls.length,callCount,'结果筛选、查看与复制不得重新查询数据库。');
   await fill(win,testId('mysql-query-filter'),'');
@@ -784,6 +820,7 @@ async function run() {
     await screenshot(win,'query');
     await click(win,testId('mysql-query-copy'));
     assert.equal(await win.webContents.executeJavaScript('window.__databaseClipboardWrites.at(-1)',true),sql,'复制 SQL 必须保留编辑器文本。');
+    await assertReadonlyResultKeyboard(win);
     await assertResultDetails(win);
     await assertQueryDocuments(win,sql);
     const beforeReturnCalls=databaseCalls.length;

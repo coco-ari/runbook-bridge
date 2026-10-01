@@ -330,6 +330,8 @@
   height:28px;
   font-size: var(--text-xs)
 }
+.mysql-sql-action-group { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+.mysql-sql-action-group + .mysql-sql-action-group { border-left:1px solid var(--border); padding-left:6px; }
 
 .mysql-editor-hint {
   overflow:hidden;

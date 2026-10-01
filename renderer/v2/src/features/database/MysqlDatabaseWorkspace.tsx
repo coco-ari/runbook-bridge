@@ -5,7 +5,9 @@ import type { PublicError } from "@/bridge/ai-ops-v2"
 import { useWorkspaceNavigationActions } from "@/features/plugins/WorkspaceNavigation"
 import { resolveConnectionCancelTarget } from "@/features/connections/connection-model"
 import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
-import { StatusIndicator } from "@/components/app-shell/StatusIndicator"
+import { WorkspaceConnectionStatus } from "@/components/workspace/WorkspaceConnectionStatus"
+import { workspaceConnectionNotice, workspaceConnectionPresentation } from "@/components/workspace/workspace-connection-presentation"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { WorkspaceBackButton, WorkspaceHeaderActions, WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { WorkspaceLayoutControls, WorkspacePanelToggle, WorkspaceTabBar } from "@/components/workspace/WorkspaceLayoutControls"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
@@ -87,7 +89,7 @@ function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, envi
     <header className="mysql-workspace-header">
       <WorkspaceBackButton label={backLabel} testId="mysql-workspace-back" onClick={() => editing.protect(onBack, undefined, { preserveTransactions: true })} />
       <span className="mysql-workspace-header-divider" />
-      <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold" title={plugin.displayName}>{plugin.displayName}</h1><EnvironmentTypeBadge /><StatusIndicator appearance="badge" status={connected ? "connected" : "disconnected"} /><Badge variant="outline"><ShieldCheck className="size-3" />Agent 只读</Badge></div><p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName + " · " + database}>{projectName} / {environmentName} · {database}</p></div>
+      <div className="min-w-0 flex-1"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold" title={plugin.displayName}>{plugin.displayName}</h1><EnvironmentTypeBadge /><WorkspaceConnectionStatus state={connection.state} /><Tooltip><TooltipTrigger asChild><Badge variant="outline" tabIndex={0} aria-label="Agent 查询只读；此工作区的手动修改需确认"><ShieldCheck aria-hidden="true" className="size-3" />Agent 只读</Badge></TooltipTrigger><TooltipContent>Agent 查询只读；此工作区的手动修改需确认。</TooltipContent></Tooltip></div><p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName + " · " + database}>{projectName} / {environmentName} · {database}</p></div>
       <WorkspaceHeaderActions connected={connected} busy={disconnecting || connection.state.phase === "disconnecting"}
         reconnecting={Boolean(connection.state.operation) || connection.state.phase === "connecting"}
         canCancel={resolveConnectionCancelTarget(connection.state.operation, connection.state.runtime, scope, scope.pluginInstanceId) !== null}
@@ -99,7 +101,7 @@ function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, envi
         }} onDisconnect={() => editing.protect(() => void disconnect())} onClose={() => setClosing(true)} prefix="mysql-workspace" closeLabel="关闭数据库工作区" closeTitle="关闭工作区并清除查询" />
     </header>
     {!connected ? <div className="mysql-edit-message" role="status" data-testid="mysql-workspace-disconnected">
-      <span>连接已断开，SQL 和表标签已保留，可继续编辑 SQL。</span>
+      <span>{workspaceConnectionNotice(workspaceConnectionPresentation(connection.state), "SQL 和表标签已保留，可继续编辑 SQL。")}</span>
       {connection.state.error ? <DiagnosticDetails error={connection.state.error} domain="operation" /> : null}
     </div> : null}
     <RuntimeHostKeyDialog state={connection.state} onReject={connection.rejectHostKey} onTrust={connection.trustHostKey} returnFocusRef={reconnectFocus} testId="mysql-workspace-host-key-confirmation" />

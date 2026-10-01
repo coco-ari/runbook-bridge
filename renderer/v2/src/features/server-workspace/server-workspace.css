@@ -208,8 +208,9 @@
 .server-directory-bookmarks, .server-directory-bookmarks * { transition-property: none; }
 .server-bookmark-list > li > button { color: var(--popover-foreground); }
 
-.server-workspace-heading { min-width: 100px; flex: 1; }
-.server-metrics { --metric-accent: var(--success); --metric-warning: var(--warning); display: flex; align-items: center; flex: 0 1 auto; min-width: 0; margin-inline: 8px 12px; color: var(--foreground); font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.server-workspace-heading { min-width: 205px; flex: 1; }
+.server-workspace-heading h1 { min-width: 64px; }
+.server-metrics { --metric-accent: var(--success); --metric-warning: var(--warning); display: flex; align-items: center; flex: 0 0 auto; min-width: 0; margin-inline: 8px 12px; color: var(--foreground); font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .server-metric { --metric-color: var(--metric-accent); display: flex; align-items: baseline; flex: 0 0 auto; gap: 8px; min-width: 0; padding: 3px 13px; text-align: left; line-height: 20px; outline-offset: 3px; }
 .server-metric + .server-metric { border-left: 1px solid var(--border); }
 .server-metric[data-tone="warning"] { --metric-color: var(--metric-warning); }
@@ -219,7 +220,7 @@
 .server-metric-label { color: var(--muted-foreground); font-size: var(--text-xs); }
 .server-metric strong { flex-shrink: 0; min-width: 3.4ch; color: var(--metric-color); font-size: var(--text-section); font-weight: 600; }
 .server-metric-detail { color: var(--muted-foreground); font-size: var(--text-xs); }
-.server-metric-disk { flex-shrink: 1; cursor: pointer; background: none; border-block: 0; border-right: 0; }
+.server-metric-disk { flex-shrink: 0; cursor: pointer; background: none; border-block: 0; border-right: 0; }
 .server-metric-disk:hover:not(:disabled), .server-metric-disk[data-state="open"] { background: var(--muted); }
 .server-metric-disk:disabled { cursor: default; }
 .server-metric-disk-label { display: flex; min-width: 6ch; }
@@ -235,6 +236,13 @@
 .server-metrics-disk-path code { overflow-wrap: anywhere; min-width: 0; }
 .server-metrics-disk-path strong { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .server-metrics-disk-list button > span + span { display: block; font-size: var(--text-xs); color: var(--muted-foreground); margin-top: 4px; }
+@media (max-width: 1300px) {
+  .server-workspace-header > [data-testid="server-workspace-back"],
+  .server-workspace-header > [data-testid="workspace-switcher"],
+  .server-workspace-header > [data-testid="settings-open"] { width: var(--control-height); height: var(--control-height); gap: 0; padding: 0; font-size: 0; }
+  .server-workspace-header > [data-testid="workspace-switcher"] > span,
+  .server-workspace-header > [data-testid="settings-open"] > span { display: none; }
+}
 @media (max-width: 1150px) {
   .server-metrics { margin-inline: 0 4px; }
   .server-metric { padding-inline: 10px; }
@@ -242,11 +250,13 @@
   .server-metric-disk-label > span { max-width: 5ch; }
 }
 @media (max-width: 900px) {
-  .server-metric { gap: 6px; padding-inline: 7px; }
+  .server-workspace > .server-workspace-header { gap: 4px; }
+  .server-metric { gap: 4px; padding-inline: 5px; }
   .server-metric-label { font-size: var(--text-xs); }
   .server-metric strong { font-size: var(--text-sm); }
-  .server-metric-disk-label > span { max-width: 3ch; }
-  .server-workspace-heading { min-width: 65px; }
+  .server-metric-disk-label > span { max-width: 1ch; }
+  .server-workspace-heading { min-width: 180px; }
+  .server-workspace-heading > div > [data-status] > span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; }
 }
 
 .server-upload-batch-actions label, .server-upload-file-conflict label { display: flex; align-items: center; gap: 8px; }
@@ -332,6 +342,7 @@
 .server-remote-code .cm-panels { background: var(--muted); color: var(--foreground); border-color: var(--border); }
 .server-remote-code .cm-textfield, .server-remote-code .cm-button { background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .server-edit-review { width: min(1100px, calc(100vw - 40px)); max-width: none !important; max-height: calc(100vh - 40px); overflow: auto; }
+.server-edit-diff-summary { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; font-size: var(--text-xs); color: var(--muted-foreground); }
 .server-edit-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; min-height: 180px; height: min(48vh, 450px); }
 .server-edit-comparison section { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); }
 .server-edit-comparison h4 { padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: var(--text-xs); font-weight: 600; }

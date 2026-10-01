@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input"
 import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { DockerIcon } from "./ServerResourceRail"
 import { useDockerRead } from "./use-docker-read"
+import { dockerStateLabel } from "./docker-presentation"
 
 export interface DockerViewProps {
   readonly api:AiOpsV2Api
@@ -46,7 +47,7 @@ export function ServerDockerTree({ api, scope, connected, visible, binding, onOp
       {groups.map(([project, items]) => <div key={project}>
         <button type="button" className="server-docker-group" aria-expanded={!collapsed.has(project)} onClick={() => setCollapsed(current => { const next = new Set(current); if (next.has(project)) next.delete(project); else next.add(project); return next })}>{collapsed.has(project) ? "▸" : "▾"} {project ? "Compose · " + project : "独立容器"} <span>{items.length}</span></button>
         {!collapsed.has(project) ? items.map(item => <button key={item.id} type="button" className="server-docker-container" aria-label={"打开容器 " + item.name} aria-pressed={selected === item.id} disabled={!connected} onClick={() => onOpen(item)} title={item.name + "\n" + item.status + "\n" + item.image}>
-          <DockerIcon size={18} /><span className="server-docker-container-text"><strong>{item.name}</strong><small>{item.service || item.image}</small></span><span className="server-docker-state" data-running={item.state === "running"}>{item.state === "running" ? "运行中" : item.state}</span>
+          <DockerIcon size={18} /><span className="server-docker-container-text"><strong>{item.name}</strong><small>{item.service || item.image}</small></span><span className="server-docker-state" title={item.state} data-running={item.state === "running"}>{dockerStateLabel(item.state)}</span>
         </button>) : null}
       </div>)}
       {data && !groups.length ? <p className="server-docker-message">{search || state !== "all" ? "当前筛选没有匹配容器。" : "当前没有容器。"}</p> : null}

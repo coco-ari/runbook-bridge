@@ -273,7 +273,7 @@ function SidebarTrigger({
       }}
       {...props}
     >
-      <SidebarSimple />
+      <SidebarSimple aria-hidden="true" />
       <span className="sr-only">切换侧边栏</span>
     </Button>
   )

@@ -115,7 +115,7 @@ function ContextMenuSubTrigger({
       {...props}
     >
       {children}
-      <CaretRight className="ml-auto" />
+      <CaretRight aria-hidden="true" className="ml-auto" />
     </ContextMenuPrimitive.SubTrigger>
   )
 }
@@ -155,7 +155,7 @@ function ContextMenuCheckboxItem({
     >
       <span className="pointer-events-none absolute right-2">
         <ContextMenuPrimitive.ItemIndicator>
-          <Check
+          <Check aria-hidden="true"
           />
         </ContextMenuPrimitive.ItemIndicator>
       </span>
@@ -184,7 +184,7 @@ function ContextMenuRadioItem({
     >
       <span className="pointer-events-none absolute right-2">
         <ContextMenuPrimitive.ItemIndicator>
-          <Check
+          <Check aria-hidden="true"
           />
         </ContextMenuPrimitive.ItemIndicator>
       </span>

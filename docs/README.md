@@ -23,6 +23,7 @@
 - [当前架构](architecture.md) · [插件开发](plugin-development.md)
 - [测试与交付验证](full-function-verification.md)
 - [界面规范](ui-style-guide.md) · [工作区控件](workspace-controls-design.md)
+- [UI 整体优化评估与实施方案](ui-optimization-plan.md) · [组件与图标覆盖清单](ui-component-inventory.md)
 - [CSP 设计依据](shadcn-ui-radix-csp-decision.md) · [macOS 适配边界](macos-adaptation.md)
 
 本目录中其余方案、审计和阶段记录用于追溯历史决策，其中的测试数量、截图和交付结论仅适用于对应批次；当前功能以使用指南和实际发布说明为准，当前构建是否通过以实际验证结果为准。

@@ -1,13 +1,9 @@
 import {
   ArrowClockwise,
-  Database,
   DotsThree,
   GearSix,
-  HardDrives,
-  Plugs,
   Plus,
   ShieldWarning,
-  TerminalWindow,
   Trash,
   TreeStructure,
   WarningCircle,
@@ -73,24 +69,18 @@ import {
   pluginTypeLabel,
   type WorkspaceEnvironmentReadModel,
   type WorkspacePluginReadModel,
-  type WorkspacePluginType,
   type WorkspaceProjectReadModel,
   type WorkspaceReadError,
 } from "@/features/workspace/workspace-read-model"
 import { useRovingNavigation } from "@/hooks/use-roving-navigation"
+import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
+import { pluginIcons } from "@/features/plugins/plugin-icons"
 import { useMenuHandoff } from "@/hooks/use-menu-handoff"
 import { cn } from "@/lib/utils"
 import {
   reconcileEnvironmentExpansion,
   type EnvironmentNavigationTarget,
 } from "./environment-expansion"
-
-const pluginIcons = {
-  server: TerminalWindow,
-  mysql: Database,
-  redis: HardDrives,
-  unknown: Plugs,
-} satisfies Record<WorkspacePluginType, Icon>
 
 function pluginConfigLabel(state: WorkspacePluginReadModel["configState"]): string {
   if (state === "ready") return "配置完整"
@@ -242,7 +232,7 @@ function EnvironmentGroup({
   return (
     <AccordionItem
       className={cn(
-        "group/environment-card mx-2 overflow-hidden rounded-lg border border-border/70 bg-surface",
+        "group/environment-card mx-1 overflow-hidden rounded-md border border-border/35 bg-surface",
         "transition-colors duration-150",
       )}
       data-environment-id={environment.environmentId}
@@ -260,42 +250,46 @@ function EnvironmentGroup({
         size="xs"
         variant={expanded ? "muted" : "default"}
       >
+        <div className="ml-1 w-8 shrink-0 self-center">
+          <AccordionTrigger aria-label={`${expanded ? "收起" : "展开"}「${environment.name}」的插件`} className="h-8 w-8 flex-none items-center justify-center gap-0 rounded-md p-0 hover:no-underline [&_[data-slot=accordion-trigger-icon]]:ml-0 [&_[data-slot=accordion-trigger-icon]]:size-4" data-testid={`environment-expand-${environment.environmentId}`}>
+            <span className="sr-only">{expanded ? "收起" : "展开"}插件</span>
+          </AccordionTrigger>
+        </div>
         <ContextMenu onOpenChange={contextHandoff.onOpenChange}>
           <ContextMenuTrigger asChild>
-            <AccordionTrigger
+            <Button
               aria-current={environmentSelected ? "page" : undefined}
               className={cn(
-                "min-h-14 min-w-0 flex-1 gap-2 rounded-none border-0 px-2.5 py-2 hover:no-underline",
+                "h-auto min-h-12 min-w-0 flex-1 shrink justify-start gap-2 overflow-hidden rounded-none border-0 px-1.5 py-1.5 text-left @max-[280px]/resource-navigation:gap-1 @max-[280px]/resource-navigation:px-1",
                 "transition-colors duration-150 hover:bg-transparent focus-visible:ring-inset",
-                "[&_[data-slot=accordion-trigger-icon]]:hidden",
                 environmentSelected && "bg-surface-selected text-primary",
               )}
               data-shell-nav-item
               data-testid={`environment-trigger-${environment.environmentId}`}
               onClick={() => {
-                // Selecting a plugin is not selecting its environment details.
-                // Navigate independently of the native Accordion toggle.
                 if (!environmentSelected) onSelectEnvironment()
               }}
               onKeyDown={(event) => onEnvironmentKeyDown?.(event, environment.environmentId)}
               tabIndex={
                 tabStopItemId === `environment:${environment.environmentId}` ? 0 : -1
               }
+              title={environment.name}
+              variant="ghost"
             >
               <ItemMedia
                 asChild
                 className={cn(
-                  "grid size-8 shrink-0 place-items-center self-center rounded-md border border-border/70 bg-surface-raised text-muted-foreground",
+                  "grid size-7 shrink-0 place-items-center self-center rounded-md text-muted-foreground @max-[280px]/resource-navigation:hidden",
                   "transition-[color,background-color,border-color] duration-150",
-                  environmentScopeSelected && "border-primary/25 bg-primary/12 text-primary",
+                  environmentScopeSelected && "bg-primary/12 text-primary",
                 )}
                 variant="icon"
               >
-                <span><TreeStructure size={15} weight={expanded ? "fill" : "regular"} /></span>
+                <span><TreeStructure aria-hidden="true" size={15} weight={expanded ? "fill" : "regular"} /></span>
               </ItemMedia>
-              <ItemContent asChild className="self-center gap-0.5">
+              <ItemContent asChild className="overflow-hidden self-center gap-0">
                 <span>
-                  <ItemTitle asChild className="block w-full truncate text-xs font-semibold" title={environment.name}>
+                  <ItemTitle asChild className="block w-full truncate text-xs font-semibold leading-4" title={environment.name}>
                     <span>{environment.name}</span>
                   </ItemTitle>
                   <ItemDescription asChild className={cn(
@@ -306,22 +300,23 @@ function EnvironmentGroup({
                       <span className="min-w-0 flex-1 truncate">
                         {environment.pluginCount === 0
                           ? "暂无插件"
-                          : `${environment.readyPluginCount}/${environment.pluginCount} 已就绪`}
+                          : `配置完成 ${environment.readyPluginCount}/${environment.pluginCount}`}
                       </span>
+                      <EnvironmentTypeBadge compact type={environment.environmentType} />
                     </span>
                   </ItemDescription>
                 </span>
               </ItemContent>
-              <ItemActions asChild className="self-center">
+              <ItemActions asChild className="shrink-0 self-center">
                 <span>
                   <StatusIndicator
                     appearance="badge"
-                    className="h-5 max-w-18 px-1.5 font-mono text-xs"
+                    className="h-5 max-w-full px-1.5 font-mono text-xs [&>svg]:shrink-0 @max-[280px]/resource-navigation:px-0 @max-[280px]/resource-navigation:[&>span]:sr-only"
                     status={environment.status}
                   />
                 </span>
               </ItemActions>
-            </AccordionTrigger>
+            </Button>
           </ContextMenuTrigger>
           <ContextMenuContent onCloseAutoFocus={contextHandoff.onCloseAutoFocus}>
             <ContextMenuItem onSelect={() => contextHandoff.queueAction(onSelectEnvironment)}>
@@ -443,7 +438,7 @@ function EnvironmentGroup({
             const row = (
               <Item
                 className={cn(
-                  "group/plugin relative min-h-12 min-w-0 flex-nowrap items-stretch gap-0 overflow-hidden rounded-none border-0 border-b border-border/50 p-0 last:border-b-0",
+                  "group/plugin relative min-h-10 min-w-0 flex-nowrap items-stretch gap-0 overflow-hidden rounded-none border-0 border-b border-border/50 p-0 last:border-b-0",
                   "before:absolute before:inset-y-2 before:left-0 before:z-10 before:w-0.5 before:rounded-r-full before:bg-transparent",
                   "transition-colors duration-150 hover:bg-accent/55",
                   selected && "bg-surface-selected text-primary before:bg-primary",
@@ -456,7 +451,7 @@ function EnvironmentGroup({
               >
                 <Button
                   aria-current={selected ? "page" : undefined}
-                  className="h-auto min-w-0 flex-1 justify-start gap-2 rounded-none px-2 py-1.5 text-left hover:bg-transparent focus-visible:ring-inset"
+                  className="h-auto min-w-0 flex-1 justify-start gap-2 rounded-none px-2 py-1 text-left hover:bg-transparent focus-visible:ring-inset"
                   data-shell-nav-item
                   data-testid={`plugin-trigger-${plugin.pluginInstanceId}`}
                   onClick={() => onSelectPlugin(plugin.pluginInstanceId)}
@@ -473,17 +468,17 @@ function EnvironmentGroup({
                   <ItemMedia
                     asChild
                     className={cn(
-                      "grid size-7 place-items-center self-center rounded-md border border-border/60 bg-surface-raised text-muted-foreground",
+                      "grid size-7 place-items-center self-center rounded-md text-muted-foreground",
                       "transition-colors duration-150",
-                      selected && "border-primary/25 bg-primary/12 text-primary",
+                      selected && "bg-primary/12 text-primary",
                     )}
                     variant="icon"
                   >
-                    <span><PluginIcon size={14} weight={selected ? "fill" : "regular"} /></span>
+                    <span><PluginIcon aria-hidden="true" size={14} weight={selected ? "fill" : "regular"} /></span>
                   </ItemMedia>
                   <ItemContent asChild className="self-center gap-0">
                     <span>
-                      <ItemTitle asChild className="block w-full truncate text-xs font-medium">
+                      <ItemTitle asChild className="block w-full truncate text-xs font-medium leading-4">
                         <span>{plugin.displayName}</span>
                       </ItemTitle>
                       <ItemDescription asChild className={cn(
@@ -650,7 +645,7 @@ export function ResourcePane({
   return (
     <aside
       aria-label="环境与插件栏"
-      className="flex h-full min-h-0 min-w-0 flex-col bg-surface-inset"
+      className="@container/resource-navigation flex h-full min-h-0 min-w-0 flex-col bg-surface-inset"
       data-testid="resource-pane"
     >
       <header className="flex h-13 shrink-0 items-center gap-2.5 border-b border-border/80 bg-surface px-3">
@@ -757,7 +752,7 @@ export function ResourcePane({
                 )
               ) : (
                 <Accordion
-                  className="gap-2 py-2"
+                  className="gap-1 py-1"
                   onValueChange={setExpandedEnvironmentIds}
                   type="multiple"
                   value={[...expandedEnvironmentIds]}

@@ -1,12 +1,15 @@
 import { copyText } from "@/lib/clipboard"
 import { SelectControl, SelectItem } from "@/components/ui/select"
-import { useState } from "react"
+import { useMemo, useRef, useState } from "react"
+import { X } from "@phosphor-icons/react"
 import type { DockerContainer, DockerContainerDetails, DockerLogs, DockerStats } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { useDockerRead } from "./use-docker-read"
 import type { DockerViewProps } from "./ServerDockerTree"
+import { dockerStateLabel, logMatchSegments } from "./docker-presentation"
+import { isMacPlatform, shortcutLabel } from "@/lib/platform"
 
 type View = "inspect" | "logs" | "stats"
 export function ServerDockerContainer({ container, ...props }: DockerViewProps & { readonly container:DockerContainer }) {
@@ -18,12 +21,17 @@ export function ServerDockerContainer({ container, ...props }: DockerViewProps &
   const [search, setSearch] = useState("")
   const [copyError, setCopyError] = useState("")
   const [copied, setCopied] = useState<"visible" | "all" | null>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const logRef = useRef<HTMLPreElement>(null)
   const detail = useDockerRead<DockerContainerDetails>({ api, scope, query:{ kind:"inspect", containerId:container.id }, enabled:visible && connected && view === "inspect", binding })
   const logs = useDockerRead<DockerLogs>({ api, scope, query:{ kind:"logs", containerId:container.id, lines, ...(since ? { since } : {}) }, enabled:visible && connected && view === "logs", binding })
   const stats = useDockerRead<DockerStats>({ api, scope, query:{ kind:"stats", containerId:container.id }, enabled:visible && connected && view === "stats", binding, interval:5000 })
   const result = view === "inspect" ? detail : view === "logs" ? logs : stats
-  const logLines = logs.data?.content.split("\n") ?? []
-  const displayedLines = search ? logLines.filter(line => line.toLowerCase().includes(search.toLowerCase())) : logLines
+  const displayedLines = useMemo(() => {
+    const logLines = logs.data?.content.split("\n") ?? []
+    return search ? logLines.filter(line => line.toLowerCase().includes(search.toLowerCase())) : logLines
+  }, [logs.data?.content, search])
+  const highlightedLines = useMemo(() => displayedLines.map(line => logMatchSegments(line, search)), [displayedLines, search])
   const copy = async (all = false) => {
     setCopyError(""); setCopied(null)
     try { await copyText(all ? logs.data?.content ?? "" : displayedLines.join("\n")); setCopied(all ? "all" : "visible") }
@@ -34,7 +42,15 @@ export function ServerDockerContainer({ container, ...props }: DockerViewProps &
     if (view === "logs" && range !== "all") setSince(new Date(Date.now() - Number(range) * 60000).toISOString())
     else result.refresh()
   }
-  return <section className="server-docker-detail" aria-label={"容器 " + container.name}>
+  return <section className="server-docker-detail" aria-label={"容器 " + container.name} onKeyDownCapture={event => {
+    const modifier = isMacPlatform() ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey
+    if (!visible || view !== "logs" || !modifier || event.altKey || event.shiftKey || event.nativeEvent.isComposing || event.key.toLowerCase() !== "f") return
+    if (!event.currentTarget.contains(event.target as Node)) return
+    event.preventDefault()
+    event.stopPropagation()
+    searchRef.current?.focus()
+    searchRef.current?.select()
+  }}>
     <div className="server-docker-context">
       <div className="server-docker-views" aria-label="容器内容">
         {([["inspect", "概览"], ["logs", "日志"], ["stats", "资源"]] as const).map(([id, label]) => <button type="button" key={id} aria-pressed={view === id} onClick={() => setView(id)}>{label}</button>)}
@@ -50,14 +66,17 @@ export function ServerDockerContainer({ container, ...props }: DockerViewProps &
     {result.busy && !result.data ? <p className="server-docker-message">正在读取…</p> : null}
     <div className="server-docker-scroll" hidden={view !== "inspect"}>
       {detail.data ? <dl className="server-docker-overview">
-        {([["名称", detail.data.name], ["状态", detail.data.state], ["镜像", detail.data.image], ["健康检查", detail.data.health ?? "未配置"], ["重启次数", detail.data.restartCount], ["退出码", detail.data.exitCode], ["启动时间", detail.data.startedAt], ["结束时间", detail.data.finishedAt], ["端口", JSON.stringify(detail.data.ports, null, 2)], ["挂载", detail.data.mounts.map(item => item.Type + " · " + item.Source + " → " + item.Destination + (item.RW ? "（读写）" : "（只读）")).join("\n") || "无"]] as const).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
+        {([["名称", detail.data.name], ["状态", dockerStateLabel(detail.data.state)], ["镜像", detail.data.image], ["健康检查", detail.data.health ?? "未配置"], ["重启次数", detail.data.restartCount], ["退出码", detail.data.exitCode], ["启动时间", detail.data.startedAt], ["结束时间", detail.data.finishedAt], ["端口", JSON.stringify(detail.data.ports, null, 2)], ["挂载", detail.data.mounts.map(item => item.Type + " · " + item.Source + " → " + item.Destination + (item.RW ? "（读写）" : "（只读）")).join("\n") || "无"]] as const).map(([label, value]) => <div key={label}><dt>{label}</dt><dd title={label === "状态" ? detail.data?.state : undefined}>{value}</dd></div>)}
       </dl> : null}
     </div>
     <div className="server-docker-log-panel" hidden={view !== "logs"}>
-      <div className="server-docker-log-search"><Input aria-label="搜索已加载日志" placeholder="搜索已加载日志" value={search} onChange={event => { setSearch(event.target.value); setCopied(null) }} />{search ? <span>{displayedLines.length} 行匹配</span> : null}</div>
+      <div className="server-docker-log-search" role="search" aria-label="容器日志搜索"><Input ref={searchRef} aria-label="搜索已加载日志" aria-keyshortcuts="Control+F Meta+F" title={"查找日志（" + shortcutLabel("F") + "）"} placeholder="搜索已加载日志" value={search} onChange={event => { setSearch(event.target.value); setCopied(null) }} onKeyDown={event => {
+        if (event.key !== "Escape" || event.nativeEvent.isComposing) return
+        event.preventDefault(); event.stopPropagation(); setSearch(""); setCopied(null); logRef.current?.focus()
+      }} />{search ? <><Button size="icon-xs" variant="ghost" aria-label="清除日志搜索" title="清除搜索（Esc）" onClick={() => { setSearch(""); setCopied(null); searchRef.current?.focus() }}><X aria-hidden="true" /></Button><span role="status" aria-live="polite">{displayedLines.length} 行匹配</span></> : null}</div>
       {logs.data?.truncated ? <p className="server-docker-message text-warning" role="status">日志已截断；请缩短时间范围或调整行数，不能据此判断没有其他记录。</p> : null}
       {copyError ? <p className="server-docker-message text-danger" role="alert">{copyError}</p> : null}
-      <pre className="server-docker-logs" tabIndex={0} aria-label="容器日志">{logs.data ? displayedLines.join("\n") || (search ? "已加载日志中没有匹配项。" : "当前读取范围内没有日志。") : ""}</pre>
+      <pre ref={logRef} className="server-docker-logs" tabIndex={0} aria-label="容器日志">{logs.data ? displayedLines.join("\n") ? highlightedLines.map((segments, lineIndex) => <span key={lineIndex}>{lineIndex ? "\n" : ""}{segments.map((segment, index) => segment.matched ? <mark key={index}>{segment.text}</mark> : segment.text)}</span>) : search ? "已加载日志中没有匹配项。" : "当前读取范围内没有日志。" : ""}</pre>
     </div>
     <div className="server-docker-scroll" hidden={view !== "stats"}>
       {stats.data ? stats.data.available ? <dl className="server-docker-overview">

@@ -4,7 +4,8 @@ module.exports = async function({evaluate,click,doubleClick,clickText,until,wait
   const selector='.server-file-editor [aria-label="远程文件内容"]';
   const has=text=>`document.querySelector('.server-file-editor')?.textContent.includes(${JSON.stringify(text)})`;
   const selected=path=>`document.querySelector('[role=treeitem][title="${path}"]')?.getAttribute('aria-selected')==='true'`;
-  const locate='[aria-label="在目录树中定位：/srv/example.conf"]';
+  // 准星的禁用说明可能与路径入口同名，必须选择真正接受定位交互的按钮。
+  const locate='.server-file-editor button.server-file-path[aria-label="在目录树中定位：/srv/example.conf"]';
   const crosshair='[aria-label="定位当前文件"]';
   const nativeClick=async selector=>{
     const point=await evaluate(`(() => {const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`);
@@ -149,7 +150,25 @@ module.exports = async function({evaluate,click,doubleClick,clickText,until,wait
   assert.ok(await evaluate("document.querySelector('.server-edit-review [data-testid=environment-type-badge]')?.textContent.includes('测试环境')"));
   assert.ok(await evaluate("document.querySelector('[aria-label=保存前文件内容]')?.textContent.includes('8080')"));
   assert.ok(await evaluate("document.querySelector('[aria-label=保存后文件内容]')?.textContent.includes('9090')"));
+  assert.match(await evaluate("document.querySelector('[data-testid=server-edit-diff-summary]').textContent"),/1 处变更 · 新增 1 行 · 删除 1 行/u,'确认显示精确逐行增删统计');
+  assert.equal(await evaluate("document.querySelector('.server-edit-review button[aria-label=下一处文件变更]').disabled"),true,'只有一个变更块时不提供无效向后跳转');
+  assert.equal(await evaluate("document.querySelector('.server-edit-review button[aria-label=上一处文件变更]').disabled"),true,'只有一个变更块时不提供无效向前跳转');
+  assert.equal(await evaluate("document.querySelectorAll('.server-edit-diff-after').length"),1,'只高亮实际修改的行');
   await clickText('返回编辑');assert.equal(probe.writes,0);
+  await fill('# 示例配置\r\ninserted first\r\nport = 8080\r\ninserted last\r\n');
+  await clickText('检查并保存');await until("document.querySelector('.server-edit-comparison')",'两处分离插入对照');
+  assert.match(await evaluate("document.querySelector('[data-testid=server-edit-diff-summary]').textContent"),/2 处变更 · 新增 2 行 · 删除 0 行/u,'分离插入有独立变更块');
+  const reviewedText=await evaluate("[...document.querySelectorAll('.server-edit-comparison .cm-content')].map(e=>e.textContent)");
+  await click('.server-edit-review button[aria-label="下一处文件变更"]');
+  await until("document.querySelector('[data-testid=server-edit-diff-summary]').textContent.includes('2 / 2')",'跳转到第二处变更');
+  assert.equal(await evaluate("document.querySelector('.server-edit-review button[aria-label=下一处文件变更]').disabled"),true,'最后一个变更块禁止越界向后跳转');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.server-edit-comparison .cm-content')].map(e=>e.textContent)"),reviewedText,'跳转不改变批准内容');
+  await click('.server-edit-review button[aria-label="上一处文件变更"]');
+  await until("document.querySelector('[data-testid=server-edit-diff-summary]').textContent.includes('1 / 2')",'返回第一处变更');
+  assert.equal(await evaluate("document.querySelector('.server-edit-review button[aria-label=上一处文件变更]').disabled"),true,'第一个变更块禁止越界向前跳转');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.server-edit-comparison .cm-content')].map(e=>e.textContent)"),reviewedText,'返回首块也不改变批准内容');
+  await clickText('返回编辑');assert.equal(probe.writes,0,'审查多处变更不触发写入');
+  await fill('# 示例配置\r\nport = 9090\r\n');
   for(const theme of ['dark','light']) {
     nativeTheme.themeSource=theme;await setViewport(960,640);await wait(180);
     await clickText('检查并保存');await until("document.querySelector('.server-edit-comparison')",'窄窗口对照');
@@ -164,7 +183,13 @@ module.exports = async function({evaluate,click,doubleClick,clickText,until,wait
   publishRecovery(false,'waiting');await until(has('连接已断开'),'断线保留');
   assert.ok(await evaluate(`document.querySelector(${JSON.stringify(crosshair)}).disabled`),'断线时禁用文件定位准星');
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(locate)}).getAttribute('aria-disabled')`),'true','离线路径入口提示暂不可定位');
-  await click(locate);assert.ok(await evaluate(`document.querySelector(${JSON.stringify(selector)}).textContent.includes('8080')`),'离线点击保留草稿');
+  const offlineSelection=await evaluate("[...document.querySelectorAll('[role=treeitem][aria-selected=true]')].map(item=>item.title)");
+  const offlineReads={previews:previewReads.length,edits:probe.reads,terminalDirectories:directoryState.requests.length,writes:probe.writes};
+  await nativeClick(locate);
+  assert.ok(await evaluate(`document.querySelector(${JSON.stringify(selector)}).textContent.includes('8080')`),'离线点击保留草稿');
+  assert.ok(await evaluate(`window.workspaceDraftNode===document.querySelector(${JSON.stringify(selector)})`),'离线点击不替换草稿编辑器');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('[role=treeitem][aria-selected=true]')].map(item=>item.title)"),offlineSelection,'离线点击不改变目录选择');
+  assert.deepEqual({previews:previewReads.length,edits:probe.reads,terminalDirectories:directoryState.requests.length,writes:probe.writes},offlineReads,'离线点击不触发预览、编辑会话、终端目录读取或保存');
   assert.ok(await evaluate("[...document.querySelectorAll('.server-file-editor button')].find(b=>b.textContent==='检查并保存').disabled"));
   publishRecovery(true);await until("![...document.querySelectorAll('.server-file-editor button')].find(b=>b.textContent==='检查并保存').disabled",'重连');
   probe.content='\uFEFF# 示例配置\r\nport = 7070\r\n';

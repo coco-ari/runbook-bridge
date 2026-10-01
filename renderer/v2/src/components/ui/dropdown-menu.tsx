@@ -106,7 +106,7 @@ function DropdownMenuCheckboxItem({
         data-slot="dropdown-menu-checkbox-item-indicator"
       >
         <DropdownMenuPrimitive.ItemIndicator>
-          <Check
+          <Check aria-hidden="true"
           />
         </DropdownMenuPrimitive.ItemIndicator>
       </span>
@@ -149,7 +149,7 @@ function DropdownMenuRadioItem({
         data-slot="dropdown-menu-radio-item-indicator"
       >
         <DropdownMenuPrimitive.ItemIndicator>
-          <Check
+          <Check aria-hidden="true"
           />
         </DropdownMenuPrimitive.ItemIndicator>
       </span>
@@ -232,7 +232,7 @@ function DropdownMenuSubTrigger({
       {...props}
     >
       {children}
-      <CaretRight className="ml-auto" />
+      <CaretRight aria-hidden="true" className="ml-auto" />
     </DropdownMenuPrimitive.SubTrigger>
   )
 }

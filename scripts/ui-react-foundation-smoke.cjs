@@ -126,10 +126,10 @@ function runtime(projectId,environmentId,phase,records,sequence = 10) {
   };
 }
 
-function environment(environmentId,name,phase) {
+function environment(environmentId,name,phase,environmentType = 'unspecified') {
   const records = pluginsByEnvironment[environmentId] ?? [];
   return {
-    projectId:'project-operations',environmentId,name,revision:4,
+    projectId:'project-operations',environmentId,name,environmentType,revision:4,
     pluginCount:records.length,readyPluginCount:records.length,draftCount:0,
     resourcePreview:records.map((record) => ({
       projectId:record.projectId,environmentId:record.environmentId,
@@ -143,8 +143,8 @@ function environment(environmentId,name,phase) {
 }
 
 const operationEnvironments = [
-  environment('env-production-east','生产环境 · 华东集群与共享服务','partial'),
-  environment('env-preview','预发布环境','connecting'),
+  environment('env-production-east','生产环境 · 华东集群与共享服务','partial','production'),
+  environment('env-preview','预发布环境','connecting','test'),
   environment('env-drill','灾备演练环境','disconnected'),
 ];
 const workspaceProjects = [
@@ -176,7 +176,7 @@ const confirmations = [
     pluginInstanceId:'plugin-app-server',capability:'shell.execute',capabilityLabel:'执行任意 Shell',
     summary:'读取示例服务状态',riskLevel:'critical',approvalLevel:'strong',
     createdAt:new Date().toISOString(),expiresAt:Date.now()+600000,
-    presentation:{kind:'shell',target:'应用服务器',command:'Get-Service -Name ExampleService',workingDirectory:'C:\\Temp'},
+    presentation:{kind:'shell',target:'应用服务器',command:'echo ' + 'x'.repeat(5000) + ' 完整命令尾部END',workingDirectory:'/tmp'},
   },
   {
     requestId:'confirmation-other-scope',projectId:'project-data',environmentId:'environment-archive',
@@ -683,6 +683,86 @@ async function assertKeyboardResizerPersistence(win,{testId,keyCode,panelId}) {
   return after.savedLayout;
 }
 
+async function assertDetailCollapseViewportPersistence(win) {
+  const storageKey='runbook-bridge:app-shell-layout:v1';
+  const originalViewport=await win.webContents.executeJavaScript('({width:innerWidth,height:innerHeight})',true);
+  assert.ok(originalViewport.width>=960,'详情偏好验收从可展开宽窗开始');
+  const readSnapshot=()=>win.webContents.executeJavaScript(`(() => ({
+    width:innerWidth,collapsed:document.querySelector('[data-testid="detail-workspace"]')?.dataset.collapsed,
+    pixels:document.getElementById('detail-panel')?.getBoundingClientRect().width,
+    saved:localStorage.getItem('${storageKey}'),
+  }))()`,true);
+  const waitCollapsed=async(collapsed,label)=>{
+    await waitFor(win,`(() => {
+      const saved=JSON.parse(localStorage.getItem('${storageKey}'));
+      const pixels=document.getElementById('detail-panel')?.getBoundingClientRect().width;
+      return saved?.detailCollapsed===${collapsed}
+        &&document.querySelector('[data-testid="detail-workspace"]')?.dataset.collapsed==='${collapsed}'
+        &&${collapsed?'pixels<=50':'pixels>=359.5'};
+    })()`,label);
+  };
+  const activateButton=async testId=>{
+    await captureRenderedFrame(win);
+    win.focus();win.webContents.focus();
+    await wait(100);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="${testId}"]')?.focus({preventScroll:true})`,true);
+    await waitFor(win,`document.hasFocus()&&document.activeElement?.dataset.testid==='${testId}'`,'真实详情按钮键盘焦点');
+    await win.webContents.executeJavaScript(`(() => {
+      const button=document.querySelector('[data-testid="${testId}"]'),events=[];
+      const listener=event=>events.push({trusted:event.isTrusted,exactTarget:event.target===button});
+      button.addEventListener('click',listener,true);
+      window.__foundationDetailActivationProbe={button,events,listener};
+    })()`,true);
+    try{
+      // 原生按钮的默认激活需要字符阶段，不能只发送分隔线使用的按下与抬起事件。
+      win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});
+      win.webContents.sendInputEvent({type:'char',keyCode:'\r'});
+      win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});
+      await captureRenderedFrame(win);
+      const events=await win.webContents.executeJavaScript('window.__foundationDetailActivationProbe.events',true);
+      assert.deepEqual(events,[{trusted:true,exactTarget:true}],'完整原生Enter恰好激活一次当前详情按钮：'+JSON.stringify({testId,events,state:await readSnapshot()}));
+    }finally{
+      await win.webContents.executeJavaScript(`(() => {
+        const probe=window.__foundationDetailActivationProbe;if(!probe)return;
+        probe.button.removeEventListener('click',probe.listener,true);delete window.__foundationDetailActivationProbe;
+      })()`,true);
+    }
+  };
+  const viewportRoundTrip=async collapsed=>{
+    const before=await readSnapshot();
+    for(const width of [800,originalViewport.width]){
+      win.setContentSize(width,originalViewport.height);
+      await waitFor(win,`innerWidth===${width}&&innerHeight===${originalViewport.height}`,'详情偏好窗口往返');
+      await captureRenderedFrame(win);
+      const current=await readSnapshot();
+      assert.equal(current.saved,before.saved,'窗口约束不改写手动详情偏好：'+JSON.stringify(current));
+    }
+    await waitCollapsed(collapsed,'窗口恢复按手动详情偏好显示');
+  };
+  await activateButton('detail-collapse');
+  await waitCollapsed(true,'原生Enter明确折叠并保存详情');
+  await viewportRoundTrip(true);
+  await activateButton('detail-expand');
+  await waitCollapsed(false,'原生Enter明确展开并保存详情');
+  await viewportRoundTrip(false);
+  await activateButton('detail-collapse');
+  await waitCollapsed(true,'折叠后双击详情分隔线');
+  const point=await win.webContents.executeJavaScript(`(() => {
+    const handle=document.querySelector('[data-testid="resource-detail-resizer"]'),rect=handle.getBoundingClientRect();
+    const x=Math.round(rect.left+rect.width/2),y=Math.round(rect.top+rect.height/2);
+    if(!handle.contains(document.elementFromPoint(x,y)))throw new Error('详情分隔线真实指针命中失败');
+    return {x,y};
+  })()`,true);
+  for(const clickCount of [1,2]){
+    win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount,...point});
+    win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount,...point});
+  }
+  await captureRenderedFrame(win);
+  await waitCollapsed(false,'真实双击恢复展开偏好');
+  await waitFor(win,`Math.abs(JSON.parse(localStorage.getItem('${storageKey}')).layout['detail-panel']-48)<0.01`,'真实双击保存48%详情重置比例');
+  process.stdout.write('详情手动折叠、窄窗恢复和双击保存：'+JSON.stringify(await readSnapshot())+'\n');
+}
+
 async function assertRendererKeyboardFocus(win) {
   win.focus();
   win.webContents.focus();
@@ -871,10 +951,12 @@ async function assertManualThemePreferences(win) {
   await assertThemeState(win,'system','light','default follows system',{persisted:false});
   await selectThemePreference(win,'dark');
   await assertThemeState(win,'dark','dark','manual dark on a light system');
+  await assertDesignSystemContrast(win);
   nativeTheme.themeSource = 'dark';
   await assertThemeState(win,'dark','dark','manual dark survives system changes');
   await selectThemePreference(win,'light');
   await assertThemeState(win,'light','light','manual light on a dark system');
+  await assertDesignSystemContrast(win);
   nativeTheme.themeSource = 'light';
   await assertThemeState(win,'light','light','manual light remains explicit');
   nativeTheme.themeSource = 'dark';
@@ -931,6 +1013,7 @@ async function assertManualThemePreferences(win) {
 
 async function assertEnvironmentAccordionNavigation(win) {
   const trigger = (id) => `[data-testid="environment-trigger-${id}"]`;
+  const expandTrigger = (id) => `[data-testid="environment-expand-${id}"]`;
   const nativeClick = async (selector) => {
     const point = await win.webContents.executeJavaScript(`(() => {
       const target = document.querySelector(${JSON.stringify(selector)});
@@ -948,7 +1031,7 @@ async function assertEnvironmentAccordionNavigation(win) {
     try {
       await waitFor(win,`(() => {
         const row = document.querySelector('[data-testid="environment-row-${id}"]');
-        const button = row?.querySelector('[data-testid="environment-trigger-${id}"]');
+        const button = row?.querySelector('[data-testid="environment-expand-${id}"]');
         const content = row?.querySelector('[data-slot="accordion-content"]');
         return button?.getAttribute('aria-expanded') === '${expanded}' && row.dataset.expanded === '${expanded}'
           && (${expanded} ? Boolean(content && content.getBoundingClientRect().height > 1) : !content || content.getBoundingClientRect().height <= 1);
@@ -978,9 +1061,9 @@ async function assertEnvironmentAccordionNavigation(win) {
   };
   const commandSelect = async (valuePrefix,query) => {
     await win.webContents.executeJavaScript(`document.querySelector('#detail-main')?.focus({preventScroll:true})`,true);
-    await pressKey(win,'k',['control']);
+    await nativeClick('[data-testid="global-resource-search"]');
     await waitFor(win,`document.querySelector('[data-testid="global-command"] [cmdk-input]') === document.activeElement`,
-      'command input receives focus for external navigation');
+      '可见资源搜索入口打开全局搜索并聚焦输入');
     await win.webContents.insertText(query);
     const selector = `[data-testid="global-command"] [cmdk-item][data-value^="${valuePrefix} "]`;
     await waitFor(win,`document.querySelector(${JSON.stringify(selector)})?.getClientRects().length > 0`,
@@ -996,13 +1079,16 @@ async function assertEnvironmentAccordionNavigation(win) {
   await waitEnvironmentDetails(prod,'overview','clicking an already expanded unselected environment opens its details');
   await waitExpanded(prod,true,'new environment navigation reveals its destination after native activation');
   await selectVisualTab(win,'runbook','[data-feature="runbook"]','environment runbook before repeated heading activation');
+  await nativeClick(trigger(prod));
+  await waitExpanded(prod,true,'重复选择环境保留展开状态');
+  await waitEnvironmentDetails(prod,'runbook','重复选择当前环境保留详情栏目');
   for (const expanded of [false,true]) {
-    await nativeClick(trigger(prod));
+    await nativeClick(expandTrigger(prod));
     await waitExpanded(prod,expanded,`repeated selected environment mouse toggle ${expanded}`);
     await waitEnvironmentDetails(prod,'runbook','mouse toggling the selected environment preserves its active detail tab');
   }
   for (const key of ['Enter','Space']) {
-    await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(trigger(prod))})?.focus({preventScroll:true})`,true);
+    await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(expandTrigger(prod))})?.focus({preventScroll:true})`,true);
     for (const expanded of [false,true]) {
       await nativeButtonKey(key);
       await waitExpanded(prod,expanded,`native ${key} toggles selected environment ${expanded}`);
@@ -1015,20 +1101,23 @@ async function assertEnvironmentAccordionNavigation(win) {
       && document.querySelector('[data-testid="plugin-trigger-plugin-app-server"]')?.getAttribute('aria-current') === 'page'`,
     `select the same environment's plugin before ${activation} heading activation`);
     await selectVisualTab(win,'agent','[data-testid="plugin-agent-access"]',`plugin Agent view before ${activation} returns to its environment`);
+    await nativeClick(expandTrigger(prod));
+    await waitExpanded(prod,false,'展开动作独立于已选插件');
+    assert.equal(await selectedKind(),'plugin','收起插件列表不会切换详情范围');
+    await nativeClick(expandTrigger(prod));
+    await waitExpanded(prod,true,'展开动作保留已选插件');
+    assert.equal(await selectedKind(),'plugin');
     if (activation === 'Mouse') {
       await nativeClick(trigger(prod));
     } else {
       await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(trigger(prod))})?.focus({preventScroll:true})`,true);
       await nativeButtonKey(activation);
     }
-    await waitExpanded(prod,false,`${activation} from the selected plugin still closes its expanded parent`);
+    await waitExpanded(prod,true,`${activation} 返回环境详情不折叠插件`);
     await waitEnvironmentDetails(prod,'overview',`${activation} on the plugin's environment heading clears plugin selection and opens environment details`);
-    if (activation !== 'Space') {
-      await nativeClick(trigger(prod));
-      await waitExpanded(prod,true,'reopen the selected environment before another plugin-return regression');
-      await waitEnvironmentDetails(prod,'overview','reopening an already selected environment preserves its detail tab');
-    }
   }
+  await nativeClick(expandTrigger(prod));
+  await waitExpanded(prod,false,'关闭列表后验证导航焦点');
   const collapsedNavigation = await win.webContents.executeJavaScript(`(() => {
     const pane = document.querySelector('[data-testid="resource-pane"]');
     return Array.from(pane.querySelectorAll('[data-shell-nav-item][tabindex="0"]'))
@@ -1059,10 +1148,10 @@ async function assertEnvironmentAccordionNavigation(win) {
     }
     await setTheme(win,'light');
   }
-  await nativeClick(trigger(prod));
+  await nativeClick(expandTrigger(prod));
   await waitExpanded(prod,true,'reopening the same environment preserves environment navigation');
   assert.equal(await selectedKind(),'environment');
-  await nativeClick(trigger(prod));
+  await nativeClick(expandTrigger(prod));
   await waitExpanded(prod,false,'close before external plugin navigation');
   await commandSelect('plugin:project-operations:env-production-east:plugin-orders-db','订单数据库');
   await waitExpanded(prod,true,'selecting another plugin through commands reveals its closed parent');
@@ -1082,6 +1171,168 @@ async function assertEnvironmentAccordionNavigation(win) {
   await waitExpanded(prod,true,'restore the original production environment for subsequent scenarios');
   await waitFor(win,`document.querySelector('[data-testid="environment-overview"]') !== null`,'restore environment detail');
   process.stdout.write('Environment accordion navigation evidence: mouse, Enter, Space, plugin-to-environment navigation, retained environment tabs, runtime/overview refresh, external navigation and project switching passed\n');
+}
+
+async function assertConfirmationReviewAndRecovery(win) {
+  await win.webContents.executeJavaScript(
+    `document.querySelector('[data-testid="confirmation-center"]')?.click()`,
+    true,
+  );
+  await waitFor(
+    win,
+    `document.querySelector('[data-feature="confirmations"]') !== null`,
+    'confirmation detail tab',
+  );
+  await waitFor(
+    win,
+    `document.querySelectorAll('[data-confirmation-id]').length === 2`,
+    'confirmation cards',
+  );
+  const confirmationTab = await win.webContents.executeJavaScript(`(() => ({
+    active:[...document.querySelectorAll('[role="tab"]')]
+      .find((tab) => tab.getAttribute('aria-selected') === 'true')?.textContent?.trim() ?? null,
+    selected:document.querySelector('[data-feature="confirmations"]') !== null,
+    crossScopeVisible:document.body.textContent?.includes('跨范围请求不得显示') === true,
+    scopedCount:document.querySelector('[data-testid="confirmation-center"]')
+      ?.getAttribute('aria-label')?.includes('2 项') === true,
+  }))()`,true);
+  assert.deepEqual(confirmationTab,{
+    active:'操作确认',selected:true,crossScopeVisible:false,scopedCount:true,
+  });
+  const confirmationSelectionKind = await win.webContents.executeJavaScript(
+    `document.querySelector('#detail-main')?.dataset.selectionKind ?? null`,
+    true,
+  );
+  assert.equal(confirmationSelectionKind,'environment');
+  const longCommand = await win.webContents.executeJavaScript(`(() => {
+    const card = document.querySelector('[data-confirmation-id="confirmation-shell"]');
+    const command = card?.querySelector('[data-testid="confirmation-full-command"]');
+    const check = card?.querySelector('[role="checkbox"]');
+    return {length:command?.textContent?.length,tail:command?.textContent?.endsWith('完整命令尾部END'),focusable:command?.tabIndex === 0,ackEnabled:check?.getAttribute('disabled') === null};
+  })()`,true);
+  assert.deepEqual(longCommand,{length:confirmations[1].presentation.command.length,tail:true,focusable:true,ackEnabled:true},'超过4000字符的命令保留真实DOM尾部并支持键盘滚动核对');
+  await require('./ui-forced-controls-ui.cjs')({
+    win,
+    waitFor: (expr,label) => waitFor(win,expr,label),
+    pressKey: key => pressKey(win,key),
+    captureRenderedFrame,
+    screenshotRoot,
+    selector:'[data-confirmation-id="confirmation-shell"] [role="checkbox"]',
+    type:'checkbox',
+    label:'confirmation',
+  });
+  await waitFor(win,`[...document.querySelectorAll('[data-confirmation-id="confirmation-shell"] button')].some(button => button.textContent?.includes('确认执行一次') && !button.disabled)`,'完整核对后强确认可用');
+  win.webContents.send('v2:confirmations-changed',[confirmations[0],{...confirmations[1],presentation:{kind:'shell'}}]);
+  await waitFor(win,`(() => {
+    const card = document.querySelector('[data-confirmation-id="confirmation-shell"]');
+    return card?.textContent?.includes('完整命令不可用') && card?.querySelector('[role="checkbox"]')?.getAttribute('disabled') !== null
+      && [...card.querySelectorAll('button')].some(button => button.textContent?.includes('确认执行一次') && button.disabled);
+  })()`,'展示缺失时已勾选的强确认也不可执行');
+  assert.deepEqual(mutationCalls,[],'命令展示与核对不触发任何批准或远端操作');
+  win.webContents.send('v2:confirmations-changed',[confirmations[0]]);
+  await waitFor(
+    win,
+    `document.querySelectorAll('[data-confirmation-id]').length === 1`,
+    'confirmation subscription update',
+  );
+  await waitFor(
+    win,
+    `document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('1 项') === true`,
+    'confirmation counter subscription',
+  );
+  await assertConfirmationCountRecovery(win);
+}
+
+async function assertConfirmationCountRecovery(win) {
+  const channel = 'v2:confirmation-list';
+  let mode = 'fail';
+  let releaseRead = null;
+  ipcMain.removeHandler(channel);
+  ipcMain.handle(channel,async (_event,...args) => {
+    readCalls.push({channel,args:clone(args)});
+    if (mode === 'fail') return {ok:false,error:{code:'CONFIRMATION_FAILED',message:'合成确认读取失败'}};
+    if (mode === 'hold') return new Promise(resolve => { releaseRead = resolve; });
+    return ok(clone(confirmations));
+  });
+  try {
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="environment-trigger-env-preview"]')?.click()`,true);
+    await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.textContent?.includes('待确认不可用')`,'读取失败显示不可用');
+    const unavailable = await win.webContents.executeJavaScript(`(() => {
+      const entry = document.querySelector('[data-testid="confirmation-center"]');
+      return {name:entry?.getAttribute('aria-label'),count:entry?.querySelector('[data-utility-count]') !== null,projects:document.querySelectorAll('[data-project-id]').length};
+    })()`,true);
+    assert.match(unavailable.name,/当前环境「预发布环境」.*不可用.*重新读取/u);
+    assert.equal(unavailable.count,false,'失败状态不能显示确定数量');
+    assert.equal(unavailable.projects,workspaceProjects.length,'计数失败不会让项目导航进入加载状态');
+    await selectVisualTab(win,'confirmations','[data-testid="confirmation-queue-count"]','确认页面读取失败');
+    await waitFor(win,`document.querySelector('[data-testid="confirmation-queue-count"]')?.dataset.queueState === 'unavailable'
+      && document.querySelector('[data-testid="confirmation-queue-unavailable"]') !== null`,'确认页面首读失败显示不可用');
+    const pageUnavailable = await win.webContents.executeJavaScript(`(() => ({
+      count:document.querySelector('[data-testid="confirmation-queue-count"]')?.textContent,
+      noOperationSuccess:document.querySelector('[data-feature="confirmations"]')?.textContent?.includes('当前没有待确认操作'),
+      hasRequests:document.querySelectorAll('[data-confirmation-id]').length,
+    }))()`,true);
+    assert.deepEqual(pageUnavailable,{count:'队列不可用',noOperationSuccess:false,hasRequests:0},'初读失败不能声称零项或成功空队列');
+    mode = 'normal';
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-queue-refresh"]')?.click()`,true);
+    await waitFor(win,`document.querySelector('[data-testid="confirmation-queue-count"]')?.dataset.queueState === 'ready'
+      && document.querySelector('[data-testid="confirmation-queue-count"]')?.textContent === '0 项待处理'
+      && document.querySelector('[data-testid="confirmation-queue-error"]') === null`,'确认页面重读恢复已知空队列');
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-center"]')?.click()`,true);
+    await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('0 项待确认操作')`,'重读成功显示已知空队列');
+    mode = 'fail';
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-queue-refresh"]')?.click()`,true);
+    await waitFor(win,`document.querySelector('[data-testid="confirmation-queue-count"]')?.dataset.queueState === 'stale'
+      && document.querySelector('[data-testid="confirmation-queue-stale"]') !== null
+      && document.querySelector('[data-testid="confirmation-queue-unavailable"]') !== null`,'旧空快照刷新失败仍显示未知当前队列');
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-queue-count"]')?.textContent`,true),'上次读取：0 项');
+    win.webContents.send('v2:confirmations-changed',[]);
+    await waitFor(win,`document.querySelector('[data-testid="confirmation-queue-count"]')?.dataset.queueState === 'ready'
+      && document.querySelector('[data-testid="confirmation-queue-error"]') === null
+      && document.querySelector('[data-testid="confirmation-queue-stale"]') === null
+      && document.querySelector('[data-feature="confirmations"]')?.textContent?.includes('当前没有待确认操作')`,'有效空队列订阅清除读取错误');
+    mode = 'normal';
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="environment-trigger-env-production-east"]')?.click()`,true);
+    await selectVisualTab(win,'confirmations','[data-testid="confirmation-queue-count"]','生产环境确认页面');
+    await waitFor(win,`document.querySelector('[data-testid="confirmation-queue-count"]')?.dataset.queueState === 'ready'
+      && document.querySelectorAll('[data-confirmation-id]').length === 2`,'读取当前环境两项合成请求');
+    mode = 'fail';
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-queue-refresh"]')?.click()`,true);
+    await waitFor(win,`document.querySelector('[data-testid="confirmation-queue-count"]')?.dataset.queueState === 'stale'
+      && document.querySelector('[data-testid="confirmation-queue-error"]') !== null
+      && document.querySelector('[data-testid="confirmation-queue-stale"]') !== null`,'刷新失败保留并标注上次读取的请求');
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('[data-confirmation-id]').length`,true),2,'读取失败保留两项旧请求供查看');
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-queue-count"]')?.textContent`,true),'上次读取：2 项');
+    win.webContents.send('v2:confirmations-changed',[confirmations[0]]);
+    await waitFor(win,`document.querySelector('[data-testid="confirmation-queue-count"]')?.textContent === '1 项待处理'
+      && document.querySelector('[data-testid="confirmation-queue-count"]')?.dataset.queueState === 'ready'
+      && document.querySelectorAll('[data-confirmation-id]').length === 1
+      && document.querySelector('[data-testid="confirmation-queue-error"]') === null
+      && document.querySelector('[data-testid="confirmation-queue-stale"]') === null`,'当前范围有效订阅恢复队列和条目并清除错误');
+    mode = 'normal';
+    await selectVisualTab(win,'overview','[data-testid="environment-overview"]','退出确认页面验证独立底栏');
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="environment-trigger-env-preview"]')?.click()`,true);
+    await selectVisualTab(win,'overview','[data-testid="environment-overview"]','预发布环境概览');
+    await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('0 项待确认操作')`,'恢复底栏在途读取的空范围基线');
+    mode = 'hold';
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="environment-trigger-env-production-east"]')?.click()`,true);
+    for (let attempt = 0; attempt < 50 && !releaseRead; attempt += 1) await wait(20);
+    assert.equal(typeof releaseRead,'function','首次读取保持在途');
+    win.webContents.send('v2:confirmations-changed',[confirmations[0]]);
+    await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('1 项待确认操作')`,'订阅先到更新真实计数');
+    releaseRead({ok:false,error:{code:'CONFIRMATION_FAILED',message:'合成旧读取失败'}});
+    releaseRead = null;
+    await captureRenderedFrame(win);
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('1 项待确认操作')`,true),true,'旧读取失败不覆写更新的订阅计数');
+  } finally {
+    releaseRead?.(ok([]));
+    ipcMain.removeHandler(channel);
+    ipcMain.handle(channel,async (_event,...args) => {
+      readCalls.push({channel,args:clone(args)});
+      return ok(clone(confirmations));
+    });
+  }
+  assert.deepEqual(mutationCalls,[],'计数和确认页面恢复仅执行只读请求');
 }
 
 async function captureLongProjectListEvidence(win,theme) {
@@ -1495,8 +1746,7 @@ async function assertCompactProjectRail(win,theme) {
       const add = rail.querySelector('[data-testid="add-project-header"]');
       const addStyle = add && getComputedStyle(add);
       const confirmation = rail.querySelector('[data-testid="confirmation-center"]');
-      const confirmationLabel = confirmation && [...confirmation.querySelectorAll('span')]
-        .find((element) => element.textContent?.trim() === '操作确认');
+      const confirmationLabel = confirmation?.querySelector('[data-utility-label]');
       const viewport = rail.querySelector('[data-slot="scroll-area-viewport"]');
       const before = footer?.getBoundingClientRect();
       const previousScrollTop = viewport?.scrollTop;
@@ -1515,6 +1765,7 @@ async function assertCompactProjectRail(win,theme) {
         add:{height:add?.getBoundingClientRect().height,label:add?.getAttribute('aria-label'),
           iconOnly:add?.textContent?.trim() === '',borderless:Boolean(addStyle && parseFloat(addStyle.borderTopWidth) === 0)},
         selected:rail.querySelector('[data-project-id][aria-current="page"]')?.dataset.projectId,
+        selectionKind:document.querySelector('#detail-main')?.dataset.selectionKind,
         tabStops:rail.querySelectorAll('[data-project-id][tabindex="0"]').length,
         footerToggle:rail.querySelector('[data-slot="sidebar-footer"] [data-project-rail-toggle],[data-slot="sidebar-footer"] [data-testid="project-expand"]') !== null,
         unlabeled:[...rail.querySelectorAll('button')].filter((button) => button.getClientRects().length > 0
@@ -1534,7 +1785,15 @@ async function assertCompactProjectRail(win,theme) {
     assert.equal(snapshot.rows.length,workspaceProjects.length);
     assert.equal(snapshot.tabStops,1);
     assert.equal(snapshot.footerToggle,false);
-    assert.match(snapshot.confirmation.label,/操作确认，\d+ 项待处理/u);
+    const selectedScope = workspaceProjects.find(project => project.projectId === snapshot.selected);
+    assert.ok(selectedScope,'确认计数验收绑定实际选中的合成项目');
+    if (snapshot.selectionKind === 'project') {
+      assert.equal(snapshot.confirmation.label,'选择环境查看待确认操作','无环境的项目明确待确认尚无范围');
+    } else {
+      assert.equal(['environment','plugin'].includes(snapshot.selectionKind),true,`紧凑栏计数与详情范围一致：${snapshot.selectionKind}`);
+      assert.match(snapshot.confirmation.label,/当前环境「[^」]+」，\d+ 项待确认操作/u);
+      assert.equal(selectedScope.environments.some(environment => snapshot.confirmation.label.includes(`当前环境「${environment.name}」`)),true,'计数范围属于实际选中的项目');
+    }
     assert.equal(snapshot.confirmation.labelHidden,true,'窄栏保留可访问名称并收起工具文字');
     assert.deepEqual(snapshot.footer,{height:46,visible:true,fixed:true});
     assert.deepEqual(snapshot.add,{height:32,label:'新增项目',iconOnly:true,borderless:true});
@@ -2662,6 +2921,7 @@ async function openDeleteProjectAlert(win) {
 async function assertCreatePluginWorkspace(win,theme) {
   await setZoomFactorAndWait(win,1,{width:1280,height:820});
   await selectVisualScope(win,'environment');
+  await waitFor(win,`document.querySelector('[data-testid="plugin-trigger-plugin-app-server"]') !== null`,'编辑器回归当前环境插件导航已读取');
   await selectVisualScope(win,'plugin');
   const opened = await win.webContents.executeJavaScript(`(() => {
     const trigger = document.querySelector('[data-testid="add-plugin-env-production-east"]');
@@ -2765,6 +3025,105 @@ async function assertCreatePluginWorkspace(win,theme) {
     }
   }
   await setZoomFactorAndWait(win,1,{width:1280,height:820});
+  const editorLayoutBefore=await win.webContents.executeJavaScript(`({
+    saved:localStorage.getItem('runbook-bridge:app-shell-layout:v1'),
+    panels:['project-panel','resource-panel','detail-panel'].map(id=>({id,width:document.getElementById(id).getBoundingClientRect().width})),
+  })`,true);
+  const toggleEditorWidth=async expectedLabel=>{
+    await win.webContents.executeJavaScript(`(() => {
+      const identify=element=>element instanceof HTMLElement?{id:element.id,testId:element.dataset.testid??null,tag:element.tagName}:null;
+      const probe={events:[],changes:[]};
+      probe.listener=event=>{
+        if(['keydown','keypress','keyup'].includes(event.type)&&event.key!=='Enter')return;
+        const entry={event:event.type,key:event.key??null,target:identify(event.target),trusted:event.isTrusted,prevented:event.defaultPrevented,
+          active:identify(document.activeElement),label:document.querySelector('[data-testid="plugin-editor-expand"]')?.getAttribute('aria-label')};
+        probe.events.push(entry);if(probe.events.length>32)probe.events.shift();
+        queueMicrotask(()=>{entry.preventedAfter=event.defaultPrevented;entry.activeAfter=identify(document.activeElement)});
+      };
+      probe.observer=new MutationObserver(()=>{
+        const button=document.querySelector('[data-testid="plugin-editor-expand"]');
+        const entry={label:button?.getAttribute('aria-label'),hidden:document.querySelector('[data-testid="plugin-editor-workspace"]')?.hidden,
+          panels:['project-panel','resource-panel','detail-panel'].map(id=>({id,width:document.getElementById(id)?.getBoundingClientRect().width}))};
+        if(JSON.stringify(probe.changes.at(-1))!==JSON.stringify(entry))probe.changes.push(entry);
+        if(probe.changes.length>16)probe.changes.shift();
+      });
+      for(const type of ['keydown','keypress','keyup','click','focusin','focusout'])document.addEventListener(type,probe.listener,true);
+      probe.observer.observe(document.querySelector('[data-testid="plugin-editor-workspace"]'),{subtree:true,attributes:true,attributeFilter:['aria-label','hidden']});
+      window.__foundationEditorLayoutProbe=probe;
+    })()`,true);
+    try{
+      await captureRenderedFrame(win);
+      win.focus();win.webContents.focus();
+      await wait(100);
+      await win.webContents.executeJavaScript(`document.querySelector('[data-testid="plugin-editor-expand"]').focus({preventScroll:true})`,true);
+      await waitFor(win,`document.hasFocus()&&document.activeElement?.dataset.testid==='plugin-editor-expand'`,'编辑器拓宽按钮真实焦点');
+      // 与现有环境、项目原生按钮验收使用相同的完整 Enter 默认激活序列。
+      win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});
+      win.webContents.sendInputEvent({type:'char',keyCode:'\r'});
+      win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});
+      await captureRenderedFrame(win);
+      await waitFor(win,`document.querySelector('[data-testid="plugin-editor-expand"]')?.getAttribute('aria-label')===${JSON.stringify(expectedLabel)}`,'原生Enter编辑器宽度切换到'+expectedLabel);
+      const activation=await win.webContents.executeJavaScript(`(() => {
+        const events=window.__foundationEditorLayoutProbe.events;
+        return {clicks:events.filter(event=>event.event==='click'&&event.target?.testId==='plugin-editor-expand'),
+          keypresses:events.filter(event=>event.event==='keypress'&&event.target?.testId==='plugin-editor-expand')};
+      })()`,true);
+      assert.equal(activation.clicks.length,1,'完整原生Enter恰好激活一次编辑器拓宽按钮');
+      assert.equal(activation.clicks[0].trusted,true,'编辑器拓宽来自真实键盘默认click');
+      assert.equal(activation.keypresses.length,1,'编辑器原生Enter完整经过字符阶段');
+      assert.equal(activation.keypresses[0].trusted,true,'编辑器字符阶段来自真实输入');
+    }catch(error){
+      // 只记录合成夹具的控件、事件和布局，不读取草稿、凭据或终端内容。
+      const diagnostics=await win.webContents.executeJavaScript(`(() => {
+        const box=element=>{const rect=element?.getBoundingClientRect();return rect?{left:rect.left,right:rect.right,width:rect.width,height:rect.height}:null};
+        const button=document.querySelector('[data-testid="plugin-editor-expand"]'),editor=document.querySelector('[data-testid="plugin-editor-workspace"]');
+        return {width:innerWidth,height:innerHeight,hasFocus:document.hasFocus(),visibility:document.visibilityState,
+          active:document.activeElement instanceof HTMLElement?{tag:document.activeElement.tagName,id:document.activeElement.id,testId:document.activeElement.dataset.testid}:null,
+          button:button?{label:button.getAttribute('aria-label'),type:button.type,disabled:button.disabled,connected:button.isConnected,
+            visible:Boolean(button.getClientRects().length&&!button.closest('[hidden],[inert]')),focused:document.activeElement===button,rect:box(button)}:null,
+          editor:editor?{scope:editor.dataset.scope,hidden:editor.hidden,rect:box(editor)}:null,
+          panels:['project-panel','resource-panel','detail-panel'].map(id=>({id,...box(document.getElementById(id))})),
+          saved:JSON.parse(localStorage.getItem('runbook-bridge:app-shell-layout:v1')),
+          events:window.__foundationEditorLayoutProbe?.events,changes:window.__foundationEditorLayoutProbe?.changes,
+          windowErrors:window.__foundationWindowErrors?.slice(-4)};
+      })()`,true);
+      process.stderr.write('编辑器原生宽度切换诊断：'+JSON.stringify({expectedLabel,diagnostics})+'\n');
+      throw error;
+    }finally{
+      await win.webContents.executeJavaScript(`(() => {
+        const probe=window.__foundationEditorLayoutProbe;if(!probe)return;
+        for(const type of ['keydown','keypress','keyup','click','focusin','focusout'])document.removeEventListener(type,probe.listener,true);
+        probe.observer.disconnect();delete window.__foundationEditorLayoutProbe;
+      })()`,true);
+    }
+  };
+  await toggleEditorWidth('恢复三栏宽度');
+  for(const width of [640,800,1280]){
+    win.setContentSize(width,820);
+    await waitFor(win,`innerWidth===${width}&&innerHeight===820`,'临时编辑器窗口缩窄与恢复');
+    await captureRenderedFrame(win);
+    assert.equal(await win.webContents.executeJavaScript(`localStorage.getItem('runbook-bridge:app-shell-layout:v1')`,true),editorLayoutBefore.saved,'临时编辑器缩放不保存比例或折叠偏好');
+  }
+  await waitFor(win,`(() => {
+    const editor=document.querySelector('[data-testid="plugin-editor-workspace"]');
+    const panel=document.getElementById('detail-panel');
+    return editor&&!editor.hidden&&editor.dataset.scope==='project-operations/env-production-east'
+      &&document.querySelector('[data-testid="plugin-editor-expand"]')?.getAttribute('aria-label')==='恢复三栏宽度'
+      &&panel.getBoundingClientRect().width>=890;
+  })()`,'恢复宽窗保留临时拓宽编辑区及原范围');
+  await toggleEditorWidth('拓宽编辑区');
+  await waitFor(win,`(() => {
+    const expected=${JSON.stringify(editorLayoutBefore.panels)};
+    return expected.every(panel=>Math.abs(document.getElementById(panel.id).getBoundingClientRect().width-panel.width)<2)
+      &&localStorage.getItem('runbook-bridge:app-shell-layout:v1')===${JSON.stringify(editorLayoutBefore.saved)};
+  })()`,'恢复临时编辑器前的实际三栏宽度和原保存记录');
+  const editorLayoutRestored=await win.webContents.executeJavaScript(`({
+    saved:localStorage.getItem('runbook-bridge:app-shell-layout:v1'),
+    panels:['project-panel','resource-panel','detail-panel'].map(id=>({id,width:document.getElementById(id).getBoundingClientRect().width})),
+  })`,true);
+  assert.equal(editorLayoutRestored.saved,editorLayoutBefore.saved,'恢复三栏不改写用户保存记录');
+  assert.ok(editorLayoutRestored.panels.every(panel=>Math.abs(panel.width-editorLayoutBefore.panels.find(before=>before.id===panel.id).width)<2),
+    '恢复临时编辑器前的实际三栏宽度：'+JSON.stringify({editorLayoutBefore,editorLayoutRestored}));
   await win.webContents.executeJavaScript(`document.querySelector('[data-project-id="project-operations"]')?.focus()`,true);
   await waitFor(win,
     `document.activeElement === document.querySelector('[data-project-id="project-operations"]')`,
@@ -3123,6 +3482,71 @@ async function assertZoomedShell(win,zoomFactor,stage) {
   return snapshot;
 }
 
+async function assertDesignSystemContrast(win) {
+  const snapshot = await win.webContents.executeJavaScript(`(${(() => {
+    const theme = document.documentElement.dataset.theme;
+    const tokens = getComputedStyle(document.documentElement);
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    const context = canvas.getContext('2d',{colorSpace:'srgb',willReadFrequently:true});
+    const token = name => tokens.getPropertyValue('--' + name).trim();
+    const rgba = (foreground,background) => {
+      context.clearRect(0,0,1,1);
+      if (background) { context.fillStyle = background; context.fillRect(0,0,1,1); }
+      context.fillStyle = foreground;
+      context.fillRect(0,0,1,1);
+      return [...context.getImageData(0,0,1,1).data];
+    };
+    const luminance = color => color.slice(0,3).map(channel => channel / 255)
+      .map(channel => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4)
+      .reduce((value,channel,index) => value + channel * [0.2126,0.7152,0.0722][index],0);
+    const ratio = (foreground,background) => {
+      const a = luminance(foreground), b = luminance(background);
+      return (Math.max(a,b) + 0.05) / (Math.min(a,b) + 0.05);
+    };
+    const checks = [];
+    const add = (name,background,foreground,minimum) => checks.push({name,background,minimum,
+      ratio:ratio(foreground,rgba(token(background)))});
+    for (const background of ['background','surface','surface-inset','surface-raised','surface-hover','card','popover']) {
+      for (const name of ['foreground','muted-foreground','text-faint']) add(name,background,rgba(token(name)),4.5);
+      for (const name of ['success','warning','danger','info']) {
+        const badgeBackground = 'color-mix(in oklab, ' + token(name) + ' 10%, transparent)';
+        checks.push({name:name + '-badge',background,minimum:4.5,
+          ratio:ratio(rgba(token(name)),rgba(badgeBackground,token(background)))});
+      }
+      for (const name of ['control-border','scrollbar-thumb','ring']) add(name,background,rgba(token(name)),3);
+    }
+    for (const [foreground,background] of [['primary-foreground','primary'],['danger-foreground','danger-solid']]) {
+      add(foreground,background,rgba(token(foreground)),4.5);
+    }
+    checks.push({name:'switch-off-thumb',background:'control-border',minimum:3,
+      ratio:ratio(rgba(token('background')),rgba(token('control-border')))});
+    return {theme,checks};
+  }).toString()})()`,true);
+  for (const check of snapshot.checks) {
+    assert.ok(check.ratio >= check.minimum,
+      `${snapshot.theme} ${check.name} on ${check.background} contrast ${check.ratio} must be >=${check.minimum}`);
+  }
+  accessibilityMediaEvidence.push({kind:'design-system-contrast',snapshot});
+}
+
+async function assertSharedKeyboardFocus(win,selector,label,{compound = false} = {}) {
+  await waitFor(win,`document.querySelector(${JSON.stringify(selector)}) === document.activeElement
+    && document.activeElement?.matches(':focus-visible') === true`,label + ' keyboard focus');
+  const snapshot = await win.webContents.executeJavaScript(`(() => {
+    const target = document.querySelector(${JSON.stringify(selector)});
+    const indicator = ${compound} ? target?.closest('[data-slot="input-group"]') : target;
+    if (!indicator) return null;
+    const style = getComputedStyle(indicator);
+    return {outlineStyle:style.outlineStyle,outlineWidth:parseFloat(style.outlineWidth),
+      boxShadow:style.boxShadow,ringShadow:style.getPropertyValue('--tw-ring-shadow')};
+  })()`,true);
+  assert.ok(snapshot,label + ' focus indicator target exists');
+  const outline = snapshot.outlineStyle === 'solid' && snapshot.outlineWidth >= 2;
+  const ring = snapshot.boxShadow !== 'none' && snapshot.ringShadow.includes('2px');
+  assert.ok(outline || ring,label + ' visible focus indicator: ' + JSON.stringify(snapshot));
+}
+
 async function assertEmulatedAccessibilityMedia(win) {
   const chromiumDebugger = win.webContents.debugger;
   if (!chromiumDebugger.isAttached()) chromiumDebugger.attach('1.3');
@@ -3268,8 +3692,30 @@ async function assertViewport(win,width,height,theme,capture) {
     };
     const environmentRows = [...document.querySelectorAll('[data-testid^="environment-row-"]')].map((row) => {
       const trigger = row.querySelector('[data-testid^="environment-trigger-"]');
+      const expand = row.querySelector('[data-testid^="environment-expand-"]');
       const actions = row.querySelector('[data-testid^="environment-actions-"]');
       const content = row.querySelector('[data-slot="accordion-content"]');
+      const status = trigger?.querySelector('[data-status]');
+      const statusText = status?.querySelector(':scope > span');
+      const typeBadge = trigger?.querySelector('[data-environment-type]');
+      const name = trigger?.querySelector('[data-slot="item-title"]');
+      const contained = (inner,outer) => Boolean(inner && outer
+        && inner.left >= outer.left - 1 && inner.right <= outer.right + 1
+        && inner.top >= outer.top - 1 && inner.bottom <= outer.bottom + 1);
+      const textRect = element => {
+        if (!element) return null;
+        const range = document.createRange();
+        range.selectNodeContents(element);
+        return range.getBoundingClientRect();
+      };
+      const statusTextHidden = Boolean(statusText && getComputedStyle(statusText).position === 'absolute'
+        && statusText.getBoundingClientRect().width <= 1 && statusText.getBoundingClientRect().height <= 1);
+      const statusRect = status?.getBoundingClientRect();
+      const statusLabelRect = statusTextHidden ? null : textRect(statusText);
+      const triggerRect = trigger?.getBoundingClientRect();
+      const actionsRect = actions?.getBoundingClientRect();
+      const typeRect = typeBadge?.getBoundingClientRect();
+      const typeLabelRect = textRect(typeBadge);
       const rowRect = row.getBoundingClientRect();
       const rowStyle = getComputedStyle(row);
       const boxShadow = rowStyle.boxShadow;
@@ -3280,10 +3726,24 @@ async function assertViewport(win,width,height,theme,capture) {
       const visibleShadowColorLayers = visibleBoxShadow
         .match(/(?:rgba?|hsla?|oklab|oklch|color)\\(/g)?.length ?? 0;
       const insetLayers = visibleBoxShadow.match(/\\binset\\b/g)?.length ?? 0;
-      const indicators = trigger
-        ? [...trigger.querySelectorAll('[data-slot="accordion-trigger-icon"]')]
+      const indicators = expand
+        ? [...expand.querySelectorAll('[data-slot="accordion-trigger-icon"]')]
         : [];
+      const controls = expand?.getAttribute('aria-controls');
+      const contentTarget = controls ? document.getElementById(controls) : null;
       return {
+        id:row.dataset.environmentId,
+        childContentEvidence:{resourceWidth:resourceRect.width,trigger:triggerRect?.toJSON(),actions:actionsRect?.toJSON(),status:statusRect?.toJSON(),statusText:statusLabelRect?.toJSON(),statusTextHidden,type:typeRect?.toJSON(),typeText:typeLabelRect?.toJSON(),nameWidth:name?.getBoundingClientRect().width},
+        childContentBounded:Boolean(contained(statusRect,triggerRect)
+          && !intersects(statusRect,actionsRect)
+          && (statusTextHidden || (contained(statusLabelRect,statusRect) && !intersects(statusLabelRect,actionsRect)))
+          && (!typeBadge || (contained(typeRect,triggerRect) && contained(typeLabelRect,typeRect) && !intersects(typeRect,actionsRect)))
+          && name && contained(name.getBoundingClientRect(),triggerRect) && name.getBoundingClientRect().width >= 16),
+        statusIdentity:Boolean(status?.getAttribute('title') && statusText?.textContent.trim() === status.getAttribute('title')),
+        statusCompactMatchesWidth:resourceRect.width < 280 ? statusTextHidden : !statusTextHidden,
+        environmentType:typeBadge?.dataset.environmentType ?? null,
+        environmentTypeReadable:!typeBadge || (typeRect.width >= 24 && parseFloat(getComputedStyle(typeBadge).fontSize) >= 12),
+        expansionEvidence:{titleExists:Boolean(trigger),expandExists:Boolean(expand),nested:Boolean(trigger && expand && trigger.contains(expand)),titleExpanded:trigger?.getAttribute('aria-expanded'),expandExpanded:expand?.getAttribute('aria-expanded'),rowExpanded:row.dataset.expanded,expandName:expand?.getAttribute('aria-label'),controls:expand?.getAttribute('aria-controls'),contentMounted:Boolean(content),contentId:content?.id},
         expanded:row.dataset.expanded === 'true',
         boxShadow,
         outerGlowRemoved:visibleBoxShadow === 'none' || (
@@ -3292,22 +3752,30 @@ async function assertViewport(win,width,height,theme,capture) {
           && visibleBoxShadow.endsWith('inset')
         ),
         hasStatus:Boolean(trigger?.querySelector('[data-status]')),
-        indicatorHidden:indicators.every(
-          (indicator) => getComputedStyle(indicator).display === 'none'
-        ),
+        independentExpansion:Boolean(trigger && expand && !trigger.contains(expand)
+          && trigger.getAttribute('aria-expanded') === null
+          && expand.getAttribute('aria-expanded') === row.dataset.expanded
+          && expand.getAttribute('aria-label')?.includes('插件')),
+        expansionControlsValid:row.dataset.expanded === 'true'
+          ? Boolean(controls && content && contentTarget === content && content.id === controls)
+          : Boolean((controls === null || contentTarget === content) && (!content || content.getBoundingClientRect().height <= 1)),
+        indicatorVisible:indicators.filter(indicator => getComputedStyle(indicator).display !== 'none' && indicator.getClientRects().length > 0).length === 1,
+        expandHitArea:Boolean(expand && Math.abs(expand.getBoundingClientRect().width - 32) <= 1 && Math.abs(expand.getBoundingClientRect().height - 32) <= 1),
+        headingHeight:trigger?.getBoundingClientRect().height,
         actionsAreSibling:Boolean(trigger && actions && !trigger.contains(actions)),
         unifiedContainer:Boolean(
           row.getAttribute('data-slot') === 'accordion-item' &&
           parseFloat(rowStyle.borderTopWidth) >= 1 &&
-          parseFloat(rowStyle.borderRadius) >= 8 &&
+          Math.abs(parseFloat(rowStyle.borderRadius) - 6) <= 1 &&
           (row.dataset.expanded !== 'true' || !content || (
             content.getBoundingClientRect().left >= rowRect.left - 1 &&
             content.getBoundingClientRect().right <= rowRect.right + 1
           ))
         ),
         noOverlap:Boolean(
-          trigger && actions &&
+          trigger && actions && expand &&
           !intersects(trigger.getBoundingClientRect(),actions.getBoundingClientRect())
+          && !intersects(trigger.getBoundingClientRect(),expand.getBoundingClientRect())
         ),
       };
     });
@@ -3315,6 +3783,7 @@ async function assertViewport(win,width,height,theme,capture) {
       const trigger = row.querySelector('[data-testid^="plugin-trigger-"]');
       const actions = row.querySelector('[data-testid^="plugin-actions-"]');
       return {
+        height:trigger?.getBoundingClientRect().height,
         hasStatus:Boolean(trigger?.querySelector('[data-status]')),
         actionsAreSibling:!actions || Boolean(trigger && !trigger.contains(actions)),
         noOverlap:!actions || Boolean(
@@ -3510,12 +3979,23 @@ async function assertViewport(win,width,height,theme,capture) {
       `${width}x${height} environment outer glow remains: ${row.boxShadow}`,
     );
     assert.equal(row.hasStatus,true,`${width}x${height} environment status missing`);
-    assert.equal(row.indicatorHidden,true,`${width}x${height} environment accordion indicator remains`);
+    assert.equal(row.childContentBounded,true,`${width}x${height} 环境内部状态、身份与文字不能越过选择按钮或覆盖实际动作：${row.id} ${JSON.stringify(row.childContentEvidence)}`);
+    assert.equal(row.statusIdentity,true,`${width}x${height} 紧凑状态仍保留完整文字与提示`);
+    assert.equal(row.statusCompactMatchesWidth,true,`${width}x${height} 运行状态按实际资源栏宽度展示：${JSON.stringify(row.childContentEvidence)}`);
+    assert.equal(row.environmentTypeReadable,true,`${width}x${height} 生产/测试身份保持完整12px文字`);
+    assert.equal(row.environmentType,operationEnvironments.find(environment => environment.environmentId === row.id)?.environmentType === 'unspecified'
+      ? null : operationEnvironments.find(environment => environment.environmentId === row.id)?.environmentType,`${width}x${height} 环境身份按真实数据保留`);
+    assert.equal(row.independentExpansion,true,`${width}x${height} 环境展开和选择按钮互相独立：${row.id} ${JSON.stringify(row.expansionEvidence)}`);
+    assert.equal(row.expansionControlsValid,true,`${width}x${height} 展开关联实际内容且折叠内容不可见：${row.id} ${JSON.stringify(row.expansionEvidence)}`);
+    assert.equal(row.indicatorVisible,true,`${width}x${height} 插件展开方向图标可见`);
+    assert.equal(row.expandHitArea,true,`${width}x${height} 插件展开保留32px命中区域`);
+    assert.ok(Math.abs(row.headingHeight - 48) <= 1,`${width}x${height} 环境标题保持约48px：${row.headingHeight}`);
     assert.equal(row.actionsAreSibling,true,`${width}x${height} nested environment action`);
     assert.equal(row.unifiedContainer,true,`${width}x${height} environment is not one accordion container`);
     assert.equal(row.noOverlap,true,`${width}x${height} environment action overlap`);
   }
   for (const row of snapshot.pluginRows) {
+    assert.ok(Math.abs(row.height - 40) <= 1,`${width}x${height} 插件行保持约40px：${row.height}`);
     assert.equal(row.hasStatus,true,`${width}x${height} plugin status missing`);
     assert.equal(row.actionsAreSibling,true,`${width}x${height} nested plugin action`);
     assert.equal(row.noOverlap,true,`${width}x${height} plugin action overlap`);
@@ -3670,8 +4150,39 @@ async function run() {
       `document.querySelector('[data-project-id="project-operations"]') !== null`,
       'workspace overview',
     );
+    if (process.env.RUNBOOK_BRIDGE_CONFIRMATION_REGRESSION_ONLY === '1') {
+      win.setContentSize(1280,820);
+      await waitFor(win,`innerWidth === 1280 && innerHeight === 820 && document.querySelector('[data-testid="environment-trigger-env-production-east"]') !== null`,'确认窄回归环境导航已挂载');
+      await win.webContents.executeJavaScript(`document.querySelector('[data-testid="environment-trigger-env-production-east"]').click()`,true);
+      await waitFor(win,`document.querySelector('#detail-main')?.dataset.selectionKind === 'environment'`,'确认窄回归选择当前环境');
+      await captureRenderedFrame(win);
+      await assertConfirmationReviewAndRecovery(win);
+      await collectWindowErrorDiagnostics(win);
+      assert.deepEqual(mutationCalls,[]);
+      assert.deepEqual(externalRequests,[]);
+      assert.deepEqual(rendererErrors,[]);
+      assert.deepEqual(rendererWindowErrors,[]);
+      process.stdout.write('确认窄回归通过：完整命令、高对比真实复选框、失败重读、旧请求标记及订阅恢复。\n');
+      return;
+    }
+    if (process.env.RUNBOOK_BRIDGE_EDITOR_LAYOUT_REGRESSION_ONLY === '1') {
+      await assertSecurity(win);
+      await selectVisualScope(win,'project');
+      await waitFor(win,`document.querySelector('[data-testid="environment-trigger-env-production-east"]') !== null`,'编辑器窄回归当前项目环境已挂载');
+      await assertRendererKeyboardFocus(win);
+      await assertCreatePluginWorkspace(win,nativeTheme.shouldUseDarkColors?'dark':'light');
+      await assertDetailCollapseViewportPersistence(win);
+      await collectWindowErrorDiagnostics(win);
+      assert.deepEqual(mutationCalls,[]);
+      assert.deepEqual(externalRequests,[]);
+      assert.deepEqual(rendererErrors,[]);
+      assert.deepEqual(rendererWindowErrors,[]);
+      process.stdout.write('编辑器与详情布局窄回归通过：完整创建草稿、范围及放弃保护、真实键盘拓宽/手动折叠、窄窗恢复与双击保存，零变更调用。\n');
+      return;
+    }
     await assertSecurity(win);
     await require('./workspace-style-ui.cjs')(win);
+    await require('./ui-optimization-layout-ui.cjs')({win,waitFor,captureRenderedFrame,screenshotRoot});
     await assertRendererKeyboardFocus(win);
 
     const initial = await win.webContents.executeJavaScript(`(() => ({
@@ -3882,12 +4393,12 @@ async function run() {
       return;
     }
     await win.webContents.executeJavaScript(`(() => {
-      const trigger = document.querySelector('[data-environment-id="env-production-east"] [data-shell-nav-item]');
+      const trigger = document.querySelector('[data-testid="environment-expand-env-production-east"]');
       if (trigger?.getAttribute('aria-expanded') !== 'true') trigger?.click();
     })()`,true);
     await waitFor(
       win,
-      `document.querySelector('[data-environment-id="env-production-east"] [data-shell-nav-item]')?.getAttribute('aria-expanded') === 'true'`,
+      `document.querySelector('[data-testid="environment-expand-env-production-east"]')?.getAttribute('aria-expanded') === 'true'`,
       'expanded production environment',
     );
 
@@ -3982,6 +4493,13 @@ async function run() {
         && document.activeElement?.getAttribute('data-detail-tab') === 'agent'`,
       'detail tab keyboard activation',
     );
+    // 使用原生 Tab 建立键盘输入状态，再验证实际 Radix 内容区的可见焦点。
+    await pressKey(win,'TAB');
+    await win.webContents.executeJavaScript(
+      `document.querySelector('[data-slot="tabs-content"][data-state="active"]')?.focus({preventScroll:true})`,true);
+    await assertSharedKeyboardFocus(win,'[data-slot="tabs-content"][data-state="active"]','标签页内容');
+    await win.webContents.executeJavaScript(
+      `document.querySelector('[data-detail-tab="agent"]')?.focus({preventScroll:true})`,true);
     await win.webContents.executeJavaScript(`(() => {
       document.activeElement?.dispatchEvent(new KeyboardEvent('keydown',{
         bubbles:true,
@@ -4055,6 +4573,7 @@ async function run() {
     }))()`,true);
     assert.equal(commandSnapshot.dialogs,1);
     assert.equal(commandSnapshot.inputFocused,true);
+    await assertSharedKeyboardFocus(win,'[data-testid="global-command"] [cmdk-input]','命令输入框',{compound:true});
     assert.equal(commandSnapshot.hasProject,true);
     assert.equal(commandSnapshot.hasPlugin,true);
     await captureOverlayVisualEvidence(win,{
@@ -4202,47 +4721,7 @@ async function run() {
     await assertEmulatedAccessibilityMedia(win);
     assert.deepEqual(mutationCalls,[]);
 
-    await win.webContents.executeJavaScript(
-      `document.querySelector('[data-testid="confirmation-center"]')?.click()`,
-      true,
-    );
-    await waitFor(
-      win,
-      `document.querySelector('[data-feature="confirmations"]') !== null`,
-      'confirmation detail tab',
-    );
-    await waitFor(
-      win,
-      `document.querySelectorAll('[data-confirmation-id]').length === 2`,
-      'confirmation cards',
-    );
-    const confirmationTab = await win.webContents.executeJavaScript(`(() => ({
-      active:[...document.querySelectorAll('[role="tab"]')]
-        .find((tab) => tab.getAttribute('aria-selected') === 'true')?.textContent?.trim() ?? null,
-      selected:document.querySelector('[data-feature="confirmations"]') !== null,
-      crossScopeVisible:document.body.textContent?.includes('跨范围请求不得显示') === true,
-      scopedCount:document.querySelector('[data-testid="confirmation-center"]')
-        ?.getAttribute('aria-label')?.includes('2 项') === true,
-    }))()`,true);
-    assert.deepEqual(confirmationTab,{
-      active:'操作确认',selected:true,crossScopeVisible:false,scopedCount:true,
-    });
-    const confirmationSelectionKind = await win.webContents.executeJavaScript(
-      `document.querySelector('#detail-main')?.dataset.selectionKind ?? null`,
-      true,
-    );
-    assert.equal(confirmationSelectionKind,'environment');
-    win.webContents.send('v2:confirmations-changed',[confirmations[0]]);
-    await waitFor(
-      win,
-      `document.querySelectorAll('[data-confirmation-id]').length === 1`,
-      'confirmation subscription update',
-    );
-    await waitFor(
-      win,
-      `document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('1 项') === true`,
-      'confirmation counter subscription',
-    );
+    await assertConfirmationReviewAndRecovery(win);
 
     const accessibility = await win.webContents.executeJavaScript(`(() => {
       const visibleButtons = [...document.querySelectorAll('button')].filter((button) => {
@@ -4268,6 +4747,8 @@ async function run() {
     assert.equal(accessibility.tabVariant,'navigation');
 
     await assertRendererKeyboardFocus(win);
+
+    await assertDetailCollapseViewportPersistence(win);
 
     await win.webContents.executeJavaScript(
       `document.querySelector('[data-testid="detail-collapse"]')?.click()`,

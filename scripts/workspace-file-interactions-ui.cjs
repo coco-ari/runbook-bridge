@@ -1,11 +1,41 @@
 const assert = require('node:assert/strict');
 
-module.exports = async function testWorkspaceFileInteractions({evaluate,click,doubleClick,clickText,until,wait,win,previewReads,writes,opened,errors}) {
+module.exports = async function testWorkspaceFileInteractions({evaluate,click,doubleClick,clickText,until,wait,win,previewReads,writes,terminalSessions,errors}) {
   const row = path => '[role="treeitem"][title=' + JSON.stringify(path) + ']';
-  const panel = '.server-terminal-tab-panel:not([hidden])';
+  const panel = '.server-workspace:not([hidden]) .server-terminal-tab-panel:not([hidden])[data-input-active=true]';
   const terminal = panel + ' .server-terminal-container';
   const quote = path => "'" + path.replace(/'/g, "'\"'\"'") + "'";
   const has = selector => 'document.querySelector(' + JSON.stringify(selector) + ')';
+  const paneState = () => evaluate("(() => { const panes = [...document.querySelectorAll(" + JSON.stringify(panel) + ")], pane = panes[0], section = pane?.querySelector('[data-session-status]'), target = pane?.querySelector('.server-terminal-container'), rect = target?.getBoundingClientRect(), tabId = pane?.dataset.terminalId; return {connected:Boolean(pane?.closest('.server-workspace')?.querySelector('.server-workspace-header [data-status=connected]')),activePaneCount:panes.length,tabId:tabId === 'default' || /^[0-9a-f-]{36}$/i.test(tabId ?? '') ? tabId : null,status:['idle','opening','open','closed','waiting'].includes(section?.dataset.sessionStatus) ? section.dataset.sessionStatus : null,visible:Boolean(pane?.getClientRects().length),dialogPresent:Boolean(document.querySelector('[role=dialog]:not([hidden]),[role=alertdialog]:not([hidden])')),rect:rect ? {x:Math.round(rect.x),y:Math.round(rect.y),width:Math.round(rect.width),height:Math.round(rect.height)} : null}; })()");
+  const bindCurrentSession = async label => {
+    const state = await paneState();
+    assert.equal(state.connected, true, label + '：服务器保持已连接');
+    assert.equal(state.activePaneCount, 1, label + '：唯一可见活动终端');
+    assert.equal(state.visible, true, label + '：当前终端可见');
+    assert.equal(state.status, 'open', label + '：当前人工会话已打开');
+    assert.ok(state.tabId, label + '：标签使用测试终端标识');
+    // 打开记录包含历史已结束会话，必须按当前窗格标签与打开状态精确绑定。
+    const matches = [...terminalSessions].filter(([, session]) => session.tabId === state.tabId && session.status === 'open');
+    assert.equal(matches.length, 1, label + '：标签唯一绑定一个打开的会话');
+    assert.match(matches[0][0], /^terminal-\d+$/, label + '：使用合成会话标识');
+    return {tabId:state.tabId,sessionId:matches[0][0]};
+  };
+  await until(has(panel), '拖拽准备当前活动终端');
+  const initialState = await paneState();
+  assert.equal(initialState.connected, true, '拖拽准备必须先连接服务器');
+  assert.equal(initialState.activePaneCount, 1, '拖拽准备唯一可见活动终端');
+  assert.equal(initialState.visible, true, '拖拽准备终端实际可见');
+  assert.ok(initialState.tabId, '拖拽准备有效终端标签');
+  const beforePreparation = writes.length;
+  // 前序监控会主动断开服务器；只在测试入口由人工按钮重新打开原标签，负例不自动恢复。
+  if (initialState.status === 'closed') {
+    await until(has(panel + ' [data-testid=terminal-ended-actions] button') + '?.disabled === false', '人工重开入口可用');
+    await click(panel + ' [data-testid=terminal-ended-actions] button');
+  }
+  await until(has(panel + ' [data-session-status=open]'), '拖拽准备人工终端已打开');
+  const initialBinding = await bindCurrentSession('初始拖拽终端');
+  assert.equal(initialBinding.tabId, initialState.tabId, '准备只重开原活动标签');
+  assert.equal(writes.length, beforePreparation, '准备终端不发送输入');
   await until(has(row('/srv')), '拖拽测试根目录');
   await click(row('/srv'));
   await until(has(row('/srv/example.conf')), '文件夹单击展开');
@@ -58,7 +88,13 @@ module.exports = async function testWorkspaceFileInteractions({evaluate,click,do
   const drop = async (data,{cancel=false,accepted=true}={}) => {
     const target = await point(terminal);
     for (const type of ['dragEnter','dragOver']) await debuggerApi.sendCommand('Input.dispatchDragEvent',{type,...target,data});
-    if (accepted) await until(has(terminal + '[data-path-drag-over=true]'), '有效路径拖拽显示终端边框');
+    if (accepted) {
+      try { await until(has(terminal + '[data-path-drag-over=true]'), '有效路径拖拽显示终端边框'); }
+      catch (error) {
+        process.stderr.write('文件拖拽状态诊断：' + JSON.stringify(await paneState()) + '\n');
+        throw error;
+      }
+    }
     else assert.equal(await evaluate(has(terminal) + ".hasAttribute('data-path-drag-over')"), false, '无效拖拽不显示接受反馈');
     await debuggerApi.sendCommand('Input.dispatchDragEvent',{type:cancel?'dragCancel':'drop',...target,data});
     await debuggerApi.sendCommand('Input.dispatchMouseEvent',{type:'mouseReleased',button:'left',buttons:0,clickCount:1,...target});
@@ -76,7 +112,9 @@ module.exports = async function testWorkspaceFileInteractions({evaluate,click,do
   try {
     // 原生鼠标触发拖拽，由 Chromium 接管投放，避免测试进入系统拖拽循环。
     await debuggerApi.sendCommand('Input.setInterceptDrags',{enabled:true});
-    const currentSession = opened.at(-1);
+    const currentBinding = await bindCurrentSession('预览关闭后拖拽终端');
+    assert.deepEqual(currentBinding, initialBinding, '文件预览关闭后返回原人工会话');
+    const currentSession = currentBinding.sessionId;
     const previewCount = previewReads.length;
     const currentDirectory = await evaluate("document.querySelector('.server-path-breadcrumbs').title");
     for (const path of ['/srv/example.conf','/srv/config','/srv/带空格目录 ',"/srv/带 空格'$(echo literal).conf"]) {
@@ -96,21 +134,33 @@ module.exports = async function testWorkspaceFileInteractions({evaluate,click,do
     assert.equal(writes.length, beforeCancel, '外部文本与失效标识不进入终端');
 
     await click('[aria-label="新增终端"]');
+    await until(has(panel) + '?.dataset.terminalId !== ' + JSON.stringify(currentBinding.tabId) + ' && Boolean(' + has(panel) + ')', '新增终端切换到独立活动标签');
+    await until(has(panel + ' [data-session-status=open]'), '第二个终端会话已打开');
     await until(has(panel + ' .xterm-rows') + "?.textContent.includes('operator@demo')", '第二个终端就绪');
-    const secondSession = opened.at(-1), beforeSecond = writes.length;
+    const secondBinding = await bindCurrentSession('第二个拖拽终端');
+    assert.notEqual(secondBinding.tabId, currentBinding.tabId, '新增终端使用独立标签');
+    assert.notEqual(secondBinding.sessionId, currentSession, '新增终端绑定独立会话');
+    const secondSession = secondBinding.sessionId, beforeSecond = writes.length;
     await dragPath('/srv/example.conf');
     assertWrite(beforeSecond,'/srv/example.conf',secondSession);
     const activeClose = await evaluate("document.querySelector('.server-terminal-tabs [role=tab][aria-selected=true]').parentElement.querySelector('button[aria-label^=关闭]').getAttribute('aria-label')");
     await click('[aria-label=' + JSON.stringify(activeClose) + ']');
+    await until(has(panel) + '?.dataset.terminalId === ' + JSON.stringify(currentBinding.tabId), '关闭第二终端返回原标签');
+    assert.deepEqual(await bindCurrentSession('关闭第二终端后'), currentBinding, '返回原标签仍绑定原会话');
     await wait(180);
     assert.equal(writes.length, beforeSecond + 1, '切回其他标签不重放路径');
 
     await clickText('结束会话');
+    await until(has(panel + ' [data-session-status=closed]'), '人工结束当前会话状态');
     await until(has(panel) + "?.textContent.includes('会话已结束')", '结束终端');
     const beforeClosed = writes.length;
     await dragPath('/srv/example.conf',{accepted:false});
     await click(panel + ' [data-testid=terminal-ended-actions] button');
+    await until(has(panel + ' [data-session-status=open]'), '手动重开后会话状态已打开');
     await until(has(panel + ' .xterm-rows') + "?.textContent.includes('operator@demo')", '重新打开终端');
+    const reopenedBinding = await bindCurrentSession('负例后手动重开终端');
+    assert.equal(reopenedBinding.tabId, currentBinding.tabId, '负例后手动重开原标签');
+    assert.notEqual(reopenedBinding.sessionId, currentSession, '手动重开建立新会话');
     await wait(180);
     assert.equal(writes.length, beforeClosed, '结束期间的拖拽不会在重新打开后补发');
     assert.deepEqual(errors, [], '双击和拖拽无 Renderer 错误');

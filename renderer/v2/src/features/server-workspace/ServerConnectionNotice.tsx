@@ -2,9 +2,11 @@ import { DiagnosticDetails } from "@/features/connections/DiagnosticDetails"
 import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import type { TerminalConnection } from "./terminal-recovery"
+import type { WorkspaceConnectionPresentation } from "@/components/workspace/workspace-connection-presentation"
 
-export function ServerConnectionNotice({ connection, error, onSettings }: {
+export function ServerConnectionNotice({ connection, presentation, error, onSettings }: {
   readonly connection: TerminalConnection
+  readonly presentation: WorkspaceConnectionPresentation
   readonly error?: string
   readonly onSettings: () => void
 }) {
@@ -15,14 +17,14 @@ export function ServerConnectionNotice({ connection, error, onSettings }: {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [connection.phase, connection.nextRetryAt])
-  if (connection.connected && !error) return null
+  if (presentation.status === "connected" && !error) return null
   const attempt = connection.attempt ? "（" + connection.attempt + "/" + connection.maxAttempts + "）" : ""
   const countdown = Math.max(0, Math.ceil(((connection.nextRetryAt ?? now) - now) / 1000))
-  const message = connection.connected ? "当前服务器仍保持连接。" : connection.phase === "waiting" ? "连接中断，等待自动重连" + attempt
+  const message = presentation.label === "等待身份确认" || presentation.label === "正在取消连接" || presentation.label === "正在断开" ? presentation.label + "…" : presentation.label === "正在连接" && connection.phase !== "connecting" ? "正在连接服务器…" : connection.connected ? presentation.label + "，终端历史仍可查看。" : connection.phase === "waiting" ? "连接中断，等待自动重连" + attempt
     : connection.phase === "connecting" ? "正在连接服务器" + attempt + "…"
     : connection.phase === "exhausted" ? "自动重连未成功，可重新连接。"
     : connection.phase === "action-required" ? "连接需要处理，请检查身份或连接配置。"
-    : "服务器已断开，终端历史仍可查看。"
+    : presentation.status === "disconnected" ? "服务器已断开，终端历史仍可查看。" : presentation.label + "，终端历史仍可查看。"
   const detail = error || connection.message
   return <div className="server-workspace-connection-notice flex-wrap" data-testid="server-connection-notice">
     <div className="min-w-0 flex-1">

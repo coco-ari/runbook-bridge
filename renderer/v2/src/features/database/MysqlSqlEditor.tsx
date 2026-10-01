@@ -5,6 +5,7 @@ import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "rea
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import { DisabledReason } from "@/components/ui/disabled-reason"
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu"
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select"
 import { selectMysqlScript, splitMysqlScript } from "../../../../../src/mysql-script-splitter.mjs"
@@ -159,21 +160,32 @@ export function MysqlSqlEditor({ active = true, value, loading, collapsed, onCha
       syncCursor()
     }, 0)
   }
+  const runReason = loading ? "SQL 正在执行，请等待或停止当前执行" : uncertain ? "执行结果待核实，核实后才能继续执行" : !connected ? "请先连接数据库" : !value.trim() ? "请先输入 SQL" : undefined
+  const transactionReason = loading ? "SQL 正在执行" : uncertain ? "执行结果待核实，请先核实" : !connected ? "请先连接数据库" : transaction !== "active" ? mode === "manual" ? "当前标签没有待提交事务" : "当前模式自动提交，没有待提交事务" : undefined
+  const modeReason = loading ? "SQL 正在执行，暂时不能切换事务模式" : uncertain ? "执行结果待核实，暂时不能切换事务模式" : transaction !== "none" ? "请先结束当前事务，再切换事务模式" : undefined
 
   return (
     <section aria-label="SQL 编辑器" className={`mysql-sql-editor-panel ${collapsed ? "is-collapsed" : ""}`} data-testid={active ? "mysql-query-editor-panel" : undefined}>
       <div className="mysql-editor-toolbar">
+        <div className="mysql-sql-action-group" role="group" aria-label="SQL 执行">
         <div className="mysql-sql-run-group">
-          <Button data-testid={active ? "mysql-query-run" : undefined} disabled={loading || uncertain || !connected || !value.trim()} onClick={() => run()} size="sm" type="button" title={`执行选中内容或光标所在语句 · ${shortcutLabel("↵")}`}><Play aria-hidden="true" weight="fill" />{loading ? "执行中…" : "执行"}</Button>
+          <Button data-testid={active ? "mysql-query-run" : undefined} disabled={loading || uncertain || !connected || !value.trim()} onClick={() => run()} size="sm" type="button" title={runReason ?? `执行选中内容或光标所在语句 · ${shortcutLabel("↵")}`}><Play aria-hidden="true" weight="fill" />{loading ? "执行中…" : "执行"}</Button>
           <DropdownMenu open={runMenuOpen} onOpenChange={setRunMenuOpen}><DropdownMenuTrigger asChild><Button aria-label="选择 SQL 执行范围" data-testid={active ? "mysql-query-run-menu" : undefined} disabled={loading || uncertain || !connected || !value.trim()} size="icon-sm" type="button"><CaretDown /></Button></DropdownMenuTrigger><DropdownMenuContent className="min-w-48"><DropdownMenuItem data-testid="mysql-query-run-current" onSelect={() => run("current")}>执行当前语句 / 选中内容</DropdownMenuItem><DropdownMenuItem data-testid="mysql-query-run-selection" onSelect={() => run("selection")}>执行选中内容</DropdownMenuItem><DropdownMenuItem data-testid="mysql-query-run-all" onSelect={() => run("all")}>执行整个脚本</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
         </div>
-        <Button aria-label="停止 SQL 执行" data-testid={active ? "mysql-query-stop" : undefined} disabled={!loading} onClick={onStop} size="icon-sm" title="停止执行；已经提交的语句不会撤销" type="button" variant="outline"><Stop aria-hidden="true" weight="fill" /></Button>
+        <Button aria-label="停止 SQL 执行" data-testid={active ? "mysql-query-stop" : undefined} disabled={!loading} onClick={onStop} size="icon-sm" title={loading ? "停止执行；已经提交的语句不会撤销" : "当前没有正在执行的 SQL"} type="button" variant="outline"><Stop aria-hidden="true" weight="fill" /></Button>
+        </div>
+        <div className="mysql-sql-action-group" role="group" aria-label="SQL 事务">
+        <DisabledReason reason={modeReason ?? ""}>
         <Select value={mode} onValueChange={value => onModeChange(value as MysqlSqlMode)} disabled={loading || uncertain || transaction !== "none"}>
           <SelectTrigger aria-label="SQL 事务模式" className="mysql-sql-mode" data-testid={active ? "mysql-query-mode" : undefined} size="sm"><SelectValue>{{ atomic: "自动事务", autocommit: "逐条自动提交", manual: "手动事务" }[mode]}</SelectValue></SelectTrigger><SelectContent><SelectItem value="atomic">自动事务（默认） · 全部成功才提交，失败自动回滚</SelectItem><SelectItem value="autocommit">逐条自动提交 · 每条成功立即生效</SelectItem><SelectItem value="manual">手动事务 · 执行后需点击提交或回滚</SelectItem></SelectContent>
         </Select>
-        <Button data-testid={active ? "mysql-query-commit" : undefined} disabled={loading || uncertain || !connected || transaction !== "active"} onClick={() => onTransaction("COMMIT")} size="sm" title="提交当前 SQL 标签的事务" type="button" variant="outline"><Check />提交</Button>
-        <Button data-testid={active ? "mysql-query-rollback" : undefined} disabled={loading || uncertain || !connected || transaction !== "active"} onClick={() => onTransaction("ROLLBACK")} size="sm" title="回滚当前 SQL 标签尚未提交的更改" type="button" variant="outline"><ArrowCounterClockwise />回滚</Button>
+        </DisabledReason>
+        <Button data-testid={active ? "mysql-query-commit" : undefined} disabled={loading || uncertain || !connected || transaction !== "active"} onClick={() => onTransaction("COMMIT")} size="sm" title={transactionReason ?? "提交当前 SQL 标签的事务"} type="button" variant="outline"><Check />提交</Button>
+        <Button data-testid={active ? "mysql-query-rollback" : undefined} disabled={loading || uncertain || !connected || transaction !== "active"} onClick={() => onTransaction("ROLLBACK")} size="sm" title={transactionReason ?? "回滚当前 SQL 标签尚未提交的更改"} type="button" variant="outline"><ArrowCounterClockwise />回滚</Button>
+        </div>
+        <div className="mysql-sql-action-group" role="group" aria-label="SQL 工具">
         <Button aria-label="复制 SQL" data-testid={active ? "mysql-query-copy" : undefined} disabled={!value} onClick={() => void copySql()} size="icon-sm" title="复制 SQL" type="button" variant="ghost"><Copy aria-hidden="true" /></Button>
+        </div>
         <p className="sr-only" id={`${uniqueId}-hint`}>支持查询、增删改和批量脚本。Ctrl / ⌘ + Enter 执行当前或选中语句，Shift + Ctrl / ⌘ + Enter 执行全部。{mode === "atomic" ? "自动事务：本次语句全部成功后自动提交，失败则自动回滚本次写入。" : mode === "manual" ? "手动事务：点击提交保存更改，或点击回滚撤销未提交的更改。" : "逐条自动提交：每条成功立即生效，遇错停止，之前已提交的更改保留。"}</p>
         <span className="mysql-editor-dialect">MySQL</span>
       </div>

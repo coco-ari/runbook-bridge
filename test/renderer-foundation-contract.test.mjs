@@ -72,7 +72,7 @@ test('production React Renderer is the unique packaged entry and preserves Elect
 
   for (const token of [
     'background','surface','surface-raised','surface-hover','surface-selected',
-    'foreground','border','popover','muted','accent','input','ring','sidebar',
+    'foreground','border','control-border','scrollbar-thumb','popover','muted','accent','input','ring','sidebar',
     'primary','success','warning','danger','info',
   ]) assert.match(styles,new RegExp(`--${token}:`,'u'));
   assert.match(styles,/:root\[data-theme="dark"\]/u);
@@ -99,7 +99,7 @@ test('shared shadcn controls expose consistent focus and localized accessibility
     fs.readFile('renderer/v2/src/components/ui/tabs.tsx','utf8'),
   ]);
 
-  assert.match(button,/focus-visible:ring-2 focus-visible:ring-ring\/60/u);
+  assert.match(button,/focus-visible:ring-2 focus-visible:ring-ring/u);
   assert.doesNotMatch(button,/focus-visible:ring-offset|focus-visible:ring-focus-ring/u);
   assert.match(alert,/role=\{role \?\? \(variant === "destructive" \? "alert" : undefined\)\}/u);
   assert.doesNotMatch(alert,/role="alert"/u);

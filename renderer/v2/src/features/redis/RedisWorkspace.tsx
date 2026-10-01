@@ -7,7 +7,8 @@ import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBad
 import { OperationMessage, OperationSpinner, useOperationLabel } from "@/components/workspace/OperationFeedback"
 import { RedisWriteEditor } from "./RedisWriteEditor"
 import { useRedisEditing } from "./use-redis-editing"
-import { StatusIndicator } from "@/components/app-shell/StatusIndicator"
+import { WorkspaceConnectionStatus } from "@/components/workspace/WorkspaceConnectionStatus"
+import { workspaceConnectionNotice, workspaceConnectionPresentation } from "@/components/workspace/workspace-connection-presentation"
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from "@/components/ui/empty"
 import { lazy, Suspense, useId, useRef, useState, type ReactNode } from "react"
 import { Copy, Database, PushPin, ShieldCheck, Plus, PencilSimple, Trash } from "@phosphor-icons/react"
@@ -187,7 +188,7 @@ export function RedisWorkspace({ backLabel = "返回 Redis 详情", api, scope, 
     <header className="redis-workspace-header">
       <WorkspaceBackButton label={backLabel} testId="redis-workspace-back" onClick={onBack} />
       <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold">{plugin.displayName}</h1><EnvironmentTypeBadge /><StatusIndicator appearance="badge" status={connected ? "connected" : "disconnected"} /></div>
+        <div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold">{plugin.displayName}</h1><EnvironmentTypeBadge /><WorkspaceConnectionStatus state={connection.state} /></div>
         <p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName}>{projectName} / {environmentName} · DB {String(plugin.target?.db ?? 0)}</p>
       </div>
       <WorkspaceHeaderActions connected={connected} busy={disconnecting || connection.state.phase === "disconnecting"}
@@ -202,7 +203,7 @@ export function RedisWorkspace({ backLabel = "返回 Redis 详情", api, scope, 
     </header>
 
     {!connected ? <div className="redis-notice flex flex-wrap items-center gap-2" role="status" data-testid="redis-workspace-disconnected">
-      <span>连接已断开，Key 标签、搜索条件和草稿已保留。</span>
+      <span>{workspaceConnectionNotice(workspaceConnectionPresentation(connection.state), "Key 标签、搜索条件和草稿已保留。")}</span>
       {connection.state.error ? <DiagnosticDetails error={connection.state.error} domain="operation" /> : null}
     </div> : null}
     <RuntimeHostKeyDialog state={connection.state} onReject={connection.rejectHostKey} onTrust={connection.trustHostKey} returnFocusRef={reconnectFocus} testId="redis-workspace-host-key-confirmation" />

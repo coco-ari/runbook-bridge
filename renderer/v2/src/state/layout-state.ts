@@ -15,8 +15,7 @@ export function projectCollapseIntentAfterResize(
     isUserInteraction: boolean
   }>,
 ): boolean {
-  // Automatic viewport compression and resizes of another panel must not turn
-  // temporary compact geometry into a saved preference to collapse the rail.
+  // 窗口压缩和其他面板调整不能把临时紧凑布局保存为项目栏折叠偏好。
   if (
     !isUserInteraction
     || viewportWidth < 720
@@ -37,11 +36,22 @@ export interface AppShellLayoutState {
   readonly projectCollapsed: boolean
 }
 
-export const DEFAULT_APP_SHELL_LAYOUT: Layout = {
-  [APP_SHELL_PANEL_IDS.project]: 20,
-  [APP_SHELL_PANEL_IDS.resource]: 32,
-  [APP_SHELL_PANEL_IDS.detail]: 48,
+export function createDefaultAppShellLayout(viewportWidth = 1280): Layout {
+  // 窄窗只临时压缩，持久化初始布局仍按可正常展开的窗口计算。
+  const width = Number.isFinite(viewportWidth) && viewportWidth > 0
+    ? Math.max(960, viewportWidth)
+    : 1280
+  const panelSpace = width - 2
+  const project = 224 / panelSpace * 100
+  const resource = 320 / panelSpace * 100
+  return {
+    [APP_SHELL_PANEL_IDS.project]: project,
+    [APP_SHELL_PANEL_IDS.resource]: resource,
+    [APP_SHELL_PANEL_IDS.detail]: 100 - project - resource,
+  }
 }
+
+export const DEFAULT_APP_SHELL_LAYOUT: Layout = createDefaultAppShellLayout()
 
 export const DEFAULT_APP_SHELL_LAYOUT_STATE: AppShellLayoutState = {
   detailCollapsed: false,
@@ -79,9 +89,13 @@ export function isAppShellLayout(candidate: unknown): candidate is Layout {
 }
 
 export function readAppShellLayoutState(): AppShellLayoutState {
+  const defaultState: AppShellLayoutState = {
+    ...DEFAULT_APP_SHELL_LAYOUT_STATE,
+    layout: createDefaultAppShellLayout(typeof window === "undefined" ? 1280 : window.innerWidth),
+  }
   try {
     const stored = window.localStorage.getItem(STORAGE_KEY)
-    if (!stored) return DEFAULT_APP_SHELL_LAYOUT_STATE
+    if (!stored) return defaultState
     const parsed = JSON.parse(stored) as Record<string, unknown>
 
     if (isAppShellLayout(parsed.layout)) {
@@ -92,15 +106,14 @@ export function readAppShellLayoutState(): AppShellLayoutState {
       }
     }
 
-    // Preserve collapse intent from the discrete phase 2 schema once, then
-    // allow the Radix-compatible panel group to own exact percentages.
+    // 迁移旧版离散布局时保留折叠偏好，再由面板组管理精确比例。
     return {
-      ...DEFAULT_APP_SHELL_LAYOUT_STATE,
+      ...defaultState,
       projectCollapsed: parsed.projectSize === "collapsed",
       detailCollapsed: parsed.detailSize === "collapsed",
     }
   } catch {
-    return DEFAULT_APP_SHELL_LAYOUT_STATE
+    return defaultState
   }
 }
 
@@ -108,7 +121,7 @@ export function persistAppShellLayoutState(state: AppShellLayoutState): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
   } catch {
-    // Layout persistence is optional and must never block the workbench.
+    // 布局保存失败不能阻止工作台继续使用。
   }
 }
 

@@ -21,7 +21,8 @@ import {
 import { toast } from "sonner"
 import { focusWorkspaceElement } from "@/lib/workspace-focus"
 
-import type { AiOpsV2Api, EnvironmentScope, PluginRecord } from "@/bridge/ai-ops-v2"
+import type { AiOpsV2Api, EnvironmentScope, EnvironmentType, PluginRecord } from "@/bridge/ai-ops-v2"
+import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   AlertDialog,
@@ -98,6 +99,7 @@ export interface PluginEditorWorkspaceProps {
   readonly scope: EnvironmentScope
   readonly projectName: string
   readonly environmentName: string
+  readonly environmentType?: EnvironmentType | undefined
   readonly plugin: PluginConfigurationRecord | null
   readonly initialKind?: PluginKind
   readonly pluginTypeOptions?: readonly { readonly type: string; readonly label: string }[]
@@ -161,6 +163,7 @@ export function PluginEditorWorkspace({
   scope,
   projectName,
   environmentName,
+  environmentType,
   plugin,
   initialKind = "server",
   pluginTypeOptions = Object.entries(PLUGIN_KIND_LABELS).map(([type, label]) => ({ type, label })),
@@ -369,6 +372,7 @@ export function PluginEditorWorkspace({
               <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" data-testid="plugin-editor-scope" title={`${projectName} / ${environmentName}`}>
                 {projectName} <span className="px-1 text-muted-foreground/50">/</span> {environmentName}
               </p>
+              <EnvironmentTypeBadge type={environmentType ?? "unspecified"} />
               <Tooltip>
                 <TooltipTrigger asChild><Button aria-label={expanded ? "恢复三栏宽度" : "拓宽编辑区"} data-testid="plugin-editor-expand" onClick={onToggleExpanded} size="icon-sm" variant="ghost">{expanded ? <ArrowsInSimple /> : <ArrowsOutSimple />}</Button></TooltipTrigger>
                 <TooltipContent>{expanded ? "恢复三栏宽度" : "拓宽编辑区，继续保留环境栏"}</TooltipContent>
@@ -382,7 +386,7 @@ export function PluginEditorWorkspace({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <h1 className="text-base font-semibold tracking-tight" id="plugin-editor-title">{editor.isCreating ? "新增插件" : "编辑连接配置"}</h1>
-                  <Badge variant={editor.isDirty ? "warning" : "outline"}>{editor.isDirty ? "未保存" : "独立编辑工作区"}</Badge>
+                  {editor.isDirty ? <Badge variant="warning">未保存</Badge> : null}
                 </div>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">{editor.isCreating ? "配置新插件，保存后再决定是否连接。" : `${plugin?.displayName} · 修改仅作用于当前插件。`}</p>
               </div>
@@ -434,7 +438,7 @@ export function PluginEditorWorkspace({
                       <FieldLabel htmlFor="plugin-display-name">名称</FieldLabel>
                       <Input
                         aria-describedby="plugin-display-name-description"
-                        disabled={!editor.isCreating}
+                        readOnly={!editor.isCreating}
                         id="plugin-display-name"
                         maxLength={120}
                         onChange={(event) => editor.updateDraft((current) => ({
@@ -447,7 +451,7 @@ export function PluginEditorWorkspace({
                       <FieldDescription id="plugin-display-name-description">
                         {editor.isCreating
                           ? "留空时会根据类型和目标自动生成。"
-                          : "名称属于独立元数据，不会混入连接配置编辑事务。"}
+                          : "在插件详情的更多操作中修改名称；这里仅编辑连接配置。"}
                       </FieldDescription>
                     </Field>
                     <div className="grid grid-cols-[minmax(0,1fr)_120px] gap-3">

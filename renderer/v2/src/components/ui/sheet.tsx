@@ -77,7 +77,7 @@ function SheetContent({
               className="absolute top-3 right-3"
               size="icon-sm"
             >
-              <X
+              <X aria-hidden="true"
               />
               <span className="sr-only">关闭</span>
             </Button>

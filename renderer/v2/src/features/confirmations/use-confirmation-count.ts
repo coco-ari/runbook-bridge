@@ -1,11 +1,19 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import {
   getAiOpsV2,
   type AiOpsV2Api,
   type ConfirmationRecord,
 } from "@/bridge/ai-ops-v2"
-import { countActiveConfirmations } from "@/features/confirmations/confirmation-count-model"
+import {
+  ConfirmationCountReadCoordinator,
+  confirmationCountForScope,
+  confirmationCountLoading,
+  confirmationCountScopeKey,
+  confirmationCountSnapshot,
+  type ConfirmationCountSnapshot,
+  type ScopedConfirmationCountSnapshot,
+} from "@/features/confirmations/confirmation-count-model"
 
 type ConfirmationCountApi = Pick<AiOpsV2Api, "listConfirmations" | "onConfirmations">
 
@@ -17,70 +25,67 @@ interface ConfirmationCountScope {
 export function useConfirmationCount(
   scope: ConfirmationCountScope,
   getApi: () => ConfirmationCountApi = getAiOpsV2,
-): Readonly<{ count: number; loading: boolean }> {
-  const generationRef = useRef(0)
-  const [state, setState] = useState({ count: 0, loading: true })
+): ConfirmationCountSnapshot & { readonly retry: () => void } {
+  const coordinatorRef = useRef(new ConfirmationCountReadCoordinator())
+  const [retryEpoch, setRetryEpoch] = useState(0)
+  const retry = useCallback(() => setRetryEpoch((current) => current + 1), [])
+  const [state, setState] = useState<ScopedConfirmationCountSnapshot>({ scopeKey: confirmationCountScopeKey(scope), ...confirmationCountLoading(scope) })
 
   useEffect(() => {
-    const generation = ++generationRef.current
-    let active = true
+    const coordinator = coordinatorRef.current
+    const ticket = coordinator.activateScope(scope)
+    const commit = (snapshot: ConfirmationCountSnapshot) => setState({ scopeKey: ticket.scopeKey, ...snapshot })
     if (!scope.projectId || !scope.environmentId) {
-      setState({ count: 0, loading: false })
-      return () => {
-        active = false
-        generationRef.current += 1
-      }
+      commit(confirmationCountSnapshot(null, scope))
+      return () => coordinator.deactivateScope(ticket)
     }
-    setState({ count: 0, loading: true })
+    commit(confirmationCountLoading(scope))
     let latestItems: readonly ConfirmationRecord[] = []
     let api: ConfirmationCountApi
     try {
       api = getApi()
     } catch {
-      setState({ count: 0, loading: false })
-      return () => {
-        active = false
-      }
+      commit(confirmationCountSnapshot(null, scope))
+      return () => coordinator.deactivateScope(ticket)
     }
 
-    void api.listConfirmations().then(
+    void Promise.resolve().then(() => api.listConfirmations()).then(
       (result) => {
-        if (!active || generation !== generationRef.current) return
-        latestItems = result.ok ? result.data : []
-        setState({ count: countActiveConfirmations(latestItems, scope), loading: false })
+        if (!coordinator.isReadCurrent(ticket)) return
+        if (result.ok) latestItems = result.data
+        commit(confirmationCountSnapshot(result.ok ? latestItems : null, scope))
       },
       () => {
-        if (active && generation === generationRef.current) setState({ count: 0, loading: false })
+        if (coordinator.isReadCurrent(ticket)) commit(confirmationCountSnapshot(null, scope))
       },
     )
 
     let unsubscribe: () => void = () => undefined
     try {
       unsubscribe = api.onConfirmations((items) => {
-        if (active && generation === generationRef.current) {
+        if (coordinator.acceptSubscription(ticket)) {
           latestItems = items
-          setState({ count: countActiveConfirmations(latestItems, scope), loading: false })
+          commit(confirmationCountSnapshot(latestItems, scope))
         }
       })
     } catch {
-      // The initial read remains authoritative when subscription setup fails.
+      // 订阅建立失败时仍以首次读取结果为准。
     }
 
     const timer = window.setInterval(() => {
-      if (!active || generation !== generationRef.current) return
-      const count = countActiveConfirmations(latestItems, scope)
-      setState((current) => current.loading || current.count === count
+      if (!coordinator.isScopeCurrent(ticket)) return
+      const snapshot = confirmationCountSnapshot(latestItems, scope)
+      setState((current) => current.loading || current.unavailable || current.count === snapshot.count
         ? current
-        : { count, loading: false })
+        : { scopeKey: ticket.scopeKey, ...snapshot })
     }, 1_000)
 
     return () => {
-      active = false
-      generationRef.current += 1
+      coordinator.deactivateScope(ticket)
       window.clearInterval(timer)
       unsubscribe()
     }
-  }, [getApi, scope.environmentId, scope.projectId])
+  }, [getApi, retryEpoch, scope.environmentId, scope.projectId])
 
-  return state
+  return { ...confirmationCountForScope(state, scope), retry }
 }

@@ -172,7 +172,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
     message: string
   }> | null>(null)
   const {
-    layoutState, viewportWidth, projectPanelPixels, editorExpanded,
+    layoutState, viewportWidth, projectPanelPixels, detailCollapsed, editorExpanded,
     panelGroupRef, panelGroupElementRef, projectPanelRef, detailPanelRef,
     setProjectCollapsed, setDetailCollapsed, syncProjectSize, syncDetailSize,
     handleLayoutChanged, restoreEditorLayout, toggleEditorExpanded,
@@ -572,9 +572,9 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
   }, [scheduleWorkspaceFocus])
 
   const focusDetail = useCallback(() => {
-    if (layoutState.detailCollapsed) setDetailCollapsed(false)
+    if (detailCollapsed) setDetailCollapsed(false)
     scheduleWorkspaceFocus()
-  }, [layoutState.detailCollapsed, scheduleWorkspaceFocus, setDetailCollapsed])
+  }, [detailCollapsed, scheduleWorkspaceFocus, setDetailCollapsed])
 
   const enterPluginEditor = useCallback((environment: WorkspaceEnvironmentReadModel, plugin: PluginConfigurationRecord | null, resolveReturnFocus?: () => HTMLElement | null) => {
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -969,7 +969,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
             collapsed={compactProjectRail}
             expandDisabled={viewportWidth < 720}
             error={workspace.error}
-            loading={workspace.loading || confirmations.loading}
+            loading={workspace.loading}
             onAction={openProjectAction}
             onMoveProjectRelative={projectOrder.moveProjectRelative}
             onProjectKeyDown={projectOrder.onProjectKeyDown}
@@ -977,6 +977,11 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
             onSelectProject={selectProject}
             onToggleCollapsed={() => setProjectCollapsed(!compactProjectRail)}
             pendingConfirmationCount={confirmations.count}
+            confirmationEnvironmentName={selectedEnvironment?.name ?? null}
+            confirmationsLoading={confirmations.loading}
+            confirmationsUnavailable={confirmations.unavailable}
+            onRetryConfirmations={confirmations.retry}
+            onOpenCommand={() => setCommandOpen(true)}
             projects={navigationProjects}
             cloudRepositories={cloud.data.repositories ?? []}
             cloudProjects={cloud.data.cloudProjects ?? []}
@@ -995,7 +1000,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
 
         <ResizableHandle aria-controls="project-panel resource-panel" aria-describedby="project-rail-resize-help" aria-keyshortcuts={viewportWidth < 720 ? undefined : "Enter ArrowLeft ArrowRight Control+B Meta+B"} aria-label="调整项目栏宽度" data-testid="project-resource-resizer" disableDoubleClick id="project-resource-resizer" onDoubleClick={() => setProjectCollapsed(false, true)} title={projectResizeDescription} withHandle />
 
-        <ResizablePanel defaultSize="32%" id={APP_SHELL_PANEL_IDS.resource} maxSize="80%" minSize={constraintLimited ? (viewportWidth < 720 ? "184px" : "200px") : "240px"}>
+        <ResizablePanel defaultSize="320px" groupResizeBehavior="preserve-pixel-size" id={APP_SHELL_PANEL_IDS.resource} maxSize="80%" minSize={constraintLimited ? (viewportWidth < 720 ? "184px" : "200px") : "240px"}>
           <ResourcePane
             api={api}
             loading={workspace.loading}
@@ -1024,7 +1029,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
           />
         </ResizablePanel>
 
-        <ResizableHandle aria-controls="resource-panel detail-panel" aria-label="调整详情工作区宽度" data-testid="resource-detail-resizer" id="resource-detail-resizer" onDoubleClick={() => detailPanelRef.current?.resize("48%")} withHandle />
+        <ResizableHandle aria-controls="resource-panel detail-panel" aria-label="调整详情工作区宽度" data-testid="resource-detail-resizer" id="resource-detail-resizer" onDoubleClick={() => setDetailCollapsed(false, true)} withHandle />
 
         <ResizablePanel collapsedSize="48px" collapsible defaultSize="48%" id={APP_SHELL_PANEL_IDS.detail} minSize={constraintLimited ? "320px" : "360px"} onResize={syncDetailSize} panelRef={detailPanelRef}>
           {pluginWorkMode ? (
@@ -1033,14 +1038,15 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
               availableServers={pluginList.scopeKey === `${pluginWorkMode.scope.projectId}/${pluginWorkMode.scope.environmentId}`
                 ? scopedPluginRecords.filter((record) => record.pluginType === "server")
                 : []}
-              collapsed={layoutState.detailCollapsed}
+              collapsed={detailCollapsed}
               environmentName={pluginWorkMode.environmentName}
+              environmentType={projects.find((project) => project.projectId === pluginWorkMode.scope.projectId)?.environments.find((environment) => environment.environmentId === pluginWorkMode.scope.environmentId)?.environmentType}
               expanded={editorExpanded}
               key={pluginWorkMode.id}
               onClosed={closePluginWorkspace}
               onRegisterLeaveGuard={registerEditorLeaveGuard}
               onSaved={handlePluginSaved}
-              onToggleCollapsed={() => setDetailCollapsed(!layoutState.detailCollapsed)}
+              onToggleCollapsed={() => setDetailCollapsed(!detailCollapsed)}
               onToggleExpanded={toggleEditorExpanded}
               plugin={pluginWorkMode.plugin}
               projectName={pluginWorkMode.projectName}
@@ -1059,7 +1065,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
             auditRequestId={auditTarget?.projectId === selectedProject?.projectId && auditTarget?.environmentId === selectedEnvironment?.environmentId && auditTarget?.pluginInstanceId === selectedPlugin?.pluginInstanceId ? auditTarget?.requestId ?? null : null}
             activeTab={detailTab}
             api={api}
-            collapsed={layoutState.detailCollapsed}
+            collapsed={detailCollapsed}
             environment={selectedEnvironment}
             environmentPlugins={scopedPlugins}
             environmentError={environmentStatus.error ?? pluginList.error}
@@ -1079,7 +1085,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
             onQuickQuestionsDirtyChange={setQuickQuestionsDirty}
             onQuickQuestionsSavingChange={setQuickQuestionsSaving}
             onTabChange={(value) => { if (value !== detailTab) requestNavigation(() => setDetailTab(value)) }}
-            onToggleCollapsed={() => setDetailCollapsed(!layoutState.detailCollapsed)}
+            onToggleCollapsed={() => setDetailCollapsed(!detailCollapsed)}
             plugin={selectedPlugin}
             pluginRecord={selectedPluginRecord}
             saveNotice={pluginSaveNotice?.projectId === selection.projectId

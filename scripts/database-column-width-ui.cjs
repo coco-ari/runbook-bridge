@@ -20,6 +20,8 @@ module.exports=async function({win,click,waitFor,testId,databaseCalls,screenshot
     await new Promise(resolve=>setTimeout(resolve,100));
   };
   const initial=await widths(),calls=databaseCalls.length;
+  await require('./database-grid-keyboard-ui.cjs')({win,prefix:'mysql-preview',editable:true,waitFor});
+  assert.equal(databaseCalls.length,calls,'网格键盘浏览、复制、选择不请求数据库');
   assert.ok(initial[0]<168,'短主键不再占用统一大列宽');
   const size=await evaluate(`(()=>{const table=document.querySelector('[data-testid=mysql-preview-result] table');return {width:table.getBoundingClientRect().width,columns:[...table.querySelectorAll('col')].reduce((sum,col)=>sum+parseFloat(col.style.width),0)}})()`);
   assert.ok(Math.abs(size.width-size.columns)<=1,'表格不拉伸列来填满视口');

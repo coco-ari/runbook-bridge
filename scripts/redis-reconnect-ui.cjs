@@ -111,7 +111,7 @@ module.exports = async function ({win,click,fill,waitFor,testId,active,openKey,m
   await fill(win,'[aria-label="Redis Value"]','{"draft":1}');
   await click(win,testId('redis-workspace-disconnect'));
   await waitFor(win,"document.querySelector('[data-testid=redis-workspace-disconnected]')",'手动断开保留编辑器');
-  assert.equal(await evaluate("document.querySelector('[aria-label=\"Redis Value\"]').value"),'{"draft":1}');
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"Redis Value\"]').cmTile.root.view.state.sliceDoc()"),'{"draft":1}');
   await fill(win,'[aria-label="Redis Value"]','{"draft":2}');
   await online();
   assert.equal(await evaluate("document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-save-value]').disabled"),false);
@@ -123,7 +123,7 @@ module.exports = async function ({win,click,fill,waitFor,testId,active,openKey,m
   await offline();await online();prepareHold.release();
   await waitFor(win,"document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-save-value]')?.getAttribute('aria-busy')==='false'",'迟到准备响应结束');
   assert.equal(state.writeCommits,beforePrepare,'断线前准备响应不能提交');
-  assert.equal(await evaluate("document.querySelector('[aria-label=\"Redis Value\"]').value"),'{"draft":2}');
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"Redis Value\"]').cmTile.root.view.state.sliceDoc()"),'{"draft":2}');
   await click(win,active('redis-save-value'));
   await waitFor(win,"!document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]')",'明确保存成功');
   await waitFor(win,"document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-delete-key]')?.disabled===false",'保存后读取新内容');
@@ -146,7 +146,7 @@ module.exports = async function ({win,click,fill,waitFor,testId,active,openKey,m
   await click(win,active('redis-save-value'));
   await waitFor(win,"document.querySelector('[role=dialog]')?.textContent.includes('核对当前值')",'原值变化才显示冲突对比');
   assert.equal(state.writeCommits,beforeConflict,'未确认冲突时不覆盖外部更改');
-  assert.equal(await evaluate("document.querySelector('[aria-label=\"Redis Value\"]').value"),'{"draft":"local"}');
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"Redis Value\"]').cmTile.root.view.state.sliceDoc()"),'{"draft":"local"}');
   await evaluate("[...document.querySelectorAll('[role=dialog] button')].find(e=>e.textContent==='已核对，保留草稿继续编辑').click()");
   await click(win,active('redis-save-value'));
   await waitFor(win,"!document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]')",'确认冲突后显式保存草稿');

@@ -2,7 +2,8 @@ import { getAiOpsV2 } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { useCommandPlugins } from "./use-command-plugins"
 import { shortcutLabel } from "@/lib/platform"
-import { FolderSimple, Plus, Stack, TreeStructure } from "@phosphor-icons/react"
+import { FolderSimple, Plus, TreeStructure } from "@phosphor-icons/react"
+import { pluginIcons } from "@/features/plugins/plugin-icons"
 import { Fragment, useEffect, useRef } from "react"
 
 import {
@@ -168,7 +169,9 @@ export function GlobalCommand({
                       {project.name}
                     </CommandShortcut>
                   </CommandItem>
-                  {(complete.lists.get(`${project.projectId}/${environment.environmentId}`) ?? pluginsByScope.get(`${project.projectId}/${environment.environmentId}`) ?? environment.resourcePreview).map((plugin) => (
+                  {(complete.lists.get(`${project.projectId}/${environment.environmentId}`) ?? pluginsByScope.get(`${project.projectId}/${environment.environmentId}`) ?? environment.resourcePreview).map((plugin) => {
+                    const PluginIcon = pluginIcons[plugin.pluginType]
+                    return (
                     <CommandItem
                       disabled={project.isolated}
                       key={plugin.pluginInstanceId}
@@ -179,13 +182,13 @@ export function GlobalCommand({
                       }
                       value={`plugin:${project.projectId}:${environment.environmentId}:${plugin.pluginInstanceId} ${plugin.displayName}`}
                     >
-                      <Stack />
+                      <PluginIcon aria-hidden="true" />
                       <span className="min-w-0 flex-1 truncate" title={plugin.displayName}>{plugin.displayName}</span>
                       <CommandShortcut className="max-w-32 truncate tracking-normal" title={environment.name}>
                         {environment.name}
                       </CommandShortcut>
                     </CommandItem>
-                  ))}
+                  )})}
                 </Fragment>
               ))}
             </CommandGroup>

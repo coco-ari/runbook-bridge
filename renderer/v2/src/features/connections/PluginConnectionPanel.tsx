@@ -238,8 +238,8 @@ export function PluginConnectionPanel({
             </span>
             <div className="min-w-0 space-y-1">
               <div aria-live="polite" className="flex min-w-0 flex-wrap items-center gap-2" role="status">
-                <h3 className="text-section font-medium" id="plugin-connection-title">{guidance.title}</h3>
-                <Badge variant={phase.variant}>{phase.label}</Badge>
+                <h3 className="text-section font-medium" id="plugin-connection-title">{connection.state.phase === "connected" || connection.state.phase === "disconnected" ? "连接控制" : guidance.title}</h3>
+                {connection.state.phase === "connected" || connection.state.phase === "disconnected" ? null : <Badge variant={phase.variant}>{phase.label}</Badge>}
               </div>
               <p className="text-xs leading-5 text-muted-foreground">{guidance.description}</p>
             </div>
@@ -310,9 +310,7 @@ export function PluginConnectionPanel({
           <CardTitle><h3 className="text-section font-medium" id="plugin-config-title">配置摘要</h3></CardTitle>
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Badge variant="outline">{pluginTypeLabel(draft.pluginType)}</Badge>
-            <Badge variant={configReady ? "success" : "warning"}>
-              {configReady ? "配置完整" : plugin.configState === "draft" ? "待完善" : "配置未知"}
-            </Badge>
+            {!configReady ? <Badge variant="warning">{plugin.configState === "draft" ? "待完善" : "配置未知"}</Badge> : null}
             <span className="text-xs text-muted-foreground">配置修订 {plugin.revision}</span>
           </div>
         </CardHeader>

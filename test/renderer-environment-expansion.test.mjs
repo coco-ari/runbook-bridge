@@ -74,12 +74,16 @@ test('asynchronously available environments initialize once without reopening su
     manuallyClosed,'later updates leave that same selected environment closed when the user closes it');
 });
 
-test('environment headings toggle natively and select environment details when a plugin or another scope is selected',async () => {
+test('环境选择和原生插件展开互相独立，当前插件不会被展开动作清除',async () => {
   const source = await fs.readFile('renderer/v2/src/components/resource-pane/ResourcePane.tsx','utf8');
-  const heading = source.slice(source.indexOf('<AccordionTrigger'),source.indexOf('</AccordionTrigger>'));
+  const expand = source.slice(source.indexOf('<AccordionTrigger'),source.indexOf('</AccordionTrigger>'));
+  assert.match(expand,/environment-expand-/u);
+  assert.doesNotMatch(expand,/onSelectEnvironment|preventDefault\(|stopPropagation\(/u);
+  const titlePosition = source.indexOf('data-testid={`environment-trigger-');
+  const heading = source.slice(source.lastIndexOf('<Button',titlePosition),source.indexOf('</Button>',titlePosition));
   assert.match(heading,/if \(!environmentSelected\) onSelectEnvironment\(\)/u);
   assert.doesNotMatch(heading,/preventDefault\(/u,
-    'native Accordion activation still owns each mouse and keyboard toggle');
+    '独立标题保持原生按钮鼠标和键盘激活');
   assert.equal((heading.match(/onSelectEnvironment\(\)/gu) ?? []).length,1,
     'a title selects its environment details without repeating navigation for the already selected environment');
   assert.match(source,/const environmentSelected =\s*selectedEnvironmentId === environment\.environmentId && selectedPluginId === null/u,

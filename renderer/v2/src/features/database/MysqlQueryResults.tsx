@@ -67,6 +67,8 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastScrollTop = useRef(0)
   const selectedRowRef = useRef<HTMLElement | null>(null)
+  const [focusedCell, setFocusedCell] = useState<{ row: Record<string, unknown>; index: number; column: string } | null>(null)
+  const gridHadFocus = useRef(false)
   const detailId = useId()
   const prefix = testIdPrefix ?? `mysql-${kind}`
   const state: ResultViewState = viewState.result === viewIdentity ? viewState : { result: viewIdentity, sort: null, filter: "", page: 0, pageSize: MYSQL_RESULT_PAGE_SIZE, selectedRow: null }
@@ -94,6 +96,15 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
   const start = visiblePage * state.pageSize
   const resultRows = stream ? filteredRows : filteredRows.slice(start, start + state.pageSize)
   const rows = mergeMysqlDraftRows(resultRows, editing?.pendingRows ?? [], row => editing?.rowId(row), result.rows.length)
+  const focusedRow = (focusedCell && (rows.find(item => item.row === focusedCell.row) ?? rows.find(item => item.index === focusedCell.index)))?.row ?? rows[0]?.row
+  const focusedColumn = focusedCell && result.columns.some(column => column.name === focusedCell.column) ? focusedCell.column : result.columns[0]?.name
+  useLayoutEffect(() => {
+    if (!focusedCell || rows.some(item => item.row === focusedCell.row) && result.columns.some(column => column.name === focusedCell.column) || !gridHadFocus.current) return
+    // 新结果替换行对象或活动行被移除时保留列坐标，避免焦点落到页面根部。
+    const next = scrollRef.current?.querySelector<HTMLElement>('[data-edit-column][tabindex="0"]')
+    if (next) next.focus()
+    else scrollRef.current?.focus()
+  }, [rows, focusedCell, result.columns])
   function fitColumns(index?: number) {
     const sample = rows.slice(0, 100).map(({ row }) => Object.fromEntries(result.columns.map(column => [column.name, editing?.placeholder?.(row, column.name) || (editing ? editing.value(row, column.name, row[column.name]) : row[column.name])])))
     columnSizing.fit(index, sample)
@@ -220,7 +231,7 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
               const source = rows.find(item => item.index === index)?.row
               if (!source || !cell) { event.stopPropagation(); return }
               setMenu({row:source,index,column:cell.dataset.editColumn ?? null,element:cell.querySelector<HTMLElement>("button") ?? cell})
-            }} onPointerMove={rowSelection.move} onPointerUp={() => rowSelection.finish()} onPointerCancel={() => rowSelection.finish(true)} onLostPointerCapture={() => rowSelection.finish(true)} onClickCapture={rowSelection.click} aria-label="查询结果表格，可横向和纵向滚动" className="min-h-0 min-w-0 flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" data-testid={`${prefix}-table-scroll`} onScroll={(event) => { if (event.currentTarget.scrollTop > lastScrollTop.current) loadAtBottom(event.currentTarget); lastScrollTop.current = event.currentTarget.scrollTop }} onWheel={(event) => { if (event.deltaY > 0) loadAtBottom(event.currentTarget) }} ref={scrollRef} role="region" tabIndex={0}>
+            }} onPointerMove={rowSelection.move} onPointerUp={() => rowSelection.finish()} onPointerCancel={() => rowSelection.finish(true)} onLostPointerCapture={() => rowSelection.finish(true)} onClickCapture={rowSelection.click} aria-label="查询结果表格，可横向和纵向滚动" aria-description="方向键移动单元格，Home 和 End 到行首行尾，Ctrl 或 ⌘ 加 Home 和 End 到结果首尾，Ctrl 或 ⌘ 加 C 复制完整值，Enter 查看或编辑" className="min-h-0 min-w-0 flex-1 overflow-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" data-testid={`${prefix}-table-scroll`} onScroll={(event) => { if (event.currentTarget.scrollTop > lastScrollTop.current) loadAtBottom(event.currentTarget); lastScrollTop.current = event.currentTarget.scrollTop }} onWheel={(event) => { if (event.deltaY > 0) loadAtBottom(event.currentTarget) }} onFocusCapture={() => { gridHadFocus.current = true }} onBlurCapture={event => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) gridHadFocus.current = false }} ref={scrollRef} role="region" tabIndex={rows.length ? -1 : 0}>
               <table className="mysql-result-table table-fixed border-separate border-spacing-0 text-xs" style={{ width: tableWidth, minWidth: tableWidth }}>
                 <colgroup>{editing ? <col style={{ width: 32 }} /> : null}<col style={{ width: 44 }} />{editing ? <col style={{ width: 60 }} /> : null}{result.columns.map((column, index) => <col key={column.name} style={{ width: columnWidths[index] }} />)}</colgroup>
                 <thead>
@@ -263,27 +274,31 @@ export function MysqlQueryResults({ result, kind, testIdPrefix, sort, onSort, st
                       data-testid={`${prefix}-row`}
                       key={index >= result.rows.length ? editing?.rowId(row) : index}
                     >
-                      {editing ? <td className="mysql-inline-selector mysql-edit-row-selector" onPointerDown={event => rowSelection.down(event,index)}><Checkbox aria-label={"选择第 " + (index + 1) + " 行"} checked={editing.selection.has(row)} disabled={editing.locked} onCheckedChange={checked => editing.select([row],checked === true)} /></td> : null}
-                      <td onPointerDown={event => rowSelection.down(event,index)} className="mysql-edit-number h-8 border-b border-r border-border/50 px-2 py-0 text-right font-mono text-xs tabular-nums text-text-faint"><button type="button" className="block h-[31px] w-full leading-[31px]" title="点击或拖动选择行 · 右键更多操作" aria-label={"选择第 " + (index + 1) + " 行号"} onClick={() => { if (!editing?.locked) editing?.select([row],!editing.selection.has(row)) }}>{index >= result.rows.length ? "+" : index + 1}</button></td>
+                      {editing ? <td className="mysql-inline-selector mysql-edit-row-selector" onPointerDown={event => rowSelection.down(event,index)}><Checkbox tabIndex={-1} aria-label={"选择第 " + (index + 1) + " 行"} checked={editing.selection.has(row)} disabled={editing.locked} onCheckedChange={checked => editing.select([row],checked === true)} /></td> : null}
+                      <td onPointerDown={event => rowSelection.down(event,index)} className={`mysql-edit-number h-8 border-b border-r border-border/50 px-2 py-0 text-right font-mono text-xs tabular-nums ${state.selectedRow === index ? "text-muted-foreground" : "text-text-faint"}`}><button tabIndex={-1} type="button" className="block h-[31px] w-full leading-[31px]" title="点击或拖动选择行 · 右键更多操作" aria-label={"选择第 " + (index + 1) + " 行号"} onClick={() => { if (!editing?.locked) editing?.select([row],!editing.selection.has(row)) }}>{index >= result.rows.length ? "+" : index + 1}</button></td>
                       {editing ? <td className="mysql-row-status h-8 border-b border-border/50"><div className="mysql-row-status-content"><span>{rowStateLabel(row)}</span>{editing.rowActions?.(row)}</div></td> : null}
                       {result.columns.map((column) => {
                         const value = editing ? editing.value(row, column.name, row[column.name]) : row[column.name]
                         const placeholder = editing?.placeholder?.(row, column.name)
                         const content = placeholder ? <span className="block h-[31px] truncate leading-[31px] text-muted-foreground italic" title={placeholder}>{placeholder}</span> : <span className={`block h-[31px] truncate leading-[31px] ${typeof row[column.name] === "number" ? "text-right tabular-nums" : ""} ${value === null || value === undefined ? "text-muted-foreground italic" : ""}`}>{mysqlCellText(value)}</span>
-                        return <td className="mysql-inline-cell relative h-8 border-b border-border/50 px-2 py-0 font-mono text-xs" key={column.name} data-edit-column={column.name} data-numeric={typeof row[column.name] === "number" || undefined} data-dirty={editing?.dirty(row, column.name) || undefined} tabIndex={0}
+                        return <td className="mysql-inline-cell relative h-8 border-b border-border/50 px-2 py-0 font-mono text-xs" key={column.name} data-edit-column={column.name} data-numeric={typeof row[column.name] === "number" || undefined} data-dirty={editing?.dirty(row, column.name) || undefined} tabIndex={row === focusedRow && column.name === focusedColumn ? 0 : -1} onFocus={() => setFocusedCell({ row, index, column: column.name })}
                           onClick={event => { if (editing) { event.stopPropagation(); if (event.target === event.currentTarget || !(event.target instanceof HTMLInputElement)) event.currentTarget.focus({ preventScroll: true }) } }}
                           onDoubleClick={event => { event.stopPropagation(); if (event.target instanceof HTMLInputElement) return; if (editing) editing.begin(row, column.name); else void copyText(mysqlCopyCellText(value), "单元格已复制") }}
                           onKeyDown={event => {
-                            if (!editing || event.target !== event.currentTarget) return
+                            if (event.target !== event.currentTarget || event.nativeEvent.isComposing) return
+                            if (event.key === " " && editing && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) { event.preventDefault(); event.stopPropagation(); if (!editing.locked) editing.select([row], !editing.selection.has(row)); return }
                             if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "c") { event.preventDefault(); void copyText(mysqlCopyCellText(value), "单元格已复制") }
-                            if (event.key === "Enter" || event.key === "F2") { event.preventDefault(); event.stopPropagation(); editing.begin(row, column.name, event.shiftKey) }
-                            if (event.key.startsWith("Arrow")) {
+                            if (event.key === "Enter" || event.key === "F2" && editing) { event.preventDefault(); event.stopPropagation(); if (editing) editing.begin(row, column.name, event.shiftKey); else { selectedRowRef.current = event.currentTarget; changeView({ selectedRow: index }) } }
+                            if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
                               event.preventDefault(); event.stopPropagation()
-                              const cell = event.currentTarget
-                              const target = event.key === "ArrowLeft" ? cell.previousElementSibling : event.key === "ArrowRight" ? cell.nextElementSibling : (event.key === "ArrowUp" ? cell.parentElement?.previousElementSibling : cell.parentElement?.nextElementSibling)?.querySelector('[data-edit-column="' + CSS.escape(column.name) + '"]')
-                              if (target?.hasAttribute("data-edit-column")) (target as HTMLElement).focus({ preventScroll: true })
+                              let rowIndex = rows.findIndex(item => item.row === row), columnIndex = result.columns.findIndex(item => item.name === column.name)
+                              if (event.key === "Home" || event.key === "End") { columnIndex = event.key === "Home" ? 0 : result.columns.length - 1; if (event.ctrlKey || event.metaKey) rowIndex = event.key === "Home" ? 0 : rows.length - 1 }
+                              else if (event.key === "ArrowUp" || event.key === "ArrowDown") rowIndex += event.key === "ArrowUp" ? -1 : 1
+                              else columnIndex += event.key === "ArrowLeft" ? -1 : 1
+                              const nextRow = rows[rowIndex], nextColumn = result.columns[columnIndex]
+                              if (nextRow && nextColumn) scrollRef.current?.querySelector<HTMLElement>('tr[data-row-index="' + nextRow.index + '"] [data-edit-column="' + CSS.escape(nextColumn.name) + '"]')?.focus()
                             }
-                          }} title={editing ? "双击编辑 · Ctrl+C 复制 · 右键更多操作" : "右键查看行详情，双击复制完整单元格"}>
+                          }} aria-description={editing ? "空格勾选当前行，Enter 或 F2 编辑，Ctrl 或 ⌘ 加 C 复制，右键更多操作" : "Enter 查看行详情，Ctrl 或 ⌘ 加 C 复制完整值"} title={editing ? "空格勾选当前行 · Enter / F2 编辑 · Ctrl / ⌘ + C 复制 · 右键更多操作" : "Enter 查看行详情 · Ctrl / ⌘ + C 复制 · 双击复制完整值"}>
                           {editing ? editing.cell(row, column.name, content) : content}
                         </td>
                       })}

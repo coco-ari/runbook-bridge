@@ -135,9 +135,14 @@ interface ProjectRailProps {
   readonly onMoveProjectRelative?: ProjectOrderController["moveProjectRelative"] | undefined
   readonly onProjectKeyDown?: ((event: React.KeyboardEvent<HTMLElement>, projectId: string) => void) | undefined
   readonly onReload?: (() => void) | undefined
+  readonly onOpenCommand: () => void
+  readonly onRetryConfirmations: () => void
   readonly onSelectProject: (projectId: string) => void
   readonly onToggleCollapsed: () => void
-  readonly pendingConfirmationCount: number
+  readonly pendingConfirmationCount: number | null
+  readonly confirmationEnvironmentName: string | null
+  readonly confirmationsLoading: boolean
+  readonly confirmationsUnavailable: boolean
   readonly projects: readonly WorkspaceProjectReadModel[]
   readonly selectedProjectId: string | null
 }
@@ -248,9 +253,14 @@ export function ProjectRail({
   onMoveProjectRelative,
   onProjectKeyDown,
   onReload,
+  onOpenCommand,
+  onRetryConfirmations,
   onSelectProject,
   onToggleCollapsed,
   pendingConfirmationCount,
+  confirmationEnvironmentName,
+  confirmationsLoading,
+  confirmationsUnavailable,
   projects,
   selectedProjectId,
 }: ProjectRailProps) {
@@ -272,6 +282,13 @@ export function ProjectRail({
     query: projectQuery,
   })
   const confirmationCount = pendingConfirmationCount
+  const confirmationDescription = !confirmationEnvironmentName
+    ? "选择环境查看待确认操作"
+    : confirmationsUnavailable
+      ? `当前环境「${confirmationEnvironmentName}」的待确认数量不可用，点击重新读取`
+      : confirmationsLoading
+        ? `正在读取当前环境「${confirmationEnvironmentName}」的待确认数量`
+        : `当前环境「${confirmationEnvironmentName}」，${confirmationCount ?? 0} 项待确认操作`
   const toggleDisabled = collapsed && expandDisabled
   const utilityButtonClassName = "project-utility-button relative h-8 gap-0.5 px-0.5 text-xs leading-4 [&_svg]:size-4"
 
@@ -354,6 +371,11 @@ export function ProjectRail({
               <SidebarSimple aria-hidden="true" />
             </Button>
           </div>
+          <Button aria-keyshortcuts="Control+K Meta+K" aria-label="搜索项目、环境和插件" className={cn("w-full justify-start gap-2", collapsed && "justify-center px-0")} data-testid="global-resource-search" onClick={onOpenCommand} size="sm" title={`搜索项目、环境和插件 (${shortcutLabel("K")})`} variant="outline">
+            <MagnifyingGlass aria-hidden="true" />
+            <span className={cn("min-w-0 flex-1 truncate text-left", collapsed && "sr-only")}>搜索资源</span>
+            <Kbd className={collapsed ? "sr-only" : undefined}>{shortcutLabel("K")}</Kbd>
+          </Button>
         </SidebarHeader>
 
         <SidebarSeparator />
@@ -364,7 +386,7 @@ export function ProjectRail({
               <InputGroupAddon className="shrink-0 pl-2.5 pr-0">
                 <MagnifyingGlass aria-hidden="true" className="size-3.5" />
               </InputGroupAddon>
-              {/* Keep the narrow field at navigation size despite the shared form font reset. */}
+              {/* 局部项目搜索沿用导航字号，避免公共表单字号覆盖。 */}
               <InputGroupInput
                 aria-controls="project-list"
                 aria-describedby="project-search-status"
@@ -627,18 +649,18 @@ export function ProjectRail({
 
         <SidebarFooter aria-label="全局工具" className="project-utility-navigation h-[46px] shrink-0 flex-row items-center gap-0.5 border-t border-sidebar-border bg-sidebar px-1.5 py-1.5" data-testid="project-utility-navigation" role="group">
           <Button
-            aria-label={"操作确认，" + confirmationCount + " 项待处理"}
+            aria-label={confirmationDescription}
             className={utilityButtonClassName}
             data-testid="confirmation-center"
-            onClick={() => onAction({ type: "open-confirmations" })}
+            onClick={() => confirmationsUnavailable ? onRetryConfirmations() : onAction({ type: "open-confirmations" })}
             size="sm"
-            title={`操作确认中心，${confirmationCount} 项待处理`}
+            title={confirmationDescription}
             type="button"
             variant="ghost"
           >
-            <ShieldWarning aria-hidden="true" className={confirmationCount > 0 ? "text-warning" : undefined} />
-            <span data-utility-label>操作确认</span>
-            {confirmationCount > 0 ? <span aria-hidden="true" className="min-w-3.5 shrink-0 rounded-sm bg-warning/15 px-0.5 text-center text-[10px] font-medium leading-4 text-warning tabular-nums" data-utility-count>
+            <ShieldWarning aria-hidden="true" className={confirmationsUnavailable || (confirmationCount ?? 0) > 0 ? "text-warning" : undefined} />
+            <span data-utility-label>{!confirmationEnvironmentName ? "选择环境" : confirmationsUnavailable ? "待确认不可用" : confirmationsLoading ? "读取待确认" : "环境待确认"}</span>
+            {confirmationCount !== null && confirmationCount > 0 ? <span aria-hidden="true" className="min-w-3.5 shrink-0 rounded-sm bg-warning/15 px-0.5 text-center text-[10px] font-medium leading-4 text-warning tabular-nums" data-utility-count>
               {confirmationCount > 9 ? "9+" : confirmationCount}
             </span> : null}
           </Button>

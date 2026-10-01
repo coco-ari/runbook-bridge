@@ -638,6 +638,22 @@ async function waitFor(win,evaluate,label,timeoutMs = 10000) {
   throw new Error(`Timed out waiting for ${label}`);
 }
 
+async function waitForPluginConnectionState(win,phase,label) {
+  assert.ok(['connected','disconnected'].includes(phase));
+  const connected=phase==='connected';
+  // 正常状态由顶栏统一展示，连接控制区继续验收真实动作和工作区入口。
+  await waitFor(win,`(() => {
+    const statuses=document.querySelectorAll('[data-testid="detail-workspace"] > header [data-status="${phase}"]');
+    const status=statuses[0],console=document.querySelector('[data-testid="plugin-status-console"]');
+    const primary=document.querySelector('[data-testid="plugin-connection-primary"]');
+    const workspace=document.querySelector('[data-testid="plugin-open-workspace"]');
+    return statuses.length===1&&status.getClientRects().length>0&&status.textContent.trim()===${JSON.stringify(connected?'已连接':'未连接')}
+      &&console?.dataset.status===${JSON.stringify(phase)}&&primary?.getClientRects().length>0&&!primary.disabled
+      &&primary.textContent.trim()===${JSON.stringify(connected?'断开':'连接')}
+      &&workspace?.getClientRects().length>0&&workspace.disabled===${JSON.stringify(!connected)};
+  })()`,label);
+}
+
 async function setExactViewport(win,width,height) {
   const initial = await win.webContents.executeJavaScript('[window.innerWidth,window.innerHeight]',true);
   if (initial[0] === width && initial[1] === height) return;
@@ -738,8 +754,7 @@ async function viewEnvironmentDetails(win,label) {
     return {x:Math.round(rect.left+rect.width/2),y:Math.round(rect.top+rect.height/2)};
   })()`,true);
   assert.ok(point,`${label} must be reachable without an overlay blocking navigation`);
-  // The heading controls accordion visibility. Its context-menu action is the
-  // explicit navigation path that still exercises dirty-editor leave guards.
+  // 环境右键菜单继续验证安全离开编辑工作区的交接路径。
   win.webContents.sendInputEvent({type:'mouseMove',x:point.x,y:point.y});
   win.webContents.sendInputEvent({type:'mouseDown',x:point.x,y:point.y,button:'right',clickCount:1});
   win.webContents.sendInputEvent({type:'mouseUp',x:point.x,y:point.y,button:'right',clickCount:1});
@@ -1264,7 +1279,7 @@ async function openPluginEditor(win,pluginName,evidenceName = null,{expectImpact
   }
   const pluginVisible = await win.webContents.executeJavaScript(`document.querySelector('[data-testid="plugin-trigger-${SERVER_ID}"]')?.getClientRects().length > 0`,true);
   if (!pluginVisible) {
-    await click(win,`[data-testid="environment-trigger-${ENVIRONMENT_ID}"]`,'expand the original plugin environment');
+    await click(win,`[data-testid="environment-expand-${ENVIRONMENT_ID}"]`,'expand the original plugin environment');
     await waitFor(win,`document.querySelector('[data-testid="plugin-trigger-${SERVER_ID}"]')?.getClientRects().length > 0`,'original server plugin visible');
   }
   await click(win,`[data-testid="plugin-trigger-${SERVER_ID}"]`,pluginName);
@@ -1279,6 +1294,11 @@ async function openPluginEditor(win,pluginName,evidenceName = null,{expectImpact
     return;
   }
   await waitFor(win,`document.querySelector('[data-testid="plugin-editor-loading"]') === null`,'plugin edit session');
+  const displayNameState = await win.webContents.executeJavaScript(`(() => {
+    const input = document.querySelector('#plugin-display-name');
+    return {readOnly:input?.readOnly,disabled:input?.disabled,renameHelp:document.querySelector('#plugin-display-name-description')?.textContent?.includes('更多操作中修改名称')};
+  })()`,true);
+  assert.deepEqual(displayNameState,{readOnly:true,disabled:false,renameHelp:true},'现有名称只读可聚焦复制，并指向正确重命名入口');
   await assertWorkspaceGeometry(win);
   await assertWorkspaceKeyboardNavigation(win);
   if (evidenceName) await capturePluginWorkspaceEvidence(win,evidenceName);
@@ -1637,7 +1657,7 @@ async function selectRuntimeHostKeyEntry(win,entry) {
   } else {
     const pluginVisible = await win.webContents.executeJavaScript(`document.querySelector('[data-testid="plugin-trigger-${SERVER_ID}"]')?.getClientRects().length > 0`,true);
     if (!pluginVisible) {
-      await clickNavigation(win,`[data-testid="environment-trigger-${ENVIRONMENT_ID}"]`,'expand the exact environment for host-key verification');
+      await clickNavigation(win,`[data-testid="environment-expand-${ENVIRONMENT_ID}"]`,'expand the exact environment for host-key verification');
       await waitFor(win,`document.querySelector('[data-testid="plugin-trigger-${SERVER_ID}"]')?.getClientRects().length > 0`,'host-key plugin row visible');
     }
     await clickNavigation(win,`[data-testid="plugin-trigger-${SERVER_ID}"]`,'select the exact plugin for host-key verification');
@@ -2383,9 +2403,9 @@ async function run() {
     assert.equal(calls('v2:connection-challenge-confirm').length,0,'rejecting a host key must not confirm it');
 
     await clickText(win,'连接','[data-testid="plugin-connection-panel"]');
-    await waitFor(win,`document.querySelector('[data-testid="plugin-connection-panel"]')?.textContent?.includes('已连接') === true`,'connected plugin');
+    await waitForPluginConnectionState(win,'connected','connected plugin');
     await clickText(win,'断开','[data-testid="plugin-connection-panel"]');
-    await waitFor(win,`document.querySelector('[data-testid="plugin-connection-panel"]')?.textContent?.includes('未连接') === true`,'disconnected plugin');
+    await waitForPluginConnectionState(win,'disconnected','disconnected plugin');
 
     const pendingConnectionCount = calls('v2:connection-intent').length;
     const pendingEditCount = calls('v2:plugin-connection-edit-prepare').length;
@@ -2428,7 +2448,7 @@ async function run() {
     'successful plugin refresh retains the same pending connection');
     assert.equal(calls('v2:connection-intent').length,pendingConnectionCount+1,'refresh recovery must not duplicate or cancel the pending connection');
     await clickText(win,'取消','[data-testid="plugin-connection-panel"]');
-    await waitFor(win,`document.querySelector('[data-testid="plugin-connection-panel"]')?.textContent?.includes('未连接') === true`,'cancelled connection');
+    await waitForPluginConnectionState(win,'disconnected','cancelled connection');
     await wait(120);
     assertConnectionPayloads();
 

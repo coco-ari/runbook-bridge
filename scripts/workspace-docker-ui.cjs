@@ -17,6 +17,7 @@ module.exports = async ({evaluate,click,clickText,until,wait,win,setViewport,sna
   assert.equal(await evaluate("document.querySelector('.server-resource-rail').getBoundingClientRect().width"),36);
   await click('[aria-label="Docker 容器"]');
   await until(visible('[aria-label="打开容器 fixture-api"]'),'Docker 列表');
+  assert.deepEqual(await evaluate("(() => {const state=document.querySelector('[aria-label=\"打开容器 fixture-6\"] .server-docker-state');return {label:state.textContent,raw:state.title};})()"),{label:'已退出',raw:'exited'},'中文状态保留原始Docker值');
   assert.ok(await evaluate(visible('.server-content-terminal')),'切换资源不改变右侧终端');
   assert.equal(opened.length,initialSessions);
   await click('[aria-label="打开容器 fixture-api"]');
@@ -36,15 +37,52 @@ module.exports = async ({evaluate,click,clickText,until,wait,win,setViewport,sna
   await click('[aria-label="刷新容器内容"]');
   await until("document.querySelector('[aria-label=\"刷新容器内容\"]').disabled === false",'手动刷新结束');
   assert.equal(count('logs'),beforeRefresh + 1);
+  const fullLogText = await evaluate("document.querySelector('.server-docker-logs').textContent");
+  assert.equal(await evaluate("Boolean(document.querySelector('.server-docker-logs').querySelector('script,img,iframe,object,embed'))"),false,'日志原文不生成脚本或外部资源节点');
   await evaluate("(() => {const input=document.querySelector('[aria-label=\"搜索已加载日志\"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'WARN'); input.dispatchEvent(new Event('input',{bubbles:true}));})()");
   await until("document.querySelector('.server-docker-logs')?.textContent.includes('WARN') && !document.querySelector('.server-docker-logs')?.textContent.includes('complete')",'搜索只影响已加载正文');
+  assert.equal(await evaluate("document.querySelector('.server-docker-logs mark')?.textContent"),'WARN','匹配通过文本节点强调');
   assert.equal(count('logs'),beforeRefresh + 1,'本地搜索不重新读取服务器');
-  await click('[data-testid=docker-copy-visible]');
-  await until("document.querySelector('[data-testid=docker-copy-visible]').textContent.includes('已复制')",'筛选日志复制完成');
-  assert.equal(require('electron').clipboard.readText(),await evaluate("document.querySelector('.server-docker-logs').textContent"),'默认复制与筛选显示范围一致');
-  await click('[data-testid=docker-copy-all]');
-  await until("document.querySelector('[data-testid=docker-copy-all]').textContent.includes('已复制全部')",'全部已加载日志复制完成');
-  assert.ok(require('electron').clipboard.readText().includes('fixture request complete'),'显式复制全部才包含隐藏行');
+  const visibleLogText = await evaluate("document.querySelector('.server-docker-logs').textContent");
+  assert.equal(await evaluate("Boolean(document.querySelector('.server-docker-logs').querySelector('script,img,iframe,object,embed'))"),false,'筛选与匹配强调保持安全文本');
+  // 隐藏且拒绝权限的测试窗口无法可靠写入系统剪贴板；这里验证真实复制参数与完成状态。
+  await evaluate(`(() => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator,'clipboard');
+    window.__dockerClipboardWrites = [];
+    Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text => { window.__dockerClipboardWrites.push(text); }}});
+    window.__restoreDockerClipboard = () => {
+      if (clipboardDescriptor) Object.defineProperty(navigator,'clipboard',clipboardDescriptor);
+      else delete navigator.clipboard;
+      delete window.__dockerClipboardWrites;
+      delete window.__restoreDockerClipboard;
+    };
+  })()`);
+  try {
+    await nativeClick('[data-testid=docker-copy-visible]');
+    await until("document.querySelector('[data-testid=docker-copy-visible]').textContent.includes('已复制')",'筛选日志复制完成');
+    assert.deepEqual(await evaluate('window.__dockerClipboardWrites'),[visibleLogText],'默认复制精确保留筛选原文，不包含匹配强调节点');
+    await nativeClick('[data-testid=docker-copy-all]');
+    await until("document.querySelector('[data-testid=docker-copy-all]').textContent.includes('已复制全部')",'全部已加载日志复制完成');
+    assert.deepEqual(await evaluate('window.__dockerClipboardWrites'),[visibleLogText,fullLogText],'显式复制全部精确保留已加载原文及隐藏行');
+  } finally {
+    await evaluate('window.__restoreDockerClipboard()');
+  }
+
+  await evaluate("document.querySelector('.server-docker-logs').focus()");
+  win.webContents.focus();
+  const modifiers=process.platform==='darwin'?['meta']:['control'];
+  win.webContents.sendInputEvent({type:'keyDown',keyCode:'F',modifiers});
+  win.webContents.sendInputEvent({type:'keyUp',keyCode:'F',modifiers});
+  await until("document.activeElement?.getAttribute('aria-label')==='搜索已加载日志' && document.activeElement.selectionEnd===4",'日志作用域快捷键选中查找词');
+  await evaluate("document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))");
+  await until("document.activeElement?.classList.contains('server-docker-logs') && !document.querySelector('.server-docker-logs mark')",'Esc清空搜索并返回日志');
+  assert.ok(await evaluate("document.querySelector('.server-docker-logs').textContent.includes('fixture request complete')"),'清空恢复已加载原文');
+  assert.equal(count('logs'),beforeRefresh + 1,'查找和清空均不新增远端读取');
+  await nativeClick('[aria-label="日志时间范围"]');
+  await until("document.querySelector('[role=option]')?.getClientRects().length>0",'日志筛选菜单已打开');
+  assert.ok(await evaluate("(() => {const item=document.querySelector('[role=option]');item.focus();item.dispatchEvent(new KeyboardEvent('keydown',{key:'f',ctrlKey:"+(process.platform==='darwin'?'false':'true')+",metaKey:"+(process.platform==='darwin'?'true':'false')+",bubbles:true,cancelable:true}));return document.activeElement!==document.querySelector('[aria-label=\"搜索已加载日志\"]');})()"),'菜单中的快捷键不被日志区域抢走');
+  await evaluate("document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))");
+  await until("!document.querySelector('[role=listbox]')",'关闭日志筛选菜单');
 
   await evaluate("(() => {const input=document.querySelector('[aria-label=\\\"搜索已加载日志\\\"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,''); input.dispatchEvent(new Event('input',{bubbles:true}));})()");
   for (const theme of ['light','dark']) {

@@ -520,12 +520,42 @@ async function activateTab(win,tab) {
     return document.activeElement === target;
   })()`,true);
   assert.equal(activated,true,`${tab} detail tab is not visible`);
-  await pressRendererKey(win,'Enter');
-  await waitFor(
-    win,
-    `document.querySelector(${JSON.stringify(selector)})?.getAttribute('aria-selected') === 'true'`,
-    `${tab} detail tab activation`,
-  );
+  await win.webContents.executeJavaScript(`(() => {
+    window.__businessTabKeys = [];
+    window.__businessTabKeyListener = event => {
+      if (event.key !== 'Enter') return;
+      window.__businessTabKeys.push({type:event.type,key:event.key,code:event.code,trusted:event.isTrusted,
+        targetTab:event.target?.dataset?.detailTab ?? null,targetTestId:event.target?.dataset?.testid ?? null,
+        targetId:event.target?.id ?? null,scope:document.querySelector('#detail-main')?.dataset.selectionKind ?? null});
+    };
+    document.addEventListener('keydown',window.__businessTabKeyListener,true);
+    document.addEventListener('keyup',window.__businessTabKeyListener,true);
+  })()`,true);
+  try {
+    await pressRendererKey(win,'Enter');
+    await waitFor(
+      win,
+      `document.querySelector(${JSON.stringify(selector)})?.getAttribute('aria-selected') === 'true'`,
+      `${tab} detail tab activation`,
+    );
+  } catch (error) {
+    const evidence = await win.webContents.executeJavaScript(`(() => ({
+      scope:document.querySelector('#detail-main')?.dataset.selectionKind ?? null,
+      documentFocus:document.hasFocus(),keys:window.__businessTabKeys,
+      active:{id:document.activeElement?.id,testId:document.activeElement?.dataset?.testid,tab:document.activeElement?.dataset?.detailTab,tag:document.activeElement?.tagName},
+      tabs:[...document.querySelectorAll('[data-detail-tab]')].map(trigger => ({tab:trigger.dataset.detailTab,selected:trigger.getAttribute('aria-selected'),connected:trigger.isConnected,disabled:trigger.disabled})),
+      currentPlugin:document.querySelector('[data-testid^="plugin-trigger-"][aria-current="page"]')?.dataset.testid ?? null,
+      modals:[...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].filter(element => element.getClientRects().length).map(element => element.dataset.testid ?? element.getAttribute('role')),
+    }))()`,true);
+    throw new Error(`${error.message}\nBusiness tab activation evidence: ${JSON.stringify(evidence)}`);
+  } finally {
+    await win.webContents.executeJavaScript(`(() => {
+      document.removeEventListener('keydown',window.__businessTabKeyListener,true);
+      document.removeEventListener('keyup',window.__businessTabKeyListener,true);
+      delete window.__businessTabKeyListener;
+      delete window.__businessTabKeys;
+    })()`,true);
+  }
 }
 
 async function clickText(win,text,rootSelector = 'body') {
@@ -1649,7 +1679,7 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
   await exerciseAuditHistory({win,scope,root,dataRoot,ipcMain,registerRead,click,clickText,fill,waitFor,pressRendererKey,screenshotRoot});
 
   let pending = [
-    {...scope,pluginInstanceId:'mock-server',requestId:'recover-approve',capability:'server.shell',summary:'执行模拟健康检查',approvalLevel:'strong',riskLevel:'critical',expiresAt:Date.now()+120000},
+    {...scope,pluginInstanceId:'mock-server',requestId:'recover-approve',capability:'shell.execute',summary:'执行模拟健康检查',approvalLevel:'strong',riskLevel:'critical',expiresAt:Date.now()+120000,presentation:{kind:'shell',command:'echo synthetic-health-check',workingDirectory:'/tmp'}},
     {...scope,pluginInstanceId:'mock-server',requestId:'recover-reject',capability:'server.write_file',summary:'写入模拟说明',approvalLevel:'standard',riskLevel:'write',expiresAt:Date.now()+120000},
     {projectId:'another-project',environmentId:'another-environment',pluginInstanceId:'mock-server',requestId:'out-of-scope',capability:'server.write_file',summary:'其他环境操作',approvalLevel:'standard',expiresAt:Date.now()+120000},
   ];
@@ -1696,6 +1726,9 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
   ipcMain.removeHandler('v2:plugin-list');
   registerRead('v2:plugin-list',() => []);
   win.webContents.send('v2:workspace-changed',{type:'plugin-deleted',...scope,pluginInstanceId:'mock-server'});
+  await waitFor(win,`document.querySelector('[data-testid="plugin-trigger-mock-server"]') === null
+    && document.querySelector('#detail-main')?.dataset.selectionKind === 'environment'`,'合成插件删除后完成当前环境范围恢复');
+  await captureRenderedFrame(win);
   await activateTab(win,'overview');
   const beforeCreate = mutationCalls.length;
   await click(win,'[data-testid="add-environment-header"]','add lifecycle environment');
@@ -2397,8 +2430,28 @@ async function run() {
       return ok({deleted:1});
     });
     await activateTab(win,'audit');
-    await waitFor(win,`document.querySelector('[data-testid="audit-clear-trigger"]')?.disabled === false`,'isolated audit entry loaded');
+    await waitFor(win,`document.querySelector('[data-testid="audit-refresh-trigger"]')?.disabled === false`,'isolated audit entry loaded');
+    const auditManagement = await win.webContents.executeJavaScript(`(() => {
+      const trigger = document.querySelector('[data-testid="audit-management-trigger"]');
+      return {name:trigger?.getAttribute('aria-label'),popup:trigger?.getAttribute('aria-haspopup'),disabled:trigger?.disabled};
+    })()`,true);
+    assert.deepEqual(auditManagement,{name:'操作记录管理',popup:'menu',disabled:false},'清除记录通过可访问的有名管理入口');
+    await openMenu(win,'[data-testid="audit-management-trigger"]','open audit management menu');
+    await waitFor(win,`(() => {
+      const trigger = document.querySelector('[data-testid="audit-management-trigger"]');
+      const clear = document.querySelector('[data-testid="audit-clear-trigger"]');
+      const menu = clear?.closest('[role="menu"]');
+      return clear instanceof HTMLElement && clear.getClientRects().length > 0
+        && clear.getAttribute('role') === 'menuitem' && clear.getAttribute('aria-disabled') !== 'true'
+        && clear.textContent.trim() === '清除环境记录' && menu?.dataset.state === 'open'
+        && trigger?.getAttribute('aria-expanded') === 'true' && trigger.getAttribute('aria-controls') === menu.id;
+    })()`,'scoped audit clear menu available');
     await click(win,'[data-testid="audit-clear-trigger"]','open audit clear');
+    await waitFor(win,`document.querySelector('[data-testid="audit-clear-confirmation"]')?.getClientRects().length > 0
+      && document.querySelector('[data-testid="audit-clear-trigger"]') === null`,'清除菜单交接到实际确认弹窗');
+    assert.equal(auditClearAttempts,0,'选择菜单只打开确认，不提前清除记录');
+    assert.equal(auditEntries.length,1,'确认前保留当前环境的完整记录');
+    assert.match(await win.webContents.executeJavaScript(`document.querySelector('[data-testid="audit-clear-confirmation"] [data-slot="alert-dialog-description"]')?.textContent`,true),/永久删除当前环境.*不影响配置、连接状态或待确认操作/u,'清除确认明确本机环境记录范围');
     await clickText(win,'确认清除','[data-testid="audit-clear-confirmation"]');
     await waitFor(win,`document.querySelector('[data-testid="audit-clear-confirmation"] [role="alert"]') !== null`,'clear failure stays inside confirmation');
     const auditFailure = await win.webContents.executeJavaScript(`(() => {
@@ -2419,7 +2472,7 @@ async function run() {
     releaseAuditClear();
     releaseAuditClear = null;
     await waitFor(win,`document.querySelector('[data-testid="audit-clear-confirmation"]') === null`,'successful clear closes confirmation');
-    await assertFocusWithin(win,'[data-testid="audit-refresh-trigger"]','clearing the last entry focuses the surviving refresh action');
+    await assertFocusWithin(win,'[data-testid="audit-management-trigger"]','清除确认关闭后焦点回到稳定的管理入口');
     assert.equal(mutationCalls.length,13,'eleven original writes plus two exact audit attempts');
     assert.deepEqual(mutationCalls.slice(-2).map((entry) => ({channel:entry.channel,payload:entry.payload})),[
       {channel:'v2:audit-clear',payload:{projectId:'project-created',environmentId:'env-created',pluginInstanceId:null}},
