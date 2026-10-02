@@ -18,8 +18,22 @@ const client = new Client({ name: 'packaged-mcp-smoke', version: '1.0.0' });
 try {
   await client.connect(transport);
   const result = await client.listTools();
-  assert.equal(result.tools.length, 40);
+  assert.equal(result.tools.length, 42);
   assert.ok(result.tools.some((tool) => tool.name === 'open_environment'));
+  for (const [name, fields] of [
+    ['connect_environment', ['projectId','environmentId','contextToken']],
+    ['connect_plugin', ['projectId','environmentId','pluginInstanceId','contextToken']],
+  ]) {
+    const connection = result.tools.find((tool) => tool.name === name);
+    assert.deepEqual(connection.inputSchema.required, fields);
+    assert.deepEqual(Object.keys(connection.inputSchema.properties), fields);
+    assert.equal(connection.inputSchema.additionalProperties, false);
+    assert.equal(connection.annotations.readOnlyHint, false);
+    assert.equal(connection.annotations.destructiveHint, false);
+  }
+  assert.equal(result.tools.find((tool) => tool.name === 'open_environment').annotations.readOnlyHint, true);
+  assert.match(client.getInstructions(), /connect_plugin/u);
+  assert.match(client.getInstructions(), /不得自动信任/u);
   assert.ok(result.tools.some((tool) => tool.name === 'mysql_search_schema'));
   assert.ok(!result.tools.some((tool) => tool.name === 'execute'));
   assert.ok(!result.tools.some((tool) => /cloud|credential|private_key/i.test(tool.name)),'云配置和凭据不得暴露为 MCP 工具');
@@ -159,4 +173,4 @@ const archiveResult = await execFileAsync(executable, ['--input-type=module', '-
   windowsHide: true,
 });
 assert.match(archiveResult.stdout, /archive-ok/u);
-console.log('Packaged MCP smoke passed (40 structured tools; archive runtime available)');
+console.log('Packaged MCP smoke passed (42 structured tools; archive runtime available)');

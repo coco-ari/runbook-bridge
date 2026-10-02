@@ -92,7 +92,7 @@ node scripts/install-upgrade-regression.cjs $installer.FullName
 
 交付说明记录当前提交/工作区范围、运行环境、实际执行的命令、失败及未覆盖项。发生失败时修复后重跑受影响路径；不能通过删断言、跳过安全测试或修改生产超时来掩盖失败。
 
-确认变更没有削弱凭据隔离、首次连接控制、精确作用域、单次审批、主机指纹/TLS、MySQL/Redis 只读策略及审计保护。公有工具契约变化需要同步工具 Schema、服务、运行时、文档和打包 smoke。
+确认变更没有削弱凭据隔离、显式连接范围、精确作用域、单次审批、主机指纹/TLS、MySQL/Redis 只读策略及审计保护。公有工具契约变化需要同步工具 Schema、服务、运行时、文档和打包 smoke。
 
 本机测试不证明企业 VPN、生产证书、系统 SSH Agent、全部代理链或远程基础设施已经验证。未运行的安装、升级、远端 CI 或人工检查必须明确标为未运行。安装包哈希、运行日志和截图属于对应交付产物，保留在忽略的产物目录或发布附件，不作为源码文档中的长期成功声明；不得包含真实凭据、客户数据或生产环境内容。
 
@@ -130,5 +130,5 @@ CI 原生运行 Windows x64、Mac arm64、Mac x64，三端均运行完整 UI 测
 - `test/server-operations-v2.test.mjs`：日志完整行续查、ZIP 跨成员匹配分页、缓存减少传输、游标隔离、失败读取预算、动态源与路径边界。
 - `test/bounded-reads.test.mjs`、`test/log-processor.test.mjs`、`test/mysql-read-efficiency.test.mjs`、`test/sftp-download-efficiency.test.mjs`：并发/队列、主线程响应、元数据复用及授权分离、传输进度和清理。
 - `test/operation-gate.test.mjs`：确认状态等待、客户端隔离和单次消费；`test/build-metadata.test.mjs`：构建指纹。
-- 包内 `verify-package.mjs` 核对源码、Renderer、构建指纹和 40 个工具；`packaged-mcp-smoke.mjs` 在实际 Electron 包中运行工作线程归档续查及确认状态回归。
+- 包内 `verify-package.mjs` 核对源码、Renderer、构建指纹和 42 个工具；`packaged-mcp-smoke.mjs` 在实际 Electron 包中运行工作线程归档续查及确认状态回归，并检查环境/插件连接工具的参数和副作用注解。
 - 三平台 CI 验证完成后保存 `installers-win32-x64`、`installers-darwin-arm64`、`installers-darwin-x64`，同时包含 `build/runtime.json`。以提交号定位 CI 运行，不以相同版本号的旧包作为本次证据。

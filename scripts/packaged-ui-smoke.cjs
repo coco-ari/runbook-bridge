@@ -839,7 +839,7 @@ async function main() {
     const codexClient = new Client({ name: 'codex-integration-smoke', version: '1.0.0' });
     try {
       await codexClient.connect(codexTransport);
-      assert.equal((await codexClient.listTools()).tools.length, 40, '生成的 Codex 配置必须能启动包内 MCP');
+      assert.equal((await codexClient.listTools()).tools.length, 42, '生成的 Codex 配置必须能启动包内 MCP');
     } finally { await codexClient.close(); }
     await running.cdp.evaluate('document.querySelector("[data-testid=settings-open]").click()');
     await waitForThemeUi(running.cdp,'Boolean(document.querySelector("[data-testid=settings-cloud]"))','配置页面加载完成');

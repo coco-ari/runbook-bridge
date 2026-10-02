@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -8,6 +9,8 @@ import { ServerOperations } from '../src/server-operations.mjs';
 import { MysqlPluginRuntime } from '../src/mysql-plugin-runtime.mjs';
 import { RedisPluginRuntime } from '../src/redis-plugin-runtime.mjs';
 import { capabilityRule } from '../src/operation-gate.mjs';
+import { BrokerServer } from '../src/broker-server.mjs';
+import { rotateBrokerToken } from '../src/broker-auth.mjs';
 
 function assertCursorMatchesSchema(tool, cursor) {
   const schema = tool.inputSchema.properties.cursor;
@@ -21,6 +24,46 @@ function assertCursorMatchesSchema(tool, cursor) {
   assert.match(cursor, new RegExp(stringSchema.pattern, 'u'));
 }
 
+test('MCP 连接工具通过 Broker 传递精确作用域并绑定同一客户端', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-mcp-connect-'));
+  t.after(() => fs.rm(root, {recursive:true, force:true}));
+  const token = await rotateBrokerToken(root);
+  const invocations = [];
+  const result = {connection:{phase:'connected'}, actions:[]};
+  const broker = new BrokerServer({
+    dataRoot:root,
+    token,
+    v2Service:{
+      connectEnvironment(params) { invocations.push({method:'environment', params}); return result; },
+      connectPlugin(params) { invocations.push({method:'plugin', params}); return result; },
+    },
+  });
+  await broker.start();
+  t.after(() => broker.stop());
+  const transport = new StdioClientTransport({
+    command:process.execPath,
+    args:[path.resolve('src/mcp-v2.mjs')],
+    env:{...process.env, AI_OPS_DATA_DIR:root},
+    stderr:'pipe',
+  });
+  const client = new Client({name:'mcp-connect-test', version:'1.0.0'});
+  await client.connect(transport);
+  t.after(() => client.close().catch(() => undefined));
+  const environment = {projectId:'project-one', environmentId:'testing', contextToken:'context-token-1234'};
+  const plugin = {...environment, pluginInstanceId:'server-main'};
+  for (const [name, args] of [['connect_environment', environment], ['connect_plugin', plugin]]) {
+    const called = await client.callTool({name, arguments:args});
+    assert.equal(called.isError, false);
+    assert.deepEqual(called.structuredContent, result);
+  }
+  const clientInstanceId = invocations[0].params.clientInstanceId;
+  assert.match(clientInstanceId, /^[a-f0-9]{32}$/u);
+  assert.deepEqual(invocations, [
+    {method:'environment', params:{...environment, clientInstanceId}},
+    {method:'plugin', params:{...plugin, clientInstanceId}},
+  ]);
+});
+
 test('V2 MCP exposes unrestricted bounded reads and confirmation-gated server changes', async (t) => {
   const transport = new StdioClientTransport({ command: process.execPath, args: [path.resolve('src/mcp-v2.mjs')], stderr: 'pipe' });
   const client = new Client({ name: 'mcp-v2-test', version: '1.0.0' });
@@ -30,13 +73,35 @@ test('V2 MCP exposes unrestricted bounded reads and confirmation-gated server ch
   assert.deepEqual(client.getServerVersion(), { name: 'agent-ops-workbench', version: manifest.version });
   const listed = await client.listTools();
   const names = listed.tools.map((tool) => tool.name);
+  assert.equal(names.length, 42);
   assert.ok(names.includes('open_environment'));
   assert.ok(names.includes('server_run_action'));
   assert.ok(names.includes('mysql_search_schema'));
   assert.ok(names.includes('mysql_query_readonly'));
   assert.ok(names.includes('redis_scan'));
   for (const name of ['server_stat','server_list_directory','server_find_files','server_read_file','server_search_files','server_system_snapshot','server_service_inspect','server_journal_query','server_container_inspect','server_upload_file','server_control_service','server_execute_shell']) assert.ok(names.includes(name));
-  assert.ok(!names.some((name) => /execute_command|raw|connect/.test(name)));
+  assert.ok(!names.some((name) => /execute_command|raw/.test(name)));
+  assert.deepEqual(names.filter((name) => name.startsWith('connect_')).sort(), ['connect_environment','connect_plugin']);
+  for (const [name, fields] of [
+    ['connect_environment', ['projectId','environmentId','contextToken']],
+    ['connect_plugin', ['projectId','environmentId','pluginInstanceId','contextToken']],
+  ]) {
+    const connection = listed.tools.find((item) => item.name === name);
+    assert.deepEqual(connection.inputSchema.required, fields);
+    assert.deepEqual(Object.keys(connection.inputSchema.properties), fields);
+    assert.equal(connection.inputSchema.additionalProperties, false);
+    assert.equal(connection.annotations.readOnlyHint, false);
+    assert.equal(connection.annotations.destructiveHint, false);
+    assert.match(connection.description, /open_environment/u);
+    assert.match(connection.description, /connected/u);
+  }
+  for (const name of ['list_projects','list_environments','open_environment']) {
+    assert.equal(listed.tools.find((item) => item.name === name).annotations.readOnlyHint, true);
+  }
+  assert.match(client.getInstructions(), /connect_plugin/u);
+  assert.match(client.getInstructions(), /connect_environment/u);
+  assert.match(client.getInstructions(), /不得自动信任/u);
+  assert.match(client.getInstructions(), /上下文失效时重新 open_environment/u);
   const addPlugin = listed.tools.find((tool) => tool.name === 'add_plugin');
   assert.ok(addPlugin.inputSchema.required.includes('configuration'));
   assert.doesNotMatch(addPlugin.description,/草稿/u);

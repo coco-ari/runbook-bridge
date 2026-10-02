@@ -67,7 +67,7 @@ export async function runMcpScenarios({ runtime, plugin, store, scope, root, own
     async function ok(name, args = {}, target = client) { const result = await call(name, args, target); assert.notEqual(result.ok, false); return result; }
     async function fails(name, args, code, target = client) { const result = await call(name, args, target); assert.equal(result.ok, false); assert.equal(result.error.code, code); return result.error; }
     await measure('mcp.manifest-and-discovery', async () => {
-      assert.equal((await client.listTools()).tools.length, 40); assert.equal(client.getServerVersion().name, 'agent-ops-workbench');
+      assert.equal((await client.listTools()).tools.length, 42); assert.equal(client.getServerVersion().name, 'agent-ops-workbench');
       assert.equal((await ok('list_projects')).projects.length, 1);
       assert.equal((await ok('list_environments', { projectId: scope.projectId })).environments.length, 1);
     });

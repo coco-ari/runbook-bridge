@@ -27,6 +27,8 @@ Electron 只加载构建后的 `renderer-build/v2/index.html`。生成目录不�
 
 `src/environment-connection-manager.mjs` 管理环境连接意图和依赖，`src/route-manager.mjs` 管理连接路由。打开项目、切换页面、读取 MCP 上下文都不会建立首次连接。环境允许部分连接成功；失败的插件不能使已连接的独立插件失去可用性。应用重启或用户主动断开后，不从持久化状态恢复自动连接意图。
 
+Agent 可通过 `connect_environment` 或 `connect_plugin` 显式发起连接；请求先验证当前客户端的环境上下文，再复用桌面连接协调、已提交配置和本机凭据。单插件连接仅包含必要的同环境 Server 隧道依赖；环境连接覆盖该环境全部已配置插件。项目只用于作用域，没有跨环境的项目连接工具。连接返回 `connection` 与 `actions`，只有目标插件 `phase:connected` 后才能操作；上下文失效须重新打开环境。桌面必须已运行，缺失凭据与 SSH 主机密钥确认仍由用户处理。主动断开后，Agent 可再次显式请求连接。
+
 新增插件使用临时探针，修改连接配置使用受保护的编辑会话。验证只针对当前表单，不替换正式连接或 Agent 上下文；正式连接使用已提交配置和 active 凭据。未保存的表单不跨页面或重启保留。主要边界分别在 `src/plugin-probe-manager.mjs`、`src/plugin-edit-session-manager.mjs`、`src/plugin-validation-runtime.mjs` 和 `src/credential-use-resolver.mjs`。
 
 应用管理的秘密由 `src/plugin-credential-vault.mjs` 配合 Electron `safeStorage`（Windows DPAPI / macOS Keychain） 加密，不写入工作区 YAML、运维说明、日志或 MCP 结果。配置与凭据提交由 `src/plugin-config-transaction.mjs` 协调，工作区变更由 `src/workspace-mutation-coordinator.mjs` 协调。旧凭据不可读时必须保留原密文；不能用空值覆盖它来掩盖错误。
@@ -34,6 +36,7 @@ Electron 只加载构建后的 `renderer-build/v2/index.html`。生成目录不�
 ## 安全契约
 
 - Agent 必须先通过 `open_environment` 获取当前环境的短期上下文。`src/context-manager.mjs` 校验精确的项目、环境、插件与状态；配置和相关安全状态变化会使旧上下文失效。
+- 连接工具只接受精确作用域和 `contextToken`，不接收地址、凭据或主机信任参数；连接具有副作用，标为非只读、非破坏性工具。列表和 `open_environment` 始终只读，普通操作仍要求插件已连接，SSH 主机密钥校验、凭据隔离和单次变更确认保持不变。
 - `src/operation-gate.mjs` 与 `src/confirmation-manager.mjs` 决定能力是否允许。未知或无法分类的操作拒绝，不能由 Agent 声明风险等级来自行放行。
 - Server 普通文件、目录、日志、状态读取和下载有界自动允许，可以使用绝对路径。运维说明和 `resourceHints` 用于导航，不是文件读取白名单；`sourceId/fileId` 是仍有调用方的兼容形式。
 - Agent 的上传、写入、移动、删除和服务控制必须逐次确认；任意 Shell 必须强确认。一次性批准绑定作用域、能力与完整规范化参数。文件变更还绑定已实现的 stat/hash/目标状态前置条件；服务控制和 Shell 不快照实时远端状态。

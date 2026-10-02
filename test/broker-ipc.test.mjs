@@ -57,6 +57,39 @@ test('broker survives an abandoned client and stop closes idle pipe clients prom
   assert.ok(Date.now() - started < 1_000);
 });
 
+test('Broker 仅开放作用域内的环境和插件连接服务，不开放项目连接或桌面信任接口', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-broker-connect-'));
+  t.after(() => fs.rm(root, {recursive:true, force:true}));
+  const token = await rotateBrokerToken(root);
+  const invocations = [];
+  const connection = {phase:'connected', plugins:[{pluginInstanceId:'server-main', phase:'connected'}]};
+  const v2Service = {
+    connectEnvironment(params) {
+      invocations.push({method:'connectEnvironment', params});
+      return {connection, actions:[]};
+    },
+    connectPlugin(params) {
+      invocations.push({method:'connectPlugin', params});
+      return {connection, actions:[]};
+    },
+  };
+  const server = new BrokerServer({dataRoot:root, token, v2Service});
+  await server.start();
+  t.after(() => server.stop());
+  const environment = {projectId:'project-one', environmentId:'testing', contextToken:'context-token-1234', clientInstanceId:'mcp-session'};
+  const plugin = {...environment, pluginInstanceId:'server-main'};
+  assert.deepEqual(await callBroker(root, 'v2.connectEnvironment', environment, 2_000), {connection, actions:[]});
+  assert.deepEqual(await callBroker(root, 'v2.connectPlugin', plugin, 2_000), {connection, actions:[]});
+  assert.deepEqual(invocations, [
+    {method:'connectEnvironment', params:environment},
+    {method:'connectPlugin', params:plugin},
+  ]);
+  for (const method of ['connectProject','disconnectEnvironment','trustHostKey','savePluginCredentials']) {
+    await assert.rejects(() => callBroker(root, `v2.${method}`, plugin, 2_000), {code:'METHOD_NOT_FOUND'});
+  }
+  assert.equal(invocations.length, 2);
+});
+
 test('broker preserves legacy log search and forwards every bounded search field', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-broker-log-search-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

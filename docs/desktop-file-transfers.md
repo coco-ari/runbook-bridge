@@ -11,7 +11,7 @@
 - 写入请求已发出但回执或最终检查失败时，显示「保存结果待核实」，禁止重复保存；「检查保存结果」重新读回判断。若连接在替换前断开，可能遗留 `.runbook-edit-*` 临时文件，应先核对目标和内容再人工处理。
 - 标准 SFTP 没有跨客户端的条件替换锁：最终检查和原子重命名之间仍有竞态窗口。原子替换会更换文件身份；不保留额外 ACL、扩展属性或硬链接关系，也不承诺服务器断电后的持久性。需要这些元数据的文件应使用专用部署流程。
 
-新增 `serverWorkspaceEditFile` 一个桌面接口（当前共 113 个桌面 API，MCP 仍为 40 个工具），仅可信主框架可用：`open` 绑定路径和文件基线；`prepare` 接受完整新内容，返回两分钟有效的一次性 `planId` 和对照；`commit` 只接受 `editId` / `planId`，不能补传内容、路径或前置条件。其余操作为 `dirty`、`cancel`、`verify`、`restore`、`close`。各操作严格限制字段，绑定窗口、项目/环境/插件、配置版本与连接代次。重连后须重新检查，旧确认不可沿用。每个窗口最多 12 个编辑会话、应用最多 32 个，主进程基线/恢复版本/准备内容预算 48 MiB。审计记录路径、操作 ID、开始/完成/错误码，不记录文件正文；不扩大 Agent/MCP 写入能力。
+新增 `serverWorkspaceEditFile` 一个桌面接口（当前共 113 个桌面 API，MCP 为 42 个工具），仅可信主框架可用：`open` 绑定路径和文件基线；`prepare` 接受完整新内容，返回两分钟有效的一次性 `planId` 和对照；`commit` 只接受 `editId` / `planId`，不能补传内容、路径或前置条件。其余操作为 `dirty`、`cancel`、`verify`、`restore`、`close`。各操作严格限制字段，绑定窗口、项目/环境/插件、配置版本与连接代次。重连后须重新检查，旧确认不可沿用。每个窗口最多 12 个编辑会话、应用最多 32 个，主进程基线/恢复版本/准备内容预算 48 MiB。审计记录路径、操作 ID、开始/完成/错误码，不记录文件正文；不扩大 Agent/MCP 写入能力。
 
 针对性验证：`node --test test/server-workspace-editor.test.mjs test/server-text-edit.test.mjs`；构建 Renderer 后，使用 `RUNBOOK_BRIDGE_FILE_EDITOR_SMOKE=1 node_modules/.bin/electron scripts/ui-react-server-workspace-smoke.cjs` 运行隔离的界面验证（Windows 用对应的环境变量设置方式）。
 
@@ -90,7 +90,7 @@ SFTP 的按路径删除没有“比较文件身份后原子删除”的通用接
 
 原生粘贴新增主进程读取本地文件剪贴板的桌面权限，读取前后校验窗口、作用域、配置修订及连接代次，与文件选择和拖入入口互斥。文件类型、数量、大小和最终写入确认继续复用原有校验。macOS 保留原生 ⌘V/菜单粘贴路径，不运行 Windows 命令。
 
-桌面 preload API 共 113 个，MCP 仍为 40 个工具。日志跟随与下载记录管理仅对受信桌面主框架开放。
+桌面 preload API 共 113 个，MCP 为 42 个工具。日志跟随与下载记录管理仅对受信桌面主框架开放。
 
 ## 验证
 

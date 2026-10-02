@@ -15,6 +15,7 @@
 - [MySQL 数据编辑](mysql-data-editing.md) · [SQL 事务与批量执行](mysql-sql-execution.md) · [Redis 工作区](redis-workspace-design.md)
 - [Docker 工作区](docker-workspace-design.md)
 - [MCP 日志读取与排障](mcp-log-reading.md)
+- [Agent 自行连接环境或插件](workspace-guide.md#agent-自行连接)
 - [操作记录](audit-history.md) · [云配置](cloud-config.md)
 
 ## 参与开发

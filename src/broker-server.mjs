@@ -140,6 +140,8 @@ export class BrokerServer {
       case 'listProjects': return this.v2Service.listProjects(params);
       case 'listEnvironments': return this.v2Service.listEnvironments(params);
       case 'openEnvironment': return this.v2Service.openEnvironment(params);
+      case 'connectEnvironment': return this.v2Service.connectEnvironment(params);
+      case 'connectPlugin': return this.v2Service.connectPlugin(params);
       case 'confirmationStatus': return this.v2Service.confirmationStatus(params);
       case 'addPlugin': return this.v2Service.addPlugin(params);
       case 'listEnvironmentPlugins': return this.v2Service.listEnvironmentPlugins(params);

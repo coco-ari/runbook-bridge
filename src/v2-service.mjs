@@ -8,6 +8,7 @@ import { assertPluginConfigurationReady } from './plugin-connection-adapters.mjs
 import { assessEnvironmentSnapshot, publicPluginAssessment } from './plugin-readiness-service.mjs';
 import { pluginWithRunbookSources, resourceHintsFromRunbook } from './runbook-sources.mjs';
 import { normalizePlugin } from './plugin-config-model.mjs';
+import { ID_RE } from './plugin-config-utils.mjs';
 import { isolateNewPluginIdentity } from './plugin-creation-identity.mjs';
 import { DesktopMysqlEditor, prepareMysqlEditRequest } from './desktop-mysql-editor.mjs';
 import { DesktopMysqlSql, prepareMysqlSqlRequest } from './desktop-mysql-sql.mjs';
@@ -37,6 +38,62 @@ function scopeOf(params) {
     environmentId: String(params.environmentId ?? ''),
     pluginInstanceId: String(params.pluginInstanceId ?? ''),
     clientInstanceId: String(params.clientInstanceId ?? 'unknown').slice(0, 128),
+  };
+}
+
+function agentConnectionScope(params, pluginRequired) {
+  const fields = ['projectId','environmentId','contextToken','clientInstanceId'];
+  if (pluginRequired) fields.push('pluginInstanceId');
+  if (!params || typeof params !== 'object' || Array.isArray(params)
+    || Object.keys(params).some((key) => !fields.includes(key))) {
+    throw new AppError('INVALID_ARGUMENT', '连接只接受项目、环境、插件和当前会话上下文，不能传入凭据或连接控制参数。');
+  }
+  for (const field of ['projectId','environmentId',...(pluginRequired ? ['pluginInstanceId'] : [])]) {
+    if (typeof params[field] !== 'string' || !ID_RE.test(params[field])) {
+      throw new AppError('INVALID_ARGUMENT', `${field} 必须是已登记的准确标识。`);
+    }
+  }
+  if (params.contextToken !== undefined && typeof params.contextToken !== 'string') {
+    throw new AppError('INVALID_ARGUMENT', 'contextToken 必须是打开环境时取得的上下文令牌。');
+  }
+  if (params.clientInstanceId !== undefined && (typeof params.clientInstanceId !== 'string' || !params.clientInstanceId || params.clientInstanceId.length > 128)) {
+    throw new AppError('INVALID_ARGUMENT', 'Agent 会话标识无效。');
+  }
+  return {
+    projectId:params.projectId,
+    environmentId:params.environmentId,
+    ...(pluginRequired ? {pluginInstanceId:params.pluginInstanceId} : {}),
+    clientInstanceId:params.clientInstanceId ?? 'unknown',
+  };
+}
+
+function agentConnectionResult(scope, result) {
+  const desktopRequired = new Set([
+    'SSH_HOST_KEY_CONFIRM_REQUIRED','SSH_HOST_KEY_CHANGED','SSH_AUTH_FAILED','AUTHENTICATION_FAILED',
+    'SSH_IDENTITY_UNAVAILABLE','MYSQL_TLS_NOT_SUPPORTED',
+  ]);
+  return {
+    projectId:scope.projectId,
+    environmentId:scope.environmentId,
+    ...(scope.pluginInstanceId ? {pluginInstanceId:scope.pluginInstanceId} : {}),
+    outcome:result.outcome,
+    planId:result.planId,
+    operationId:result.operationId,
+    connection:{
+      ...result.snapshot,
+      plugins:Object.fromEntries(Object.entries(result.snapshot.plugins).map(([id,state]) => [id,{
+        ...state,
+        ...(state.error ? {error:{code:state.error.code,message:state.error.message}} : {}),
+      }])),
+    },
+    // 主机密钥挑战仅供桌面确认，Agent 只接收定位问题所需的公开状态。
+    actions:result.actions.map((action) => ({
+      rootPluginInstanceId:action.rootPluginInstanceId,
+      affectedPluginInstanceIds:action.affectedPluginInstanceIds,
+      code:action.code,
+      message:action.message,
+      action:desktopRequired.has(action.code) || /^(CREDENTIAL_|TLS_)/.test(action.code) ? 'open-desktop' : action.action,
+    })),
   };
 }
 
@@ -173,6 +230,41 @@ export class V2Service {
     return {plugins:this.publicPluginsWithAssessments(plugins,connection),connection};
   }
 
+  connectEnvironment(params) {
+    return this.connectAgentScope(params, false);
+  }
+
+  connectPlugin(params) {
+    return this.connectAgentScope(params, true);
+  }
+
+  async connectAgentScope(params, pluginRequired) {
+    const scope = agentConnectionScope(params, pluginRequired);
+    const verify = () => pluginRequired
+      ? this.contextManager.verify(scope.projectId, scope.environmentId, scope.pluginInstanceId, params.contextToken, scope.clientInstanceId)
+      : this.contextManager.verifyEnvironment(scope.projectId, scope.environmentId, params.contextToken, scope.clientInstanceId);
+    const operation = async () => {
+      this.connectionManager.assertConfigurationStable?.(scope.projectId, scope.environmentId);
+      const verified = await verify();
+      // 仅构造受控连接意图，禁止透传凭据、信任指纹或绕过编辑门禁的内部参数。
+      const result = await this.connectionManager.requestConnectionIntent({
+        projectId:scope.projectId,
+        environmentId:scope.environmentId,
+        ...(pluginRequired ? {pluginInstanceId:scope.pluginInstanceId} : {}),
+        expectedRevision:verified.environment.revision,
+        intent:'connect',
+        source:'agent',
+        actor:'agent',
+      });
+      await verify();
+      this.connectionManager.assertConfigurationStable?.(scope.projectId, scope.environmentId);
+      return agentConnectionResult(scope, result);
+    };
+    return this.mutationCoordinator
+      ? this.mutationCoordinator.runEnvironmentOperation(scope.projectId, scope.environmentId, operation)
+      : operation();
+  }
+
   async addPlugin(params) {
     const operation = () => this.addPluginUnlocked(params);
     return this.mutationCoordinator
@@ -225,7 +317,7 @@ export class V2Service {
       },
       connection:'disconnected',
       contextStale:true,
-      message:'插件已配置并保持断开，请人工点击连接。',
+      message:'插件已配置并保持断开，请重新打开环境后调用 connect_plugin，或在桌面端连接。',
       ...(auditWarning ? { auditWarning:true } : {}),
       ...(runtimeWarning ? {runtimeWarning,manualReconnectRequired:true} : {}),
     };
@@ -324,7 +416,7 @@ export class V2Service {
               : runtime?.phase === 'reconnecting'
                 ? 'PLUGIN_RECONNECTING'
                 : 'PLUGIN_NOT_CONNECTED';
-      throw new AppError(code, runtime?.error?.message ?? `${plugin.displayName ?? '目标插件'}尚未连接，请在桌面端选择“连接并继续”。`, {
+      throw new AppError(code, runtime?.error?.message ?? `${plugin.displayName ?? '目标插件'}尚未连接，请调用 connect_plugin 或在桌面端选择“连接并继续”。`, {
         phase:runtime?.phase ?? 'disconnected',
         reason:runtime?.reason ?? null,
         action:'connect-and-continue',

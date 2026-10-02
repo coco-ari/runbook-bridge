@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | [VS Code 用户界面](https://code.visualstudio.com/docs/editing/getting-started/userinterface) | 工作区布局、命令面板、快速定位、布局显隐 | 导航与工作内容的空间分配、入口可发现性；保留当前独立工作区 |
 | [VS Code 面包屑](https://code.visualstudio.com/docs/editing/editingevolved#_breadcrumbs) | 路径定位及父级、同级导航 | 评估详情范围路径是否需要增加交互 |
-| [DataGrip 连接与会话](https://www.jetbrains.com/help/datagrip/connecting-to-a-database.html) | 连接配置与运行会话分开表达 | 配置完整、在线连接与工作区三种状态的文字区别；沿用本项目手动连接契约 |
+| [DataGrip 连接与会话](https://www.jetbrains.com/help/datagrip/connecting-to-a-database.html) | 连接配置与运行会话分开表达 | 配置完整、在线连接与工作区三种状态的文字区别；保持页面导航只读，连接由用户或 Agent 显式发起 |
 | [IBM Carbon 按钮](https://www.carbondesignsystem.com/building-blocks/core/components/button/guidelines) | 按钮层级、尺寸、图标语义与操作分组 | 页内主操作和辅助操作、少量图标统一 |
 | [IBM Carbon 通知](https://carbondesignsystem.com/components/notification/usage/) | 状态语义、可处理错误、简洁通知 | 正常状态降噪、异常与处理入口突出 |
 | [IBM Carbon 数据表](https://www.carbondesignsystem.com/building-blocks/core/components/data-table/guidelines) | 按内容与任务选择行密度、列表工具栏 | 项目状态、审计筛选、云项目列表的密度 |
