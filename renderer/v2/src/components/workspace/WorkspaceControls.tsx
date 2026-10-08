@@ -1,4 +1,4 @@
-import { WorkspaceSwitcherButton, WorkspaceConfigureButton } from "@/features/plugins/WorkspaceNavigation"
+import { WorkspaceSwitcherButton } from "@/features/plugins/WorkspaceNavigation"
 import type { ComponentProps } from "react"
 import { ArrowClockwise, ArrowLeft, ArrowsIn, ArrowsOut, LinkBreak, Plus, X } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
@@ -32,7 +32,6 @@ export function WorkspaceHeaderActions({ connected, busy, reconnecting, awaiting
   const Icon = connected || busy ? LinkBreak : ArrowClockwise
   return <>
     <WorkspaceSwitcherButton />
-    <WorkspaceConfigureButton />
     <SettingsButton />
     <UpdatesButton iconOnly />
     <Button data-testid={prefix + (connected || busy ? "-disconnect" : "-reconnect")} size="sm" variant="outline" type="button" aria-label={label} aria-description={label} disabled={cancelling || busy || (!cancelAvailable && (reconnecting || awaitingConfirmation || (connected && disabled)))} onClick={cancelAvailable ? onCancel : connected ? onDisconnect : onReconnect}><Icon aria-hidden="true" />{label}</Button>

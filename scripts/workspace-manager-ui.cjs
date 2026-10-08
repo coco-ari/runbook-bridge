@@ -27,8 +27,9 @@ module.exports = async ({evaluate,click,until,connectionRequests,opened,redisCal
   await click('[data-testid=redis-workspace-confirm-close]');
   await until("!document.querySelector('[data-testid=redis-workspace]')",'仅关闭目标 Redis 工作区');
   assert.equal(await evaluate("document.querySelector('[data-testid=server-workspace]').hidden"),false,'关闭后台工作区不隐藏当前工作区');
-  await click(server+' [data-testid=workspace-connection-settings]');
-  await until("document.querySelector('[data-testid=plugin-editor-workspace]')?.textContent.includes('工作区验证服务器')",'连接配置直达当前插件编辑器');
+  await click(server+' [data-testid=server-workspace-back]');
+  await click('[data-testid=plugin-action-edit]');
+  await until("document.querySelector('[data-testid=plugin-editor-workspace]')?.textContent.includes('工作区验证服务器')",'从插件详情修改当前插件连接配置');
   assert.equal(connectionRequests.length,connections,'打开配置不自动断开或连接');
   await until("document.querySelector('[data-testid=plugin-editor-confirmation]')",'连接中的配置编辑保留影响确认');
   await evaluate("[...document.querySelectorAll('[data-testid=plugin-editor-confirmation] button')].find(button => button.textContent.trim() === '取消').click()");

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
-import { GearSix, Stack } from "@phosphor-icons/react"
+import { Stack } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import type { PluginWorkspaceEntry } from "./workspace-registry"
@@ -76,9 +76,4 @@ export function WorkspaceSwitcherButton({className, variant = "ghost", labelLayo
 export function useWorkspaceConfigure() {
   const navigation = useContext(NavigationContext), entry = useContext(EntryContext)
   return navigation && entry ? () => navigation.configure(entry) : undefined
-}
-
-export function WorkspaceConfigureButton() {
-  const configure = useWorkspaceConfigure()
-  return configure ? <Button size="icon-sm" variant="ghost" aria-label="连接配置" title="修改当前插件的连接配置" data-testid="workspace-connection-settings" onClick={configure}><GearSix /></Button> : null
 }
