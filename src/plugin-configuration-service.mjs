@@ -95,7 +95,7 @@ export function createPluginConfigurationService(services) {
     return {...plugin,...(runtimeWarning ? {runtimeWarning,manualReconnectRequired:true} : {})};
   }));
 
-  const preparePluginUpdate = async (payload, patchScope = null) => {
+  const preparePluginUpdate = async (payload, patchScope = null, {hostKeyTrust = null} = {}) => {
     const {
       projectId,environmentId,pluginInstanceId,patch,expectedRevision,
     } = payload;
@@ -118,12 +118,12 @@ export function createPluginConfigurationService(services) {
     let prepared;
     if (typeof method === 'function') {
       prepared = patchScope === 'connection'
-        ? await method.call(store,projectId,environmentId,pluginInstanceId,patch,expectedRevision,credentialMutation)
+        ? await method.call(store,projectId,environmentId,pluginInstanceId,patch,expectedRevision,credentialMutation,{hostKeyTrust})
         : await method.call(store,projectId,environmentId,pluginInstanceId,patch,expectedRevision);
     } else if (typeof store.preparePluginUpdate === 'function') {
       prepared = await store.preparePluginUpdate(
         projectId,environmentId,pluginInstanceId,patch,expectedRevision,
-        {credentialMutation,patchScope},
+        {credentialMutation,patchScope,hostKeyTrust},
       );
     } else {
       const before = await store.getPlugin(projectId,environmentId,pluginInstanceId);
@@ -298,7 +298,7 @@ export function createPluginConfigurationService(services) {
         if (payload.expectedRevision !== material.baseRecordRevision) {
           throw new AppError('CONFIG_REVISION_CONFLICT','插件配置已经变化，请刷新后重试。');
         }
-        const prepared = await preparePluginUpdate(scopedPayload,'connection');
+        const prepared = await preparePluginUpdate(scopedPayload,'connection',{hostKeyTrust:material.hostKeyTrust});
         const adapter = getPluginConnectionAdapter(prepared.before.pluginType);
         const identityChanged = JSON.stringify(adapter.credentialIdentity(prepared.before))
           !== JSON.stringify(adapter.credentialIdentity(prepared.after ?? prepared.before));

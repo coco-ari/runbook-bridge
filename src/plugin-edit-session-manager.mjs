@@ -3,6 +3,7 @@ import { AppError, toPublicError } from './errors.mjs';
 import { pluginConnectionFingerprint } from './plugin-change-classifier.mjs';
 import { getPluginConnectionAdapter } from './plugin-connection-adapters.mjs';
 import { normalizePluginCandidate } from './plugin-config-model.mjs';
+import { hostKeyDraftBinding } from './plugin-host-key-trust.mjs';
 
 const VALIDATION_PURPOSES = new Set([
   'tls-probe','server-auth','resource-discovery','resource-access','health-check',
@@ -319,7 +320,7 @@ export class PluginEditSessionManager {
     return this.sessionSummary(editSessionId);
   }
 
-  normalizedDraft(session,draft) {
+  normalizedDraft(session,draft,hostKeyTrust = null) {
     const input = {
       ...session.basePlugin,
       ...(draft ?? {}),
@@ -329,7 +330,7 @@ export class PluginEditSessionManager {
     return normalizePluginCandidate(input,{
       projectId:session.scope.projectId,
       environmentId:session.scope.environmentId,
-    },session.basePlugin);
+    },session.basePlugin,undefined,{hostKeyTrust});
   }
 
   invalidateOlderValidations(session,nextGeneration) {
@@ -353,11 +354,19 @@ export class PluginEditSessionManager {
     if (payload.draftGeneration < session.draftGeneration) {
       throw new AppError('PLUGIN_VALIDATION_STALE','验证请求属于旧草稿代次。');
     }
+    // 新指纹仅绑定相邻草稿的实际挑战；保存阶段只复用成功验证的记录。
+    const pendingHostKey = session.temporaryHostKey;
+    const previousServerValidation = session.validationsByPurpose['server-auth'];
+    const hostKeyTrust = pendingHostKey
+      && pendingHostKey.draftGeneration === session.draftGeneration
+      && payload.draftGeneration === session.draftGeneration + 1
+      ? pendingHostKey
+      : previousServerValidation?.state === 'valid' ? previousServerValidation.hostKeyTrust : null;
+    const candidate = this.normalizedDraft(session,payload.draft,hostKeyTrust);
     if (payload.draftGeneration > session.draftGeneration) {
       this.invalidateOlderValidations(session,payload.draftGeneration);
     }
     this.captureCredentialIntent(session.editSessionId,payload);
-    const candidate = this.normalizedDraft(session,payload.draft);
     const adapter = getPluginConnectionAdapter(candidate.pluginType);
     const configuration = adapter.assessConfiguration(candidate,payload.purpose);
     if (configuration.state !== 'complete') {
@@ -387,6 +396,8 @@ export class PluginEditSessionManager {
       draftGeneration:payload.draftGeneration,configDigest,
       startedAt:new Date(this.now()).toISOString(),completedAt:null,error:null,
       controller,runtimeDraft,
+      hostKeyTrust:candidate.pluginType === 'server' && candidate.target.hostKeyFingerprint
+        ? {fingerprint:candidate.target.hostKeyFingerprint,binding:hostKeyDraftBinding(candidate)} : null,
       editSessionId:session.editSessionId,
       onProgress:typeof payload.onProgress === 'function' ? payload.onProgress : null,
     };
@@ -441,13 +452,15 @@ export class PluginEditSessionManager {
     } catch (error) {
       const current = this.sessions.get(session.editSessionId)?.validationsByPurpose?.[payload.purpose];
       const publicError = toPublicError(error);
-      if (publicError.details?.fingerprint
+      if (publicError.code === 'SSH_HOST_KEY_CONFIRM_REQUIRED' && candidate.pluginType === 'server'
+        && publicError.details?.fingerprint
         && current?.operationId === operationId && current.state === 'running'
         && !controller.signal.aborted && session.draftGeneration === payload.draftGeneration) {
         session.temporaryHostKey = {
           fingerprint:publicError.details.fingerprint,
           host:candidate.target?.host ?? null,
           port:candidate.target?.port ?? null,
+          binding:hostKeyDraftBinding(candidate),
           configDigest,
           draftGeneration:payload.draftGeneration,
         };
@@ -522,6 +535,8 @@ export class PluginEditSessionManager {
       baseRecordRevision:session.baseRecordRevision,
       credentialIntent:session.credentialIntent,
       temporarySecrets:{...session.temporarySecrets},
+      hostKeyTrust:session.validationsByPurpose['server-auth']?.state === 'valid'
+        ? structuredClone(session.validationsByPurpose['server-auth'].hostKeyTrust ?? null) : null,
     };
   }
 

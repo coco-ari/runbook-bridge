@@ -400,8 +400,8 @@ export function collectReplacementSecrets(
   return Object.freeze(Object.fromEntries(entries))
 }
 
-export function credentialMutationFor(secrets: SecretMap): CredentialMutation {
-  return Object.keys(secrets).length > 0 ? "replace" : "unchanged"
+export function credentialMutationFor(secrets: SecretMap, reuseSaved = false): CredentialMutation {
+  return Object.keys(secrets).length > 0 ? "replace" : reuseSaved ? "rebind-existing" : "unchanged"
 }
 
 export function emptyCredentialDraft(): PluginCredentialDraft {

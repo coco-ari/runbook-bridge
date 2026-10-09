@@ -18,7 +18,6 @@ import {
   pluginEditorReducer,
   normalizePluginSaveOutcome,
   validationMatches,
-  type HostKeyChallenge,
   type PluginEditorState,
   type PluginSaveOutcome,
   type PluginValidationState,
@@ -133,11 +132,6 @@ function pluginValidationPurpose(kind: PluginKind, purpose: "validate" | "tls"):
 
 function validationRecord(value: OpaqueData): Readonly<Record<string, unknown>> {
   return value as Readonly<Record<string, unknown>>
-}
-
-function hostKeyDescription(challenge: HostKeyChallenge): string {
-  const algorithm = challenge.algorithm ? `，算法 ${challenge.algorithm}` : ""
-  return `主机 ${challenge.host}:${challenge.port}${algorithm}，指纹 ${challenge.fingerprint}。仅在你确认后，指纹才会写入当前草稿。`
 }
 
 function editPreparationCounts(preparation: PluginEditPreparation): {
@@ -351,6 +345,8 @@ export function usePluginEditor({
     }
     const active = activeValidationRef.current
     if (!active) return
+    // 结束状态由请求回包统一处理，避免迟到进度覆盖错误详情或首次指纹重试。
+    if (progress.state === "valid" || progress.state === "failed" || progress.state === "cancelled") return
     const next = mergeValidationProgress(active, progress)
     if (next === active) return
     activeValidationRef.current = next.state === "running" ? next : null
@@ -363,6 +359,7 @@ export function usePluginEditor({
   useEffect(() => api.onPluginProbeProgress((progress) => {
     const active = activeValidationRef.current
     if (!active || active.editSessionId) return
+    if (progress.state === "valid" || progress.state === "failed" || progress.state === "cancelled") return
     const next = mergeValidationProgress(active, progress)
     if (next === active) return
     activeValidationRef.current = next.state === "running" ? next : null
@@ -438,6 +435,7 @@ export function usePluginEditor({
     purpose: "validate" | "tls" = "validate",
     saveAfterValidation = false,
     saveStrategy: PluginSaveStrategy = "disconnect",
+    acceptNewHostKey = true,
   ): Promise<boolean> => {
     const snapshot = stateRef.current
     if (activeValidationRef.current || pendingValidationRequestRef.current || saveInFlightRef.current || !open) return false
@@ -485,7 +483,7 @@ export function usePluginEditor({
       normalizedDraft.auth.type,
       snapshot.credentials,
     )
-    const credentialIntent = credentialMutationFor(secrets)
+    const credentialIntent = credentialMutationFor(secrets,plugin !== null)
     try {
       const response = plugin && editSessionId
         ? unwrap(await api.validatePluginDraft({
@@ -561,10 +559,23 @@ export function usePluginEditor({
       const challenge = snapshot.draft.pluginType === "server"
         ? hostKeyChallengeFromError(apiError, normalizedDraft)
         : null
+      if (challenge && acceptNewHostKey
+        && (!normalizedDraft.target.hostKeyFingerprint || normalizedDraft.target.hostKeyFingerprint === challenge.fingerprint)) {
+        // 桌面首次连接自动记住本次观测的指纹；同一次操作最多重试一次。
+        const action = {
+          type: "draft" as const,
+          draft: { ...snapshot.draft, target: { ...snapshot.draft.target, hostKeyFingerprint: challenge.fingerprint } },
+        }
+        stateRef.current = pluginEditorReducer(stateRef.current,action)
+        dispatch(action)
+        activeValidationRef.current = null
+        pendingValidationRequestRef.current = null
+        return runValidation(purpose,saveAfterValidation,saveStrategy,false)
+      }
       const canConfirmTlsFallback = apiError.code === "TLS_UNSUPPORTED"
         && normalizedDraft.pluginType !== "server"
         && normalizedDraft.tls?.mode !== "disabled"
-      const needsConfirmation = challenge !== null || canConfirmTlsFallback
+      const needsConfirmation = canConfirmTlsFallback
       const finished: PluginValidationState = {
         ...active,
         state: needsConfirmation
@@ -574,18 +585,7 @@ export function usePluginEditor({
       }
       activeValidationRef.current = null
       dispatch({ type: "validation-finished", validation: finished })
-      if (challenge) {
-        pendingValidationRetryRef.current = { purpose,saveAfterValidation,saveStrategy }
-        dispatch({
-          type: "confirmation",
-          confirmation: {
-            kind: "host-key",
-            title: "确认服务器指纹",
-            description: hostKeyDescription(challenge),
-            hostKey: challenge,
-          },
-        })
-      } else if (canConfirmTlsFallback) {
+      if (canConfirmTlsFallback) {
         pendingValidationRetryRef.current = { purpose,saveAfterValidation,saveStrategy }
         dispatch({
           type: "confirmation",
@@ -645,7 +645,7 @@ export function usePluginEditor({
         ...(plugin?.pluginInstanceId ? { pluginInstanceId: plugin.pluginInstanceId } : {}),
         input: asPluginDraft(normalizePluginDraft(snapshot.draft)),
         ...(Object.keys(secrets).length > 0 ? { temporarySecrets: secrets } : {}),
-        credentialIntent: credentialMutationFor(secrets),
+        credentialIntent: credentialMutationFor(secrets,plugin !== null),
         ...(sessionRef.current ? { editSessionId: sessionRef.current } : {}),
         draftGeneration: snapshot.draftGeneration,
       }))
@@ -686,7 +686,7 @@ export function usePluginEditor({
       normalizedDraft.auth.type,
       snapshot.credentials,
     )
-    const credentialIntent = credentialMutationFor(secrets)
+    const credentialIntent = credentialMutationFor(secrets,plugin !== null)
     const epoch = epochRef.current
     const expectedOwner = snapshot.ownerKey
     try {
@@ -771,6 +771,7 @@ export function usePluginEditor({
   }, [api, isCurrent, onClosed, onSaved, open, plugin, scope.environmentId, scope.projectId])
 
   const save = useCallback(async (strategy: PluginSaveStrategy = "disconnect") => {
+    if (!open || activeValidationRef.current || pendingValidationRequestRef.current || saveInFlightRef.current) return
     pendingValidationRetryRef.current = null
     if (!pluginSaveStrategyIsAvailable(strategy,plugin === null)) {
       dispatch({
@@ -783,9 +784,15 @@ export function usePluginEditor({
       return
     }
     pendingSaveStrategyRef.current = strategy
-    if (!(await runValidation("validate",true,strategy))) return
+    const snapshot = stateRef.current
+    const validation = snapshot.validation
+    const alreadyValidated = validation?.state === "valid"
+      && validation.draftGeneration === snapshot.draftGeneration
+      && validation.purpose === pluginValidationPurpose(snapshot.draft.pluginType,"validate")
+      && (validation.editSessionId ?? null) === sessionRef.current
+    if (!alreadyValidated && !(await runValidation("validate",true,strategy))) return
     await persist(strategy,false)
-  }, [persist, plugin, runValidation])
+  }, [open, persist, plugin, runValidation])
 
   const applyValidationRecovery = useCallback(async (
     kind: "host-key" | "disable-tls",

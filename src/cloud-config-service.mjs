@@ -6,7 +6,7 @@ import { cloudError, cloudHash, cloudId, deriveCloudKeys, newCloudMeta, encryptC
 import { exportCloudProject, normalizeCloudSnapshot, snapshotDigest, cloudProjectWarnings, cloudProjectDiff, cloudBackupDiff, cloudTrashAvailable } from './cloud-config-snapshot.mjs';
 import { appendCloudVersion, pruneCloudHistory, projectSummary, cloudVersionSummaries } from './cloud-config-history.mjs';
 
-const emptyState = () => ({schemaVersion:2,repositories:[],activeRepositoryId:null,mappings:[],detachedMappings:[],checkIntervalMinutes:15});
+const emptyState = () => ({schemaVersion:2,repositories:[],activeRepositoryId:null,mappings:[],detachedMappings:[],checkIntervalMinutes:15,softwareUpdateRepositoryId:null});
 const projectIdPattern = /^[a-z0-9][a-z0-9-]{1,62}$/;
 const newProjectId = () => `project-${crypto.randomUUID()}`;
 const publicFailure = error => error?.code === 'MYSQL_SQL_TRANSACTION_ACTIVE'
@@ -53,6 +53,32 @@ export class CloudConfigService {
     } catch (error) { if (error.code !== 'ENOENT') this.stateError = true; }
   }
   async saveState(state) { await this.workspace.writeSealed(this.stateFile,state); this.state = state; }
+  softwareUpdateSources() {
+    if (this.stateError) return [];
+    return this.state.repositories.flatMap(repo => {
+      if (!repo.remembered && ![...this.sessions.values()].some(sessions => sessions.has(repo.repositoryId))) return [];
+      try {
+        // 只跨越服务边界传递已解锁来源的公开摘要，不传递会话或派生密钥。
+        return [{repositoryId:repo.repositoryId,name:repo.name,origin:this.client.repository(repo.url).origin}];
+      } catch { return []; }
+    });
+  }
+  softwareUpdateSelection() { return this.state.softwareUpdateRepositoryId ?? null; }
+  async saveSoftwareUpdateSelection(repositoryId) {
+    return this.enqueue(async () => {
+      if (this.stateError) throw cloudError('LOCAL_DECRYPT_FAILED','本机云仓库记录无法解密，请恢复系统安全存储后重试。');
+      if (repositoryId !== null) {
+        if (typeof repositoryId !== 'string') throw cloudError('INVALID_ARGUMENT','软件更新来源无效。');
+        this.repository(repositoryId);
+        if (!this.softwareUpdateSources().some(source => source.repositoryId === repositoryId)) throw cloudError('LOCKED','请先解锁所选云仓库。');
+      }
+      await this.saveState({...this.state,softwareUpdateRepositoryId:repositoryId});
+    });
+  }
+  notifySoftwareUpdateSourcesChanged() {
+    try { Promise.resolve(this.onSoftwareUpdateSourcesChanged?.()).catch(() => undefined); }
+    catch { /* 软件升级状态通知失败不得阻断云配置操作。 */ }
+  }
   invoke(owner,method,payload = {}) {
     const epoch = this.epochs.get(owner) ?? 0;
     const run = async () => {
@@ -80,6 +106,7 @@ export class CloudConfigService {
     this.snapshots.clear();
     this.histories.clear();
     for (const [id,plan] of this.plans) if (plan.owner === owner) this.plans.delete(id);
+    this.notifySoftwareUpdateSourcesChanged();
   }
   repository(repositoryId = this.state.activeRepositoryId) {
     const repo = this.state.repositories.find(item => item.repositoryId === repositoryId);
@@ -162,6 +189,7 @@ export class CloudConfigService {
       for (const [id,plan] of this.plans) if (plan.repositoryId === repositoryId) this.plans.delete(id);
       this.snapshots.delete(repositoryId);
       this.histories.delete(repositoryId);
+      this.notifySoftwareUpdateSourcesChanged();
       return this.status(owner);
     } catch (error) { keys.encryption.fill(0); throw error; }
   }
@@ -190,6 +218,7 @@ export class CloudConfigService {
     for (const [id,plan] of this.plans) if (plan.repositoryId === repo.repositoryId) this.plans.delete(id);
     this.snapshots.delete(repo.repositoryId);
     this.histories.delete(repo.repositoryId);
+    this.notifySoftwareUpdateSourcesChanged();
     return this.status(owner);
   }
   async remote(owner,snapshotId = null,repositoryId,{cache = true,signal} = {}) {

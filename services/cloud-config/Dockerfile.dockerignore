@@ -5,3 +5,4 @@
 !services/
 !services/cloud-config/
 !services/cloud-config/server.mjs
+!services/cloud-config/software-updates.mjs

@@ -1,6 +1,6 @@
 {
   "name": "runbook-bridge",
-  "version": "2.0.0",
+  "version": "2.0.2",
   "private": true,
   "packageManager": "pnpm@11.21.0",
   "author": "AI Ops Tool contributors",
@@ -49,7 +49,8 @@
     "dist:mac:arm64": "corepack pnpm run build:renderer && corepack pnpm run build:metadata && node scripts/build-mac.mjs arm64",
     "dist:mac:x64": "corepack pnpm run build:renderer && corepack pnpm run build:metadata && node scripts/build-mac.mjs x64",
     "build:metadata": "node scripts/build-metadata.mjs",
-    "test:ui:docker": "corepack pnpm run build:renderer && electron scripts/ui-react-docker-smoke.cjs"
+    "test:ui:docker": "corepack pnpm run build:renderer && electron scripts/ui-react-docker-smoke.cjs",
+    "updates:prepare": "node scripts/prepare-cloud-update.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
@@ -68,6 +69,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "date-fns": "^4.4.0",
+    "electron-updater": "6.8.9",
     "mysql2": "^3.23.3",
     "node-sql-parser": "^5.4.0",
     "radix-ui": "^1.6.7",
@@ -101,6 +103,7 @@
     "appId": "com.local.aiopstool",
     "productName": "Agent运维工作台",
     "npmRebuild": false,
+    "publish": [{"provider":"generic","url":"https://updates.invalid/runbook-bridge"}],
     "directories": {
       "output": "dist"
     },

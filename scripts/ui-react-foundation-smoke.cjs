@@ -231,6 +231,7 @@ function registerForbiddenMutation(channel) {
 
 let codexFixtureStatus = 'available';
 let commandPluginRead = null, codexReadGate = null;
+let softwareUpdateFixtureHandler = null;
 
 function registerMockApi() {
   registerRead('v2:codex-integration', async ({ action }) => {
@@ -241,6 +242,11 @@ function registerMockApi() {
   registerRead('v2:cloud-config',({action}) => {
     assert.ok(['status','check'].includes(action),'后台云检测只允许只读请求');
     return {repositories:[],cloudProjects:[],projects:[],backups:[],checkIntervalMinutes:0};
+  });
+  registerRead('v2:software-update',request => {
+    if (softwareUpdateFixtureHandler) return softwareUpdateFixtureHandler(request);
+    assert.equal(request.action,'status','基础 UI 测试只读取本机更新状态');
+    return {phase:'no-source',currentVersion:require('../package.json').version,availableVersion:null,releaseNotes:'',releaseDate:null,progress:null,error:null,checkedAt:null,source:null,sources:[],supported:true};
   });
   registerRead('v2:project-list',() => workspaceProjects.map(({environments:_,...project}) => project));
   registerRead('v2:workspace-overview',() => workspaceProjects);
@@ -4086,7 +4092,7 @@ async function assertSecurity(win) {
     styleAttributeProbe.remove();
     return result;
   })()`,true);
-  assert.equal(snapshot.apiNames.length,115);
+  assert.equal(snapshot.apiNames.length,116);
   assert.equal(snapshot.hasRequire,false);
   assert.equal(snapshot.hasProcess,false);
   assert.equal(snapshot.inlineStyleAttributeWidth,'13px');
@@ -4163,6 +4169,21 @@ async function run() {
       assert.deepEqual(rendererErrors,[]);
       assert.deepEqual(rendererWindowErrors,[]);
       process.stdout.write('确认窄回归通过：完整命令、高对比真实复选框、失败重读、旧请求标记及订阅恢复。\n');
+      return;
+    }
+    if (app.commandLine.hasSwitch('software-update-only')) {
+      await require('./software-update-ui.cjs')({
+        evaluate:code => win.webContents.executeJavaScript(code,true),
+        waitFor:(expression,label) => waitFor(win,expression,label),
+        pressKey:key => pressKey(win,key),
+        setHandler:handler => { softwareUpdateFixtureHandler = handler; },
+        capture:screenshotRoot ? async () => fs.writeFileSync(path.join(screenshotRoot,'software-update.png'),(await captureRenderedFrame(win)).toPNG()) : null,
+      });
+      await collectWindowErrorDiagnostics(win);
+      assert.deepEqual(externalRequests,[]);
+      assert.deepEqual(rendererErrors,[]);
+      assert.deepEqual(rendererWindowErrors,[]);
+      process.stdout.write('软件更新 UI 专项通过：来源选择、检查、下载进度、取消、切页恢复和安装确认；无外部请求。\n');
       return;
     }
     if (process.env.RUNBOOK_BRIDGE_EDITOR_LAYOUT_REGRESSION_ONLY === '1') {
@@ -4830,7 +4851,7 @@ async function run() {
       'v2:project-list','v2:workspace-overview','v2:environment-list','v2:environment-status',
       'v2:plugin-list','v2:runbook-read','v2:quick-question-opening-get','v2:quick-question-list',
       'v2:plugin-assess','v2:plugin-credential-status','v2:plugin-databases','v2:audit-list',
-      'v2:confirmation-list','v2:cloud-config','v2:codex-integration',
+      'v2:confirmation-list','v2:cloud-config','v2:codex-integration','v2:software-update',
     ]);
     await collectWindowErrorDiagnostics(win);
     process.stdout.write(`React smoke final diagnostics: ${JSON.stringify({

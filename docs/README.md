@@ -6,6 +6,8 @@
 - [升级说明、备份、限制与反馈](beta-guide.md)
 - [工作区与 Agent 使用指南](workspace-guide.md)
 - [macOS 源码构建与 MCP](macos-getting-started.md)
+- [2.0.2 云仓库版与在线安装修复](releases/v2.0.2.md)
+- [2.0.1 云仓库版历史说明](releases/v2.0.1.md)
 - [版本记录](../CHANGELOG.md) · [安全说明](../SECURITY.md)
 
 ## 按功能查阅
@@ -17,6 +19,7 @@
 - [MCP 日志读取与排障](mcp-log-reading.md)
 - [Agent 自行连接环境或插件](workspace-guide.md#agent-自行连接)
 - [操作记录](audit-history.md) · [云配置](cloud-config.md)
+- [软件在线升级与云仓库发布](software-updates.md)
 
 ## 参与开发
 

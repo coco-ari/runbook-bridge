@@ -6,6 +6,7 @@ const EXPECTED_API_NAMES = [
   'codexIntegration',
   'openRepository',
   'cloudConfig',
+  'softwareUpdate',
   'serverDockerRead',
   'serverDockerCancel',
   'redisEditOpen',
@@ -145,14 +146,14 @@ function runtimeApiNames(source) {
     .map((entry) => entry[1]);
 }
 
-test('React 桥接固定 115 个 preload API 名称和严格签名', async () => {
+test('React 桥接固定 116 个 preload API 名称和严格签名', async () => {
   const [preload,bridge,globalTypes] = await Promise.all([
     fs.readFile('src/preload.cjs','utf8'),
     fs.readFile('renderer/v2/src/bridge/ai-ops-v2.ts','utf8'),
     fs.readFile('renderer/v2/src/types/global.d.ts','utf8'),
   ]);
 
-  assert.equal(EXPECTED_API_NAMES.length,115);
+  assert.equal(EXPECTED_API_NAMES.length,116);
   assert.deepEqual(sorted(preloadApiNames(preload)),sorted(EXPECTED_API_NAMES));
   assert.deepEqual(sorted(interfaceApiNames(bridge)),sorted(EXPECTED_API_NAMES));
   assert.deepEqual(sorted(runtimeApiNames(bridge)),sorted(EXPECTED_API_NAMES));
@@ -161,6 +162,7 @@ test('React 桥接固定 115 个 preload API 名称和严格签名', async () =>
   assert.match(bridge,/export type IpcResult<T>/u);
   assert.match(bridge,/readonly ok: false; readonly error: PublicError/u);
   assert.match(bridge,/notifyNetworkChanged\(\): void/u);
+  assert.match(bridge,/softwareUpdate\(payload: SoftwareUpdateRequest\): Promise<IpcResult<SoftwareUpdateState>>/u);
   assert.match(bridge,/listQuickQuestions\(payload: EnvironmentScope\): Promise<IpcResult<QuickQuestionCollectionRecord>>/u);
   assert.match(bridge,/deleteQuickQuestion\(payload: QuickQuestionDeletePayload\): Promise<IpcResult<QuickQuestionCollectionRecord>>/u);
   assert.match(bridge,/readonly createdAt: string[\s\S]*readonly updatedAt: string/u);

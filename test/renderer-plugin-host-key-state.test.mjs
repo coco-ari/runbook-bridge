@@ -113,34 +113,46 @@ async function harness({existing = false,kind = 'server',respond = () => challen
 for (const existing of [false,true]) {
   const entry = existing ? 'existing plugin validation' : 'new plugin probe';
 
-  test(`${entry} treats a correlated host-key challenge as a pending decision and ignores late progress`,async () => {
-    const h = await harness({existing});
-    assert.equal(await h.current.validate(),false);
-    assert.equal(h.current.state.validation.state,'awaiting-confirmation');
-    assert.equal(h.current.state.validation.error,undefined);
-    assert.equal(h.current.state.error,null);
-    assert.equal(h.current.state.confirmation.kind,'host-key');
-    assert.equal(h.current.state.draft.target.hostKeyFingerprint,undefined);
-    const request = h.calls[0];
-    h.progress({...request,state:'failed'});
-    assert.equal(h.current.state.validation.state,'awaiting-confirmation');
-    assert.equal(h.current.state.error,null);
-    assert.equal(h.calls.length,1,'observing a fingerprint must never retry or trust automatically');
+  test(`${entry} 结束进度不能抢先覆盖请求返回的具体错误`,async () => {
+    let finish;
+    const h = await harness({existing,respond:() => new Promise(resolve => { finish = resolve; })});
+    const validating = h.current.validate();
+    h.progress({...h.calls[0],state:'failed'});
+    assert.equal(h.current.state.validation.state,'running');
+    finish({ok:false,error:{code:'SSH_AUTH_FAILED',message:'合成密码错误'}});
+    await validating;
+    h.progress({...h.calls[0],state:'failed'});
+    assert.equal(h.current.state.validation.error.message,'合成密码错误');
   });
 
-  test(`${entry} cancels host-key confirmation without trusting or retrying`,async () => {
+  test(`${entry} 自动接受首次指纹且忽略上一轮的迟到进度`,async () => {
+    const h = await harness({existing,respond:(_payload,attempt) => attempt === 1 ? challenge() : ok({})});
+    assert.equal(await h.current.validate(),true);
+    assert.equal(h.current.state.validation.state,'valid');
+    assert.equal(h.current.state.validation.error,undefined);
+    assert.equal(h.current.state.error,null);
+    assert.equal(h.current.state.confirmation,null);
+    assert.equal(h.current.state.draft.target.hostKeyFingerprint,fingerprint);
+    const request = h.calls[0];
+    h.progress({...request,state:'failed'});
+    assert.equal(h.current.state.validation.state,'valid');
+    assert.equal(h.current.state.error,null);
+    assert.equal(h.calls.length,2);
+  });
+
+  test(`${entry} 连续指纹挑战最多自动重试一次，避免循环`,async () => {
     const h = await harness({existing});
     await h.current.validate();
     h.current.rejectConfirmation();
     await h.current.acceptHostKey();
     assert.equal(h.current.state.confirmation,null);
-    assert.equal(h.current.state.validation.state,'cancelled');
-    assert.equal(h.current.state.error,null);
-    assert.equal(h.current.state.draft.target.hostKeyFingerprint,undefined);
-    assert.equal(h.calls.length,1,'a rejected confirmation cannot be reused to retry');
+    assert.equal(h.current.state.validation.state,'failed');
+    assert.equal(h.current.state.error.code,'SSH_HOST_KEY_CONFIRM_REQUIRED');
+    assert.equal(h.current.state.draft.target.hostKeyFingerprint,fingerprint);
+    assert.equal(h.calls.length,2);
   });
 
-  test(`${entry} retries only the approved fingerprint and preserves a real retry failure`,async () => {
+  test(`${entry} 首次指纹自动重试仍保留真实认证失败`,async () => {
     const failure = {code:'SSH_AUTHENTICATION_FAILED',message:'Fixture authentication failed.'};
     const h = await harness({existing,respond:(_payload,attempt) => attempt === 1 ? challenge() : {ok:false,error:failure}});
     await h.current.validate();
@@ -175,7 +187,69 @@ test('unusable host-key challenges and host-key mismatches remain visible errors
   }
 });
 
+test('已有指纹不能被不同的首次挑战静默替换',async () => {
+  const h = await harness({existing:true});
+  h.current.updateDraft(draft => ({...draft,target:{...draft.target,hostKeyFingerprint:'SHA256:known-fixture'}}));
+  assert.equal(await h.current.validate(),false);
+  assert.equal(h.calls.length,1);
+  assert.equal(h.current.state.draft.target.hostKeyFingerprint,'SHA256:known-fixture');
+});
+
+test('密码修正后可以按相同指纹重新验证并保存，不丢失新密码',async () => {
+  const saves = [];
+  const h = await harness({existing:true,respond:(_payload,attempt) => {
+    if (attempt === 1 || attempt === 3) return challenge();
+    if (attempt === 2) return {ok:false,error:{code:'SSH_AUTHENTICATION_FAILED',message:'合成认证失败'}};
+    return ok({});
+  },apiOverrides:{savePluginConnectionEdit:async payload => { saves.push(payload); return ok({committed:true}); }}});
+  assert.equal(await h.current.validate(),false);
+  h.current.setCredentials({primary:'corrected-fixture',proxy:''});
+  await h.current.save();
+  assert.equal(h.calls.length,4);
+  assert.equal(h.calls.at(-1).temporarySecrets.password,'corrected-fixture');
+  assert.equal(saves.length,1);
+  assert.equal(saves[0].credentialIntent,'replace');
+});
+
 const unsupportedTls = () => ({ok:false,error:{code:'TLS_UNSUPPORTED',message:'Fixture target does not support TLS.'}});
+
+for (const existing of [false,true]) {
+  for (const kind of ['server','mysql','redis']) {
+    test(`${existing ? '已有' : '新建'} ${kind} 检查成功后保存复用结果，主动检查仍重新验证`,async () => {
+      const saves = [];
+      const h = await harness({existing,kind,respond:() => ok({}),apiOverrides:{
+        savePluginConnectionEdit:async payload => { saves.push(payload); return ok({committed:true}); },
+        createPlugin:async payload => { saves.push(payload); return ok({}); },
+      }});
+      assert.equal(await h.current.validate(),true);
+      assert.equal(await h.current.validate(),true);
+      assert.equal(h.calls.length,2);
+      await h.current.save();
+      assert.equal(h.calls.length,2);
+      assert.equal(saves.length,1);
+      assert.equal(h.calls[0].credentialIntent,existing ? 'rebind-existing' : undefined);
+      if (existing) {
+        assert.equal(saves[0].credentialIntent,'rebind-existing');
+        assert.equal(saves[0].temporarySecrets,undefined);
+      }
+    });
+  }
+}
+
+for (const change of ['target','credentials','tls-probe']) {
+  test(`保存不能复用 ${change} 对应的过期或不完整验证`,async () => {
+    const saves = [];
+    const h = await harness({existing:true,kind:'mysql',respond:() => ok({}),apiOverrides:{
+      savePluginConnectionEdit:async payload => { saves.push(payload); return ok({committed:true}); },
+    }});
+    assert.equal(await h.current.validate(change === 'tls-probe' ? 'tls' : 'validate'),true);
+    if (change === 'target') h.current.updateDraft(draft => ({...draft,target:{...draft.target,host:'changed.fixture.invalid'}}));
+    if (change === 'credentials') h.current.setCredentials({primary:'replacement-fixture',proxy:''});
+    await h.current.save();
+    assert.equal(h.calls.length,2);
+    assert.equal(saves.length,1);
+  });
+}
 
 for (const existing of [false,true]) {
   for (const kind of ['mysql','redis']) {

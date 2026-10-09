@@ -6,7 +6,7 @@ const smoke = require('./ui-react-plugin-operations-smoke.cjs');
 const {
   state,PROJECT_ID,ENVIRONMENT_ID,SERVER_ID,EDITOR_SELECTOR,DISCARD_SELECTOR,
   wait,waitFor,waitUntil,click,clickText,openPopup,fill,chooseSelectOption,activateTab,
-  assertNoSensitivePayload,setExactViewport,captureSurfaceEvidence,
+  assertNoSensitivePayload,setExactViewport,
 } = smoke;
 
 const calls = [];
@@ -139,7 +139,7 @@ async function installMatrixApi(win) {
     const material = edits.commitMaterial(payload.editSessionId,{ownerId});
     const before = state.plugins.find((plugin) => plugin.pluginInstanceId === material.scope.pluginInstanceId);
     assert.equal(payload.expectedRevision,before.revision);
-    const next = workspaceInternals.normalizePluginCandidate({...before,...payload.patch},material.scope,before);
+    const next = workspaceInternals.normalizePluginCandidate({...before,...payload.patch},material.scope,before,undefined,{hostKeyTrust:material.hostKeyTrust});
     Object.assign(before,next,{revision:before.revision+1});
     fixtureCredentials.set(before.pluginInstanceId,{
       ...(fixtureCredentials.get(before.pluginInstanceId) ?? {}),...material.temporarySecrets,
@@ -303,6 +303,7 @@ async function serverMatrix(win) {
   const savedId = await saveAndClose(win);
   await editPlugin(win,savedId);
   assert.equal(await win.webContents.executeJavaScript(`document.querySelector('#plugin-primary-credential')?.value === ''`,true),true,'saved credentials are never displayed');
+  await fill(win,'#plugin-host','moved.matrix.invalid');
   await checkPassed(win);
   assert.deepEqual(runtimeCalls.at(-1).credentialFields,['password']);
   await fill(win,'#plugin-primary-credential',randomBytes(24).toString('hex'));
@@ -316,6 +317,7 @@ async function serverMatrix(win) {
   await click(win,'[data-testid="plugin-save-disconnected"]','save cleared temporary credential');
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'saved credential edit closes');
   assert.equal(fixtureCredentials.get(savedId).password === savedValue,true,'cleared temporary credentials must not overwrite the stored fixture');
+  assert.equal(state.plugins.find(plugin => plugin.pluginInstanceId === savedId).target.host,'moved.matrix.invalid');
   runtimeBehavior = null;
 }
 
@@ -571,22 +573,20 @@ async function recoveryMatrix(win,{AppError}) {
     });
     return {reachable:true};
   };
-  await click(win,'[data-testid="plugin-save-disconnected"]','save with explicit host-key trust');
-  await waitFor(win,`document.querySelector('[data-testid="plugin-editor-confirmation"]')?.textContent?.includes('确认服务器指纹') === true`,'host-key draft challenge');
-  await assertDraftHostKeyConfirmation(win,fingerprint);
   const beforeTrust = state.plugins.length;
-  const beforeRejectRuntime = runtimeCalls.length;
-  await clickText(win,'取消','[data-testid="plugin-editor-confirmation"]');
-  await waitFor(win,`document.querySelector('[data-testid="plugin-editor-confirmation"]') === null`,'draft host-key rejection closes the prompt');
-  assert.equal(state.plugins.length,beforeTrust,'rejecting a fingerprint must not save the draft');
-  assert.equal(runtimeCalls.length,beforeRejectRuntime,'rejecting a fingerprint must not retry the connection');
-  await click(win,'[data-testid="plugin-save-disconnected"]','request fingerprint approval again');
-  await waitFor(win,`document.querySelector('[data-testid="plugin-editor-confirmation"]') !== null`,'fresh host-key approval');
-  assert.equal(runtimeCalls.at(-1).draft.target.hostKeyFingerprint,undefined,'rejecting a fingerprint must not trust it');
-  await clickText(win,'信任此指纹','[data-testid="plugin-editor-confirmation"]');
-  await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'trusted fingerprint retries and saves');
-  assert.equal(state.plugins.length,beforeTrust+1,'explicit fingerprint approval saves exactly once');
+  const beforeRuntime = runtimeCalls.length;
+  await click(win,'[data-testid="plugin-save-disconnected"]','自动接受新主机指纹并保存');
+  await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'首次指纹自动重试完成保存');
+  assert.equal(runtimeCalls.length,beforeRuntime+2);
+  assert.equal(state.plugins.length,beforeTrust+1,'新指纹只保存一次');
   assert.equal(state.plugins.at(-1).target.hostKeyFingerprint,fingerprint);
+  const editedId = state.plugins.at(-1).pluginInstanceId;
+  await editPlugin(win,editedId);
+  await fill(win,'#plugin-host','changed.fixture.invalid');
+  await click(win,'[data-testid="plugin-save-disconnected"]','换地址后直接保存');
+  await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'换地址后自动处理新指纹');
+  assert.equal(state.plugins.find(plugin => plugin.pluginInstanceId === editedId).target.host,'changed.fixture.invalid');
+  assert.equal(state.plugins.find(plugin => plugin.pluginInstanceId === editedId).target.hostKeyFingerprint,fingerprint);
   runtimeBehavior = null;
 
   await openNew(win,'Server');
@@ -599,11 +599,13 @@ async function recoveryMatrix(win,{AppError}) {
     throw new AppError('SSH_AUTH_FAILED','模拟指纹确认后的认证失败');
   };
   await click(win,'[data-testid="plugin-save-disconnected"]','check a host whose authentication will fail after trust');
-  await waitFor(win,`document.querySelector('[data-testid="plugin-editor-confirmation"]') !== null`,'authentication fixture fingerprint approval');
-  await assertDraftHostKeyConfirmation(win,fingerprint,{capture:false});
   const beforeAuthFailure = state.plugins.length;
-  await clickText(win,'信任此指纹','[data-testid="plugin-editor-confirmation"]');
-  await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)})?.textContent?.includes('模拟指纹确认后的认证失败') === true`,'real failure after fingerprint approval remains visible');
+  try {
+    await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)})?.textContent?.includes('模拟指纹确认后的认证失败') === true`,'real failure after fingerprint approval remains visible');
+  } catch (error) {
+    const diagnostic = await win.webContents.executeJavaScript(`({progress:document.querySelector('[data-testid="plugin-validation-progress"]')?.textContent,alerts:[...document.querySelectorAll('[role="alert"]')].map(item => item.textContent)})`,true);
+    throw new Error(`${error.message}: ${JSON.stringify(diagnostic)}`);
+  }
   assert.equal(state.plugins.length,beforeAuthFailure,'failed authentication must not save the plugin');
   await waitFor(win,`document.querySelector('[data-testid="plugin-editor-confirmation"]') === null`,'failed authentication closes the fingerprint prompt');
   await discard(win);
@@ -629,46 +631,6 @@ async function assertPendingTlsDecision(win) {
   assert.equal(presentation.error,false,'TLS fallback is a pending decision, not an operation failure');
   assert.match(presentation.progress,/等待确认/u);
   assert.doesNotMatch(presentation.progress,/检查失败|指纹|fixture target/u);
-}
-
-async function assertDraftHostKeyConfirmation(win,fingerprint,{capture = true} = {}) {
-  const selector = '[data-testid="plugin-editor-confirmation"]';
-  for (const [width,height] of [[960,640],[1280,820],[1920,1080]]) {
-    await setExactViewport(win,width,height);
-    await win.webContents.executeJavaScript('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))',true);
-    const geometry = await win.webContents.executeJavaScript(`(() => {
-      const dialog = document.querySelector(${JSON.stringify(selector)});
-      const rect = dialog.getBoundingClientRect();
-      const inside = (child) => child.left >= rect.left-1 && child.right <= rect.right+1
-        && child.top >= rect.top-1 && child.bottom <= rect.bottom+1;
-      const parts = [...dialog.querySelectorAll('[data-slot="alert-dialog-header"],[data-slot="alert-dialog-description"],[data-slot="alert-dialog-footer"],button')];
-      const description = dialog.querySelector('[data-slot="alert-dialog-description"]');
-      const range = document.createRange();
-      range.selectNodeContents(description);
-      return {
-        insideViewport:rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight,
-        contentInside:parts.every((part) => inside(part.getBoundingClientRect())),
-        textInside:[...range.getClientRects()].every(inside),
-        horizontalOverflow:dialog.scrollWidth-dialog.clientWidth,
-        fingerprintVisible:description.textContent.includes(${JSON.stringify(fingerprint)}),
-        errorVisible:dialog.querySelector('[role="alert"]') !== null,
-        progress:document.querySelector('[data-testid="plugin-validation-progress"]')?.textContent,
-      };
-    })()`,true);
-    assert.equal(geometry.insideViewport,true,`draft host-key dialog stays inside ${width}x${height}`);
-    assert.equal(geometry.contentInside,true,'draft host-key content and buttons must stay inside the dialog');
-    assert.equal(geometry.textInside,true,'draft host-key fingerprint must wrap inside the dialog');
-    assert.ok(geometry.horizontalOverflow <= 1,'draft host-key dialog must not overflow horizontally');
-    assert.equal(geometry.fingerprintVisible,true,'the full fingerprint must remain available for verification');
-    assert.equal(geometry.errorVisible,false,'waiting for initial fingerprint approval is not an operation failure');
-    assert.match(geometry.progress,/等待确认/u);
-    assert.doesNotMatch(geometry.progress,/检查失败|fixture fingerprint requires approval/u);
-  }
-  if (capture) {
-    await waitFor(win,`document.querySelector('[data-sonner-toast]') === null`,'previous fixture save notification expires before the approval screenshot');
-    await captureSurfaceEvidence(win,{name:'draft-host-key-confirmation',selector});
-  }
-  await setExactViewport(win,960,640);
 }
 
 async function deleteMatrixPlugin(win,pluginInstanceId) {
@@ -817,6 +779,13 @@ async function deletionMatrix(win) {
 
 async function matrix(win) {
   const {probe,edits,AppError} = await installMatrixApi(win);
+  if (app.commandLine.hasSwitch('connection-edit-only')) {
+    await recoveryMatrix(win,{AppError});
+    assert.equal(probe.requests.size,0);
+    assert.equal(edits.sessions.size,0);
+    process.stdout.write('插件连接编辑回归通过\n');
+    return;
+  }
   if (app.commandLine.hasSwitch('credential-view-only')) {
     await credentialViewMatrix(win);
     assert.equal(probe.requests.size,0);

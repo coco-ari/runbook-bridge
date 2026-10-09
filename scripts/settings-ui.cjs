@@ -23,6 +23,9 @@ module.exports = async function exerciseSettings({ evaluate, install = false, in
   assert.equal(await evaluate('document.querySelector("[data-testid=about-version]").textContent'), version);
   assert.equal(await evaluate('document.querySelector("[data-testid=settings-version]").textContent.includes("https://github.com/coco-ari/runbook-bridge")'), true);
   assert.equal(await evaluate('Boolean(document.querySelector("[data-testid=about-github]"))'), true);
+  await waitFor('Boolean(document.querySelector("[data-testid=software-update-status]")) && !document.querySelector("[data-testid=software-update-status]").textContent.includes("正在读取")', '软件更新状态');
+  assert.equal(await evaluate('document.querySelector("[data-testid=software-update-check]").disabled'), true, '隔离的空云仓库不能检查远程更新');
+  assert.equal(await evaluate('Boolean(document.querySelector("[data-testid=software-update-install]"))'), false, '仅下载完成后才能请求安装');
   assert.equal(await evaluate('document.activeElement.id'), 'settings-heading');
   if (capture) await capture('settings-about');
   await click('settings-agent');

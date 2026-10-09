@@ -20,7 +20,11 @@ try {
     "import fs from 'node:fs';",
     "import path from 'node:path';",
     "import {createHash} from 'node:crypto';",
+    "import {createRequire} from 'node:module';",
     "const appAsar=process.env.AI_OPS_APP_ASAR;",
+    "const require=createRequire(path.join(appAsar,'package.json'));",
+    "const updater=require('electron-updater');",
+    "const updaterConfig=require('yaml').parse(fs.readFileSync(path.join(path.dirname(appAsar),'app-update.yml'),'utf8'));",
     "const buildInfo=JSON.parse(fs.readFileSync(path.join(appAsar,'build','runtime.json'),'utf8'));",
     "const rendererRoot=path.join(appAsar,'renderer-build','v2');",
     "const indexPath=path.join(rendererRoot,'index.html');",
@@ -32,7 +36,7 @@ try {
     "const rendererHashes=Object.fromEntries(files.map((file)=>[file,digest(path.join(rendererRoot,file))]));",
     "const html=fs.readFileSync(indexPath,'utf8');",
     'const references=[...html.matchAll(/(?:src|href)="\\.\\/([^"]+)"/gu)].map((match)=>match[1]);',
-    "process.stdout.write(JSON.stringify({buildInfo,files,references,html,sourceHashes,rendererHashes,sourceRendererPresent:fs.existsSync(path.join(appAsar,'renderer'))}));",
+    "process.stdout.write(JSON.stringify({buildInfo,files,references,html,sourceHashes,rendererHashes,updater:{nsis:typeof updater.NsisUpdater,config:updaterConfig},sourceRendererPresent:fs.existsSync(path.join(appAsar,'renderer'))}));",
   ].join('\n');
   const rendererInspectionResult = await execFileAsync(
     executable,
@@ -60,6 +64,10 @@ try {
   assert.equal(runtime.version,manifest.version);
   assert.equal(runtime.platform,process.platform);
   assert.equal(runtime.arch,process.arch);
+  assert.equal(renderer.updater.nsis,'function','安装包缺少 Windows 更新运行库');
+  assert.equal(renderer.updater.config.provider,'generic');
+  assert.equal(renderer.updater.config.url,'https://updates.invalid/runbook-bridge');
+  assert.ok(renderer.updater.config.updaterCacheDirName,'安装包缺少更新缓存配置');
   for (const [relative,expected] of Object.entries(renderer.sourceHashes)) {
     const contents = await fs.readFile(new URL(`../src/${relative}`, import.meta.url));
     assert.equal(createHash('sha256').update(contents).digest('hex'), expected,
@@ -73,6 +81,7 @@ try {
   assert.ok(Object.hasOwn(renderer.sourceHashes, 'plugin-creation-identity.mjs'));
   assert.ok(Object.hasOwn(renderer.sourceHashes, 'codex-integration.mjs'), '安装包缺少 Codex 接入模块');
   for (const module of ['cloud-config-crypto.mjs','cloud-config-service.mjs','cloud-config-workspace.mjs','cloud-config-ipc.mjs']) assert.ok(Object.hasOwn(renderer.sourceHashes,module),'安装包缺少云配置模块');
+  for (const module of ['software-update-service.mjs','software-update-driver.mjs','software-update-ipc.mjs','software-update-lifecycle.mjs','software-update-shutdown.mjs']) assert.ok(Object.hasOwn(renderer.sourceHashes,module),'安装包缺少软件更新模块');
   for (const module of ['server-workspace-manager.mjs', 'server-workspace-files.mjs', 'server-workspace-directory-cache.mjs', 'server-workspace-ipc.mjs']) {
     assert.ok(Object.hasOwn(renderer.sourceHashes, module), '安装包缺少服务器工作区模块：' + module);
   }

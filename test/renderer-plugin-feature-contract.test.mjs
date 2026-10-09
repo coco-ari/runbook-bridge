@@ -148,7 +148,10 @@ test('React plugin features preserve scope, credential, and edit-session boundar
   assert.match(types,/credential\.primary\.length > 0/u);
   assert.match(types,/credential\.proxy\.length > 0/u);
   assert.match(types,/credentialMutationFor/u);
-  assert.match(types,/Object\.keys\(secrets\)\.length > 0 \? "replace" : "unchanged"/u);
+  const credentialModel = await import(pathToFileURL(path.resolve('renderer/v2/src/features/plugins/plugin-types.ts')).href);
+  assert.equal(credentialModel.credentialMutationFor({}), 'unchanged');
+  assert.equal(credentialModel.credentialMutationFor({},true), 'rebind-existing');
+  assert.equal(credentialModel.credentialMutationFor({password:'fixture'},true), 'replace');
   assert.match(types,/connectionPatch/u);
 
   assert.match(model,/draftGeneration/u);
@@ -244,7 +247,7 @@ test('React plugin features preserve scope, credential, and edit-session boundar
   assert.match(editor,/type="password"/u);
   assert.match(editor,/autoComplete="new-password"/u);
   assert.match(editor,/已保存值不会自动填入，可主动查看/u);
-  assert.match(editor,/留空表示保持不变/u);
+  assert.match(editor,/留空沿用此插件已保存的凭据/u);
   assert.match(editor,/保存但不连接/u);
   assert.match(editor,/添加但不连接/u);
   assert.match(editor,/添加并连接/u);

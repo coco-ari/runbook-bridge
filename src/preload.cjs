@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('aiOps', {
     openRepository: () => ipcRenderer.invoke('v2:open-repository'),
     codexIntegration: (payload) => ipcRenderer.invoke('v2:codex-integration', payload),
     cloudConfig: (payload) => ipcRenderer.invoke('v2:cloud-config',payload),
+    softwareUpdate: (payload) => ipcRenderer.invoke('v2:software-update',payload),
     serverDockerRead: payload => ipcRenderer.invoke('v2:server-docker-read', payload),
     serverDockerCancel: payload => ipcRenderer.invoke('v2:server-docker-cancel', payload),
     serverWorkspaceMetrics: payload => ipcRenderer.invoke('v2:server-workspace-metrics', payload),

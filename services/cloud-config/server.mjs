@@ -5,6 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { CLOUD_MAX_BYTES, cloudHash, cloudId, validateCloudMeta, validateCloudEnvelope } from '../../src/cloud-config-crypto.mjs';
+import { serveSoftwareUpdate } from './software-updates.mjs';
 
 function reject(status, code) { throw Object.assign(new Error(code),{status,code}); }
 function matches(actual, expected) {
@@ -25,7 +26,7 @@ async function body(request) {
   catch { reject(400,'CLOUD_FORMAT_INVALID'); }
 }
 
-export function createCloudServer({database = ':memory:',adminToken,retention = 20,now = Date.now} = {}) {
+export function createCloudServer({database = ':memory:',adminToken,retention = 20,now = Date.now,releasesDirectory} = {}) {
   if (typeof adminToken !== 'string' || adminToken.length < 32) throw new Error('管理员令牌至少需要 32 个字符。');
   const db = new DatabaseSync(database);
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
@@ -46,6 +47,7 @@ export function createCloudServer({database = ':memory:',adminToken,retention = 
       if (buckets.size >= 10_000 && !buckets.has(ip)) reject(429,'CLOUD_RATE_LIMITED');
       buckets.set(ip,bucket);
       if (++bucket.count > 180 || bucket.failures >= 20) reject(429,'CLOUD_RATE_LIMITED');
+      if (await serveSoftwareUpdate(request,response,{releasesDirectory})) return;
       const url = new URL(request.url,'http://localhost');
       if (request.method === 'GET' && url.pathname === '/healthz') return send(response,200,{ok:true});
       const token = /^Bearer ([A-Za-z0-9_-]+)$/.exec(request.headers.authorization ?? '')?.[1] ?? '';
@@ -110,5 +112,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   const directory = process.env.CLOUD_DATA_DIR ?? '/data';
   await fs.mkdir(directory,{recursive:true});
   const adminToken = (await fs.readFile(process.env.CLOUD_ADMIN_TOKEN_FILE ?? '/run/secrets/cloud_admin_token','utf8')).trim();
-  createCloudServer({database:path.join(directory,'cloud.sqlite'),adminToken}).listen(Number(process.env.PORT ?? 3000),'0.0.0.0');
+  createCloudServer({database:path.join(directory,'cloud.sqlite'),adminToken,releasesDirectory:process.env.CLOUD_RELEASES_DIR}).listen(Number(process.env.PORT ?? 3000),'0.0.0.0');
 }

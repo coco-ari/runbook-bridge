@@ -4,9 +4,9 @@
 
 面向独立开发者、后端开发者和小团队的本地桌面工作台。按项目和环境组织资源，通过 MCP 为 Codex 等 Agent 提供排查工具，并保留人工终端、数据库和缓存工作区。
 
-当前代码包版本：`2.0.0` · Windows x64 稳定版 · macOS arm64 / x64 源码构建 · [MIT 开源](LICENSE)
+当前代码包版本：`2.0.2` · Windows x64 云仓库发布版 · macOS arm64 / x64 源码构建 · [MIT 开源](LICENSE)
 
-[下载最新稳定版](https://github.com/coco-ari/runbook-bridge/releases/tag/v2.0.0) · [首次使用](docs/getting-started.md) · [已知限制](docs/beta-guide.md) · [反馈问题](https://github.com/coco-ari/runbook-bridge/issues/new/choose)
+[云仓库版 2.0.2](docs/releases/v2.0.2.md) · [GitHub 稳定版 2.0.0](https://github.com/coco-ari/runbook-bridge/releases/tag/v2.0.0) · [首次使用](docs/getting-started.md) · [已知限制](docs/beta-guide.md) · [反馈问题](https://github.com/coco-ari/runbook-bridge/issues/new/choose)
 
 ## 它能帮你做什么
 
@@ -14,6 +14,7 @@
 - **让 Agent 自行连接**：保持桌面运行并预先保存配置和凭据，Agent 可按项目、环境连接指定插件或整个环境，无需每次点击连接；首次 SSH 指纹确认和凭据补全仍由你处理。[使用方法](docs/workspace-guide.md#agent-自行连接)
 - **归档日志断点续读**：压缩日志传输超时可按游标继续读取缺失块，保持有界读取和本机解压；详见[日志读取说明](docs/mcp-log-reading.md)。
 - **按项目管理云配置**：关联多个云仓库，按项目更新、上传、查看历史、恢复版本和删除，支持 30 天误删恢复。工作台用统一状态图标提示更新，定时检测只刷新状态。[云配置使用与部署](docs/cloud-config.md)
+- **通过云仓库升级软件**：Windows 安装版可从现有 HTTPS 云仓库自动检测新版本，在“设置 → 关于”下载并确认重启安装；需要先部署云端软件分发文件。[软件升级与发布](docs/software-updates.md)
 - **保留人工操作入口**：SSH 终端、文件上传下载、Docker 容器浏览、MySQL 表格编辑与 [SQL 事务/批量执行](docs/mysql-sql-execution.md)，以及 Redis String/JSON 编辑。
 - **控制 Agent 的操作范围**：连接限定在明确指定的环境与插件；MySQL/Redis 的 Agent 数据操作保持只读；Agent 服务控制、文件变更和 Shell 操作需要确认。
 
@@ -42,14 +43,17 @@ MySQL 草稿使用不同颜色和文字标记，新增、复制、修改、删�
 
 | 渠道 | 版本 | 说明 |
 | --- | --- | --- |
-| 最新稳定版 | [2.0.0](https://github.com/coco-ari/runbook-bridge/releases/tag/v2.0.0) | 当前服务器、MySQL、Redis 工作区及 Agent 接入 |
+| 现有 HTTPS 云仓库 | [2.0.2](docs/releases/v2.0.2.md) | Windows x64；修复在线安装向导隐藏导致退出后未重新打开的问题 |
+| GitHub 公开稳定版 | [2.0.0](https://github.com/coco-ari/runbook-bridge/releases/tag/v2.0.0) | 保留原下载入口；本次云仓库发布不变更 GitHub Latest |
 | 历史稳定版 | [1.0.46](https://github.com/coco-ari/runbook-bridge/releases/tag/v1.0.46) | 仅供旧版本查阅，不包含本页全部新工作区能力 |
 
-[直接下载 Windows x64 安装包](https://github.com/coco-ari/runbook-bridge/releases/download/v2.0.0/RunbookBridge-Setup-2.0.0.exe) · [SHA-256 校验文件](https://github.com/coco-ari/runbook-bridge/releases/download/v2.0.0/RunbookBridge-Setup-2.0.0.exe.sha256) · [本版更新说明](docs/releases/v2.0.0.md)
+[GitHub 2.0.0 Windows x64 安装包](https://github.com/coco-ari/runbook-bridge/releases/download/v2.0.0/RunbookBridge-Setup-2.0.0.exe) · [2.0.0 SHA-256 校验文件](https://github.com/coco-ari/runbook-bridge/releases/download/v2.0.0/RunbookBridge-Setup-2.0.0.exe.sha256) · [2.0.0 更新说明](docs/releases/v2.0.0.md)
 
-安装包尚未进行 Windows 发布者数字签名，系统可能提示未知发布者。请从本仓库 Release 下载并核对校验值，遵守所在组织的软件安装要求。Source code 压缩包不是安装包。
+2.0.2 通过部署管理员维护的现有 HTTPS 云仓库分发，本次不创建 GitHub Release。原 GitHub 2.0.0 没有软件更新入口，首次使用需要手动安装包含更新功能的客户端。旧更新器可能在退出后等待隐藏的安装向导；请先完成 [2.0.2 修复安装](docs/releases/v2.0.2.md)，后续在线升级在后台下载，经确认后静默安装并重新打开客户端。首次手动安装仍使用向导，系统权限提示仍可能出现。
 
-2.0 稳定版、此前测试版与 1.x 版本共用安装位置和本地数据。升级前退出应用并备份 `%LOCALAPPDATA%\AIOpsTool`；不要同时运行两个版本。跨大版本降级兼容性尚未保证。[备份、升级和已知限制](docs/beta-guide.md)
+安装包尚未进行 Windows 发布者数字签名，系统可能提示未知发布者。请使用可信云仓库或本仓库 Release 分发的安装包，并核对校验值，遵守所在组织的软件安装要求。Source code 压缩包不是安装包。
+
+2.0 稳定版、此前测试版与 1.x 版本共用安装位置和本地数据。升级前备份 `%LOCALAPPDATA%\AIOpsTool`，手动安装前退出应用；不要同时运行两个版本。跨大版本降级兼容性尚未保证。[备份、升级和已知限制](docs/beta-guide.md)
 
 macOS 已有源码构建支持，尚未提供完成签名与公证的正式下载包。[macOS 构建说明](docs/macos-getting-started.md)
 
@@ -77,4 +81,4 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm start
 ```
 
-`main` 包含当前开发成果；复现已发布版本请检出对应版本 Tag。欢迎提交复现步骤和改进建议，反馈中不要包含真实凭据或业务数据。
+`main` 包含当前开发成果；复现 GitHub 发布版本请检出对应版本 Tag，云仓库发布方式见[软件升级与发布](docs/software-updates.md)。欢迎提交复现步骤和改进建议，反馈中不要包含真实凭据或业务数据。

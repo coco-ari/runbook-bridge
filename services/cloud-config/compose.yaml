@@ -6,6 +6,12 @@ services:
     restart: unless-stopped
     volumes:
       - cloud-data:/data
+      - type: bind
+        source: ${CLOUD_RELEASES_DIR:-../../artifacts/cloud-updates}
+        target: /releases
+        read_only: true
+    environment:
+      CLOUD_RELEASES_DIR: ${CLOUD_RELEASES_DIR:+/releases}
     secrets:
       - cloud_admin_token
     security_opt:

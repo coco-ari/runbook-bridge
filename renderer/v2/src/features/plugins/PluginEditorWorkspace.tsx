@@ -587,7 +587,7 @@ export function PluginEditorWorkspace({
                           />
                         ) : null}
                         <FieldDescription id="plugin-primary-credential-description">
-                          已保存值不会自动填入，可主动查看。留空表示保持不变，只有明确输入的非空值会发送。
+                          留空沿用此插件已保存的凭据，修改地址后也无需重新输入；输入新值才会替换。
                         </FieldDescription>
                         <FieldError id="plugin-primary-credential-error">
                           {issueFor(state.issues, "primaryCredential")}

@@ -954,3 +954,73 @@ test('手动硬上传在条件提交冲突后读取新版本重试，保留并�
   assert.equal(catalog.projects.find(item => item.projectId === p.projectId).name,'当前设备手动硬上传');
   assert.equal(catalog.projects.find(item => item.projectId === other.projectId).name,'并发设备更新其他项目');
 });
+
+test('软件更新来源仅返回任意窗口已解锁仓库的公开摘要，关闭会话和损坏状态均收窄来源',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client);
+  const notifications = [];
+  a.service.onSoftwareUpdateSourcesChanged = () => notifications.push(a.service.softwareUpdateSources());
+  assert.deepEqual(a.service.softwareUpdateSources(),[]);
+  const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD,name:'升级来源'});
+  const expected = [{repositoryId:created.repositoryId,name:'升级来源',origin:remote.origin}];
+  assert.deepEqual(a.service.softwareUpdateSources(),expected);
+  const session = a.service.session('test-owner',created.repositoryId);
+  const summary = JSON.stringify(a.service.softwareUpdateSources());
+  for (const secret of [PASSWORD,ADMIN,session.keys.auth,session.keys.encryption.toString('base64')]) assert.ok(!summary.includes(secret));
+  assert.equal(notifications.length,1);
+  await a.service.invoke('other-window','bind',{url:created.url,password:PASSWORD});
+  a.service.closeOwner('test-owner');
+  assert.deepEqual(a.service.softwareUpdateSources(),expected);
+  a.service.closeOwner('other-window');
+  assert.deepEqual(a.service.softwareUpdateSources(),[]);
+  assert.equal(notifications.length,4);
+  await assert.rejects(a.service.saveSoftwareUpdateSelection(created.repositoryId),{code:'CLOUD_LOCKED'});
+  await a.call('bind',{url:created.url,password:PASSWORD,remember:true});
+  a.service.closeOwner('test-owner');
+  assert.deepEqual(a.service.softwareUpdateSources(),expected);
+  a.service.stateError = true;
+  assert.deepEqual(a.service.softwareUpdateSources(),[]);
+  await assert.rejects(a.service.saveSoftwareUpdateSelection(created.repositoryId),{code:'CLOUD_LOCAL_DECRYPT_FAILED'});
+});
+
+test('软件更新来源选择只在本机加密保存，解绑后保留失效选择以阻止重启时自动换源',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client);
+  const one = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD,remember:true});
+  const two = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD,remember:true});
+  assert.equal(a.service.softwareUpdateSelection(),null);
+  await Promise.all([
+    a.service.saveSoftwareUpdateSelection(one.repositoryId),
+    a.call('preferences',{checkIntervalMinutes:30}),
+  ]);
+  assert.equal(a.service.softwareUpdateSelection(),one.repositoryId);
+  assert.equal(a.service.state.checkIntervalMinutes,30);
+  const sealed = await fs.readFile(a.service.stateFile,'utf8');
+  assert.ok(!sealed.includes(one.repositoryId));
+  const persisted = await a.workspace.unseal(sealed);
+  assert.equal(persisted.softwareUpdateRepositoryId,one.repositoryId);
+  a.service.state = {...a.service.state,softwareUpdateRepositoryId:null};
+  await a.service.init();
+  assert.equal(a.service.softwareUpdateSelection(),one.repositoryId);
+  await assert.rejects(a.service.saveSoftwareUpdateSelection('not-a-bound-repository'),{code:'CLOUD_NOT_FOUND'});
+  await assert.rejects(a.service.saveSoftwareUpdateSelection(undefined),{code:'CLOUD_INVALID_ARGUMENT'});
+  await a.call('unbind',{repositoryId:one.repositoryId});
+  assert.equal(a.service.softwareUpdateSelection(),one.repositoryId);
+  assert.equal(a.service.softwareUpdateSources()[0].repositoryId,two.repositoryId);
+  assert.equal((await a.workspace.unseal(await fs.readFile(a.service.stateFile,'utf8'))).softwareUpdateRepositoryId,one.repositoryId);
+  await a.service.init();
+  assert.equal(a.service.softwareUpdateSelection(),one.repositoryId);
+  assert.ok(!a.service.softwareUpdateSources().some(source => source.repositoryId === a.service.softwareUpdateSelection()));
+  await a.service.saveSoftwareUpdateSelection(null);
+  assert.equal(a.service.softwareUpdateSelection(),null);
+});
+
+test('软件更新来源通知的同步和异步异常不影响云绑定、解绑或窗口清理',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client);
+  a.service.onSoftwareUpdateSourcesChanged = () => { throw new Error('synthetic-notification-error'); };
+  const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD,remember:true});
+  a.service.closeOwner('test-owner');
+  assert.equal(a.service.softwareUpdateSources().length,1);
+  a.service.onSoftwareUpdateSourcesChanged = async () => { throw new Error('synthetic-async-notification-error'); };
+  await a.call('unbind',{repositoryId:created.repositoryId});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(a.service.softwareUpdateSources(),[]);
+});

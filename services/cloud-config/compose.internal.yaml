@@ -8,6 +8,12 @@ services:
       - "${CLOUD_BIND_IP:?请设置服务器私网地址}:${CLOUD_HTTP_PORT:-18083}:3000"
     volumes:
       - cloud-data:/data
+      - type: bind
+        source: ${CLOUD_RELEASES_DIR:-../../artifacts/cloud-updates}
+        target: /releases
+        read_only: true
+    environment:
+      CLOUD_RELEASES_DIR: ${CLOUD_RELEASES_DIR:+/releases}
     secrets:
       - cloud_admin_token
     security_opt:

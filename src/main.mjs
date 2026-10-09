@@ -2,7 +2,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import fs from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { app, BrowserWindow, clipboard, dialog, ipcMain, powerMonitor, session, Menu, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, powerMonitor, session, Menu, shell, Notification } from 'electron';
 import { ProjectStore } from './project-store.mjs';
 import { desktopMenuTemplate } from './desktop-menu.mjs';
 import { readWindowsClipboardFiles } from './desktop-file-clipboard.mjs';
@@ -15,6 +15,10 @@ import { defaultDataRoot } from './paths.mjs';
 import { WorkspaceStore } from './workspace-store.mjs';
 import { CloudConfigWorkspace } from './cloud-config-workspace.mjs';
 import { CloudConfigService } from './cloud-config-service.mjs';
+import { SoftwareUpdateService, softwareUpdateError } from './software-update-service.mjs';
+import { createSoftwareUpdateDriver } from './software-update-driver.mjs';
+import { assertSoftwareUpdateIdle, startSoftwareUpdateChecks } from './software-update-lifecycle.mjs';
+import { SoftwareUpdateShutdownGate } from './software-update-shutdown.mjs';
 import { PluginCredentialVault, pluginCredentialInternals } from './plugin-credential-vault.mjs';
 import { AddressResolver, SystemVpnGuard, RouteManager } from './route-manager.mjs';
 import { ServerPluginRuntime } from './server-plugin-runtime.mjs';
@@ -48,6 +52,8 @@ let brokerServer;
 let credentialStore;
 let mainWindow;
 let v2;
+let updateChecks;
+const updateShutdown = new SoftwareUpdateShutdownGate();
 const SHUTDOWN_WATCHDOG_MS = 15_000;
 const transferExitGuard = createTransferExitGuard({
   summary: () => {
@@ -89,10 +95,33 @@ function createWindow() {
     },
   });
   mainWindow.setMenuBarVisibility(false);
-  mainWindow.on('close', event => { if (!app.__aiOpsClosing) transferExitGuard.allow(event); });
+  mainWindow.on('close', event => {
+    if (updateShutdown.closing && !updateShutdown.allowQuit) { event.preventDefault(); return; }
+    if (!app.__aiOpsClosing) transferExitGuard.allow(event);
+  });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer-build', 'v2', 'index.html'));
+}
+
+async function closeForSoftwareUpdate() {
+  app.__aiOpsClosing = true;
+  updateChecks?.dispose();
+  v2.networkWatcher.stop();
+  v2.serverDocker.dispose();
+  v2.v2Service.redisWorkspaceManager?.dispose();
+  v2.v2Service.redisEditor?.dispose();
+  v2.serverWorkspaceManager.dispose();
+  v2.serverWorkspaceFiles.dispose();
+  v2.pluginProbeManager.invalidateAll();
+  v2.pluginEditSessionManager.invalidateAll({allowSaving:true});
+  let timeout;
+  try {
+    await Promise.race([
+      Promise.all([v2.v2Service.mysqlSql.closeAll(),v2.connectionManager.closeAll(),brokerServer.stop()]),
+      new Promise((_,reject) => { timeout = setTimeout(() => reject(softwareUpdateError('UPDATE_BUSY')),SHUTDOWN_WATCHDOG_MS); }),
+    ]);
+  } finally { clearTimeout(timeout); }
 }
 
 async function clearRendererCacheAfterUpgrade() {
@@ -239,15 +268,43 @@ if (process.argv.includes('--mcp')) {
         const cloudConfigService = new CloudConfigService({...v2,workspace:cloudWorkspace,broadcast});
         await cloudConfigService.init();
         v2.cloudConfigService = cloudConfigService;
+        const softwareUpdateService = new SoftwareUpdateService({
+          currentVersion:app.getVersion(),supported:app.isPackaged && process.platform === 'win32',
+          getSources:() => cloudConfigService.softwareUpdateSources(),
+          loadSelection:() => cloudConfigService.softwareUpdateSelection(),
+          saveSelection:id => cloudConfigService.saveSoftwareUpdateSelection(id),
+          createUpdater:createSoftwareUpdateDriver,
+          install:driver => updateShutdown.install(driver,{
+            assertIdle:() => assertSoftwareUpdateIdle(v2),close:closeForSoftwareUpdate,quit:() => app.quit(),
+            onFailure:() => {
+              dialog.showErrorBox('软件更新未完成','客户端未能安全完成更新。请重新打开客户端后重试；当前版本和本地配置会保留。');
+              app.quit();
+            },
+          }),
+        });
+        v2.softwareUpdateService = softwareUpdateService;
+        await softwareUpdateService.init();
         const token = await rotateBrokerToken(dataRoot);
-        brokerServer = new BrokerServer({ dataRoot, token, v2Service, appVersion: app.getVersion() });
+        // 统计所有 Agent 请求；更新停机后不再接受新操作。
+        const brokerService = new Proxy(v2Service,{get:(target,key) => typeof target[key] === 'function'
+          ? (...args) => updateShutdown.run(() => target[key](...args)) : target[key]});
+        brokerServer = new BrokerServer({ dataRoot, token, v2Service:brokerService, appVersion: app.getVersion() });
         await brokerServer.start();
         const downloadPicker = new DesktopDownloadPicker({
           dataRoot, defaultDirectory:app.getPath('downloads'),
           showSaveDialog:(window, options) => dialog.showSaveDialog(window, options),
           atomicWrite:(file, content) => workspaceStore.atomicWrite(file, content),
         });
-        registerV2Ipc(ipcMain, {
+        const guardedIpc = {
+          handle:(channel,handler) => ipcMain.handle(channel,async (...args) => {
+            if (updateShutdown.closing) return {ok:false,error:{code:'UPDATE_BUSY',message:'客户端正在重启更新。'}};
+            return channel === 'v2:software-update' ? handler(...args) : updateShutdown.run(() => handler(...args));
+          }),
+          on:(channel,handler) => ipcMain.on(channel,(...args) => {
+            if (!updateShutdown.closing) return handler(...args);
+          }),
+        };
+        registerV2Ipc(guardedIpc, {
           ...v2,
           codexIntegration: new CodexIntegration({ executablePath: process.execPath, entryPath: path.join(__dirname, 'mcp-v2.mjs'), dataRoot, clipboard }),
           broadcast,
@@ -278,6 +335,16 @@ if (process.argv.includes('--mcp')) {
         const menuTemplate = desktopMenuTemplate();
         if (menuTemplate) Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
         createWindow();
+        updateChecks = startSoftwareUpdateChecks(softwareUpdateService,{onAvailable:state => {
+          if (!Notification.isSupported()) return;
+          const notification = new Notification({title:'软件有新版本',body:`发现 ${state.availableVersion}，可在“设置 → 关于”下载并安装。`});
+          notification.on('click',() => { mainWindow?.show(); mainWindow?.focus(); });
+          notification.show();
+        }});
+        cloudConfigService.onSoftwareUpdateSourcesChanged = async () => {
+          await softwareUpdateService.invoke('status');
+          return updateChecks.checkNow();
+        };
         powerMonitor.on('resume', () => environmentConnectionManager.networkChanged('system-resume').catch(() => undefined));
         app.on('activate', () => {
           if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -289,10 +356,13 @@ if (process.argv.includes('--mcp')) {
       });
 
     app.on('before-quit', (event) => {
+      if (updateShutdown.closing && !updateShutdown.allowQuit) { event.preventDefault(); return; }
       if (app.__aiOpsClosing) return;
       if (!transferExitGuard.allow(event)) return;
       event.preventDefault();
       app.__aiOpsClosing = true;
+      updateChecks?.dispose();
+      v2?.softwareUpdateService?.dispose();
       v2?.networkWatcher?.stop();
       v2?.serverDocker?.dispose();
       v2?.v2Service?.redisWorkspaceManager?.dispose();

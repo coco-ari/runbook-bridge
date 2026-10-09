@@ -3,6 +3,7 @@ import { PLUGIN_IPC_CHANNELS } from './plugin-ipc-contract.mjs';
 import { createPluginConfigurationService } from './plugin-configuration-service.mjs';
 import crypto from 'node:crypto';
 import { registerCloudConfigIpc } from './cloud-config-ipc.mjs';
+import { registerSoftwareUpdateIpc } from './software-update-ipc.mjs';
 import { registerCodexIntegrationIpc } from './codex-integration.mjs';
 import { registerServerWorkspaceIpc } from './server-workspace-ipc.mjs';
 import { registerMysqlEditIpc } from './mysql-edit-ipc.mjs';
@@ -126,6 +127,7 @@ export function registerV2Ipc(ipcMain, services) {
   registerCodexIntegrationIpc(ipcMain, services);
   registerServerWorkspaceIpc(ipcMain, services);
   registerCloudConfigIpc(ipcMain, services);
+  registerSoftwareUpdateIpc(ipcMain, services);
   registerRedisWorkspaceIpc(ipcMain, services);
   registerRedisEditIpc(ipcMain, services);
   registerMysqlEditIpc(ipcMain, services);

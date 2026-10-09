@@ -5,6 +5,7 @@ import type { AiOpsV2Api } from "@/bridge/ai-ops-v2"
 import { ThemeMenu } from "@/components/app-shell/ThemeMenu"
 import { Button } from "@/components/ui/button"
 import { CloudConfigPanel } from "@/features/cloud-config/CloudConfigPanel"
+import { SoftwareUpdatePanel } from "@/features/software-update/SoftwareUpdatePanel"
 import { cn } from "@/lib/utils"
 import { CodexIntegrationPanel } from "./CodexIntegrationPanel"
 
@@ -61,12 +62,12 @@ export function SettingsPage({ api, onBack, onChanged }: {
           <p className="text-xs text-muted-foreground">更改立即生效，并保存在本机。</p>
         </section> : null}
         {section === "agent" ? <CodexIntegrationPanel api={api} onBusyChange={setAgentBusy} /> : null}
-        {section === "about" ? <section className="max-w-xl space-y-5 rounded-lg border bg-card p-5 sm:p-6" aria-label="版本信息" data-testid="settings-version">
+        {section === "about" ? <><section className="max-w-xl space-y-5 rounded-lg border bg-card p-5 sm:p-6" aria-label="版本信息" data-testid="settings-version">
           <div className="space-y-2"><h2 className="text-section font-semibold">Agent运维工作台</h2><p className="text-sm leading-6 text-muted-foreground">按项目和环境组织运维资源，为 Agent 提供受控的排查工具。</p></div>
           <div className="space-y-2"><Button data-testid="about-github" onClick={() => void openRepository()}><GithubLogo />GitHub 开源仓库</Button><p className="break-all text-xs text-muted-foreground">https://github.com/coco-ari/runbook-bridge</p>{repositoryError ? <p role="alert" className="text-xs text-destructive">{repositoryError}</p> : null}</div>
           <dl className="space-y-3 border-t pt-4 text-sm"><div className="flex flex-wrap justify-between gap-2"><dt className="text-muted-foreground">当前版本</dt><dd className="font-mono" data-testid="about-version">{appVersion}</dd></div><div className="flex flex-wrap justify-between gap-2"><dt className="text-muted-foreground">开源许可</dt><dd>MIT</dd></div></dl>
           <div className="border-t pt-4"><h3 className="text-sm font-medium">版本兼容性</h3><p className="mt-2 text-xs leading-5 text-muted-foreground">版本号来自当前应用包。共享云仓库的设备请保持客户端功能兼容；使用生产/测试环境标识时，其他设备也需更新到支持此功能的版本。</p></div>
-        </section> : null}
+        </section><SoftwareUpdatePanel api={api} /></> : null}
         {cloudVisited ? <div hidden={section !== "cloud"} className={section === "cloud" ? "flex min-h-0 flex-1 flex-col" : "hidden"}><CloudConfigPanel api={api} onChanged={onChanged} onBusyChange={setCloudBusy} /></div> : null}
       </div>
     </main>

@@ -1,5 +1,6 @@
 import { AppError } from './errors.mjs';
 import { builtinPluginRegistry } from './plugins/builtins.mjs';
+import { applyHostKeyTrust } from './plugin-host-key-trust.mjs';
 import { normalizeId, normalizeName, normalizeDescription, normalizeTags, normalizeDisplayOrder } from './plugin-config-utils.mjs';
 export { normalizeId, normalizeName } from './plugin-config-utils.mjs';
 
@@ -37,9 +38,9 @@ export function normalizePlugin(input, scope, existing = null, registry = builti
   return registry.get(pluginType).normalizeConfiguration(input, existing, base);
 }
 
-export function normalizePluginCandidate(input, scope, existing, registry = builtinPluginRegistry) {
+export function normalizePluginCandidate(input, scope, existing, registry = builtinPluginRegistry, {hostKeyTrust = null} = {}) {
   if (!existing) throw new AppError('PLUGIN_NOT_FOUND', '缺少候选配置的现有插件。');
-  const normalized = normalizePlugin(input,scope,existing,registry);
+  const normalized = applyHostKeyTrust(normalizePlugin(input,scope,existing,registry),input,hostKeyTrust);
   return {
     ...normalized,
     revision:existing.revision,

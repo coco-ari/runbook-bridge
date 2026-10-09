@@ -1017,6 +1017,7 @@ export class WorkspaceStore {
     credentialMutation = 'none',
     patchScope = null,
     requireReady = false,
+    hostKeyTrust = null,
   } = {}) {
     const before = await this.getPlugin(projectId, environmentId, pluginInstanceId);
     if (expectedRevision !== null && expectedRevision !== undefined && before.revision !== expectedRevision) {
@@ -1043,6 +1044,7 @@ export class WorkspaceStore {
       {projectId,environmentId},
       before,
       this.registry,
+      {hostKeyTrust},
     );
     const candidate = preserveNormalizationOnlyRoots(
       before,normalizedBaseline,normalizedCandidate,
@@ -1077,11 +1079,12 @@ export class WorkspaceStore {
     });
   }
 
-  preparePluginConnectionUpdate(projectId,environmentId,pluginInstanceId,patch,expectedRevision,credentialMutation = 'none') {
+  preparePluginConnectionUpdate(projectId,environmentId,pluginInstanceId,patch,expectedRevision,credentialMutation = 'none', {hostKeyTrust = null} = {}) {
     return this.preparePluginUpdate(projectId,environmentId,pluginInstanceId,patch,expectedRevision,{
       patchScope:'connection',
       credentialMutation,
       requireReady:true,
+      hostKeyTrust,
     });
   }
 
