@@ -812,9 +812,15 @@ async function main() {
     assert.deepEqual(noticeContract.status.data.items,[]);
     assert.equal(noticeContract.invalid.ok,false);
     assert.equal(noticeContract.extra.ok,false);
+    const noticePreferences = await running.cdp.evaluate("(async () => ({saved:await window.aiOps.v2.updateCenter({action:'preferences',notificationMode:'app'}),status:await window.aiOps.v2.updateCenter({action:'status'}),snooze:await window.aiOps.v2.updateCenter({action:'snooze',ids:[],duration:'hour'}),invalid:await window.aiOps.v2.updateCenter({action:'snooze',ids:[],duration:'hour',until:1}),restored:await window.aiOps.v2.updateCenter({action:'preferences',notificationMode:'background'})}))()");
+    assert.equal(noticePreferences.saved.data.notificationMode,'app');
+    assert.equal(noticePreferences.status.data.notificationMode,'app');
+    assert.equal(noticePreferences.snooze.ok,true);
+    assert.equal(noticePreferences.invalid.ok,false);
+    assert.equal(noticePreferences.restored.data.notificationMode,'background');
     await running.cdp.evaluate('document.querySelector("[data-testid=updates-open]").click()');
     await waitForThemeUi(running.cdp,'document.querySelector("[data-testid=update-center]")?.textContent.includes("暂无待处理更新")','打包客户端更新面板空状态');
-    await running.cdp.evaluate('document.querySelector("[data-testid=update-center] [data-slot=dialog-close]").click()');
+    await running.cdp.evaluate('document.querySelector("[data-testid=update-center] [data-slot=sheet-close]").click()');
     await running.cdp.call('Page.bringToFront');
     await require('./settings-ui.cjs')({
       evaluate: code => running.cdp.evaluate(code), install: true,

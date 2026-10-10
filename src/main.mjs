@@ -19,7 +19,7 @@ import { SoftwareUpdateService, softwareUpdateError } from './software-update-se
 import { createSoftwareUpdateDriver } from './software-update-driver.mjs';
 import { assertSoftwareUpdateIdle, startSoftwareUpdateChecks } from './software-update-lifecycle.mjs';
 import { SoftwareUpdateShutdownGate } from './software-update-shutdown.mjs';
-import { UpdateNotifications } from './update-notifications.mjs';
+import { UpdateNotifications, UpdateNotificationDelivery, notificationChannel } from './update-notifications.mjs';
 import { UpdateCoordinator } from './update-coordinator.mjs';
 import { PluginCredentialVault, pluginCredentialInternals } from './plugin-credential-vault.mjs';
 import { AddressResolver, SystemVpnGuard, RouteManager } from './route-manager.mjs';
@@ -110,6 +110,8 @@ async function closeForSoftwareUpdate() {
   app.__aiOpsClosing = true;
   updateChecks?.dispose();
   v2?.updateCoordinator?.dispose();
+  v2?.updateNotifications?.dispose();
+  v2?.updateDelivery?.dispose();
   v2.networkWatcher.stop();
   v2.serverDocker.dispose();
   v2.v2Service.redisWorkspaceManager?.dispose();
@@ -289,15 +291,19 @@ if (process.argv.includes('--mcp')) {
         await softwareUpdateService.init();
         const updateNotifications = new UpdateNotifications({workspace:cloudWorkspace,
           onChanged:() => broadcast('v2:update-center',{kind:'changed'}),
-          onNotify:items => {
+          onNotify:items => updateDelivery.enqueue(items)});
+        await updateNotifications.init();
+        const updateDelivery = new UpdateNotificationDelivery({current:() => updateNotifications.snapshot(),
+          send:(items,mode) => {
             const groups = Map.groupBy(items,item => item.type === 'software' ? item.id : item.repositoryId);
             for (const notices of groups.values()) {
               const first = notices[0];
               const title = first.type === 'software' ? first.title : '云仓库有更新';
               const body = first.type === 'software' ? first.description : `${first.repositoryName} 有 ${notices.length} 个项目需要查看。`;
-              const target = {type:first.type,repositoryId:first.repositoryId,kind:first.kind};
-              if (mainWindow?.isFocused()) broadcast('v2:update-center',{kind:'notice',title,body,target});
-              else if (Notification.isSupported()) {
+              const target = {type:first.type,repositoryId:first.repositoryId,kind:first.kind,...(notices.length === 1 && first.projectId ? {projectId:first.projectId} : {})};
+              const channel = notificationChannel(mode,mainWindow?.isFocused());
+              if (channel === 'app') broadcast('v2:update-center',{kind:'notice',title,body,target});
+              else if (channel === 'system' && Notification.isSupported()) {
                 const notification = new Notification({title,body});
                 notification.on('click',() => {
                   if (mainWindow?.isMinimized()) mainWindow.restore();
@@ -308,7 +314,7 @@ if (process.argv.includes('--mcp')) {
               }
             }
           }});
-        await updateNotifications.init();
+        v2.updateDelivery = updateDelivery;
         const updateCoordinator = new UpdateCoordinator({cloud:cloudConfigService,software:softwareUpdateService,notifications:updateNotifications,
           checkSoftware:() => updateChecks?.checkNow() ?? Promise.resolve(),broadcast});
         v2.updateNotifications = updateNotifications;
@@ -390,6 +396,8 @@ if (process.argv.includes('--mcp')) {
       app.__aiOpsClosing = true;
       updateChecks?.dispose();
       v2?.updateCoordinator?.dispose();
+      v2?.updateNotifications?.dispose();
+      v2?.updateDelivery?.dispose();
       v2?.softwareUpdateService?.dispose();
       v2?.networkWatcher?.stop();
       v2?.serverDocker?.dispose();

@@ -236,8 +236,10 @@ let updateCenterFixture = {items:[],error:null};
 
 function registerMockApi() {
   registerRead('v2:update-center',request => {
-    assert.ok(['status','read'].includes(request.action));
+    assert.ok(['status','read','snooze','preferences'].includes(request.action));
     if (request.action === 'read') updateCenterFixture = {...updateCenterFixture,items:updateCenterFixture.items.map(item => request.ids.includes(item.id) ? {...item,unread:false} : item)};
+    if (request.action === 'snooze') updateCenterFixture = {...updateCenterFixture,items:updateCenterFixture.items.map(item => request.ids.includes(item.id) ? {...item,unread:request.duration === 'cancel',snoozedUntil:request.duration === 'cancel' ? null : Date.now()+3_600_000} : item)};
+    if (request.action === 'preferences') updateCenterFixture = {...updateCenterFixture,notificationMode:request.notificationMode};
     return updateCenterFixture;
   });
   registerRead('v2:codex-integration', async ({ action }) => {
@@ -4194,15 +4196,24 @@ async function run() {
     }
     if (app.commandLine.hasSwitch('update-center-only')) {
       await require('./update-center-ui.cjs')({
+        click:async selector => {
+          win.focus(); win.webContents.focus(); await captureRenderedFrame(win);
+          const point = await win.webContents.executeJavaScript(`(() => { const target=document.querySelector(${JSON.stringify(selector)}),rect=target.getBoundingClientRect(); const x=Math.round(rect.left+rect.width/2),y=Math.round(rect.top+rect.height/2); if(!target.contains(document.elementFromPoint(x,y))) throw new Error('更新面板原生点击目标被遮挡'); return {x,y}; })()`,true);
+          win.webContents.sendInputEvent({type:'mouseMove',...point});
+          win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});
+          win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point});
+          await captureRenderedFrame(win);
+        },
         evaluate:code => win.webContents.executeJavaScript(code,true),
         waitFor:(expression,label) => waitFor(win,expression,label),
         pressKey:key => pressKey(win,key),
-        publish:(items,event = {kind:'changed'}) => { updateCenterFixture = {items,error:null}; win.webContents.send('v2:update-center',event); },
-        capture:screenshotRoot ? async () => fs.writeFileSync(path.join(screenshotRoot,'update-center.png'),(await captureRenderedFrame(win)).toPNG()) : null,
+        publish:(items,event = {kind:'changed'}) => { updateCenterFixture = {...updateCenterFixture,items,error:null}; win.webContents.send('v2:update-center',event); },
+        capture:screenshotRoot ? async (name = 'update-center') => { fs.mkdirSync(screenshotRoot,{recursive:true}); fs.writeFileSync(path.join(screenshotRoot,`${name}.png`),(await captureRenderedFrame(win)).toPNG()); } : null,
+        resize:async (width,height) => { win.setContentSize(width,height); await new Promise(resolve => setTimeout(resolve,200)); },
       });
       await collectWindowErrorDiagnostics(win);
       assert.deepEqual(externalRequests,[]); assert.deepEqual(rendererErrors,[]); assert.deepEqual(rendererWindowErrors,[]);
-      process.stdout.write('更新提醒 UI 专项通过：角标、已读、稍后处理、版本定位、系统通知跳转与空状态。\n');
+      process.stdout.write('更新提醒 UI 专项通过：侧边面板、项目提示、未读角标、延后和恢复、通知偏好、窄屏及导航。\n');
       return;
     }
     if (process.env.RUNBOOK_BRIDGE_EDITOR_LAYOUT_REGRESSION_ONLY === '1') {

@@ -26,7 +26,8 @@ export class UpdateCoordinator {
     this.owner = null;
     for (const stream of this.streams.values()) stream.connection.dispose();
     this.streams.clear(); this.lastChecks.clear(); this.pendingChecks.clear(); this.checkFlights.clear();
-    this.notifications.items = [];
+    if (this.notifications.clear) this.notifications.clear();
+    else this.notifications.items = [];
     this.broadcast?.('v2:update-center',{kind:'changed'});
   }
   schedule() {

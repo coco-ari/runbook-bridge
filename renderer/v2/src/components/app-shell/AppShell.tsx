@@ -582,11 +582,12 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
     }
     requestNavigation(() => {
       setCommandOpen(false)
-      setUpdateSettingsTarget(target)
-      setSettingsOpen(true)
       // 先经过工作台未保存内容守卫，再读取差异并进入原有确认流程。
       if (target.section === "cloud" && target.repositoryId && target.projectId) {
         void cloud.run({action:"prepare",direction:"download",repositoryId:target.repositoryId,projectIds:[target.projectId]})
+      } else {
+        setUpdateSettingsTarget(target)
+        setSettingsOpen(true)
       }
     })
   }, [cloud, requestNavigation])
