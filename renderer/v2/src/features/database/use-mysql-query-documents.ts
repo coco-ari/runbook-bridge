@@ -7,6 +7,7 @@ import { useMysqlEditingGuard } from "./MysqlEditingContext"
 
 export const MYSQL_MAX_QUERY_DOCUMENTS = 6
 export const mysqlSqlGuardKey = (id: string) => `sql:${id}`
+export const mysqlTextGuardKey = (id: string) => `sql-text:${id}`
 
 interface MysqlDocumentRead {
   readonly stale?: boolean
@@ -24,6 +25,7 @@ export interface MysqlQueryDocument {
   readonly documentId: string
   readonly name: string
   readonly sql: string
+  readonly savedSql: string
   readonly mode: MysqlSqlMode
   readonly execution: MysqlSqlState | null
   readonly result: MysqlDocumentRead
@@ -31,7 +33,7 @@ export interface MysqlQueryDocument {
 }
 interface QueryTicket { ticket: number; busy: boolean; executing?: boolean; released?: boolean }
 const createQuery = (number: number): MysqlQueryDocument => ({
-  id: `query-${number}`, documentId: `sql-${crypto.randomUUID()}`, name: `SQL 查询 ${number}`, sql: "", mode: "atomic", execution: null,
+  id: `query-${number}`, documentId: `sql-${crypto.randomUUID()}`, name: `SQL 查询 ${number}`, sql: "", savedSql: "", mode: "atomic", execution: null,
   result: { data: null, loading: false, error: null }, confirmation: false,
 })
 const publicError = (error: unknown): PublicError => error && typeof error === "object" && "publicError" in error
@@ -39,6 +41,7 @@ const publicError = (error: unknown): PublicError => error && typeof error === "
 
 export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
   const [documents, setDocuments] = useState<readonly MysqlQueryDocument[]>(() => [createQuery(1)])
+  const [closedScripts, setClosedScripts] = useState<readonly Pick<MysqlQueryDocument, "name" | "sql" | "savedSql">[]>([])
   const documentsRef = useRef(documents)
   const sequence = useRef(1)
   const closing = useRef(false)
@@ -122,15 +125,20 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
   const documentIds = documents.map(document => document.id).join("|")
   useEffect(() => {
     const ids = documentIds.split("|")
-    const cleanups = ids.map(id => guard.register(mysqlSqlGuardKey(id), () => {
+    const cleanups = ids.flatMap(id => [guard.register(mysqlTextGuardKey(id), () => ({
+      busy: false, dirty: Boolean(find(id) && find(id)!.sql !== find(id)!.savedSql),
+    })), guard.register(mysqlSqlGuardKey(id), () => {
       const current = find(id)
       const transaction = current?.execution?.transaction
       return { busy: Boolean(current?.result.loading), dirty: transaction === "active" || transaction === "unknown" || current?.execution?.status === "unknown", transaction: true, uncertain: transaction === "unknown" || current?.execution?.status === "unknown", discard: () => release(id) }
-    }))
-    return () => { cleanups.forEach(cleanup => cleanup()); ids.forEach(id => guard.setEditing(mysqlSqlGuardKey(id), false)) }
+    })])
+    return () => { cleanups.forEach(cleanup => cleanup()); ids.forEach(id => { guard.setEditing(mysqlSqlGuardKey(id), false); guard.setEditing(mysqlTextGuardKey(id), false) }) }
   }, [api, documentIds, guard.register])
   useEffect(() => {
-    documents.forEach(document => guard.setEditing(mysqlSqlGuardKey(document.id), document.result.loading || document.execution?.transaction === "active" || document.execution?.transaction === "unknown" || document.execution?.status === "unknown"))
+    documents.forEach(document => {
+      guard.setEditing(mysqlTextGuardKey(document.id), document.sql !== document.savedSql)
+      guard.setEditing(mysqlSqlGuardKey(document.id), document.result.loading || document.execution?.transaction === "active" || document.execution?.transaction === "unknown" || document.execution?.status === "unknown")
+    })
   }, [documents, guard.setEditing])
 
   function createDocument(): string | null {
@@ -148,6 +156,8 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
     try {
       await release(id)
       if (!active.current || !tickets.current.has(id) || tickets.current.size <= 1) return false
+      const document = find(id)
+      if (document?.sql) setClosedScripts(current => [...current.slice(-5), { name: document.name, sql: document.sql, savedSql: document.savedSql }])
       tickets.current.delete(id)
       documentsRef.current = documentsRef.current.filter(document => document.id !== id)
       setDocuments(documentsRef.current)
@@ -156,6 +166,22 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
   }
 
   function updateSql(id: string, sql: string) { if (active.current && tickets.current.has(id)) update(id, current => ({ ...current, sql, confirmation: false })) }
+  function renameDocument(id: string, name: string) { update(id, current => ({ ...current, name: name.trim().slice(0, 80) || current.name })) }
+  async function saveDocument(id: string) {
+    const document = find(id)
+    if (!document) return false
+    const response = await api.mysqlExportSave({ fileName: `${document.name.replace(/[^\p{L}\p{N}_.-]/gu, "_")}.sql`, sql: document.sql })
+    if (!response.ok) throw new Error(response.error.message)
+    if (response.data.saved && active.current) update(id, current => ({ ...current, savedSql: document.sql }))
+    return response.data.saved
+  }
+  function restoreDocument(): string | null {
+    const script = closedScripts.at(-1)
+    if (!script) return null
+    const id = createDocument()
+    if (id) { update(id, current => ({ ...current, ...script })); setClosedScripts(current => current.slice(0, -1)) }
+    return id
+  }
   function updateMode(id: string, mode: MysqlSqlMode) {
     const current = find(id)
     if (!current || current.result.loading || (current.execution?.transaction && current.execution.transaction !== "none")) return
@@ -278,6 +304,7 @@ export function useMysqlQueryDocuments(api: AiOpsV2Api, scope: PluginScope) {
     }
   }
   return { documents, createDocument, closeDocument, updateSql, updateMode, runQuery, execute, stop, checkStatus,
+    renameDocument, saveDocument, restoreDocument, canRestore: closedScripts.length > 0, isClosing: () => closing.current,
     cancelConfirmation: (id: string) => update(id, current => ({ ...current, confirmation: false })),
   }
 }

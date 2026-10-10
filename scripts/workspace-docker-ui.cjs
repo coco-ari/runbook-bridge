@@ -95,6 +95,14 @@ module.exports = async ({evaluate,click,clickText,until,wait,win,setViewport,sna
     await snapshot('docker-workspace-' + theme + '.png');
     if (theme === 'light') { await click('[aria-label="服务器文件"]'); await snapshot('docker-workspace-files-light.png'); await click('[aria-label="Docker 容器"]'); }
   }
+  const beforeFollow = count('logs');
+  await click('[data-testid=docker-logs-follow]');
+  await wait(5400);
+  assert.ok(count('logs') > beforeFollow,'开启自动刷新后定时读取新的日志快照');
+  await click('[data-testid=docker-logs-follow]');
+  const afterPause = count('logs');
+  await wait(5400);
+  assert.equal(count('logs'),afterPause,'暂停自动刷新后不再轮询日志');
   await clickText('资源');
   await until("document.querySelector('.server-docker-detail').textContent.includes('5.2%')",'资源采样');
   await click('[role="tab"][title="终端 1"]');

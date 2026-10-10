@@ -281,7 +281,11 @@ export function editPreparationDescription(
     ? `进入编辑前将安全断开 ${connected} 个连接。`
     : "当前没有需要断开的连接。"
   const activeText = active > 0 ? `还需等待 ${active} 个进行中的操作结束。` : ""
-  return `修改“${pluginName}”会影响 ${affected} 个插件。${connectionText}${activeText}`
+  const names = readArray(preparation.affectedPlugins).map(value => {
+    const item = value as Record<string, unknown>
+    return typeof item.displayName === "string" ? `${item.displayName}（${item.connected ? "将断开" : "未连接"}）` : ""
+  }).filter(Boolean).join("、")
+  return `修改“${pluginName}”会影响 ${affected} 个插件。${connectionText}${activeText}${names ? `受影响插件：${names}。` : ""}取消编辑时可恢复原有连接。`
 }
 
 export function validationMatches(

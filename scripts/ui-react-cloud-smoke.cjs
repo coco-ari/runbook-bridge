@@ -336,6 +336,7 @@ async function run() {
   assert.match(await js('document.querySelector("[data-testid=cloud-field-diff]").textContent'),/云配置演示项目/);
   assert.doesNotMatch(await js('document.querySelector("[data-testid=cloud-field-diff]").textContent'),/synthetic-ui-only-secret/);
   assert.equal(await js('document.querySelectorAll("[data-cloud-change-project]").length'),2,'整库更新仅列出两个变化项目');
+  assert.equal(await js('[...document.querySelectorAll("[data-cloud-change-project] [role=checkbox]")].every(item=>item.getAttribute("aria-checked")==="false")'),true,'有本地修改的项目默认不覆盖');
   assert.match(await js('document.querySelector("[data-testid=cloud-change-summary]").textContent'),/Alpha.*Beta/);
   await capture('-confirmation');
   const confirmationSize=window.getContentSize();
@@ -350,6 +351,9 @@ async function run() {
   await wait('!document.querySelector("[role=alertdialog]")'); await idle();
   await store.updateProject('cloud-secondary',{name:'云配置演示项目 · Beta'});
   await cardAction('update'); await wait('Boolean(document.querySelector("[data-testid=cloud-confirm-update]"))');
+  await wait('!document.querySelector("[data-cloud-change-project] [role=checkbox]").disabled');
+  assert.equal(await js('document.querySelector("[data-testid=cloud-confirm-update]").disabled'),true,'核对并选择前不能覆盖冲突项目');
+  await js('document.querySelector("[data-cloud-change-project] [role=checkbox]").click()');
   await clickTestId('cloud-confirm-update'); await idle();
   assert.equal((await store.getProject(project.projectId)).name,'云配置演示项目 · Alpha');
   assert.equal(await js('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("synthetic-ui-only-secret")'),false);

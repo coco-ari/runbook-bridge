@@ -10,7 +10,7 @@ interface EditingContext {
   readonly connectionEpoch: number
   readonly connected: boolean
   register(key: string, inspect: () => GuardState): () => void
-  protect(action: () => void, keys?: readonly string[], options?: { preserveTransactions?: boolean }): void
+  protect(action: () => void, keys?: readonly string[], options?: { preserveTransactions?: boolean; preserveDrafts?: boolean }): void
 }
 const Context = createContext<EditingContext>({
   connectionEpoch: 0, hasEditing: false, setEditing: () => {}, connected: true,
@@ -29,8 +29,8 @@ export function MysqlEditingProvider({ connected, connectionEpoch, onEditingChan
       guards.current.set(key, inspect)
       return () => { if (guards.current.get(key) === inspect) guards.current.delete(key) }
     },
-    protect(action: () => void, keys?: readonly string[], options?: { preserveTransactions?: boolean }) {
-      const entries = [...guards.current].filter(([key]) => !keys || keys.includes(key)).map(([, inspect]) => inspect()).filter(entry => !options?.preserveTransactions || !entry.transaction)
+    protect(action: () => void, keys?: readonly string[], options?: { preserveTransactions?: boolean; preserveDrafts?: boolean }) {
+      const entries = [...guards.current].filter(([key]) => !keys || keys.includes(key)).map(([, inspect]) => inspect()).filter(entry => (!options?.preserveTransactions || !entry.transaction) && (!options?.preserveDrafts || entry.transaction))
       if (entries.some(entry => entry.busy)) { toast.info("正在读取或保存数据，请等待结果。"); return }
       const count = entries.filter(entry => entry.dirty).length
       if (count) setPending({ action, count, uncertain: entries.some(entry => entry.uncertain), transaction: entries.some(entry => entry.transaction && entry.dirty), discard: async () => { for (const entry of entries) await entry.discard?.() } })

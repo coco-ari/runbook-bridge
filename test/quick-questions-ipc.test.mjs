@@ -122,7 +122,7 @@ test('copy uses canonical names and revision-bound global opening, redacts the q
     '【当前范围】',
     '项目：订单中心',
     '环境：生产环境',
-    '问题发现时间：8月24日',
+    '问题发现时间：2026年8月24日',
     '',
     '【问题】',
     '排查 access_token="[已脱敏]" 对应请求',

@@ -22,6 +22,7 @@ const legacyConnectionSnapshot = (payload) => requestConnectionIntent(payload).t
 
 contextBridge.exposeInMainWorld('aiOps', {
   v2: {
+    reportUnsavedWork: count => ipcRenderer.send('v2:unsaved-work', count),
     openRepository: () => ipcRenderer.invoke('v2:open-repository'),
     codexIntegration: (payload) => ipcRenderer.invoke('v2:codex-integration', payload),
     cloudConfig: (payload) => ipcRenderer.invoke('v2:cloud-config',payload),

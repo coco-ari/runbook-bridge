@@ -23,6 +23,7 @@ module.exports = async function ({win,fill,click,waitFor,textContains,testId,sta
   const reset = async () => {
     await click(win,testId('mysql-workspace-close'));
     await click(win,testId('mysql-workspace-confirm-close'));
+  if (await evaluate("Boolean(document.querySelector('[data-testid=mysql-edit-discard-confirm]'))")) await click(win,testId('mysql-edit-discard-confirm'));
     await click(win,testId('plugin-workspace-open'));
     await textContains(win,'mysql-table-list','orders');
   };

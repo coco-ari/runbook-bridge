@@ -16,6 +16,9 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { RedisPatternEditor } from "./RedisPatternEditor"
+import { useScopeHasWorkspaceDraft } from "./WorkspaceNavigation"
+import { redisPatterns } from "@/features/redis/redis-workspace-model"
 import {
   Item,
   ItemActions,
@@ -101,6 +104,7 @@ export function PluginAgentAccess({
   plugin,
   onUpdated,
 }: PluginAgentAccessProps) {
+  const workspaceHasDraft = useScopeHasWorkspaceDraft(plugin)
   const kind = (plugin.pluginType === "mysql" || plugin.pluginType === "redis")
     ? plugin.pluginType
     : "server"
@@ -116,6 +120,9 @@ export function PluginAgentAccess({
   const [editing, setEditing] = useState(false)
   const [timeoutMs, setTimeoutMs] = useState(configuredTimeout)
   const [resourceLimit, setResourceLimit] = useState(configuredResourceLimit)
+  const patternSignature = JSON.stringify(redisPatterns(plugin))
+  const configuredPatterns = useMemo(() => JSON.parse(patternSignature) as ReturnType<typeof redisPatterns>, [patternSignature])
+  const [patterns, setPatterns] = useState(configuredPatterns)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<PublicError | null>(null)
   const generationRef = useRef(0)
@@ -131,10 +138,11 @@ export function PluginAgentAccess({
     setError(null)
     setTimeoutMs(configuredTimeout)
     setResourceLimit(configuredResourceLimit)
-  }, [configuredResourceLimit, configuredTimeout, ownerKey])
+    setPatterns(configuredPatterns)
+  }, [configuredResourceLimit, configuredTimeout, configuredPatterns, ownerKey])
 
   const dirty = editing
-    && (timeoutMs !== configuredTimeout || resourceLimit !== configuredResourceLimit)
+    && (timeoutMs !== configuredTimeout || resourceLimit !== configuredResourceLimit || JSON.stringify(patterns) !== JSON.stringify(configuredPatterns))
 
   useEffect(() => {
     onDirtyChange?.(dirty)
@@ -153,6 +161,11 @@ export function PluginAgentAccess({
   }, [kind, plugin.limits])
 
   const save = async () => {
+    if (workspaceHasDraft) { setError({ code: "WORKSPACE_HAS_DRAFT", message: "此插件的工作区还有草稿或待处理操作。请从“工作区”返回保存、导出或关闭后再修改访问范围。" }); return }
+    if (kind === "redis" && (!patterns.length || patterns.some(item => !item.pattern.trim() || !item.displayName.trim() || /[\u0000-\u001f\u007f]/u.test(item.pattern)))) {
+      setError({ code: "INVALID_PATTERN", message: "请为每个 Key 范围填写名称和模式；模式不能为空或包含控制字符。" })
+      return
+    }
     const maxTimeout = kind === "redis" ? 30_000 : 60_000
     if (!Number.isInteger(timeoutMs) || timeoutMs < 500 || timeoutMs > maxTimeout) {
       setError({ code: "INVALID_TIMEOUT", message: `超时必须在 500 到 ${maxTimeout} 毫秒之间。` })
@@ -182,7 +195,7 @@ export function PluginAgentAccess({
         environmentId: plugin.environmentId,
         pluginInstanceId: plugin.pluginInstanceId,
         expectedRevision: plugin.revision,
-        patch: { limits },
+        patch: { limits, ...(kind === "redis" ? { patterns } : {}) },
       }))
       if (generationRef.current !== generation) return
       setEditing(false)
@@ -200,7 +213,7 @@ export function PluginAgentAccess({
         actions={!editing ? (
           <Button onClick={() => setEditing(true)} size="sm" type="button" variant="outline">
             <ShieldCheck />
-            编辑资源上限
+            {kind === "redis" ? "编辑 Key 范围与资源上限" : "编辑资源上限"}
           </Button>
         ) : null}
         description="权限由应用策略强制判定，Agent 与插件配置都不能绕过。"
@@ -212,6 +225,7 @@ export function PluginAgentAccess({
         <Card className="gap-0 bg-surface-inset py-0" size="sm">
           <CardContent className="p-3">
             <FieldGroup className="grid gap-3 @md/agent-access:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+              {kind === "redis" ? <RedisPatternEditor patterns={patterns} onChange={setPatterns} disabled={busy} /> : null}
               {kind !== "server" ? (
                 <Field data-invalid={Boolean(resourceLimitError)}>
                   <FieldLabel htmlFor="plugin-agent-resource-limit">
@@ -263,6 +277,7 @@ export function PluginAgentAccess({
                 <Button className="flex-1 @md/agent-access:flex-none" disabled={busy} onClick={() => {
                   setTimeoutMs(configuredTimeout)
                   setResourceLimit(configuredResourceLimit)
+                  setPatterns(configuredPatterns)
                   setEditing(false)
                   setError(null)
                 }} size="sm" type="button" variant="outline">
@@ -278,7 +293,7 @@ export function PluginAgentAccess({
       ) : (
         <Alert className="bg-surface-inset py-2">
           <ShieldCheck aria-hidden="true" />
-          <AlertDescription>{limitsSummary}</AlertDescription>
+          <AlertDescription>{limitsSummary}{kind === "redis" ? <p className="mt-1 break-words" data-testid="redis-configured-patterns">桌面与 Agent 允许范围：{configuredPatterns.map(item => `${item.displayName}（${item.pattern}）`).join("、")}。保存范围后，已有工作区将按新配置重新打开。</p> : null}</AlertDescription>
         </Alert>
       )}
 

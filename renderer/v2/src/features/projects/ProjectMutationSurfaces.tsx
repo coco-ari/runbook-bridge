@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
+import { useUnsavedWork } from "@/hooks/use-unsaved-work"
 import { PencilSimple, Warning } from "@phosphor-icons/react"
 
 import type { AiOpsV2Api } from "@/bridge/ai-ops-v2"
@@ -91,6 +92,7 @@ export function ProjectMutationSurfaces({
   const busyDialogRef = useBusyDialogFocus(controller.busy !== null)
   const mutationError = controller.feedback?.kind === "error" ? controller.feedback.message : null
   const project = action && action.kind !== "create" ? action.project : null
+  useUnsavedWork(Boolean(controller.busy) || Boolean(action && action.kind !== "delete" && (name !== (project?.name ?? "") || action.kind === "create" && environmentName)))
   const linked = cloud.data.cloudProjects?.find(p => p.localId === project?.projectId)
   const repository = cloud.data.repositories?.find(r => r.repositoryId === linked?.repositoryId)
   const actionKey = action && action.kind !== "create"

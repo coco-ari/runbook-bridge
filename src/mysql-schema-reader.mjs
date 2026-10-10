@@ -29,13 +29,13 @@ export class MysqlSchemaReader {
     this.assertBaseTables = assertBaseTables;
   }
 
-  async listTables(plugin, { cursor, limit = 100 } = {}) {
+  async listTables(plugin, { cursor, limit = 100, nameContains } = {}) {
     const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 200);
     const offset = parseOffsetCursor(cursor);
     const [rows] = await this.querySession(plugin, {
-      sql: 'SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME LIMIT ? OFFSET ?',
+      sql: `SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ?${nameContains ? ' AND INSTR(LOWER(TABLE_NAME), LOWER(?)) > 0' : ''} ORDER BY TABLE_NAME LIMIT ? OFFSET ?`,
       timeout: plugin.limits.timeoutMs,
-      values: [plugin.target.database, safeLimit + 1, offset],
+      values: [plugin.target.database, ...(nameContains ? [nameContains] : []), safeLimit + 1, offset],
     }, { fallbackMessage:'MySQL 数据表列表读取失败。', operation:'list_tables' });
     const truncated = rows.length > safeLimit;
     return {

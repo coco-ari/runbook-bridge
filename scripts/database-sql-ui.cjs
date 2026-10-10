@@ -216,6 +216,7 @@ async function assertSqlExecutionUi({win,fill,click,waitFor,textContains,testId,
   await resultText('mysql-query-execution-summary','停止');
   assert.equal(fixture.executions.length,executionsBeforeStop,'停止不能重试执行');
   await click(win,`[data-testid=mysql-query-close][data-query-id="${stopId}"]`);
+  if (await evaluate("Boolean(document.querySelector('[data-testid=mysql-edit-discard-confirm]'))")) await click(win,testId('mysql-edit-discard-confirm'));
 
   await click(win,testId('mysql-query-new'));
   const unknownId=await currentId();state.sqlUnknownNext=true;
@@ -238,6 +239,7 @@ async function assertSqlExecutionUi({win,fill,click,waitFor,textContains,testId,
   const existing=await evaluate("[...document.querySelectorAll('[data-query-id][role=tab]')].map(e=>e.dataset.queryId)");
   for(const extraId of existing.slice(1)) {
     await click(win,`[data-testid=mysql-query-close][data-query-id="${extraId}"]`);
+    if (await evaluate("Boolean(document.querySelector('[data-testid=mysql-edit-discard-confirm]'))")) await click(win,testId('mysql-edit-discard-confirm'));
     await waitFor(win,`!document.querySelector('[data-query-id="${extraId}"][role=tab]')`,'关闭前序用例留下的查询');
   }
   // 主进程释放延迟时，连续关闭最后两个标签不能把工作区清成零标签。
@@ -253,6 +255,7 @@ async function assertSqlExecutionUi({win,fill,click,waitFor,textContains,testId,
     assert.equal(typeof releaseHold.release,'function','关闭等待独立会话释放');
     assert.equal(lastOperation('release').length,releaseBeforeRace+1,'并发关闭只允许一条释放流程');
     assert.equal(await evaluate("document.querySelectorAll('[data-query-id][role=tab]').length"),2,'释放完成前保留两个标签');
+    assert.equal(await evaluate("Boolean(document.querySelector('[data-testid=mysql-edit-discard-dialog]'))"),false,'释放期间第二次关闭不遗留草稿确认弹窗');
   } finally {releaseHold.release?.();state.holdSqlRelease=null;}
   await waitFor(win,"document.querySelectorAll('[data-query-id][role=tab]').length === 1",'并发关闭后保留最后一个 SQL 标签');
   assert.equal(await evaluate("document.querySelector('[data-query-id][role=tab][aria-selected=true]')?.dataset.queryId"),remaining[0],'当前选择必须仍指向保留的 SQL 标签');
@@ -345,7 +348,10 @@ async function assertTransactionSummaryUi({win,fill,click,waitFor,testId,screens
   const copied=await evaluate('window.__databaseClipboardWrites.at(-1)');
   assert.match(copied,/TRIGGER/u);assert.ok(!copied.includes('fixture-private-driver-user-and-host'));
   await screenshot(win,'sql-permission-guidance');
-  await click(win,`[data-testid=mysql-query-close][data-query-id="${permissionId}"]`);await click(win,testId('mysql-sql-tab'));
+  await click(win,`[data-testid=mysql-query-close][data-query-id="${permissionId}"]`);
+
+  if (await evaluate("Boolean(document.querySelector('[data-testid=mysql-edit-discard-confirm]'))")) await click(win,testId('mysql-edit-discard-confirm'));
+  await click(win,testId('mysql-sql-tab'));
 }
 
 module.exports={createSqlFixture,assertSqlExecutionUi};

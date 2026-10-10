@@ -64,6 +64,14 @@ function mocks(redisKeySearch) {
   read('v2:plugin-credential-status', () => ({ fields: { primary: false, proxy: false }, legacyAvailable: false }));
   read('v2:audit-list', () => ({ entries: [], nextCursor: null }));
   read('v2:confirmation-list', () => []);
+  read('v2:plugin-agent-configuration-update', payload => {
+    assert.deepEqual({projectId:payload.projectId,environmentId:payload.environmentId,pluginInstanceId:payload.pluginInstanceId},scope);
+    assert.equal(payload.expectedRevision,plugin.revision);
+    assert.equal(payload.patch.patterns[0].pattern,'cache:*');
+    assert.equal(payload.patch.patterns[0].displayName,'缓存匹配范围');
+    plugin.patterns=payload.patch.patterns;plugin.limits=payload.patch.limits;plugin.revision++;
+    return plugin;
+  });
   read('v2:runbook-read', () => ({ content: '', bytes: 0, hash: '0'.repeat(64), empty: true }));
   read('v2:quick-question-opening-get', () => ({ schemaVersion: 1, text: '只读排查', defaultText: '只读排查', revision: 1 }));
   read('v2:quick-question-list', () => ({ schemaVersion: 1, projectId, environmentId, revision: 1, items: [] }));
@@ -181,6 +189,15 @@ async function click(win, selector) {
   await win.webContents.executeJavaScript(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); if(e.disabled) throw new Error('控件不可用'); e.click(); })()`, true);
   await wait(60);
 }
+async function activateDetailTab(win, tab) {
+  const selector='[data-detail-tab="'+tab+'"]';
+  if (process.platform==='darwin') app.focus({steal:true});
+  win.focus();win.webContents.focus();
+  await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(selector)}).focus()`,true);
+  win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});
+  win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});
+  await waitFor(win,`document.querySelector(${JSON.stringify(selector)})?.getAttribute('aria-selected') === 'true'`,'详情页签激活');
+}
 async function fill(win, selector, text) {
   const code = await win.webContents.executeJavaScript(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); if(e?.classList.contains('cm-content')) { e.focus(); return true; } return false; })()`, true);
   if (code) {
@@ -297,6 +314,21 @@ async function run() {
     await waitFor(win, 'document.querySelector(\'[data-testid="plugin-workspace-open"]\')?.disabled === true', '离线入口禁用');
     assert.equal(calls.length, 0);
     await click(win, testId('plugin-trigger-redis-primary'));
+    await activateDetailTab(win,'agent');
+    await waitFor(win,"[...document.querySelectorAll('button')].some(e=>e.textContent==='编辑 Key 范围与资源上限')",'范围编辑入口');
+    await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(e=>e.textContent==='编辑 Key 范围与资源上限').click()",true);
+    await fill(win,'[aria-label="范围 1 名称"]','缓存匹配范围');
+    await fill(win,'[aria-label="试算 Key"]','outside:example');
+    await text(win,testId('redis-pattern-editor'),'不在允许范围内');
+    await fill(win,'[aria-label="试算 Key"]','cache:example');
+    await text(win,testId('redis-pattern-editor'),'允许：缓存匹配范围');
+    win.webContents.send('v2:workspace-changed',{...scope,type:'plugin-updated'});
+    await wait(300);
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('[aria-label=\"范围 1 名称\"]').value",true),'缓存匹配范围','同版本刷新不丢失访问范围草稿');
+    await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(e=>e.textContent==='保存 Agent 配置').click()",true);
+    await text(win,testId('redis-configured-patterns'),'缓存匹配范围');
+    assert.equal(plugin.revision,2,'范围通过修订绑定的配置接口保存');
+    await activateDetailTab(win,'overview');
     await click(win, testId('plugin-workspace-open'));
     await waitFor(win, 'document.querySelector(\'[data-redis-key="cache:text"]\')?.getClientRects().length > 0', 'Key 已加载');
     assert.equal(calls.filter((entry) => entry.operation === 'inspect' || entry.operation === 'read').length, 0, '列表不逐项读取元数据');

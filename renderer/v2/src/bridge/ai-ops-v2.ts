@@ -299,6 +299,7 @@ export type MysqlSqlRequest = Readonly<{ documentId: string }> & (
 )
 
 export interface MysqlTableListPayload extends PluginScope {
+  readonly nameContains?: string
   readonly cursor?: string
   readonly limit?: number
 }
@@ -881,6 +882,8 @@ export interface CodexIntegrationStatus {
 }
 
 export interface AiOpsV2Api {
+  /** 桌面生命周期通知，仅包含待保存/待完成工作数量。 */
+  reportUnsavedWork(count: number): void
   openRepository(): Promise<IpcResult<{ opened: boolean }>>
   codexIntegration(payload: { action: "status" } | { action: "install"; approvalId: string }): Promise<IpcResult<CodexIntegrationStatus>>
   codexIntegration(payload: { action: "copy" }): Promise<IpcResult<{ copied: boolean }>>
@@ -1006,6 +1009,7 @@ export interface AiOpsV2Api {
 }
 
 export const AI_OPS_V2_API_NAMES = [
+  "reportUnsavedWork",
   "openRepository",
   "codexIntegration",
   "cloudConfig",

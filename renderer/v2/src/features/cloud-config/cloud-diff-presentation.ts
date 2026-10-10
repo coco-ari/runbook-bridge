@@ -4,6 +4,10 @@ export function changedCloudRows(rows: readonly CloudRow[] = []) {
   return rows.filter(row => row.diff.contentChanged)
 }
 
+export function initialCloudChoices(rows: readonly CloudRow[] = []): Record<string, "local" | "cloud"> {
+  return Object.fromEntries(rows.map(row => [row.rowId, row.diff.contentChanged && !row.conflict ? "cloud" : "local"]))
+}
+
 export function changeSummary(diff: CloudRow["diff"]): string {
   const changes: string[] = []
   if (diff.added) changes.push(`新增 ${diff.added} 个插件`)

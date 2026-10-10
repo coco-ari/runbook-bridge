@@ -5,6 +5,7 @@ import { workspaceScopeMatches } from "@/features/plugins/workspace-registry"
 import { PluginWorkspaceHost } from "@/features/plugins/PluginWorkspaceHost"
 import { CloudConfigProvider, useCloudConfig } from "@/features/cloud-config/CloudConfigProvider"
 import { usePluginWorkspaceSessions, useSelectedPluginWorkspace } from "@/features/plugins/use-plugin-workspaces"
+import { useUnsavedWork } from "@/hooks/use-unsaved-work"
 import { useAppShellLayout } from "@/components/app-shell/use-app-shell-layout"
 import { shortcutLabel } from "@/lib/platform"
 import { SettingsPage } from "@/features/settings/SettingsPage"
@@ -158,6 +159,8 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
   const [agentAccessSaving, setAgentAccessSaving] = useState(false)
   const [quickQuestionsDirty, setQuickQuestionsDirty] = useState(false)
   const [quickQuestionsSaving, setQuickQuestionsSaving] = useState(false)
+  useUnsavedWork(Number(runbookDirty || runbookSaving) + Number(agentAccessDirty || agentAccessSaving)
+    + Number(quickQuestionsDirty || quickQuestionsSaving) + workspaceSessions.state.entries.filter(entry => entry.dirty).length)
   const [detailDraftEpoch, setDetailDraftEpoch] = useState(0)
   const [pendingSelection, setPendingSelection] = useState<PendingSelection | null>(null)
   const [projectSurface, setProjectSurface] = useState<ProjectMutationSurface>(null)
@@ -697,10 +700,12 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
         return
       }
       dispatchSelection({ type: "select-project", projectId, workspace: latestWorkspace })
+      workspaceSessions.back()
+      setSettingsOpen(false)
       setDetailTab("overview")
       setNotice("已选择项目")
     })
-  }, [requestNavigation])
+  }, [requestNavigation, workspaceSessions.back])
 
   const selectEnvironment = useCallback((projectId: string, environmentId: string) => {
     requestNavigation(() => {
@@ -718,10 +723,12 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
         environmentId,
         workspace: latestWorkspace,
       })
+      workspaceSessions.back()
+      setSettingsOpen(false)
       setDetailTab("overview")
       setNotice("已选择环境")
     })
-  }, [requestNavigation])
+  }, [requestNavigation, workspaceSessions.back])
 
   const selectPlugin = useCallback((
     projectId: string,
@@ -770,8 +777,10 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
         setPendingSelection({ projectId, environmentId, pluginInstanceId, focusTarget })
       }
       setNotice("已选择插件")
+      workspaceSessions.back()
+      setSettingsOpen(false)
     })
-  }, [requestNavigation, scheduleWorkspaceFocus])
+  }, [requestNavigation, scheduleWorkspaceFocus, workspaceSessions.back])
 
   const openProjectAction = useCallback((action: ProjectRailAction) => {
     rememberFocus()
@@ -837,6 +846,8 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
   const openDetailAction = useCallback((action: WorkspaceDetailAction) => {
     rememberFocus()
     if (action.type === "create-project") requestNavigation(() => setProjectSurface({ kind: "create" }))
+    else if (action.type === "create-environment") requestNavigation(() => setEnvironmentSurface({ kind: "create", project: action.project }))
+    else if (action.type === "create-plugin") enterPluginEditor(action.environment, null)
     else if (action.type === "edit-project") setProjectSurface({ kind: "settings", project: action.project })
     else if (action.type === "edit-environment") {
       setEnvironmentSurface({ kind: "settings", project: action.project, environment: action.environment })
@@ -924,6 +935,8 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
     requestId?: string,
   ) => {
     requestNavigation(() => {
+      workspaceSessions.back()
+      setSettingsOpen(false)
       setAuditTarget(tab === "audit" && requestId ? {...scope, requestId} : null)
       setPendingSelection({
         projectId: scope.projectId,
@@ -933,7 +946,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       })
       focusDetail()
     })
-  }, [focusDetail, requestNavigation])
+  }, [focusDetail, requestNavigation, workspaceSessions.back])
 
   const shellLabel = selectedPlugin?.displayName
     ?? selectedEnvironment?.name
@@ -961,7 +974,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
         enterPluginEditor(environment, entry.plugin)
       }}>
     <SettingsNavigationContext.Provider value={openSettings}>
-    <UpdateCenterProvider api={api} onNavigate={openUpdateSettings} confirmations={confirmations} projects={workspace.data?.projects ?? []} onConfirmationNavigate={openConfirmationEnvironment}>
+    <UpdateCenterProvider api={api} onNavigate={openUpdateSettings} confirmations={confirmations} projects={workspace.data?.projects ?? []} onConfirmationNavigate={openConfirmationEnvironment} onConfirmationAudit={(scope, requestId) => locateConfirmationScope(scope, "audit", requestId)}>
     <div className="h-full max-h-full min-h-0 relative w-full min-w-0 overflow-hidden bg-background text-foreground" data-shell-ready="true" data-testid="react-app-shell">
       <a
         className="fixed left-3 top-2 z-[70] -translate-y-14 rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground shadow-sm outline-none transition-transform focus:translate-y-0 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background"
@@ -1117,14 +1130,14 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
         onBack={workspaceSessions.back} onClose={workspaceSessions.close} onDirtyChange={workspaceSessions.setDirty} />
 
       <GlobalCommand
-        disabled={workspaceVisible || settingsOpen}
+        disabled={false}
         onCreateEnvironment={selectedProject ? () => {
           rememberFocus()
-          requestNavigation(() => setEnvironmentSurface({ kind: "create", project: selectedProject }))
+          requestNavigation(() => { workspaceSessions.back(); setSettingsOpen(false); setEnvironmentSurface({ kind: "create", project: selectedProject }) })
         } : undefined}
         onCreateProject={() => {
           rememberFocus()
-          requestNavigation(() => setProjectSurface({ kind: "create" }))
+          requestNavigation(() => { workspaceSessions.back(); setSettingsOpen(false); setProjectSurface({ kind: "create" }) })
         }}
         onOpenChange={setCommandOpen}
         onSelectEnvironment={selectEnvironment}

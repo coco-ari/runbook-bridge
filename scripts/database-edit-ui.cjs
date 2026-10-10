@@ -331,6 +331,12 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   await click(win,testId('mysql-edit-discard-confirm'));
   await waitFor(win,'document.querySelector("[data-testid=mysql-edit-save]")?.disabled===true && !document.querySelector("[data-conflict]")','刷新冲突结果');
   await stage(2,'label','断连保留的草稿');
+  await click(win,testId('mysql-workspace-back'));
+  await waitFor(win,'document.querySelector("[data-testid=mysql-full-window-workspace]")?.hidden === true','返回详情保留数据修改草稿');
+  assert.equal(await evaluate('Boolean(document.querySelector("[data-testid=mysql-edit-discard-dialog]"))'),false,'仅返回详情不要求丢弃草稿');
+  await click(win,testId('plugin-workspace-open'));
+  await waitFor(win,'document.querySelector("[data-testid=mysql-full-window-workspace]")?.hidden === false','重新进入数据工作区');
+  assert.match(await current(cell(2,'label')),/断连保留的草稿/u);
   plugins.find(p=>p.pluginInstanceId===PRIMARY_ID).assessment={phase:'disconnected',primaryStatus:{kind:'disconnected',label:'未连接',action:'connect'}};
   state.sequence++;win.webContents.send('v2:environment-status-changed',runtime());
   await waitFor(win,'document.querySelector("[data-testid=mysql-edit-save]")?.disabled===true','断连禁用保存');

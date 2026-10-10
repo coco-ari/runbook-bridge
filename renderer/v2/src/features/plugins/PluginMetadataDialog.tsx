@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import { useUnsavedWork } from "@/hooks/use-unsaved-work"
 
 import type { AiOpsV2Api, PluginRecord, PublicError } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
@@ -39,6 +40,7 @@ export function PluginMetadataDialog({
 }: PluginMetadataDialogProps) {
   const [name, setName] = useState(plugin.displayName)
   const [busy, setBusy] = useState(false)
+  useUnsavedWork(open && (busy || name !== plugin.displayName))
   const busyDialogRef = useBusyDialogFocus(busy)
   const [error, setError] = useState<PublicError | null>(null)
   const generationRef = useRef(0)

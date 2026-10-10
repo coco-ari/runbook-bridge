@@ -11,7 +11,7 @@ export function assertSoftwareUpdateIdle(v2) {
     const editing = v2.serverWorkspaceFiles?.editor?.exitSummary?.() ?? 0;
     const coordinator = v2.mutationCoordinator;
     const activity = [...(coordinator?.environmentActivity?.values() ?? [])];
-    if (transfers.active || transfers.resumable || sql.active || editing
+    if (transfers.active || transfers.resumable || sql.active || editing || v2.unsavedWorkCount
       || v2.pluginEditSessionManager?.sessions?.size
       || activity.some(item => item.readers || item.writers)
       || coordinator?.environmentFences?.size || coordinator?.cloudProjects?.size || coordinator?.projectsDeleting?.size) {

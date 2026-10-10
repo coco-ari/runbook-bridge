@@ -95,6 +95,10 @@ test('begin installs the edit fence before draining existing Agent work and disc
   const prepared = await values.manager.preparePluginConnectionEdit({
     projectId:'p1',environmentId:'e1',pluginInstanceId:'server',expectedRevision:1,
   });
+  assert.deepEqual(prepared.affectedPlugins,[
+    {pluginInstanceId:'server',displayName:'server',pluginType:'server',connected:true},
+    {pluginInstanceId:'orders',displayName:'orders',pluginType:'mysql',connected:true},
+  ],'影响预览只包含连接名称、类型与状态，不包含地址或凭据');
   const beginning = values.manager.beginPluginConnectionEdit({prepareToken:prepared.prepareToken});
   await waitFor(() => values.mutationCoordinator.environmentFence('p1','e1'));
 

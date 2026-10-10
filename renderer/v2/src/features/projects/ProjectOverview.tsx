@@ -41,6 +41,7 @@ export interface ProjectOverviewProps {
   readonly loading?: boolean
   readonly onReload?: (() => void) | undefined
   readonly onSelectEnvironment?: ((environmentId: string) => void) | undefined
+  readonly onCreateEnvironment?: (() => void) | undefined
   readonly project: WorkspaceProjectReadModel | null
 }
 
@@ -88,6 +89,7 @@ export function ProjectOverview({
   loading = false,
   onReload,
   onSelectEnvironment,
+  onCreateEnvironment,
   project,
 }: ProjectOverviewProps) {
   if (loading && !project) return <ProjectOverviewSkeleton />
@@ -135,6 +137,7 @@ export function ProjectOverview({
               <EmptyTitle>当前项目没有环境</EmptyTitle>
               <EmptyDescription className="text-xs">新增环境后即可在此查看运行状态。</EmptyDescription>
             </EmptyHeader>
+            {onCreateEnvironment ? <Button size="sm" onClick={onCreateEnvironment}>创建第一个环境</Button> : null}
           </Empty>
         ) : (
           <Card className="gap-0 py-0" size="sm">

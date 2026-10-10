@@ -21,6 +21,7 @@ function idleWorkspace() {
 test('安装更新前阻止传输、事务、草稿、配置编辑和云变更，不改变原任务',() => {
   assert.doesNotThrow(() => assertSoftwareUpdateIdle(idleWorkspace()));
   const mutations = [
+    v2 => { v2.unsavedWorkCount = 1; },
     v2 => { v2.serverWorkspaceFiles.exitSummary = () => ({active:1,resumable:0}); },
     v2 => { v2.serverWorkspaceFiles.exitSummary = () => ({active:0,resumable:1}); },
     v2 => { v2.v2Service.mysqlSql.exitSummary = () => ({active:1}); },

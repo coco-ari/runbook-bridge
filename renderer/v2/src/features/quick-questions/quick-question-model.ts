@@ -169,6 +169,7 @@ export function formatQuickQuestionDiscoveredDate(value: string | undefined): st
     || date.getUTCMonth() !== month - 1
     || date.getUTCDate() !== day) return ""
   return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
     month: "long",
     day: "numeric",
     timeZone: "UTC",

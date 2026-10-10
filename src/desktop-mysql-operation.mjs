@@ -4,7 +4,7 @@ import { parseOffsetCursor } from './pagination-cursor.mjs';
 
 const SCOPE_FIELDS = ['projectId', 'environmentId', 'pluginInstanceId'];
 const OPERATION_FIELDS = {
-  listTables: ['cursor', 'limit'],
+  listTables: ['cursor', 'limit', 'nameContains'],
   describeTable: ['table'],
   previewTable: ['table', 'where', 'orderBy', 'limit', 'offset'],
   queryReadonly: ['sql', 'params'],
@@ -32,7 +32,11 @@ export function prepareDesktopMysqlOperation(payload, operation) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
       throw new AppError('INVALID_ARGUMENT', '数据表分页数量必须是 1 到 200 之间的整数。');
     }
-    return { scope, capability: 'describe', args: { cursor: parseOffsetCursor(payload.cursor), limit } };
+    const search = payload.nameContains;
+    if (search !== undefined && (typeof search !== 'string' || search.length > 128 || /[\u0000-\u001f\u007f]/u.test(search))) {
+      throw new AppError('INVALID_ARGUMENT', '表名搜索不能超过 128 个字符或包含控制字符。');
+    }
+    return { scope, capability: 'describe', args: { cursor: parseOffsetCursor(payload.cursor), limit, ...(search?.trim() ? {nameContains:search.trim()} : {}) } };
   }
   if (operation === 'queryReadonly') {
     if (typeof payload.sql !== 'string' || !payload.sql.trim() || Buffer.byteLength(payload.sql, 'utf8') > 65_536) {

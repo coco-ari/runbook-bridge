@@ -2,11 +2,28 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { validateMysqlSelect, applyMysqlRowLimit } from '../src/mysql-policy.mjs';
 import { prepareDesktopMysqlOperation } from '../src/desktop-mysql-operation.mjs';
+import { MysqlSchemaReader } from '../src/mysql-schema-reader.mjs';
 import { mysqlCompletionContext, mysqlSelectSnippet, mysqlSqlDiagnostic, compareMysqlCells } from '../renderer/v2/src/features/database/mysql-sql-assist.ts';
 
 const scope = { projectId:'fixture-project', environmentId:'fixture-environment', pluginInstanceId:'fixture-mysql' };
 const preview = (options) => prepareDesktopMysqlOperation({ ...scope, table:'records', ...options }, 'previewTable').args.sql;
 const tables = [{ name:'records', type:'BASE TABLE', queryable:true }, { name:'record_view', type:'VIEW', queryable:false }];
+
+test('桌面表名搜索覆盖固定数据库目录，按字面参数绑定且保持分页', async () => {
+  const nameContains = "fixture_%' OR 1=1 --";
+  const prepared = prepareDesktopMysqlOperation({...scope,nameContains,limit:1,cursor:'1'},'listTables');
+  const calls = [];
+  const reader = new MysqlSchemaReader({querySession:async (plugin, query) => { calls.push(query); return [[{TABLE_NAME:'fixture_match',TABLE_TYPE:'BASE TABLE'},{TABLE_NAME:'fixture_more',TABLE_TYPE:'BASE TABLE'}]]; }});
+  const page = await reader.listTables({target:{database:'fixture_database'},limits:{timeoutMs:1000}},prepared.args);
+  assert.equal(calls.length,1);
+  assert.match(calls[0].sql,/TABLE_SCHEMA = \? AND INSTR\(LOWER\(TABLE_NAME\), LOWER\(\?\)\)/);
+  assert.ok(!calls[0].sql.includes(nameContains));
+  assert.deepEqual(calls[0].values,['fixture_database',nameContains,2,1]);
+  assert.equal(page.nextCursor,'2');
+  assert.equal(page.tables.length,1);
+  for (const value of [null,{},'x'.repeat(129),'bad\nname']) assert.throws(() => prepareDesktopMysqlOperation({...scope,nameContains:value},'listTables'),{code:'INVALID_ARGUMENT'});
+  assert.throws(() => prepareDesktopMysqlOperation({...scope,nameContains:'fixture',database:'other'},'listTables'),{code:'INVALID_ARGUMENT'});
+});
 
 test('行数限制同时保留两种 LIMIT 写法的偏移和更小的读取数量', () => {
   for (const [sql, count, offset] of [

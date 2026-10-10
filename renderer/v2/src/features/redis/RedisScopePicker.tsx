@@ -17,7 +17,7 @@ export function RedisScopePicker({ database, patterns, patternId, visible, disab
   const [open, setOpen] = useState(false)
   const selected = patterns.find((pattern) => pattern.patternId === patternId)
   const label = selected?.pattern === "*" ? "全部 Key（*）" : selected?.pattern ?? "未配置范围"
-  const description = selected ? "Key 范围：" + selected.displayName + "（" + selected.pattern + "）" : "请先在插件配置中登记 Key 范围"
+  const description = selected ? "Key 范围：" + selected.displayName + "（" + selected.pattern + "）；在插件详情 → Agent 可执行范围中编辑" : "请在插件详情 → Agent 可执行范围中登记 Key 范围"
 
   useEffect(() => { if (!visible) setOpen(false) }, [visible])
 

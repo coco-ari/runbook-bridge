@@ -16,6 +16,7 @@ export function ServerDockerContainer({ container, ...props }: DockerViewProps &
   const { api, scope, connected, visible, binding } = props
   const [view, setView] = useState<View>("inspect")
   const [lines, setLines] = useState(200)
+  const [following, setFollowing] = useState(false)
   const [range, setRange] = useState("all")
   const [since, setSince] = useState<string>()
   const [search, setSearch] = useState("")
@@ -24,7 +25,7 @@ export function ServerDockerContainer({ container, ...props }: DockerViewProps &
   const searchRef = useRef<HTMLInputElement>(null)
   const logRef = useRef<HTMLPreElement>(null)
   const detail = useDockerRead<DockerContainerDetails>({ api, scope, query:{ kind:"inspect", containerId:container.id }, enabled:visible && connected && view === "inspect", binding })
-  const logs = useDockerRead<DockerLogs>({ api, scope, query:{ kind:"logs", containerId:container.id, lines, ...(since ? { since } : {}) }, enabled:visible && connected && view === "logs", binding })
+  const logs = useDockerRead<DockerLogs>({ api, scope, query:{ kind:"logs", containerId:container.id, lines, ...(since ? { since } : {}) }, enabled:visible && connected && view === "logs", binding, interval:following ? 5000 : 0 })
   const stats = useDockerRead<DockerStats>({ api, scope, query:{ kind:"stats", containerId:container.id }, enabled:visible && connected && view === "stats", binding, interval:5000 })
   const result = view === "inspect" ? detail : view === "logs" ? logs : stats
   const displayedLines = useMemo(() => {
@@ -60,6 +61,7 @@ export function ServerDockerContainer({ container, ...props }: DockerViewProps &
         <SelectControl aria-label="日志行数" value={String(lines)} onValueChange={value => { setLines(Number(value)); setCopied(null) }}>{[200, 500, 2000].map(value => <SelectItem key={value} value={String(value)}>{value} 行</SelectItem>)}</SelectControl>
         <Button size="sm" variant="ghost" disabled={!logs.data || !displayedLines.some(line => line.length)} title={search ? "复制当前筛选的 " + displayedLines.length + " 行日志" : "复制全部已加载日志"} data-testid="docker-copy-visible" onClick={() => { void copy() }}>{copied === "visible" ? "已复制" : search ? "复制筛选结果" : "复制已加载日志"}</Button>{search ? <Button size="sm" variant="ghost" disabled={!logs.data} data-testid="docker-copy-all" onClick={() => { void copy(true) }}>{copied === "all" ? "已复制全部" : "复制全部已加载日志"}</Button> : null}</> : null}
       <WorkspaceIconButton action="refresh" label="刷新容器内容" disabled={!connected || result.busy} busy={result.busy} onClick={refresh} />
+      {view === "logs" ? <Button size="sm" variant={following ? "secondary" : "outline"} aria-pressed={following} disabled={!connected} data-testid="docker-logs-follow" onClick={() => setFollowing(value => !value)}>{following ? "暂停自动刷新" : "每 5 秒刷新"}</Button> : null}
     </div>
     {!connected ? <p className="server-docker-message">服务器已断开，重新连接后读取。</p> : null}
     {result.error ? <p className="server-docker-message text-danger" role="alert">{result.error}{result.data ? " 下方保留上次结果。" : ""}</p> : null}
@@ -83,6 +85,6 @@ export function ServerDockerContainer({ container, ...props }: DockerViewProps &
         {([["CPU", stats.data.cpu], ["内存", stats.data.memory], ["内存占比", stats.data.memoryPercent], ["网络收发", stats.data.network], ["磁盘读写", stats.data.block], ["进程数", stats.data.pids]] as const).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
       </dl> : <p className="server-docker-message">容器未运行，暂无资源数据。</p> : null}
     </div>
-    <footer className="server-docker-sampled">{result.data ? "采集于 " + new Date(result.data.sampledAt).toLocaleString() : "尚未采集"}{view === "stats" ? " · 可见时每 5 秒采样" : view === "logs" ? " · 手动刷新" : ""}</footer>
+    <footer className="server-docker-sampled">{result.data ? "采集于 " + new Date(result.data.sampledAt).toLocaleString() : "尚未采集"}{view === "stats" ? " · 可见时每 5 秒采样" : view === "logs" ? ` · ${following ? "可见时每 5 秒刷新" : "手动刷新"} · 最近 ${lines} 行快照，搜索仅覆盖已加载内容` : ""}</footer>
   </section>
 }

@@ -46,7 +46,7 @@ export function SoftwareUpdatePanel({ api }: { readonly api: AiOpsV2Api }) {
       <p className="flex items-center gap-2 text-sm font-medium" data-testid="software-update-status">{working || !state && !error ? <SpinnerGap className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : null}{state ? labels[state.phase] : error ? "无法读取更新状态" : "正在读取更新状态…"}</p>
       {state?.availableVersion ? <p className="text-xs text-muted-foreground" data-testid="software-update-version">{state.currentVersion} → {state.availableVersion}</p> : null}
       {phase === "no-source" ? <p className="text-xs leading-5 text-muted-foreground">请先在“云同步”中连接云仓库，再回来检查软件更新。</p> : null}
-      {phase === "unsupported" ? <p className="text-xs leading-5 text-muted-foreground">当前仅支持 Windows 正式安装版。</p> : null}
+      {phase === "unsupported" ? <div className="space-y-2 text-xs leading-5 text-muted-foreground"><p>云仓库在线更新适用于 Windows 正式安装版。macOS 安装版请从项目发行页获取匹配架构的安装包；源码运行请更新仓库后重新构建。</p><Button size="xs" variant="outline" onClick={() => void api.openRepository()}>打开项目与发行说明</Button></div> : null}
       {phase === "downloading" ? <div className="space-y-2" data-testid="software-update-progress"><Progress value={percent} aria-label="更新下载进度" /><p className="text-xs text-muted-foreground">{percent === null ? "正在准备下载…" : `已下载 ${Math.floor(percent)}%`} · 可以返回工作台，下载会继续。</p></div> : null}
       {phase === "downloaded" ? <p className="text-xs leading-5 text-muted-foreground">安装包已就绪。请保存工作内容，再重启完成更新。</p> : null}
     </div>
@@ -57,6 +57,7 @@ export function SoftwareUpdatePanel({ api }: { readonly api: AiOpsV2Api }) {
       {phase === "downloading" ? <Button variant="outline" size="sm" disabled={pending === "cancel"} data-testid="software-update-cancel" onClick={() => { void run({ action: "cancel" }) }}>{pending === "cancel" ? "正在取消…" : "取消下载"}</Button> : null}
       {phase === "downloaded" ? <Button size="sm" disabled={blocked} data-testid="software-update-install" onClick={() => setConfirmInstall(true)}><ArrowClockwise />立即更新</Button> : null}
     </div>
+    {state ? <p className="text-xs text-muted-foreground">当前版本 {state.currentVersion} · {state.supported ? "云仓库更新通道" : "手动更新通道"}。不同来源的版本可能不同。</p> : null}
     {state?.checkedAt ? <p className="text-xs text-muted-foreground">上次检查：{formatTime(state.checkedAt)}</p> : null}
     {state?.releaseNotes ? <details className="border-t pt-3" data-testid="software-update-notes"><summary className="cursor-pointer rounded-sm text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/60">版本说明{state.releaseDate ? ` · ${formatTime(state.releaseDate)}` : ""}</summary><p className="mt-3 max-h-64 overflow-y-auto break-words whitespace-pre-wrap text-xs leading-5 text-muted-foreground">{state.releaseNotes}</p></details> : null}
     <SoftwareUpdateConfirmation open={confirmInstall} onOpenChange={setConfirmInstall} version={state?.availableVersion ?? null} disabled={phase !== "downloaded" || blocked} onInstall={() => { void run({ action: "install" }) }} />

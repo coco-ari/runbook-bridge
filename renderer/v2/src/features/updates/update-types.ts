@@ -17,7 +17,7 @@ export type UpdateCenterRequest = { action: "status" }
   | { action: "preferences"; notificationMode: NotificationMode }
 export interface UpdateTarget { readonly type: "software" | "cloud"; readonly repositoryId: string; readonly kind: string; readonly projectId?: string }
 export interface UpdateCenterEvent {
-  readonly kind: "changed" | "cloud" | "notice" | "open"
+  readonly kind: "changed" | "cloud" | "notice" | "open" | "confirmations-open"
   readonly title?: string
   readonly body?: string
   readonly target?: UpdateTarget

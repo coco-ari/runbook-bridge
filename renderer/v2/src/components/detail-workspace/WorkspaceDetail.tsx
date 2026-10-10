@@ -68,6 +68,8 @@ import type {
 
 export type WorkspaceDetailAction =
   | Readonly<{ type: "create-project" }>
+  | Readonly<{ type: "create-environment"; project: WorkspaceProjectReadModel }>
+  | Readonly<{ type: "create-plugin"; environment: WorkspaceEnvironmentReadModel }>
   | Readonly<{ type: "edit-project"; project: WorkspaceProjectReadModel }>
   | Readonly<{
       type: "edit-environment"
@@ -573,6 +575,7 @@ export function WorkspaceDetail({
                   onReload={onReloadEnvironment}
                   connectionPanel={(
                     <EnvironmentConnectionPanel
+                      onCreatePlugin={() => onAction({ type: "create-plugin", environment })}
                       onOpenWorkspace={onOpenEnvironmentWorkspace}
                       onConfigurePlugin={onConfigureEnvironmentPlugin}
                       workspaceActions={environmentWorkspaceActions}
@@ -586,7 +589,7 @@ export function WorkspaceDetail({
                   )}
                 />
               ) : (
-                <ProjectOverview onSelectEnvironment={environmentId => { if (project) onOpenEnvironment(project.projectId, environmentId) }} error={workspaceError} loading={workspaceLoading} onReload={onReloadWorkspace} project={project} />
+                <ProjectOverview onCreateEnvironment={project ? () => onAction({ type: "create-environment", project }) : undefined} onSelectEnvironment={environmentId => { if (project) onOpenEnvironment(project.projectId, environmentId) }} error={workspaceError} loading={workspaceLoading} onReload={onReloadWorkspace} project={project} />
               )}
             </PersistentTabsContent>
 

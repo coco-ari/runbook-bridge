@@ -1,5 +1,6 @@
 import { SelectControl, SelectItem } from "@/components/ui/select"
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react"
+import { useUnsavedWork } from "@/hooks/use-unsaved-work"
 import { PencilSimple, Stack, Trash, Warning } from "@phosphor-icons/react"
 
 import type { AiOpsV2Api, EnvironmentType } from "@/bridge/ai-ops-v2"
@@ -102,6 +103,7 @@ export function EnvironmentMutationSurfaces({
   const mutationError = controller.feedback?.kind === "error" ? controller.feedback.message : null
   const project = action?.project ?? null
   const environment = action && action.kind !== "create" ? action.environment : null
+  useUnsavedWork(Boolean(controller.busy) || Boolean(action && action.kind !== "delete" && (name !== (environment?.name ?? "") || environmentType !== (environment?.environmentType ?? "unspecified"))))
   const actionKey = action && action.kind !== "create"
     ? `${action.kind}:${action.project.projectId}:${action.environment.environmentId}:${action.environment.revision}`
     : action?.kind === "create"

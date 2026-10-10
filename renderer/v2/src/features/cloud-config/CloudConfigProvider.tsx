@@ -1,4 +1,5 @@
 import { CloudFieldDiff } from "./CloudFieldDiff"
+import { unsavedWorkCount } from "@/hooks/use-unsaved-work"
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react"
 import { toast } from "sonner"
 import type { AiOpsV2Api, PublicError } from "@/bridge/ai-ops-v2"
@@ -8,7 +9,7 @@ import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFoo
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import type { CloudConfigData, CloudConfigRequest } from "./cloud-types"
 
-import { changedCloudRows, changeSummary } from "./cloud-diff-presentation"
+import { changedCloudRows, changeSummary, initialCloudChoices } from "./cloud-diff-presentation"
 export { changeSummary } from "./cloud-diff-presentation"
 
 interface CloudController {
@@ -96,6 +97,12 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
   }, [api, refresh])
   const run = useCallback(async (request: CloudConfigRequest) => {
     if (busyRef.current) return null
+    const replacesLocal = request.action === "sync" && request.direction === "download"
+      || request.action === "confirm" && plan?.direction !== "upload" && Object.values(request.choices).some(choice => choice === "cloud")
+    if (replacesLocal && unsavedWorkCount() > 0) {
+      toast.error("还有未保存的草稿或待处理操作", { description: "请先保存、导出或关闭相关编辑，再覆盖本地配置。" })
+      return null
+    }
     busyRef.current = true
     setWorking(true); setError(""); setOperationError(null)
     try {
@@ -103,7 +110,7 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
       if (!active.current) return null
       if (result.planId) {
         setPlan({ ...result, historical: request.action === "prepare" && Boolean(request.snapshotId) })
-        setChoices(Object.fromEntries((result.rows ?? []).map(row => [row.rowId, row.diff.contentChanged ? "cloud" : "local"])))
+        setChoices(initialCloudChoices(result.rows))
       }
       if (result.results) {
         const failed = result.results.filter(row => row.status === "failed")
@@ -123,7 +130,7 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
       if (active.current) { const message = cause instanceof Error ? cause.message : "云同步操作失败"; setError(message); setOperationError({ code: cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string" ? cause.code : "CLOUD_OPERATION_FAILED", message }); toast.error(message) }
       return null
     } finally { busyRef.current = false; if (active.current) setWorking(false) }
-  }, [call, check, refresh])
+  }, [call, check, refresh, plan?.direction])
   const upload = useCallback((projectId: string, repositoryId?: string) => {
     const available = (data.repositories ?? []).filter(repo => repo.unlocked)
     const target = repositoryId ?? (available.length === 1 ? available[0]?.repositoryId : undefined)
@@ -140,7 +147,7 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
       <AlertDialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden data-[size=default]:max-w-[calc(100vw-2rem)] data-[size=default]:sm:max-w-2xl" data-testid="cloud-update-confirmation">
         <AlertDialogHeader className="shrink-0">
           <AlertDialogTitle>{plan?.direction === "restore" ? "恢复本机备份" : plan?.historical ? "恢复云端历史版本？" : conflict ? "覆盖本地修改？" : "查看云端配置变更"}</AlertDialogTitle>
-          <AlertDialogDescription>{plan?.direction === "restore" ? "选中项目将用备份完整替换。" : plan?.historical ? "选中项目将用所选历史版本完整替换。" : conflict ? "以下项目存在本地修改。选中项目将用云端配置完整替换。" : "确认后将用云端配置更新选中的项目。"}覆盖前自动备份，原连接将断开。</AlertDialogDescription>
+          <AlertDialogDescription>{plan?.direction === "restore" ? "选中项目将用备份完整替换。" : plan?.historical ? "选中项目将用所选历史版本完整替换。" : conflict ? "有本地修改的项目默认保留；核对后需手动勾选，才会用云端配置完整替换。" : "确认后将用云端配置更新选中的项目。"}覆盖前自动备份，原连接将断开。可在“配置 → 云同步 → 本机备份”恢复。</AlertDialogDescription>
         </AlertDialogHeader>
         <div className="shrink-0 space-y-2 border-y py-3" data-testid="cloud-change-summary">
           <p className="text-sm font-medium">{changedRows.length} 个项目有变化{(plan?.rows?.length ?? 0) > changedRows.length ? <span className="ml-2 text-xs font-normal text-muted-foreground">已隐藏 {(plan?.rows?.length ?? 0) - changedRows.length} 个无变化项目</span> : null}</p>

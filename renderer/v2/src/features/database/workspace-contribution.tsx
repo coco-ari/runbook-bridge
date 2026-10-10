@@ -4,7 +4,7 @@ import { mysqlDatabaseName, mysqlWorkspaceSessionKey } from "./mysql-workspace-m
 
 function MysqlWorkspaceContribution({ api, entry, visible, onBack, onClose, onDirtyChange }: PluginWorkspaceProps) {
   return <div className="absolute inset-0 z-40 min-h-0 min-w-0 bg-background" data-testid="mysql-full-window-workspace" hidden={!visible} inert={!visible}>
-    <MysqlDatabaseWorkspace api={api} scope={entry.scope} plugin={entry.plugin}
+    <MysqlDatabaseWorkspace api={api} scope={entry.scope} plugin={entry.plugin} visible={visible}
       projectName={entry.projectName} environmentName={entry.environmentName}
       connected={entry.connected} runtime={entry.runtime} connectionEpoch={entry.connectionEpoch} onEditingChange={onDirtyChange}
       backLabel={entry.returnFocusTestId?.startsWith("environment-") ? "返回环境详情" : "返回数据库详情"} onBack={onBack} onClose={onClose} />
@@ -15,6 +15,6 @@ export const mysqlWorkspaceContribution: PluginWorkspaceContribution = {
   type: "mysql", Component: MysqlWorkspaceContribution,
   sessionKey: (plugin) => mysqlWorkspaceSessionKey(plugin, plugin),
   canOpen: (plugin) => Boolean(mysqlDatabaseName(plugin)),
-  retainAcrossSelection: true, retainOnDisconnect: "always", requiresConnection: true, maxSessions: 1,
+  retainAcrossSelection: true, retainOnDisconnect: "always", requiresConnection: true, maxSessions: 4,
   focusTestId: "mysql-workspace-back", returnFocusTestId: "plugin-workspace-open",
 }

@@ -141,6 +141,7 @@ module.exports = async function ({win,fill,click,waitFor,textContains,testId,scr
   state.extraTables = false;
   await click(win,testId('mysql-workspace-close'));
   await click(win,testId('mysql-workspace-confirm-close'));
+  if (await evaluate("Boolean(document.querySelector('[data-testid=mysql-edit-discard-confirm]'))")) await click(win,testId('mysql-edit-discard-confirm'));
   await click(win,testId('plugin-workspace-open'));
   assert.equal(await evaluate("document.querySelectorAll('[data-testid=mysql-table-document-tab]').length"),0,'关闭工作区清除全部表标签');
   state.allowDisconnect = true;

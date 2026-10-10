@@ -87,7 +87,7 @@ function KeyDocument({ connected, tab, refresh, more, fullOpen, exportValue, fie
         {metadata ? <>
           {metadata.length !== null ? <span className="redis-meta-item"><span className="redis-meta-label">大小</span><span>{redisBytes(metadata.length)}</span></span>
             : metadata.cardinality !== null ? <span className="redis-meta-item"><span className="redis-meta-label">成员</span><span>{metadata.cardinality} 个</span></span> : null}
-          <span className="redis-meta-item" title="TTL 为最近一次读取时的剩余时间"><span className="redis-meta-label">TTL</span><span>{redisTtl(metadata.ttlSeconds)}</span></span>
+          <span className="redis-meta-item" title="刷新后核实当前是否仍存在；此值不会自动倒计时"><span className="redis-meta-label">读取时 TTL</span><span>{redisTtl(metadata.ttlSeconds)}</span></span>
         </> : <span className="redis-meta-label">按需读取内容与过期时间</span>}
         <span className="redis-sample-group">
           {metadata ? <span className="redis-meta-label">读取于 <time dateTime={metadata.readAt} title={new Date(metadata.readAt).toLocaleString()}>{time(metadata.readAt)}</time></span> : null}

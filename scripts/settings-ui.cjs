@@ -31,7 +31,7 @@ module.exports = async function exerciseSettings({ evaluate, install = false, in
   await click('settings-agent');
   await waitFor('document.querySelector("[data-testid=codex-status]")?.textContent === ' + JSON.stringify(initialCodexStatus), 'Codex 检测');
   assert.equal(await evaluate('document.querySelector("[data-testid=codex-advanced]").open'), false, '高级设置默认收起');
-  const configured = initialCodexStatus === '已配置';
+  const configured = initialCodexStatus === '配置已写入';
   const manualOnly = ['需要手动处理', '暂时无法检测'].includes(initialCodexStatus);
   assert.equal(await evaluate('Boolean(document.querySelector("[data-testid=codex-install]")?.checkVisibility())'), !configured && !manualOnly, '主要操作只在需要配置时显示');
   assert.equal(await evaluate('Boolean(document.querySelector("[data-testid=codex-next-steps]"))'), configured);
@@ -60,7 +60,7 @@ module.exports = async function exerciseSettings({ evaluate, install = false, in
   await setAdvanced(false);
   if (install) {
     await click('codex-install');
-    await waitFor('document.querySelector("[data-testid=codex-status]")?.textContent === "已配置"', 'Codex 接入');
+    await waitFor('document.querySelector("[data-testid=codex-status]")?.textContent === "配置已写入"', 'Codex 接入');
     await waitFor('!document.querySelector("[data-testid=codex-install]").disabled', '接入完成');
     assert.match(await evaluate('document.querySelector("[data-testid=codex-install]").textContent'), /重新配置/u);
     assert.equal(await evaluate('document.querySelector("[data-testid=codex-install]").checkVisibility()'), false, '接入成功后自动收起重新配置');
@@ -69,11 +69,11 @@ module.exports = async function exerciseSettings({ evaluate, install = false, in
     const previousBackup = await evaluate('document.querySelector("[data-testid=codex-backup]").textContent');
     await click('codex-install');
     await waitFor('!document.querySelector("[data-testid=codex-install]").disabled && document.querySelector("[data-testid=codex-backup]")?.textContent !== ' + JSON.stringify(previousBackup), '再次接入完成');
-    assert.equal(await evaluate('document.querySelector("[data-testid=codex-status]").textContent'), '已配置');
+    assert.equal(await evaluate('document.querySelector("[data-testid=codex-status]").textContent'), '配置已写入');
     assert.match(await evaluate('document.querySelector("[data-testid=codex-notice]").textContent'), /重新打开 Codex/u);
     await click('codex-refresh');
     await waitFor('!document.querySelector("[data-testid=codex-refresh]").disabled', '重新检测');
-    assert.equal(await evaluate('document.querySelector("[data-testid=codex-status]").textContent'), '已配置');
+    assert.equal(await evaluate('document.querySelector("[data-testid=codex-status]").textContent'), '配置已写入');
   }
   assert.equal(await evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth'), true);
   await click('settings-back');

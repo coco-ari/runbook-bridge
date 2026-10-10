@@ -40,6 +40,7 @@ export interface EnvironmentConnectionPanelProps {
   readonly onOpenWorkspace: (pluginInstanceId: string) => void
   readonly workspaceActions: Readonly<Record<string, EnvironmentWorkspaceAction>>
   readonly onConfigurePlugin: (pluginInstanceId: string) => void
+  readonly onCreatePlugin?: (() => void) | undefined
   readonly onOpenPlugin: (pluginInstanceId: string) => void
   readonly runtime?: EnvironmentRuntime | null
   readonly onRuntime?: (runtime: EnvironmentRuntime) => void
@@ -62,6 +63,7 @@ export function EnvironmentConnectionPanel({
   plugins,
   onOpenPlugin,
   onConfigurePlugin,
+  onCreatePlugin,
   onOpenWorkspace,
   workspaceActions,
   runtime = null,
@@ -211,6 +213,7 @@ export function EnvironmentConnectionPanel({
               <EmptyTitle>{detail.summary.total > 0 ? "插件列表尚未读取" : "当前环境还没有插件"}</EmptyTitle>
               <EmptyDescription>{detail.summary.total > 0 ? "请重新读取环境信息后查看插件详情。" : "在环境栏新增插件并完善配置后，即可在此管理连接。"}</EmptyDescription>
             </EmptyHeader>
+            {!detail.summary.total && onCreatePlugin ? <Button size="sm" onClick={onCreatePlugin}>添加第一个插件</Button> : null}
           </Empty>
         ) : (
           <CardContent className="px-3">

@@ -67,6 +67,7 @@ async function assertSqlAssistanceAndBrowse({win,fill,click,waitFor,textContains
   assert.equal(await editorValue(),beforeInvalidDrop,'拖入其他标签不能修改原标签');
   for (const id of fullTabs.filter(id=>!originalTabs.includes(id))) {
     await click(win,'[data-testid=mysql-query-close][data-query-id="'+id+'"]');
+  if (await evaluate("Boolean(document.querySelector('[data-testid=mysql-edit-discard-confirm]'))")) await click(win,testId('mysql-edit-discard-confirm'));
     await waitFor(win,`!document.querySelector('[role=tab][data-query-id="${id}"]')`,'关闭拖放测试标签');
   }
   await fill(win,testId('mysql-sql-editor'),'SELECT sort_probe FROM orders');

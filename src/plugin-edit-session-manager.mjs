@@ -124,6 +124,7 @@ export class PluginEditSessionManager {
       baseRecordRevision:plugin.revision,
       baseConnectionFingerprint:pluginConnectionFingerprint(plugin),
       affectedIds,
+      affectedPlugins:plugins.filter(item => affectedIds.includes(item.pluginInstanceId)).map(item => ({pluginInstanceId:item.pluginInstanceId, displayName:item.displayName, pluginType:item.pluginType, connected:preEditConnectedSet.includes(item.pluginInstanceId)})),
       preEditConnectedSet,
       activeOperations:{connection:connectionOperations,workspace:workspaceActivity},
     };
@@ -149,6 +150,7 @@ export class PluginEditSessionManager {
     return {
       prepareToken,
       affectedIds:preview.affectedIds,
+      affectedPlugins:preview.affectedPlugins,
       preEditConnectedSet:preview.preEditConnectedSet,
       activeOperations:preview.activeOperations,
       expiresAt:new Date(expiresAtMs).toISOString(),
@@ -256,6 +258,7 @@ export class PluginEditSessionManager {
       baseRecordRevision:preview.baseRecordRevision,
       baseConnectionFingerprint:preview.baseConnectionFingerprint,
       affectedIds:[...preview.affectedIds],
+      affectedPlugins:structuredClone(preview.affectedPlugins),
       preEditConnectedSet:[...preview.preEditConnectedSet],
       activeOperations:structuredClone(preview.activeOperations),
     };

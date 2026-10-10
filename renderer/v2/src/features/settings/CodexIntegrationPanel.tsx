@@ -4,7 +4,7 @@ import type { AiOpsV2Api, CodexIntegrationStatus } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
-const labels = { available: "尚未配置", configured: "已配置", outdated: "配置需要更新", conflict: "需要手动处理", error: "暂时无法检测" }
+const labels = { available: "尚未配置", configured: "配置已写入", outdated: "配置需要更新", conflict: "需要手动处理", error: "暂时无法检测" }
 
 export function CodexIntegrationPanel({ api, onBusyChange }: {
   readonly api: AiOpsV2Api
@@ -72,7 +72,7 @@ export function CodexIntegrationPanel({ api, onBusyChange }: {
   const canInstall = state?.status === "available" || state?.status === "outdated"
   const needsAttention = state?.status === "outdated" || state?.status === "conflict" || state?.status === "error" || Boolean(error)
   const title = state ? labels[state.status] : error ? "暂时无法检测" : "正在检测配置"
-  const description = configured ? "本机已完成 Codex 接入，无需重复配置。"
+  const description = configured ? "本机接入配置已就绪。此状态仅表示配置文件正确；请重启 Codex，并发起一次只读资源查询验证实际连接。"
     : state?.status === "available" ? "配置一次，即可让 Codex 使用工作台中已连接的资源。"
     : state?.status === "outdated" ? "已有配置与当前工作台不一致，更新后可使用当前应用。"
     : state?.message ?? (error ? "请重新检测，或在高级设置中查看手动配置方式。" : "正在检查本机是否已经配置，请稍候。")

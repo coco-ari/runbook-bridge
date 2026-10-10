@@ -13,6 +13,7 @@ import { ConfirmationsFeature } from "@/features/confirmations/ConfirmationsFeat
 import { ConfirmationMessages, confirmationTarget, type MessageConfirmations } from "@/features/confirmations/ConfirmationMessages"
 import { ConfirmationArrivals, type ConfirmationMessage } from "@/features/confirmations/confirmation-message-model"
 import type { ConfirmationEnvironment } from "@/features/confirmations/global-confirmation-model"
+import type { ConfirmationScope } from "@/features/confirmations/ConfirmationsFeature"
 import type { NotificationMode, UpdateCenterState, UpdateNotice, UpdateSettingsTarget, UpdateTarget } from "./update-types"
 
 interface UpdatesController {
@@ -62,7 +63,8 @@ export function ConfirmationNotice({ inline = false }: { readonly inline?: boole
   </Button>
 }
 
-export function UpdateCenterProvider({ api, onNavigate, confirmations, projects, onConfirmationNavigate, children }: {
+export function UpdateCenterProvider({ api, onNavigate, confirmations, projects, onConfirmationNavigate, onConfirmationAudit, children }: {
+  readonly onConfirmationAudit: (scope: ConfirmationScope, requestId: string) => void
   readonly api: AiOpsV2Api
   readonly onNavigate: (target: UpdateSettingsTarget) => void
   readonly confirmations: MessageConfirmations
@@ -76,6 +78,7 @@ export function UpdateCenterProvider({ api, onNavigate, confirmations, projects,
   const [selected, setSelected] = useState<ConfirmationMessage | null>(null)
   const reviewHeading = useRef<HTMLHeadingElement | null>(null)
   const pendingScope = useRef<ConfirmationEnvironment | null>(null)
+  const pendingAudit = useRef<{ scope: ConfirmationScope; requestId: string } | null>(null)
   const arrivals = useRef(new ConfirmationArrivals())
   const [decisionNotice, setDecisionNotice] = useState("")
   const selectedTarget = selected ? confirmationTarget(selected, projects) : null
@@ -139,6 +142,7 @@ export function UpdateCenterProvider({ api, onNavigate, confirmations, projects,
     mounted.current = true
     const unsubscribe = api.onUpdateCenter(event => {
       void refresh()
+      if (event.kind === "confirmations-open") openConfirmations()
       if (event.kind === "open" && event.target) navigate(event.target)
       if (event.kind === "notice") toast.info(event.title ?? "有新的更新", { id: `update-${event.target?.repositoryId ?? "all"}`, description: event.body, action: { label: "查看", onClick: () => {
         const trigger = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="updates-open"]')).find(element => element.checkVisibility() && !element.closest('[hidden],[inert]'))
@@ -149,7 +153,7 @@ export function UpdateCenterProvider({ api, onNavigate, confirmations, projects,
     })
     void refresh()
     return () => { mounted.current = false; sequence.current++; unsubscribe() }
-  }, [api, navigate, refresh, show])
+  }, [api, navigate, refresh, show, openConfirmations])
   useEffect(() => {
     if (!popup.open) return
     const timer = window.setInterval(() => setClock(value => value + 1), 1_000)
@@ -195,7 +199,7 @@ export function UpdateCenterProvider({ api, onNavigate, confirmations, projects,
   const groups = [...new Set(state.items.map(item => item.type === "software" ? "software" : item.repositoryId))]
   const preferences = <DropdownMenu>
     <DropdownMenuTrigger asChild><Button size="icon-xs" variant="ghost" className="text-muted-foreground" disabled={saving} aria-label="提醒设置" title="提醒设置" data-testid="update-preferences"><GearSix /></Button></DropdownMenuTrigger>
-    <DropdownMenuContent align="end"><DropdownMenuLabel>更新提醒方式</DropdownMenuLabel><DropdownMenuRadioGroup value={state.notificationMode ?? "background"} onValueChange={value => void savePreferences(value as NotificationMode)}>
+    <DropdownMenuContent align="end"><DropdownMenuLabel>审批与更新提醒方式</DropdownMenuLabel><DropdownMenuRadioGroup value={state.notificationMode ?? "background"} onValueChange={value => void savePreferences(value as NotificationMode)}>
       <DropdownMenuRadioItem value="app" data-testid="update-mode-app">仅应用内</DropdownMenuRadioItem>
       <DropdownMenuRadioItem value="background" data-testid="update-mode-background">仅后台时系统通知</DropdownMenuRadioItem>
       <DropdownMenuRadioItem value="always" data-testid="update-mode-always">始终系统通知</DropdownMenuRadioItem>
@@ -203,15 +207,16 @@ export function UpdateCenterProvider({ api, onNavigate, confirmations, projects,
   </DropdownMenu>
   return <UpdatesContext.Provider value={{ confirmations, openConfirmations, items: state.items, count: state.items.length, busy: saving || cloud.busy, isOpen: popup.open, contentId: popup.id, open: trigger => { navigating.current = false; popup.toggle(trigger); if (confirmations.unavailable) confirmations.retry(); void refresh() }, view }}>
     {children}
-    <UtilityPopover controller={popup} title={selected ? "核对操作" : "消息中心"} summary={selected ? null : [confirmations.count ? `${confirmations.count} 项待确认` : "", state.items.length ? `${state.items.length} 项更新` : ""].filter(Boolean).join(" · ")} description="待确认操作优先显示；配置与软件更新单独列出。" actions={selected ? null : preferences} testId="update-center" closeTestId="updates-close"
+    <UtilityPopover controller={popup} wide={Boolean(selected)} title={selected ? "核对操作" : "消息中心"} summary={selected ? null : [confirmations.count ? `${confirmations.count} 项待确认` : "", state.items.length ? `${state.items.length} 项更新` : ""].filter(Boolean).join(" · ")} description="待确认操作优先显示；配置与软件更新单独列出。" actions={selected ? null : preferences} testId="update-center" closeTestId="updates-close"
       footer={selected ? <div className="flex items-center justify-between gap-2"><Button size="xs" variant="ghost" data-testid="confirmation-review-back" onClick={backToMessages}><ArrowLeft />返回消息</Button><Button size="xs" variant="ghost" disabled={!selectedTarget?.available} data-testid="confirmation-review-page" onClick={() => { pendingScope.current = { projectId: selected.projectId, environmentId: selected.environmentId, count: 1 }; popup.setOpen(false) }}>在页面中查看<ArrowSquareOut /></Button></div> : null}
-      onCloseAutoFocus={event => { const scope = pendingScope.current; pendingScope.current = null; if (scope) { event.preventDefault(); requestAnimationFrame(() => onConfirmationNavigate(scope)) } else if (navigating.current) event.preventDefault() }}>
+      onCloseAutoFocus={event => { const audit = pendingAudit.current; pendingAudit.current = null; const scope = pendingScope.current; pendingScope.current = null; if (audit) { event.preventDefault(); requestAnimationFrame(() => onConfirmationAudit(audit.scope, audit.requestId)) } else if (scope) { event.preventDefault(); requestAnimationFrame(() => onConfirmationNavigate(scope)) } else if (navigating.current) event.preventDefault() }}>
       {selected ? <div data-testid="confirmation-review">
-        <h3 ref={reviewHeading} tabIndex={-1} className="break-words py-3 text-sm font-semibold outline-none">{selectedTarget?.project?.name ?? selected.projectId} / {selectedTarget?.environment?.name ?? selected.environmentId}</h3>
+        <h3 ref={reviewHeading} tabIndex={-1} className="sticky top-0 z-10 break-words border-b bg-popover py-3 text-sm font-semibold outline-none">{selectedTarget?.project?.name ?? selected.projectId} / {selectedTarget?.environment?.name ?? selected.environmentId}</h3>
         {selectedTarget?.available && selectedTarget.project && selectedTarget.environment ? <ConfirmationsFeature key={selected.requestId} compact requestId={selected.requestId}
           projectId={selected.projectId} environmentId={selected.environmentId} pluginInstanceId={selected.pluginInstanceId}
           projectName={selectedTarget.project.name} environmentName={selectedTarget.environment.name}
-          onDecided={decision => { setDecisionNotice(decision === "approve" ? "已授权一次，等待 Agent 执行。" : "操作已拒绝。"); confirmations.retry(); backToMessages() }} /> : <p role="alert" className="py-4 text-sm text-muted-foreground">环境已不存在或暂不可用，无法确认操作。</p>}
+          onOpenAudit={(scope, requestId) => { pendingAudit.current = { scope, requestId }; popup.setOpen(false) }}
+          onDecided={decision => { setDecisionNotice(decision === "approve" ? "已授权一次，等待 Agent 执行。" : "操作已拒绝。"); confirmations.retry() }} /> : <p role="alert" className="py-4 text-sm text-muted-foreground">环境已不存在或暂不可用，无法确认操作。</p>}
       </div> : <>
       {decisionNotice ? <p role="status" className="border-b py-3 text-xs" data-testid="message-decision-feedback">{decisionNotice}</p> : null}
       <ConfirmationMessages confirmations={confirmations} projects={projects} onReview={item => { setDecisionNotice(""); setSelected(item) }} />

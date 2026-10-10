@@ -42,7 +42,7 @@ test('React quick-question normalization is bounded and validates the shared ope
   }),/500/u);
 });
 
-test('React quick-question preview contains bounded human scope and a month-day date only',async () => {
+test('React quick-question preview contains bounded human scope and a full year-month-day date only',async () => {
   const model = await importModel();
   const preview = model.buildQuickQuestionPreview({
     opening:{text:'请使用 AI Ops MCP 排查。',defaultText:'请使用 AI Ops MCP 排查。',revision:2},
@@ -57,12 +57,12 @@ test('React quick-question preview contains bounded human scope and a month-day 
     '【当前范围】',
     '项目：本地项目',
     '环境：预发布环境',
-    '问题发现时间：8月24日',
+    '问题发现时间：2026年8月24日',
     '',
     '【问题】',
     '为什么任务没有完成?',
   ].join('\n'));
-  assert.doesNotMatch(preview,/projectId|environmentId|plugin|resource|2026|时区/iu);
+  assert.doesNotMatch(preview,/projectId|environmentId|plugin|resource|时区/iu);
   assert.equal(model.formatQuickQuestionDiscoveredDate('2026-02-30'),'');
 });
 

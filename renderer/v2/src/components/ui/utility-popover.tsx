@@ -18,7 +18,8 @@ export function useUtilityPopover(triggerSelector: string) {
   return { open, setOpen, anchor, id, show, toggle, triggerSelector }
 }
 
-export function UtilityPopover({ controller, title, summary, description, actions, footer, children, testId, closeTestId, onCloseAutoFocus }: {
+export function UtilityPopover({ controller, title, summary, description, actions, footer, children, testId, closeTestId, onCloseAutoFocus, wide = false }: {
+  readonly wide?: boolean
   readonly controller: ReturnType<typeof useUtilityPopover>
   readonly title: string
   readonly summary?: ReactNode
@@ -35,7 +36,7 @@ export function UtilityPopover({ controller, title, summary, description, action
   return <Popover open={open} onOpenChange={setOpen} modal={false}>
     <PopoverAnchor virtualRef={anchor} />
     <PopoverContent id={id} aria-labelledby={`${id}-title`} aria-describedby={`${id}-description`} side="top" align="start" sideOffset={10} collisionPadding={12}
-      className="max-h-[min(520px,var(--radix-popover-content-available-height))] w-[360px] max-w-[calc(100dvw-24px)] gap-0 overflow-hidden p-0" data-testid={testId} data-utility-popover
+      className={`${wide ? "max-h-[min(760px,var(--radix-popover-content-available-height))] w-[720px]" : "max-h-[min(520px,var(--radix-popover-content-available-height))] w-[360px]"} max-w-[calc(100dvw-24px)] gap-0 overflow-hidden p-0`} data-testid={testId} data-utility-popover
       onOpenAutoFocus={event => { outside.current = false; event.preventDefault(); document.getElementById(id)?.focus() }}
       onInteractOutside={event => {
         if (event.target instanceof Element && event.target.closest(triggerSelector)) { event.preventDefault(); return }

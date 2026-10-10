@@ -173,8 +173,8 @@ export function normalizeQuickQuestionDiscoveredDate(value) {
 export function formatQuickQuestionDiscoveredDate(value) {
   const normalized = normalizeQuickQuestionDiscoveredDate(value);
   if (!normalized) return '';
-  const [,month,day] = normalized.split('-');
-  return `${Number(month)}月${Number(day)}日`;
+  const [year,month,day] = normalized.split('-');
+  return `${year}年${Number(month)}月${Number(day)}日`;
 }
 
 export function buildQuickQuestionCopyText({ openingText, projectName, environmentName, question, discoveredDate }) {

@@ -18,7 +18,7 @@ function readError(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
-export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
+export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope, nameContains = "") {
   const { connected, connectionEpoch, capture } = useMysqlConnectionBoundary()
   const [tables, setTables] = useState<readonly MysqlTableSummary[]>([])
   const [tablesLoading, setTablesLoading] = useState(false)
@@ -52,6 +52,7 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
         environmentId,
         pluginInstanceId,
         limit: MYSQL_TABLE_PAGE_SIZE,
+        ...(nameContains ? { nameContains } : {}),
         ...(cursor ? { cursor } : {}),
       }))
       if (!isCurrent() || !active.current || ticket !== tickets.current.tables) return
@@ -72,7 +73,7 @@ export function useMysqlWorkspace(api: AiOpsV2Api, scope: PluginScope) {
         setTablesLoading(false)
       }
     }
-  }, [api, projectId, environmentId, pluginInstanceId, connected, connectionEpoch, capture])
+  }, [api, projectId, environmentId, pluginInstanceId, connected, connectionEpoch, capture, nameContains])
 
   useEffect(() => {
     active.current = true

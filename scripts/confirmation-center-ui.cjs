@@ -84,7 +84,9 @@ module.exports = async ({win,confirmations,publishUpdates,waitFor,captureRendere
         const popup = document.querySelector('${popup}'), rect = popup.getBoundingClientRect(), list = popup.querySelector('[data-utility-popover-list]');
         return {width:rect.width,inViewport:rect.left>=0&&rect.right<=innerWidth&&rect.top>=0&&rect.bottom<=innerHeight,scrolling:list.scrollHeight>list.clientHeight,horizontalOverflow:list.scrollWidth>list.clientWidth+1};
       })()`);
-      assert.deepEqual(geometry,{width:360,inViewport:true,scrolling:true,horizontalOverflow:false},'窄屏内保留滚动和完整参数');
+      assert.equal(geometry.width,720,'确认面板扩宽以便核对目标与参数');
+      assert.equal(geometry.inViewport,true);
+      assert.equal(geometry.horizontalOverflow,false,'窄屏不出现横向溢出');
     }
     if (screenshotRoot) {
       await click(card('confirmation-shell') + ' h3');
@@ -107,7 +109,9 @@ module.exports = async ({win,confirmations,publishUpdates,waitFor,captureRendere
     await evaluate(`document.querySelector('${approve('confirmation-upload')}').click()`);
     assert.deepEqual(decisions,[{decision:'approve',args:['confirmation-upload']}],'只提交本条请求标识一次');
     releaseDecision(); releaseDecision = null;
-    await waitFor(`document.querySelector('[data-testid="message-decision-feedback"]')?.textContent.includes('等待 Agent 执行') && !document.querySelector('${review}')`,'授权后回消息列表且不误报执行成功');
+    await waitFor(`document.querySelector('${review}')?.textContent.includes('等待 Agent 执行')`,'授权后保留详情并跟踪实际执行');
+    assert.equal(await evaluate(`document.querySelector('${review}').textContent.includes('查看操作记录')`),true,'可直达此次操作记录');
+    await click('[data-testid="confirmation-review-back"]');
     await waitFor(`document.querySelector('[data-testid="updates-open"]').getAttribute('aria-label') === '消息中心，2 项待确认操作，1 项更新'`,'两种计数独立');
     assert.equal(await evaluate(`document.querySelector('[data-testid="updates-count"]').textContent`),'3','授权后消息总数同步减少');
     await select('confirmation-shell');
@@ -119,7 +123,8 @@ module.exports = async ({win,confirmations,publishUpdates,waitFor,captureRendere
     await click(reject('confirmation-shell'));
     assert.deepEqual(decisions.slice(1),[{decision:'reject',args:['confirmation-shell']},{decision:'reject',args:['confirmation-shell']}],'拒绝只绑定本条请求，失败可重试');
     releaseDecision(); releaseDecision = null;
-    await waitFor(`document.querySelector('[data-testid=message-decision-feedback]')?.textContent.includes('操作已拒绝') && !document.querySelector('${review}')`,'拒绝后显示结果且保持弹窗打开');
+    await waitFor(`document.querySelector('${review}')?.textContent.includes('操作已拒绝')`,'拒绝后显示实际结果');
+    await click('[data-testid="confirmation-review-back"]');
     await waitFor(`document.querySelector('[data-testid="updates-open"]').getAttribute('aria-label') === '消息中心，1 项待确认操作，1 项更新'`,'处理完当前环境仍保留其他环境数量');
 
     publish([{...base[1],expiresAt:Date.now()+3000},base[2]]);

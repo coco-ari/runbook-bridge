@@ -91,6 +91,9 @@ export function RunbookFeature({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [conflict, setConflict] = useState<string | null>(null)
+  const [conflictBase, setConflictBase] = useState("")
+  const [conflictReviewed, setConflictReviewed] = useState(false)
+  const [preview, setPreview] = useState(false)
   const scopeKey = runbookScopeKey(projectId, environmentId)
   const scopeEpochRef = useRef(0)
   const scopeKeyRef = useRef(scopeKey)
@@ -181,11 +184,10 @@ export function RunbookFeature({
   }, [environmentId, projectId, readLatest, scopeKey])
 
   async function save() {
-    if (saving || loading || !dirty || tooLarge) return
+    if (saving || loading || !dirty || tooLarge || (conflict && !conflictReviewed)) return
     const epoch = scopeEpochRef.current
     setSaving(true)
     setError(null)
-    setConflict(null)
     try {
       const result = await getAiOpsV2().saveRunbook({
         projectId,
@@ -201,11 +203,15 @@ export function RunbookFeature({
       setRevision(nextRevision)
       revisionHintRef.current = nextRevision
       setEditing(false)
+      setConflict(null)
+      setConflictReviewed(false)
       revisionChangeRef.current?.(nextRevision)
       toast.success("运维说明已保存。")
     } catch (caught) {
       if (scopeEpochRef.current !== epoch) return
       if (caught instanceof FeatureApiError && caught.code === "CONFIG_REVISION_CONFLICT") {
+        setConflictBase(content)
+        setConflictReviewed(false)
         setConflict("环境已在其他窗口更新。你的草稿已保留，请核对最新内容后再次保存。")
         await readLatest(epoch, true)
       } else {
@@ -253,9 +259,10 @@ export function RunbookFeature({
                 放弃编辑
               </Button>
               <Button
-                disabled={saving || loading || !dirty || tooLarge}
+                disabled={saving || loading || !dirty || tooLarge || Boolean(conflict && !conflictReviewed)}
                 onClick={() => void save()}
                 size="xs"
+                aria-disabled={Boolean(conflict && !conflictReviewed)}
               >
                 <FloppyDisk />
                 {saving ? "保存中" : "保存"}
@@ -286,6 +293,16 @@ export function RunbookFeature({
         </Alert>
       )}
 
+      {editing && conflict ? <div className="mb-3 space-y-3 rounded-lg border border-warning/50 p-3" data-testid="runbook-conflict-review">
+        <p className="text-sm">将需要保留的内容合并到下方“我的草稿”。保存会用草稿完整替换最新版本。</p>
+        <div className="grid gap-3 @xl:grid-cols-2">
+          <label className="space-y-1 text-xs">编辑前的版本<Textarea aria-label="运维说明原始版本" readOnly value={conflictBase} className="h-44 font-mono text-xs" /></label>
+          <label className="space-y-1 text-xs">最新版本（修订 {revision}）<Textarea aria-label="运维说明最新版本" readOnly value={content} className="h-44 font-mono text-xs" /></label>
+        </div>
+        <Button size="sm" variant="outline" disabled={loading || saving || Boolean(error) || conflictReviewed} data-testid="runbook-conflict-reviewed" onClick={() => setConflictReviewed(true)}>{conflictReviewed ? "已核对，可保存合并后的草稿" : "已核对并合并到我的草稿"}</Button>
+        {error ? <Button size="sm" variant="outline" disabled={loading} onClick={() => void readLatest(scopeEpochRef.current, true)}>重新读取最新版本</Button> : null}
+      </div> : null}
+
       <div className="min-h-0">
         {loading && !editing ? (
           <div className="space-y-2" aria-label="正在读取运维说明">
@@ -294,7 +311,12 @@ export function RunbookFeature({
             <Skeleton className="h-3 w-4/5" />
             <Skeleton className="h-28 w-full" />
           </div>
-        ) : editing ? (
+        ) : editing ? (<>
+          <div className="mb-2 flex flex-wrap items-center gap-2"><span className="mr-auto text-xs font-medium">我的草稿</span>
+            {!draft.trim() ? <Button size="xs" variant="outline" disabled={saving} onClick={() => { draftGenerationRef.current += 1; setDraft("# 环境边界\n\n适用服务与操作限制：\n\n# 排障入口\n\n日志位置、监控入口与只读检查：\n\n# 部署与恢复\n\n部署步骤、验证方法与回滚条件：\n\n# 操作约定\n\n负责人、审批要求与注意事项：\n") }}>使用运维说明模板</Button> : null}
+            <Button size="xs" variant="outline" onClick={() => setPreview(value => !value)}>{preview ? "继续编辑" : "预览"}</Button>
+          </div>
+          {preview ? <pre className="h-[min(58dvh,32rem)] overflow-auto whitespace-pre-wrap break-words rounded-lg border p-4 text-sm leading-6">{draft}</pre> :
           <Textarea
             aria-describedby={tooLarge ? "runbook-size-error" : undefined}
             aria-invalid={tooLarge}
@@ -307,8 +329,9 @@ export function RunbookFeature({
             }}
             spellCheck={false}
             value={draft}
+            disabled={saving}
           />
-        ) : !content.trim() ? (
+          }</>) : !content.trim() ? (
           <Empty className="min-h-44 rounded-lg border border-dashed bg-surface-inset/45">
             <EmptyHeader>
               <EmptyMedia variant="icon"><NotePencil /></EmptyMedia>

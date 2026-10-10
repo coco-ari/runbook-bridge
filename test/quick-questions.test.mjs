@@ -130,7 +130,7 @@ test('copy text has only the canonical opening, range, and redacted question sec
   );
 });
 
-test('copy includes an optional month-day discovery date and rejects invalid dates', () => {
+test('copy includes an optional full year-month-day discovery date and rejects invalid dates', () => {
   const base = {
     openingText:'请使用 AI Ops MCP 排查。',
     projectName:'订单中心',
@@ -139,14 +139,14 @@ test('copy includes an optional month-day discovery date and rejects invalid dat
   };
   assert.equal(normalizeQuickQuestionDiscoveredDate(''), '');
   assert.equal(normalizeQuickQuestionDiscoveredDate('2026-08-24'), '2026-08-24');
-  assert.equal(formatQuickQuestionDiscoveredDate('2026-08-24'), '8月24日');
+  assert.equal(formatQuickQuestionDiscoveredDate('2026-08-24'), '2026年8月24日');
   assert.equal(buildQuickQuestionCopyText({...base,discoveredDate:'2026-08-24'}),[
     '请使用 AI Ops MCP 排查。',
     '',
     '【当前范围】',
     '项目：订单中心',
     '环境：生产环境',
-    '问题发现时间：8月24日',
+    '问题发现时间：2026年8月24日',
     '',
     '【问题】',
     '检查服务状态',

@@ -4,6 +4,8 @@ import { AppError } from './errors.mjs';
 import { normalizeRedisCursor } from './pagination-cursor.mjs';
 import { RedisEditConnection } from './redis-edit-connection.mjs';
 import { RedisWorkspaceReader } from './redis-workspace-reader.mjs';
+import { redisKeyAllowed } from './redis-key-pattern.mjs';
+export { redisKeyAllowed } from './redis-key-pattern.mjs';
 
 const { createClient } = redisPackage;
 
@@ -15,11 +17,6 @@ export function findRedisPattern(plugin, patternId) {
   const pattern = plugin.patterns.find((item) => item.patternId === patternId);
   if (!pattern) throw new AppError('POLICY_DENIED', 'Key patternId 未登记。');
   return pattern;
-}
-
-export function redisKeyAllowed(pattern, value) {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
-  return new RegExp(`^${escaped}$`, 'u').exec(value)?.[0] === value;
 }
 
 async function withTimeout(plugin, operation) {

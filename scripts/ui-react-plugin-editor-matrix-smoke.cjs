@@ -259,6 +259,8 @@ async function editPlugin(win,pluginInstanceId) {
   await waitFor(win,`document.querySelector('[data-testid="plugin-action-edit"]')?.disabled === false`,'matrix edit action');
   await click(win,'[data-testid="plugin-action-edit"]','matrix edit');
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) !== null && document.querySelector('[data-testid="plugin-editor-loading"]') === null`,'matrix edit preparation ready');
+  await click(win,'[data-testid="plugin-begin-edit"]','matrix explicit edit');
+  await waitFor(win,`document.querySelector('[data-testid="plugin-begin-edit"]') === null && document.querySelector('[data-testid="plugin-editor-loading"]') === null`,'matrix edit preparation');
   if (await win.webContents.executeJavaScript(`document.querySelector('[data-testid="plugin-editor-confirmation"]') !== null`,true)) {
     await clickText(win,'继续编辑','[data-testid="plugin-editor-confirmation"]');
   }

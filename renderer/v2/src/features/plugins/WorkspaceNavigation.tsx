@@ -78,3 +78,8 @@ export function useWorkspaceConfigure() {
   const navigation = useContext(NavigationContext), entry = useContext(EntryContext)
   return navigation && entry ? () => navigation.configure(entry) : undefined
 }
+
+export function useScopeHasWorkspaceDraft(scope: { projectId: string; environmentId: string; pluginInstanceId: string }) {
+  return useContext(NavigationContext)?.entries.some(entry => entry.dirty && entry.scope.projectId === scope.projectId
+    && entry.scope.environmentId === scope.environmentId && entry.scope.pluginInstanceId === scope.pluginInstanceId) ?? false
+}

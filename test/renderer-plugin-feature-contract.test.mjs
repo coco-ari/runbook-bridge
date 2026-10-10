@@ -237,7 +237,7 @@ test('React plugin features preserve scope, credential, and edit-session boundar
   assert.match(editor,/DropdownMenuContent/u);
   assert.match(editor,/aria-label="插件保存方式"/u);
   assert.match(editor,/aria-label="选择其他保存方式"/u);
-  assert.match(editor,/editor\.save\("disconnect"\)/u);
+  assert.match(editor,/editor\.save\(saveStrategy\)/u);
   assert.match(editor,/editor\.save\("connect-current"\)/u);
   assert.match(editor,/editor\.save\("restore-previous"\)/u);
   assert.match(editor,/FieldGroup/u);
@@ -267,7 +267,7 @@ test('React plugin features preserve scope, credential, and edit-session boundar
   assert.match(editor,/onClick=\{requestClose\}/u);
   assert.match(editor,/void requestLeave\(\)\.then\(\(allowed\) => \{ if \(allowed\) onClosed\(\) \}\)/u);
   assert.match(editor,/清除本次输入的临时凭据/u);
-  assert.match(editor,/修改仅作用于当前插件/u);
+  assert.match(editor,/受影响的连接/u);
   assert.match(editor,/\{projectName\}[\s\S]*?\{environmentName\}/u);
   assert.match(editor,/advancedConnectionSummary/u);
   assert.doesNotMatch(editor,/\{scope\.projectId\} \/ \{scope\.environmentId\}/u);

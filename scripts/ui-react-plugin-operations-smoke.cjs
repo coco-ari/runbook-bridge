@@ -812,6 +812,8 @@ async function pressEscape(win) {
 
 async function ensureNativeKeyboardFocus(win) {
   if (await win.webContents.executeJavaScript('document.hasFocus()',true)) return;
+  if (process.platform === 'darwin') app.focus({steal:true});
+  win.focus();
   // A hidden Windows Electron window can change activeElement without emitting
   // real focusin/out events. Focus the WebContents, not a synthetic FocusEvent.
   win.webContents.focus();
@@ -1272,6 +1274,7 @@ async function assertResourceAccordionBounds(win,label) {
 
 async function openPluginEditor(win,pluginName,evidenceName = null,{expectImpact = false,returnTab = null} = {}) {
   currentStep = `open-editor:${evidenceName ?? (expectImpact ? 'impact' : 'navigation')}`;
+  const previewBeginCount = calls('v2:plugin-connection-edit-begin').length;
   const projectSelected = await win.webContents.executeJavaScript(`document.querySelector('[data-project-id="${PROJECT_ID}"]')?.getAttribute('aria-current') === 'page'`,true);
   if (!projectSelected) {
     await click(win,`[data-project-id="${PROJECT_ID}"]`,'original plugin project');
@@ -1289,6 +1292,9 @@ async function openPluginEditor(win,pluginName,evidenceName = null,{expectImpact
   await waitFor(win,`document.querySelector('[data-testid="plugin-action-edit"]')?.disabled === false`,'plugin details edit action');
   await openPopup(win,'[data-testid="plugin-action-edit"]','edit configuration directly from plugin details');
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) !== null`,'plugin editor workspace');
+  await waitFor(win,`document.querySelector('[data-testid="plugin-begin-edit"]') !== null`,'read-only connection preview');
+  assert.equal(calls('v2:plugin-connection-edit-begin').length, previewBeginCount, 'viewing connection settings does not disconnect');
+  await click(win,'[data-testid="plugin-begin-edit"]','begin editing after inspecting configuration');
   if (expectImpact) {
     await waitFor(win,`document.querySelector('[data-testid="plugin-editor-confirmation"]') !== null`,'plugin edit-impact confirmation');
     return;

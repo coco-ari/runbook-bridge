@@ -55,6 +55,11 @@ let credentialStore;
 let mainWindow;
 let v2;
 let updateChecks;
+let unsavedWorkCount = 0;
+ipcMain.on('v2:unsaved-work', (event, count) => {
+  if (event.sender !== mainWindow?.webContents || !Number.isSafeInteger(count) || count < 0) return;
+  unsavedWorkCount = Math.min(count, 10_000);
+});
 const updateShutdown = new SoftwareUpdateShutdownGate();
 const SHUTDOWN_WATCHDOG_MS = 15_000;
 const transferExitGuard = createTransferExitGuard({
@@ -62,15 +67,16 @@ const transferExitGuard = createTransferExitGuard({
     const transfers = v2?.serverWorkspaceFiles?.exitSummary() ?? {active:0, resumable:0};
     const sql = v2?.v2Service?.mysqlSql?.exitSummary().active ?? 0;
     const editing = v2?.serverWorkspaceFiles?.editor.exitSummary() ?? 0;
-    return {...transfers, active:transfers.active + sql + editing, transfers:transfers.active, sql, editing};
+    return {...transfers, active:transfers.active + sql + editing + unsavedWorkCount, transfers:transfers.active, sql, editing, drafts:unsavedWorkCount};
   },
-  confirm: async ({transfers, resumable, sql, editing}) => {
+  confirm: async ({transfers, resumable, sql, editing, drafts}) => {
     const options = {
-      type:'warning', title:'退出客户端', message:editing ? '还有未保存或待核实的文件编辑' : sql ? '还有未结束的 SQL 执行或事务' : '还有未结束的文件传输',
-      detail:[sql ? `${sql} 个 SQL 标签正在执行、有未提交事务或结果尚未确认。退出将关闭这些连接，未提交事务会回滚；已提交或结果不确定的写入不会被撤销。` : '',
+      type:'warning', title:'退出客户端', message:drafts ? '还有未保存的草稿或待完成的操作' : editing ? '还有未保存或待核实的文件编辑' : sql ? '还有未结束的 SQL 执行或事务' : '还有未结束的文件传输',
+      detail:[drafts ? `${drafts} 项编辑或操作尚未完成。退出会清除会话内 SQL、数据修改和配置草稿。请留在客户端保存、导出或核实结果。` : '',
+        sql ? `${sql} 个 SQL 标签正在执行、有未提交事务或结果尚未确认。退出将关闭这些连接，未提交事务会回滚；已提交或结果不确定的写入不会被撤销。` : '',
         editing ? `${editing} 个文件有未保存内容、正在保存或结果待核实。退出会清除草稿和会话内的恢复版本；已保存的远端内容不会撤销。` : '',
         transfers || resumable ? `${transfers} 项正在传输或等待结束，${resumable} 项已暂停或等待续传。退出将终止传输并清除续传信息。` : ''].filter(Boolean).join('\n'),
-      buttons:['留在客户端', editing || sql ? '结束会话并退出' : '终止传输并退出'], defaultId:0, cancelId:0, noLink:true,
+      buttons:['留在客户端', editing || sql || drafts ? '放弃草稿并结束会话' : '终止传输并退出'], defaultId:0, cancelId:0, noLink:true,
     };
     const result = mainWindow && !mainWindow.isDestroyed() ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
     return result.response === 1;
@@ -82,6 +88,7 @@ app.setName('AI 运维工具');
 app.disableHardwareAcceleration();
 
 function createWindow() {
+  unsavedWorkCount = 0;
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
@@ -280,7 +287,7 @@ if (process.argv.includes('--mcp')) {
           saveSelection:id => cloudConfigService.saveSoftwareUpdateSelection(id),
           createUpdater:createSoftwareUpdateDriver,
           install:driver => updateShutdown.install(driver,{
-            assertIdle:() => assertSoftwareUpdateIdle(v2),close:closeForSoftwareUpdate,quit:() => app.quit(),
+            assertIdle:() => assertSoftwareUpdateIdle({...v2, unsavedWorkCount}),close:closeForSoftwareUpdate,quit:() => app.quit(),
             onFailure:() => {
               dialog.showErrorBox('软件更新未完成','客户端未能安全完成更新。请重新打开客户端后重试；当前版本和本地配置会保留。');
               app.quit();
@@ -318,6 +325,24 @@ if (process.argv.includes('--mcp')) {
         const updateCoordinator = new UpdateCoordinator({cloud:cloudConfigService,software:softwareUpdateService,notifications:updateNotifications,
           checkSoftware:() => updateChecks?.checkNow() ?? Promise.resolve(),broadcast});
         v2.updateNotifications = updateNotifications;
+        // 使用同一提醒偏好；系统通知只包含数量，不泄露目标、命令或业务内容。
+        let previousConfirmationIds = new Set();
+        let approvalNotification = null;
+        confirmationManager.on('changed', pending => {
+          const ids = new Set(pending.map(item => item.requestId));
+          const arrivals = pending.filter(item => !previousConfirmationIds.has(item.requestId));
+          previousConfirmationIds = ids;
+          if (!pending.length) { approvalNotification?.close(); approvalNotification = null; }
+          if (!arrivals.length || notificationChannel(updateNotifications.snapshot().notificationMode, mainWindow?.isFocused()) !== 'system' || !Notification.isSupported()) return;
+          approvalNotification?.close();
+          approvalNotification = new Notification({title:'有新的 Agent 操作需要确认', body:`${pending.length} 项操作等待核对，请在授权有效期内打开工作台查看。`});
+          approvalNotification.on('click', () => {
+            if (mainWindow?.isMinimized()) mainWindow.restore();
+            mainWindow?.show(); mainWindow?.focus();
+            broadcast('v2:update-center', {kind:'confirmations-open'});
+          });
+          approvalNotification.show();
+        });
         v2.updateCoordinator = updateCoordinator;
         cloudConfigService.onStateChanged = () => updateCoordinator.schedule();
         cloudConfigService.onOwnerClosed = owner => updateCoordinator.closeOwner(owner);

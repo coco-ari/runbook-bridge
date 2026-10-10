@@ -4129,7 +4129,7 @@ async function assertSecurity(win) {
     styleAttributeProbe.remove();
     return result;
   })()`,true);
-  assert.equal(snapshot.apiNames.length,119);
+  assert.equal(snapshot.apiNames.length,120);
   assert.equal(snapshot.hasRequire,false);
   assert.equal(snapshot.hasProcess,false);
   assert.equal(snapshot.inlineStyleAttributeWidth,'13px');
@@ -4328,7 +4328,7 @@ async function run() {
       return;
     }
     if (app.commandLine.hasSwitch('settings-regression-only')) {
-      const states = { configured: '已配置', available: '尚未配置', outdated: '配置需要更新', conflict: '需要手动处理', error: '暂时无法检测' };
+      const states = { configured: '配置已写入', available: '尚未配置', outdated: '配置需要更新', conflict: '需要手动处理', error: '暂时无法检测' };
       if (screenshotRoot) fs.mkdirSync(screenshotRoot, { recursive: true });
       for (const theme of ['light', 'dark']) {
         await setTheme(win, theme);

@@ -176,7 +176,10 @@ function readQuery({pluginInstanceId,sql}) {
     })),{truncated:true}));
   }
 
+let unsavedWorkCount = 0;
 function registerMockApi() {
+  ipcMain.on('v2:unsaved-work',(_event,count) => { assert.ok(Number.isSafeInteger(count) && count >= 0); unsavedWorkCount = count; });
+  registerRead('v2:mysql-export-save',() => ({saved:true}));
   registerRead('v2:project-list',() => workspace().map(({environments:_,...record}) => record));
   registerRead('v2:workspace-overview',workspace);
   registerRead('v2:environment-list',() => [environment(),environment(SECOND_ENVIRONMENT_ID)]);
@@ -190,10 +193,11 @@ function registerMockApi() {
   registerRead('v2:runbook-read',() => ({content:'',bytes:0,hash:'0'.repeat(64),empty:true}));
   registerRead('v2:quick-question-opening-get',() => ({schemaVersion:1,text:'只读验证模拟数据库。',defaultText:'只读验证模拟数据库。',revision:1}));
   registerRead('v2:quick-question-list',() => ({schemaVersion:1,projectId:PROJECT_ID,environmentId:ENVIRONMENT_ID,revision:1,items:[]}));
-  registerDatabase('v2:mysql-list-tables',({pluginInstanceId,cursor}) => {
+  registerDatabase('v2:mysql-list-tables',({pluginInstanceId,cursor,nameContains}) => {
     if (state.failList) return failed('模拟数据表列表读取失败。');
     if (state.extraTables) return ok({tables:Array.from({length:6},(_,index)=>({name:'fixture_'+(index+1),type:'BASE TABLE',queryable:true})),nextCursor:null,truncated:false});
     if (pluginInstanceId === OTHER_ID) return ok({tables:[{name:'reports',type:'BASE TABLE',queryable:true}],nextCursor:null,truncated:false});
+    if (nameContains) return ok({tables:['orders','order_summary','archived_orders'].filter(name=>name.includes(nameContains)).map(name=>({name,type:'BASE TABLE',queryable:true})),nextCursor:null,truncated:false});
     return ok(cursor ? {
       tables:[{name:'archived_orders',type:'BASE TABLE',queryable:true}],nextCursor:null,truncated:false,
     } : {
@@ -354,6 +358,7 @@ async function selectPlugin(win,pluginInstanceId) {
   if(current && current!==target.displayName) {
     await click(win,testId('mysql-workspace-close'));
     await click(win,testId('mysql-workspace-confirm-close'));
+    if (await isVisible(win,'mysql-edit-discard-confirm')) await click(win,testId('mysql-edit-discard-confirm'));
     await waitFor(win,"!document.querySelector('[data-testid=mysql-full-window-workspace]')",'切换数据库前明确关闭旧工作区');
   }
   await selectPluginDetails(win,pluginInstanceId);
@@ -414,10 +419,16 @@ async function pressBodyShortcut(win,keyCode) {
 
 async function assertBackgroundShortcutsDisabled(win) {
   const collapsed = await win.webContents.executeJavaScript(`document.querySelector('${testId('project-rail')}').dataset.collapsed`,true);
-  for (const key of ['K','N','B']) await pressBodyShortcut(win,key);
-  assert.equal(await isVisible(win,'global-command'),false,'body 焦点不得绕过工作区拦截打开全局命令。');
-  assert.equal(await win.webContents.executeJavaScript(`[...document.querySelectorAll('[role="dialog"],[role="alertdialog"]')].some((element) => element.getClientRects().length > 0)`,true),false,'工作区中不得通过后台快捷键打开弹窗。');
-  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('project-rail')}').dataset.collapsed`,true),collapsed,'工作区中的 Ctrl+B 不得改变后台栏布局。');
+  await assertBackgroundShortcutsRestored(win);
+  await pressBodyShortcut(win,'B');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('project-rail')}').dataset.collapsed`,true),collapsed,'工作区中的 Ctrl+B 不改变后台栏布局');
+  await pressBodyShortcut(win,'N');
+  await waitFor(win,"document.querySelector('[data-testid=create-project-dialog]')",'工作区中可通过全局快捷键新增项目');
+  assert.equal(await win.webContents.executeJavaScript("document.querySelector('[data-testid=mysql-full-window-workspace]')?.hidden",true),true,'新增项目暂时隐藏而不销毁工作区');
+  win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});
+  win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});
+  await waitFor(win,"!document.querySelector('[role=dialog]')",'关闭新增项目弹窗');
+  await openDatabaseWorkspace(win);
 }
 
 async function assertBackgroundShortcutsRestored(win) {
@@ -538,6 +549,19 @@ async function assertQueryDocuments(win,originalSql) {
   await click(win,testId('mysql-sql-document-tab'));
   await textContains(win,'mysql-query-result','仅属于第二个 SQL 标签');
   await click(win,`${testId('mysql-query-close')}[data-query-id="${secondId}"]`);
+  await textContains(win,'mysql-edit-discard-dialog','未保存');
+  assert.ok(unsavedWorkCount > 0, 'SQL 草稿数量报告给退出保护，正文不离开工作区');
+  await win.webContents.executeJavaScript(`[...document.querySelectorAll('[data-testid="mysql-edit-discard-dialog"] button')].find(button => button.textContent === '返回并保留').click()`,true);
+  await waitFor(win,`!document.querySelector('[data-testid="mysql-edit-discard-dialog"]')`,'cancel closing retains SQL');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').value`,true),'SELECT delayed_document FROM orders');
+  await click(win,`${testId('mysql-query-close')}[data-query-id="${secondId}"]`);
+  await click(win,testId('mysql-edit-discard-confirm'));
+  await click(win,testId('mysql-script-restore'));
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').value`,true),'SELECT delayed_document FROM orders','恢复文本不重放 SQL 或恢复原事务');
+  await click(win,testId('mysql-script-save'));
+  const restoredId = await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-document-tab')}').dataset.queryId`,true);
+  await click(win,`${testId('mysql-query-close')}[data-query-id="${restoredId}"]`);
+
   await click(win,testId('mysql-query-new'));
   const thirdId = await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-document-tab')}').dataset.queryId`,true);
   const closedHold = {channel:'v2:mysql-sql',pluginInstanceId:PRIMARY_ID,result:queryResult([{id:702,label:'已关闭标签的迟到结果',optional:null}])};
@@ -549,6 +573,7 @@ async function assertQueryDocuments(win,originalSql) {
   assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-document-tab')}[data-query-id="${thirdId}"]') !== null`,true),true,'正在执行的标签先停止再关闭');
   await click(win,testId('mysql-query-stop'));
   await click(win,`${testId('mysql-query-close')}[data-query-id="${thirdId}"]`);
+  await click(win,testId('mysql-edit-discard-confirm'));
   closedHold.release();
   await wait(100);
   await textContains(win,'mysql-query-result','模拟订单 100');
@@ -583,6 +608,7 @@ async function assertReadonlyResultKeyboard(win) {
   await require('./database-grid-keyboard-ui.cjs')({win,prefix:'mysql-query',editable:false,waitFor});
   assert.equal(databaseCalls.length,callCount,'只读网格方向、复制、查看详情和 Tab 离开不发送数据库请求');
   await click(win,`${testId('mysql-query-close')}[data-query-id="${documentId}"]`);
+  if (await isVisible(win,'mysql-edit-discard-confirm')) await click(win,testId('mysql-edit-discard-confirm'));
   await waitFor(win,`document.querySelector('${testId('mysql-sql-tab')}')?.getAttribute('aria-selected') === 'true'`,'关闭只读验证标签回到原 SELECT');
   await textContains(win,'mysql-query-result','模拟订单 100');
 }
@@ -760,15 +786,13 @@ async function run() {
     assert.equal(databaseCalls.length,1,'主题切换不得重新请求数据库');
     await assertResizableWorkspace(win);
     await assertBackgroundShortcutsDisabled(win);
-    await fill(win,testId('mysql-table-search'),'orders');
-    assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('${testId('mysql-table-item')}').length`,true),1);
-    const beforeClearSearch = databaseCalls.length;
+    await fill(win,testId('mysql-table-search'),'archived');
+    await textContains(win,'mysql-table-list','archived_orders');
+    assert.deepEqual(databaseCalls.at(-1),{channel:'v2:mysql-list-tables',payload:{...scope(PRIMARY_ID),limit:100,nameContains:'archived'}},'全库搜索能够找到原始第一页以外的表');
     await click(win,testId('mysql-table-search-clear'));
     assert.equal(await win.webContents.executeJavaScript("document.querySelector('[data-testid=mysql-table-search]').value",true),'');
     assert.equal(await win.webContents.executeJavaScript("document.activeElement === document.querySelector('[data-testid=mysql-table-search]')",true),true,'清空后焦点保留在搜索框');
-    assert.equal(await win.webContents.executeJavaScript("document.querySelector('[data-testid=mysql-table-search-clear]')",true),null,'空搜索不显示清除按钮');
-    assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('[data-testid=mysql-table-item]').length",true),2,'清空恢复全部已加载表');
-    assert.equal(databaseCalls.length,beforeClearSearch,'清除搜索不重新请求数据库');
+    await waitFor(win,"document.querySelector('[data-testid=mysql-table-item][data-table-name=order_summary]') !== null",'清空后重新加载完整列表第一页');
     await click(win,testId('mysql-tables-load-more'));
     await textContains(win,'mysql-table-list','archived_orders');
     assert.deepEqual(databaseCalls.at(-1),{channel:'v2:mysql-list-tables',payload:{...scope(PRIMARY_ID),limit:100,cursor:'100'}});

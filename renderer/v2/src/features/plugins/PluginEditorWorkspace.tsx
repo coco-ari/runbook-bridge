@@ -1,4 +1,5 @@
 import { privateKeyPathExample } from "@/lib/platform"
+import { useUnsavedWork } from "@/hooks/use-unsaved-work"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowLeft,
@@ -175,9 +176,11 @@ export function PluginEditorWorkspace({
   onToggleExpanded,
   onSaved,
 }: PluginEditorWorkspaceProps) {
+  const [editingEnabled, setEditingEnabled] = useState(!plugin)
+  const [saveStrategy, setSaveStrategy] = useState<"disconnect" | "connect-current" | "restore-previous">("disconnect")
   const editor = usePluginEditor({
     api,
-    open: true,
+    open: editingEnabled,
     scope,
     plugin,
     initialKind,
@@ -200,7 +203,8 @@ export function PluginEditorWorkspace({
   const draft = state.draft
   const busy = ["preparing", "validating", "saving"].includes(state.phase) || confirmationInFlight
   const closeBlocked = busy || discardInFlight
-  const saveBlocked = closeBlocked || state.confirmation !== null || pendingLocalChange !== null
+  const saveBlocked = !editingEnabled || closeBlocked || state.confirmation !== null || pendingLocalChange !== null
+  useUnsavedWork(editor.isDirty || busy)
   const fieldErrors = useMemo(
     () => Object.fromEntries(state.issues.map((issue) => [issue.field, issue.message])),
     [state.issues],
@@ -385,10 +389,10 @@ export function PluginEditorWorkspace({
               </span>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <h1 className="text-base font-semibold tracking-tight" id="plugin-editor-title">{editor.isCreating ? "新增插件" : "编辑连接配置"}</h1>
+                  <h1 className="text-base font-semibold tracking-tight" id="plugin-editor-title">{editor.isCreating ? "新增插件" : editingEnabled ? "编辑连接配置" : "查看连接配置"}</h1>
                   {editor.isDirty ? <Badge variant="warning">未保存</Badge> : null}
                 </div>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">{editor.isCreating ? "配置新插件，保存后再决定是否连接。" : `${plugin?.displayName} · 修改仅作用于当前插件。`}</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">{editor.isCreating ? "配置新插件，并选择保存后的连接方式。" : !editingEnabled ? "查看配置保持现有连接。点击“修改连接配置”后将核对并处理受影响的连接。" : `${plugin?.displayName} · 保存前请确认下方连接方式。`}</p>
               </div>
             </div>
           </header>
@@ -407,7 +411,7 @@ export function PluginEditorWorkspace({
                 id="plugin-editor-form"
                 onSubmit={(event) => {
                   event.preventDefault()
-                  void editor.save("disconnect")
+                  void editor.save(saveStrategy)
                 }}
               >
                 <FieldGroup className="gap-4" inert={saveBlocked}>
@@ -757,6 +761,7 @@ export function PluginEditorWorkspace({
           </ScrollArea>
 
           <footer className="shrink-0 border-t border-border bg-surface px-4 py-3 @min-[640px]/editor:px-6" data-testid="plugin-editor-footer">
+            {!editingEnabled ? <div className="mx-auto flex max-w-4xl justify-end gap-2"><Button size="sm" variant="outline" onClick={requestClose}>返回详情</Button><Button size="sm" data-testid="plugin-begin-edit" onClick={() => setEditingEnabled(true)}>修改连接配置</Button></div> : <>
             {state.error ? (
               <Alert className="mx-auto mb-3 max-w-4xl" data-testid="plugin-editor-error" variant="destructive">
                 <WarningCircle aria-hidden="true" weight="fill" />
@@ -787,7 +792,11 @@ export function PluginEditorWorkspace({
                   </Button>
                 ) : null}
               </div>
-              <div className="flex w-full min-w-0 gap-2 @min-[560px]/editor:w-auto">
+              <div className="flex w-full min-w-0 flex-wrap gap-2 @min-[560px]/editor:w-auto @min-[560px]/editor:justify-end">
+                <Select value={saveStrategy} onValueChange={value => setSaveStrategy(value as typeof saveStrategy)} disabled={saveBlocked}>
+                  <SelectTrigger aria-label="保存后的连接方式" className="w-40" data-testid="plugin-save-strategy"><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="disconnect">保存后保持断开</SelectItem><SelectItem value="connect-current">保存并连接当前插件</SelectItem>{!editor.isCreating ? <SelectItem value="restore-previous">保存并恢复原有连接</SelectItem> : null}</SelectContent>
+                </Select>
                 <Button className="shrink-0" data-testid="plugin-editor-cancel" disabled={closeBlocked} onClick={requestClose} size="sm" type="button" variant="outline">
                   {discardInFlight ? "正在结束" : "取消"}
                 </Button>
@@ -804,7 +813,7 @@ export function PluginEditorWorkspace({
                     <span className="truncate">
                       {state.phase === "saving"
                         ? "保存中"
-                        : editor.isCreating
+                        : saveStrategy === "restore-previous" ? "保存并恢复连接" : saveStrategy === "connect-current" ? "保存并连接" : editor.isCreating
                           ? "添加但不连接"
                           : "保存但不连接"}
                     </span>
@@ -860,6 +869,7 @@ export function PluginEditorWorkspace({
                 </ButtonGroup>
               </div>
             </div>
+            </>}
           </footer>
       </main>
 

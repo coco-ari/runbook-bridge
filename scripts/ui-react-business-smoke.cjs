@@ -1048,7 +1048,7 @@ async function assertQuickQuestionDatePicker(win) {
     assert.ok(selectedDate && selectedDate.year >= 1000 && selectedDate.month >= 1
       && selectedDate.month <= 12 && selectedDate.date >= 1 && selectedDate.date <= 31,
       'the discovery calendar must expose a valid selectable date');
-    const expectedDateLine = `问题发现时间：${selectedDate.month}月${selectedDate.date}日`;
+    const expectedDateLine = `问题发现时间：${selectedDate.year}年${selectedDate.month}月${selectedDate.date}日`;
     await waitFor(win,`(() => {
       const trigger = document.querySelector('#quick-question-date');
       const preview = document.querySelector(${JSON.stringify(previewSelector)});
@@ -1056,7 +1056,7 @@ async function assertQuickQuestionDatePicker(win) {
         && trigger.getAttribute('aria-expanded') === 'false'
         && preview?.textContent?.split('\\n').includes(${JSON.stringify(expectedDateLine)}) === true
         && document.activeElement === trigger;
-    })()`,'selecting a date updates month-day preview context and restores trigger focus');
+    })()`,'selecting a date updates full-date preview context and restores trigger focus');
     const selectedDateGeometry = await win.webContents.executeJavaScript(`(() => {
       const date = document.querySelector('#quick-question-date');
       const composer = document.querySelector('[data-testid="quick-question-composer"]');
@@ -1608,6 +1608,9 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
   await clickText(win,'保存','[data-feature="runbook"]');
   await waitFor(win,`document.querySelector('[data-feature="runbook"] [role="alert"]')?.textContent.includes('运维说明已在其他位置更新') === true`,'runbook conflict preserves editable draft');
   assert.equal(await win.webContents.executeJavaScript(`document.querySelector('textarea[aria-label="当前环境运维说明"]')?.value`,true),draft);
+  await waitFor(win,`document.querySelector('textarea[aria-label="运维说明最新版本"]')?.value === '# 其他窗口保存的内容' && !document.querySelector('[data-testid="runbook-conflict-reviewed"]').disabled`,'conflict comparison loads latest revision');
+  assert.equal(await win.webContents.executeJavaScript(`[...document.querySelectorAll('[data-feature="runbook"] button')].find(button => button.textContent.trim() === '保存').disabled`,true),true,'unreviewed conflict cannot overwrite latest content');
+  await click(win,'[data-testid="runbook-conflict-reviewed"]','acknowledge merged conflict');
   await waitFor(win,`[...document.querySelectorAll('[data-feature="runbook"] button')].some(button => button.textContent.trim() === '保存' && !button.disabled)`,'runbook conflict refresh completes');
   await clickText(win,'保存','[data-feature="runbook"]');
   await waitFor(win,`document.querySelector('[data-feature="runbook"] pre')?.textContent.includes('冲突恢复草稿') === true`,'runbook retry saves preserved draft');

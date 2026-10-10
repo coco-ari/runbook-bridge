@@ -563,7 +563,7 @@ export function QuickQuestionsFeature({
             spellCheck={false}
             value={openingDraft}
           />
-          <FieldDescription id="quick-opening-editor-description">保存后对所有环境生效；请保留明确的 AI Ops MCP 使用说明。</FieldDescription>
+          <FieldDescription id="quick-opening-editor-description">这是全局配置，保存后会改变所有项目、所有环境的提问开场词；请保留明确的 AI Ops MCP 使用说明。</FieldDescription>
           <FieldError id="quick-opening-editor-error">{openingValidation}</FieldError>
         </Field>
         {openingStale ? (
@@ -829,7 +829,7 @@ export function QuickQuestionsFeature({
               {inlineEditor === "opening" ? openingEditor : <Item className="flex-nowrap items-start gap-2 border-0 border-t border-border/70 rounded-none px-0 pb-0 pt-3" size="sm">
                 <ItemContent>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <ItemTitle asChild><h3 className="text-xs text-muted-foreground" id="opening-title">Agent 开场词</h3></ItemTitle>
+                    <ItemTitle asChild><h3 className="text-xs text-muted-foreground" id="opening-title">Agent 开场词 · 全局配置</h3></ItemTitle>
                     <span className="text-xs text-muted-foreground">所有环境通用</span>
                   </div>
                   {loadingOpening ? (
