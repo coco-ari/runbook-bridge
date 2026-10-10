@@ -8,7 +8,14 @@ import { redisBytes } from "./redis-workspace-model"
 import { formatRedisJson } from "./redis-value-format"
 import { RedisValueEditor, type RedisValueEditorHandle } from "./RedisValueEditor"
 
-export function RedisValueViewer({ value }: { readonly value: RedisValuePreview }) {
+export interface RedisValueViewerProps {
+  readonly value: RedisValuePreview
+  readonly loadMore?: () => void
+  readonly loading?: boolean
+  readonly disabled?: boolean
+}
+
+export function RedisValueViewer({ value, loadMore, loading = false, disabled = false }: RedisValueViewerProps) {
   const [view, setView] = useState<"text" | "json" | "hex" | null>(null)
   const [wrap, setWrap] = useState(true)
   const editor = useRef<RedisValueEditorHandle>(null)
@@ -29,6 +36,7 @@ export function RedisValueViewer({ value }: { readonly value: RedisValuePreview 
           size="xs" variant="ghost" onClick={() => setView(mode)}>{mode === "text" ? "文本" : mode === "json" ? "JSON" : "十六进制"}</Button>)}
       </div>
       <span className="redis-value-size" title={value.truncated ? "已加载字节 / 总字节" : "内容大小"}>{value.truncated ? redisBytes(value.shownBytes) + " / " : ""}{redisBytes(value.bytes)}</span>
+      {loadMore ? <Button size="xs" variant="outline" disabled={disabled || loading} data-testid="redis-value-more" onClick={loadMore}>{loading ? "正在加载…" : "加载更多内容"}</Button> : null}
       <Button size="xs" variant="ghost" className="redis-copy-content" aria-label={value.truncated ? "复制已加载部分" : "复制当前内容"}
         title={value.truncated ? "复制当前显示的片段，不包含未读取内容" : "复制当前显示内容，包含折叠部分"} data-testid="redis-copy-content" onClick={() => void copy()}><Copy aria-hidden="true" />{value.truncated ? "复制已加载部分" : "复制内容"}</Button>
       <div className="redis-value-tools">
@@ -37,7 +45,7 @@ export function RedisValueViewer({ value }: { readonly value: RedisValuePreview 
         {active === "json" ? <><Button size="xs" variant="ghost" data-testid="redis-json-collapse" onClick={() => editor.current?.fold()}>折叠全部</Button><Button size="xs" variant="ghost" data-testid="redis-json-expand" onClick={() => editor.current?.unfold()}>展开全部</Button></> : null}
       </div>
     </div>
-    {value.truncated ? <p className="redis-notice redis-value-truncation" role="status" data-testid="redis-value-truncation">仅预览 {redisBytes(value.shownBytes)} / {redisBytes(value.bytes)}。{active === "json" ? "当前为 JSON 片段，末尾可能未闭合。" : "内容已截断。"}复制仅包含已加载部分；完整读取需在插件配置中调整内容上限后刷新。</p> : null}
+    {value.truncated ? <p className="redis-notice redis-value-truncation" role="status" data-testid="redis-value-truncation">仅预览 {redisBytes(value.shownBytes)} / {redisBytes(value.bytes)}。{active === "json" ? "当前为 JSON 片段，末尾可能未闭合。" : "内容已截断。"}复制仅包含已加载部分；{loadMore ? "点击「加载更多内容」继续读取。" : "请刷新重试或调整插件内容上限。"}</p> : null}
     {value.text === null ? <p className="redis-muted px-3 pt-2">二进制内容 · 十六进制预览</p> : null}
     {shown ? <RedisValueEditor ref={editor} text={shown} language={active} wrap={wrap} />
       : <div className="redis-value-empty" data-testid="redis-value">{value.bytes === 0 ? "（空字符串）" : "（当前预算不足以展示完整字符）"}</div>}

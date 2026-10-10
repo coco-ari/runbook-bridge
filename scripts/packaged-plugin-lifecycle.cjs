@@ -5,6 +5,7 @@ const net = require('node:net');
 const path = require('node:path');
 const { Server: SshServer, utils: sshUtils } = require('ssh2');
 const mysql = require('mysql2');
+const redisLargeJson = JSON.stringify({ text: 'fixture-json-'.repeat(9000), tail: 'complete' });
 
 // These are bounded loopback protocol fixtures, not production services. The
 // packaged app still runs its actual preload, IPC, stores, DPAPI vault, network
@@ -213,10 +214,10 @@ async function startLoopbackFixtures() {
           else if (command === 'SELECT' && ['0','3'].includes(args[1])) socket.write('+OK\r\n');
           else if (command === 'CLIENT' && args[1]?.toUpperCase() === 'SETINFO') socket.write('+OK\r\n');
           else if (command === 'SCAN') socket.write(redisFixtureReply(redisScanPages.length ? redisScanPages.shift() : ['0',['cache:fixture']]));
-          else if (command === 'TYPE') socket.write(redisFixtureReply(args[1] === 'cache:fixture' ? 'string' : 'none'));
+          else if (command === 'TYPE') socket.write(redisFixtureReply(['cache:fixture', 'cache:large-json'].includes(args[1]) ? 'string' : 'none'));
           else if (command === 'TTL') socket.write(redisFixtureReply(3600));
-          else if (command === 'STRLEN') socket.write(redisFixtureReply(13));
-          else if (command === 'GETRANGE') socket.write(redisFixtureReply('fixture-value'.slice(Number(args[2]), Number(args[3]) + 1)));
+          else if (command === 'STRLEN') socket.write(redisFixtureReply(args[1] === 'cache:large-json' ? redisLargeJson.length : 13));
+          else if (command === 'GETRANGE') socket.write(redisFixtureReply((args[1] === 'cache:large-json' ? redisLargeJson : 'fixture-value').slice(Number(args[2]), Number(args[3]) + 1)));
           else if (command === 'QUIT') socket.end('+OK\r\n');
           else socket.write('-ERR command outside bounded fixture contract\r\n');
         }
@@ -455,6 +456,16 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
         assert.equal(info.ttlSeconds, 3600);
         const content = await success('redisWorkspaceRead', {...redisScope,patternId,key:'cache:fixture'});
         assert.equal(content.value.text, 'fixture-value');
+        let jsonCursor = null;
+        let jsonText = '';
+        do {
+          const page = await success('redisWorkspaceRead', { ...redisScope, patternId, key: 'cache:large-json', cursor: jsonCursor });
+          assert.ok(page.value.shownBytes <= 65536);
+          jsonText += page.value.text;
+          jsonCursor = page.nextCursor;
+          assert.equal(page.complete, jsonCursor === null);
+        } while (jsonCursor);
+        assert.equal(jsonText, redisLargeJson, '正式包 IPC 分段读取完整长 JSON');
         const denied = await invoke('redisWorkspaceRead', {...redisScope,patternId,key:'cache:fixture',command:'SET'});
         assert.equal(denied.error.code, 'INVALID_ARGUMENT');
         const normalAudit = await success('listAudit', {...redisScope,view:'operations',limit:100});

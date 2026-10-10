@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import type { AiOpsV2Api, IpcResult, PluginScope, RedisContentPage, RedisKeyInfo } from "@/bridge/ai-ops-v2"
 import type { PluginConfigurationRecord } from "@/features/plugins/plugin-types"
-import { mergeRedisRows, redisCacheBytes, redisPatterns, REDIS_CACHE_BYTES, REDIS_MAX_KEYS, REDIS_MAX_TABS } from "./redis-workspace-model"
+import { mergeRedisRows, mergeRedisValue, redisCacheBytes, redisPatterns, REDIS_CACHE_BYTES, REDIS_MAX_KEYS, REDIS_MAX_TABS } from "./redis-workspace-model"
 
 const SEARCH_PAGE_KEYS = 500
 const SEARCH_BUDGET_MS = 30_000
@@ -175,7 +175,7 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
 
   async function readTab(id: string, more = false, field?: string) {
     const tab = tabsRef.current.find((item) => item.id === id)
-    if (!tab || !connection.current.connected || ((more || field !== undefined) && tab.stale)) return
+    if (!tab || !connection.current.connected || ((more || field !== undefined) && tab.stale) || (more && (tab.loading || !tab.content?.nextCursor))) return
     const sequence = (tabSequences.current.get(id) ?? 0) + 1
     tabSequences.current.set(id, sequence)
     const captured = epoch.current
@@ -198,7 +198,11 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
         const result = unwrap(await api.redisWorkspaceRead({ ...payload, expectedType: info.type, ...(more && tab.content?.nextCursor ? { cursor: tab.content.nextCursor } : {}), ...(field !== undefined ? { field } : {}) }))
         if (!current()) return
         if (!result.exists) { patchTab(id, { stale: false, info: { ...info, exists: false, type: "none", ttlSeconds: -2 }, content: null, fieldContent: null, fieldName: null }); return }
-        const content = more && tab.content ? { ...result, rows: mergeRedisRows(tab.content.rows, result.rows), truncated: tab.content.truncated || result.truncated } : { ...result, rows: mergeRedisRows([], result.rows) }
+        const content = more && tab.content
+          ? result.type === "string" && tab.content.value && result.value
+            ? { ...result, value: mergeRedisValue(tab.content.value, result.value) }
+            : { ...result, rows: mergeRedisRows(tab.content.rows, result.rows), truncated: tab.content.truncated || result.truncated }
+          : { ...result, rows: mergeRedisRows([], result.rows) }
         const accepted = patchTab(id, field !== undefined ? { fieldContent: result, fieldName: field } : { content, stale: false })
         if (!accepted) {
           if (tab.content) patchTab(id, { content: { ...tab.content, nextCursor: null, complete: false } })
@@ -209,7 +213,7 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
     } catch (failure) {
       if (current()) {
         const code = (failure as { code?: string })?.code
-        patchTab(id, { error: (tab.writeSummary ? tab.writeSummary + "；刷新失败，可重新刷新。" : "") + message(failure), ...(["REDIS_TYPE_CHANGED", "REDIS_WORKSPACE_STALE", "PLUGIN_NOT_CONNECTED"].includes(code ?? "") ? { stale: true, content: tab.content ? { ...tab.content, nextCursor: null } : null } : {}) })
+        patchTab(id, { error: (tab.writeSummary ? tab.writeSummary + "；刷新失败，可重新刷新。" : "") + message(failure), ...(["REDIS_TYPE_CHANGED", "REDIS_VALUE_CHANGED", "REDIS_WORKSPACE_STALE", "PLUGIN_NOT_CONNECTED"].includes(code ?? "") ? { stale: true, content: tab.content ? { ...tab.content, nextCursor: null } : null } : more && tab.content ? { content: { ...tab.content, nextCursor: null, complete: false } } : {}) })
       }
     } finally { if (current()) patchTab(id, { loading: false }) }
   }

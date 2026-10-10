@@ -7,6 +7,7 @@ import { V2Service } from '../src/v2-service.mjs';
 import { registerRedisWorkspaceIpc } from '../src/redis-workspace-ipc.mjs';
 import { BoundedRespDecoder, REDIS_REPLY_BYTES } from '../src/redis-workspace-reader.mjs';
 import { redisProtocolFixture, resp } from './fixtures/redis-workspace-server.mjs';
+import { mergeRedisValue } from '../renderer/v2/src/features/redis/redis-workspace-model.ts';
 
 const scope = { projectId: 'fixture-project', environmentId: 'testing', pluginInstanceId: 'fixture-redis' };
 async function harness(t, handler, limits = {}) {
@@ -233,6 +234,88 @@ test('String 读取保留 UTF-8 字符边界，空字符串与不存在分开显
   assert.equal(empty.value.text, '');
   assert.equal(empty.value.truncated, false);
   assert.equal((await h.invoke('read', { key: 'cache:gone' })).data.exists, false);
+});
+
+test('长 JSON 按单次预算续读并完整拼接，中文、大整数和尾部不丢失', async (t) => {
+  const source = '{"id":9007199254740993123,"text":"' + '中文😀'.repeat(12000) + '","tail":"完整末尾"}';
+  const raw = Buffer.from(source);
+  const h = await harness(t, args => {
+    if (args[0] === 'STRLEN') return raw.length;
+    if (args[0] === 'GETRANGE') return raw.subarray(Number(args[2]), Number(args[3]) + 1);
+    return standard(args);
+  });
+  let cursor = null;
+  let combined;
+  let offset = 0;
+  do {
+    const response = await h.invoke('read', { key: 'cache:text', cursor });
+    assert.equal(response.ok, true);
+    const page = response.data;
+    assert.equal(page.value.bytes, raw.length);
+    assert.ok(page.value.shownBytes <= 65536);
+    assert.ok(!page.value.text.includes('\ufffd'));
+    const call = h.fixture.calls.filter(args => args[0] === 'GETRANGE').at(-1);
+    assert.equal(Number(call[2]), offset);
+    assert.ok(Number(call[3]) - Number(call[2]) + 1 <= 65536);
+    offset += page.value.shownBytes;
+    combined = combined ? mergeRedisValue(combined, page.value) : page.value;
+    cursor = page.nextCursor;
+    assert.equal(page.complete, cursor === null);
+    assert.equal(page.truncated, cursor !== null);
+  } while (cursor);
+  assert.equal(combined.text, source);
+  assert.equal(combined.hex, raw.toString('hex'));
+  assert.equal(combined.shownBytes, raw.length);
+  assert.equal(combined.truncated, false);
+  assert.ok(!JSON.stringify(h.audits).includes('完整末尾'));
+});
+
+test('String 游标单次消费并绑定 Key、窗口和配置，大小变化不能拼接旧值', async (t) => {
+  let raw = Buffer.alloc(700, 97);
+  const h = await harness(t, args => {
+    if (args[0] === 'TYPE') return 'string';
+    if (args[0] === 'STRLEN') return raw.length;
+    if (args[0] === 'GETRANGE') return raw.subarray(Number(args[2]), Number(args[3]) + 1);
+    return standard(args);
+  }, { maxValueBytes: 256 });
+  const next = async () => (await h.invoke('read', { key: 'cache:text' })).data.nextCursor;
+  const cursor = await next();
+  assert.equal((await h.invoke('read', { key: 'cache:other', cursor })).error.code, 'INVALID_CURSOR');
+  assert.equal((await h.service.invokeDesktopRedis('renderer:other', { ...scope, patternId: 'cache', key: 'cache:text', cursor }, 'read').catch(error => error)).code, 'INVALID_CURSOR');
+  assert.equal((await h.invoke('read', { key: 'cache:text', cursor })).ok, true);
+  assert.equal((await h.invoke('read', { key: 'cache:text', cursor })).error.code, 'INVALID_CURSOR');
+  const changed = await next();
+  raw = Buffer.alloc(701, 97);
+  assert.equal((await h.invoke('read', { key: 'cache:text', cursor: changed })).error.code, 'REDIS_VALUE_CHANGED');
+  const revised = await next();
+  h.plugin.revision++;
+  assert.equal((await h.invoke('read', { key: 'cache:text', cursor: revised })).error.code, 'INVALID_CURSOR');
+  const expired = await next();
+  for (const record of h.service.redisWorkspaceManager.records.values()) for (const entry of record.cursors.values()) entry.expiresAt = 0;
+  assert.equal((await h.invoke('read', { key: 'cache:text', cursor: expired })).error.code, 'INVALID_CURSOR');
+});
+
+test('String 分段读取为 RESP 头保留空间，读取中长度变化或短回复被拒绝', async (t) => {
+  const raw = Buffer.alloc(REDIS_REPLY_BYTES + 100, 97);
+  let shorten = false;
+  let changed = false;
+  const h = await harness(t, args => {
+    if (args[0] === 'STRLEN') return raw.length + (changed ? 1 : 0);
+    if (args[0] === 'GETRANGE') {
+      if (shorten) { changed = true; return Buffer.from('short'); }
+      return raw.subarray(Number(args[2]), Number(args[3]) + 1);
+    }
+    return standard(args);
+  }, { maxValueBytes: REDIS_REPLY_BYTES });
+  const first = await h.invoke('read', { key: 'cache:text' });
+  assert.equal(first.ok, true);
+  assert.ok(first.data.value.shownBytes < REDIS_REPLY_BYTES);
+  const last = await h.invoke('read', { key: 'cache:text', cursor: first.data.nextCursor });
+  assert.equal(last.ok, true);
+  assert.equal(last.data.complete, true);
+  assert.equal(first.data.value.shownBytes + last.data.value.shownBytes, raw.length);
+  shorten = true;
+  assert.equal((await h.invoke('read', { key: 'cache:text' })).error.code, 'REDIS_VALUE_CHANGED');
 });
 
 test('读取中删除或改变类型时丢弃旧内容，错误不回显服务端正文', async (t) => {

@@ -100,7 +100,14 @@ function mocks(redisKeySearch) {
     if (payload.field !== undefined) return ok({ ...base, field: payload.field, fieldExists: payload.field !== 'missing', value: payload.field === 'missing' ? null : value('精确字段内容') });
     if (payload.key === 'cache:platform:') return ok({ ...base, value: value(platformJson) });
     if (payload.key === 'cache:json-preview') return ok({ ...base, value: { ...value(partialJson, true), bytes: 100000 } });
-    if (payload.key === 'cache:large-json') return ok({ ...base, value: { ...value(largeJson.slice(0, 65536), true), bytes: Buffer.byteLength(largeJson) } });
+    if (payload.key === 'cache:large-json') {
+      if (payload.cursor && state.failValuePage) return fail('PLUGIN_TIMEOUT', '模拟后续内容读取失败，请刷新重试。');
+      const offset = payload.cursor ? Number.parseInt(payload.cursor, 16) : 0;
+      const end = Math.min(largeJson.length, offset + 65536);
+      const truncated = end < largeJson.length;
+      return ok({ ...base, nextCursor: truncated ? end.toString(16).padStart(48, '0') : null, complete: !truncated, truncated,
+        value: { ...value(largeJson.slice(offset, end), truncated), bytes: Buffer.byteLength(largeJson) } });
+    }
     if (payload.key === 'cache:invalid-json') return ok({ ...base, value: value('{"broken":}') });
     if (base.type === 'string') return ok({ ...base, value: value(payload.key === 'cache:binary' ? null : payload.key === 'cache:empty' ? '' : '{"name":"示例","enabled":true}') });
     if (base.type === 'stream') return ok({ ...base, unsupported: true });
@@ -340,6 +347,30 @@ async function run() {
     await text(win, active('redis-value-truncation'), 'JSON 片段');
     await waitFor(win, 'document.querySelectorAll(".redis-tab-panel:not([hidden]) .cm-line").length > 0', '大 JSON 渲染');
     assert.ok(await win.webContents.executeJavaScript('document.querySelectorAll(".redis-tab-panel:not([hidden]) .cm-line").length < 300', true), '大内容按视口渲染，避免创建全部行节点');
+    state.failValuePage = true;
+    await click(win, active('redis-value-more'));
+    await text(win, active('redis-key-error'), '模拟后续内容读取失败');
+    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-more]"))', true), false, '失败后不能重复消费旧游标');
+    await click(win, active('redis-copy-content'));
+    assert.ok((await win.webContents.executeJavaScript('window.__redisCopies.at(-1)', true)).includes('item-0'), '失败保留已加载片段');
+    state.failValuePage = false;
+    await click(win, active('redis-refresh-key'));
+    await waitFor(win, 'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-more]")?.disabled === false', '刷新后可重新续读');
+    for (let offset = 65536; offset < largeJson.length; offset += 65536) {
+      const before = calls.filter(entry => entry.operation === 'read').length;
+      await click(win, active('redis-value-more'));
+      await waitFor(win, '!document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-more]") || document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-more]").disabled === false', '分段读取结束');
+      assert.equal(calls.filter(entry => entry.operation === 'read').length, before + 1, '每次点击只读一个有界分段');
+    }
+    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-truncation]"))', true), false, '完整读取后不再提示截断');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-edit-value]").disabled', true), true, '完整查看长 JSON 不放宽编辑上限');
+    await click(win, active('redis-copy-content'));
+    assert.deepEqual(JSON.parse(await win.webContents.executeJavaScript('window.__redisCopies.at(-1)', true)), JSON.parse(largeJson), 'JSON 模式复制包含所有分段和尾部');
+    await win.webContents.executeJavaScript('(()=>{const view=document.querySelector(".redis-tab-panel:not([hidden]) .cm-content").cmTile.root.view;view.dispatch({selection:{anchor:view.state.doc.length},scrollIntoView:true})})()', true);
+    await waitFor(win, 'document.querySelector(".redis-tab-panel:not([hidden]) .cm-content")?.textContent.includes("item-5999")', '滚动到完整 JSON 末尾');
+    await click(win, active('redis-view-text'));
+    await click(win, active('redis-copy-content'));
+    assert.equal(await win.webContents.executeJavaScript('window.__redisCopies.at(-1)', true), largeJson, '原文模式复制逐字保持完整内容');
     await openKey(win, 'cache:invalid-json');
     assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-view-json]").disabled', true), true);
     await text(win, active('redis-value'), '{"broken":}');

@@ -1,5 +1,5 @@
 import type { PluginConfigurationRecord } from "@/features/plugins/plugin-types"
-import type { PluginScope, RedisContentRow } from "@/bridge/ai-ops-v2"
+import type { PluginScope, RedisContentRow, RedisValuePreview } from "@/bridge/ai-ops-v2"
 
 export const REDIS_MAX_KEYS = 5000
 export const REDIS_MAX_TABS = 8
@@ -39,4 +39,16 @@ export function mergeRedisRows(previous: readonly RedisContentRow[], incoming: r
 
 export function redisCacheBytes(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).length
+}
+
+export function mergeRedisValue(previous: RedisValuePreview, incoming: RedisValuePreview): RedisValuePreview {
+  return { ...incoming, text: previous.text === null || incoming.text === null ? null : previous.text + incoming.text,
+    hex: previous.hex + incoming.hex, shownBytes: previous.shownBytes + incoming.shownBytes }
+}
+
+export function redisValueReadOnlyReason(value: RedisValuePreview | null | undefined, plugin: PluginConfigurationRecord): string {
+  if (!value || value.truncated || value.text === null) return "内容未完整读取或不是文本，仅支持查看。"
+  const configured = plugin.limits?.maxValueBytes
+  const limit = Math.min(65536, typeof configured === "number" ? configured : 65536)
+  return value.bytes > limit ? "内容超过编辑上限（" + redisBytes(limit) + "），仅支持查看。" : ""
 }

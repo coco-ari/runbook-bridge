@@ -4,6 +4,7 @@ import { AppError } from './errors.mjs';
 import { findRedisPattern, redisKeyAllowed } from './redis-plugin-runtime.mjs';
 import { normalizeRedisCursor } from './pagination-cursor.mjs';
 import { redisKeySearch } from './redis-key-search.mjs';
+import { REDIS_REPLY_BYTES } from './redis-workspace-reader.mjs';
 
 const SCOPE = ['projectId', 'environmentId', 'pluginInstanceId'];
 const FIELDS = {
@@ -256,10 +257,20 @@ export class RedisWorkspaceManager {
     const budget = record.plugin.limits.maxValueBytes;
     let result;
     if (type === 'string') {
-      if (payload.cursor || payload.field !== undefined) throw new AppError('INVALID_ARGUMENT', 'String 不支持字段或集合分页。');
+      if (payload.field !== undefined) throw new AppError('INVALID_ARGUMENT', 'String 不支持字段读取。');
+      const state = this.takeCursor(record, payload, type, 50);
       const length = number(await command('STRLEN', payload.key));
-      const value = length ? buffer(await command('GETRANGE', payload.key, 0, Math.min(length, budget) - 1)) : Buffer.alloc(0);
-      result = { value: redisValuePreview(value, budget, length), rows: [], nextCursor: null, complete: true };
+      if (state.length !== undefined && state.length !== length) throw new AppError('REDIS_VALUE_CHANGED', '内容大小已经变化，请刷新后重新读取。');
+      state.length = length;
+      const size = Math.min(length - state.offset, budget, REDIS_REPLY_BYTES - 64);
+      const raw = size ? buffer(await command('GETRANGE', payload.key, state.offset, state.offset + size - 1)) : Buffer.alloc(0);
+      if (raw.length !== size || number(await command('STRLEN', payload.key)) !== length) throw new AppError('REDIS_VALUE_CHANGED', '内容大小已经变化，请刷新后重新读取。');
+      // 在完整字符边界续读，避免 UTF-8 字符被拆开后丢失或重复。
+      const preview = redisValuePreview(raw, budget, length - state.offset);
+      state.offset += preview.shownBytes;
+      state.complete = state.offset >= length;
+      const nextCursor = this.saveCursor(record, state);
+      result = { value: { ...preview, bytes: length }, rows: [], nextCursor, complete: nextCursor === null };
     } else if (type === 'hash' && payload.field !== undefined) {
       const length = number(await command('HSTRLEN', payload.key, payload.field));
       const raw = length <= budget ? await command('HGET', payload.key, payload.field) : null;
