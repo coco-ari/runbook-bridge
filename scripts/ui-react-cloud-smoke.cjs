@@ -11,7 +11,7 @@ app.commandLine.appendSwitch('force-device-scale-factor','1');
 app.on('window-all-closed',() => {});
 const root = path.resolve(__dirname,'..');
 const delay = ms => new Promise(resolve => setTimeout(resolve,ms));
-let window, server, dataRoot;
+let window, server, dataRoot, updateCoordinator;
 const errors = [], network = [];
 const additionalProjects = Array.from({length:21},(_,index) => ({projectId:'cloud-list-'+String(index+1).padStart(2,'0'),name:'示例项目 · '+String(index+1).padStart(2,'0')}));
 const projectCount = 3+additionalProjects.length;
@@ -121,7 +121,19 @@ async function run() {
   service.remote = async (...args) => { if (checkFailure) throw new Error('synthetic network failure'); return originalRemote(...args); };
   const originalCheck = service.check.bind(service);
   service.check = async (...args) => { checks++; return originalCheck(...args); };
-  registerCloudConfigIpc(ipcMain,{cloudConfigService:service,isWorkspaceRenderer:sender => sender === window?.webContents});
+  const {UpdateCoordinator} = await load('src/update-coordinator.mjs');
+  let clockOffset = 0;
+  updateCoordinator = new UpdateCoordinator({cloud:service,software:{state:{source:null},invoke:async () => ({source:null,supported:false})},
+    notifications:{items:[],reconcile:async () => {}},checkSoftware:async () => {},pollMs:200,now:() => Date.now()+clockOffset,
+    broadcast:(channel,payload) => { if (window && !window.isDestroyed()) window.webContents.send(channel,payload); }});
+  service.onStateChanged = () => updateCoordinator.schedule();
+  service.onOwnerClosed = owner => updateCoordinator.closeOwner(owner);
+  registerCloudConfigIpc(ipcMain,{cloudConfigService:service,updateCoordinator,isWorkspaceRenderer:sender => sender === window?.webContents});
+  let updateItems = [];
+  ipcMain.handle('v2:update-center',async (_event,request) => {
+    if (request.action === 'read') updateItems = updateItems.map(item => request.ids.includes(item.id) ? {...item,unread:false} : item);
+    return {ok:true,data:{items:updateItems,error:null}};
+  });
   let localDeleteFails = false;
   ipcMain.handle('v2:project-delete',async (_event,{projectId}) => {
     if (localDeleteFails) return {ok:false,error:{code:'PROJECT_CONNECTED',message:'合成项目仍有连接，请断开后重试。'}};
@@ -329,6 +341,18 @@ async function run() {
   assert.equal((await store.getProject(project.projectId)).name,'云配置演示项目 · Alpha');
   assert.equal(await js('document.querySelector("[data-testid=cloud-config-panel]").textContent.includes("synthetic-ui-only-secret")'),false);
   console.log('UI: conflict confirmation and cancellation verified');
+  await store.updateProject(project.projectId,{name:'本地尚未上传的修改'});
+  updateItems = [{id:'c'.repeat(64),type:'cloud',kind:'conflict',repositoryId,repositoryName:'团队仓库',projectId:cloudProjectId,title:'合成配置更新',description:'本地与云端都有修改。',unread:true}];
+  window.webContents.send('v2:update-center',{kind:'changed'});
+  await clickTestId('updates-open');
+  await wait('Boolean(document.querySelector("[data-testid=update-notice-view]"))');
+  await clickTestId('update-notice-view');
+  await wait('Boolean(document.querySelector("[data-testid=cloud-update-confirmation]"))');
+  assert.equal((await store.getProject(project.projectId)).name,'本地尚未上传的修改','提醒中的查看变更只预览，不自动覆盖');
+  await waitForOverlay();
+  await js('[...document.querySelectorAll("[role=alertdialog] button")].find(button => button.textContent === "保留本地").click()');
+  await wait('!document.querySelector("[role=alertdialog]")'); await idle();
+  updateItems = []; window.webContents.send('v2:update-center',{kind:'changed'});
   await store.updateProject(project.projectId,{name:'上传后的 Alpha'});
   await cardAction('upload'); await idle();
   assert.equal(service.state.repositories[0].catalog.find(p => p.projectId === cloudProjectId).name,'上传后的 Alpha');
@@ -358,22 +382,22 @@ async function run() {
   await wait(`[...document.querySelectorAll("#project-list button[data-project-id]")].findIndex(button=>button.dataset.projectId === "cloud-demo") === ${beforeIndex+1}`);
   await openSettings();
   console.log('UI: visibility and forced upload verified');
-  // Speed up only the preference-controlled interval to exercise the real timer callback.
+  // 推进主进程时钟验证实际调度，界面不再负责定时检测。
   await clickTestId('cloud-view-repository');
-  await js('window.__cloudSetInterval=window.setInterval; window.setInterval=(callback,ms,...args)=>window.__cloudSetInterval(callback,ms===300000?200:ms,...args); void 0');
   await js('document.querySelector("[aria-label=定时检测间隔]").click()');
   await wait('Boolean(document.querySelector("[role=option]"))');
   await js('[...document.querySelectorAll("[role=option]")].find(option=>option.textContent.includes("每 5 分钟")).click()');
   await idle();
   const checksBefore = checks;
   await store.updateProject(project.projectId,{name:'定时检测不覆盖的修改'});
+  clockOffset += 300_001;
   const deadline = Date.now()+5000; while(checks<=checksBefore && Date.now()<deadline) await delay(50);
   assert.ok(checks>checksBefore,'定时器必须调用检测');
   assert.equal((await store.getProject(project.projectId)).name,'定时检测不覆盖的修改');
   await js('document.querySelector("[aria-label=定时检测间隔]").click()');
   await wait('Boolean(document.querySelector("[role=option]"))');
   await js('[...document.querySelectorAll("[role=option]")].find(option=>option.textContent === "关闭").click()');
-  await idle(); await js('window.setInterval=window.__cloudSetInterval; void 0');
+  await idle();
   console.log('UI: timer verified');
   await fill('cloud-repository-name','团队配置仓库'); await clickText('保存名称'); await idle();
   assert.equal(service.state.repositories.find(r => r.repositoryId === repositoryId).name,'团队配置仓库');
@@ -546,7 +570,7 @@ async function run() {
   await confirmLocalDelete();
   await wait('!document.querySelector("[data-testid=delete-project-dialog]")');
   assert.equal(service.state.repositories.find(r => r.repositoryId === repositoryId).catalog.some(p => p.projectId === 'cloud-secondary'),true);
-  await wait('Boolean(document.querySelector("[data-cloud-project-id=cloud-secondary]"))');
+  await wait('Boolean(document.querySelector("[data-cloud-project-id=cloud-secondary]")) && !document.querySelector("[data-cloud-project-id=cloud-secondary]").disabled');
   await js('document.querySelector("[data-cloud-project-id=cloud-secondary]").click()');
   await wait('document.querySelector("button[data-project-id=cloud-secondary]")?.getAttribute("aria-current") === "page"');
   localDeleteFails = true;
@@ -584,6 +608,7 @@ async function run() {
 }
 run().then(() => finish(0)).catch(error => { console.error(error); return finish(1); });
 async function finish(code) {
+  updateCoordinator?.dispose();
   window?.destroy();
   if (server) await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
   if (dataRoot) await fs.rm(dataRoot,{recursive:true,force:true}).catch(() => undefined);

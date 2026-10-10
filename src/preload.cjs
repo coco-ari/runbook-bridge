@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld('aiOps', {
     codexIntegration: (payload) => ipcRenderer.invoke('v2:codex-integration', payload),
     cloudConfig: (payload) => ipcRenderer.invoke('v2:cloud-config',payload),
     softwareUpdate: (payload) => ipcRenderer.invoke('v2:software-update',payload),
+    updateCenter: (payload) => ipcRenderer.invoke('v2:update-center',payload),
+    onUpdateCenter: (callback) => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('v2:update-center', listener);
+      return () => ipcRenderer.removeListener('v2:update-center', listener);
+    },
     serverDockerRead: payload => ipcRenderer.invoke('v2:server-docker-read', payload),
     serverDockerCancel: payload => ipcRenderer.invoke('v2:server-docker-cancel', payload),
     serverWorkspaceMetrics: payload => ipcRenderer.invoke('v2:server-workspace-metrics', payload),

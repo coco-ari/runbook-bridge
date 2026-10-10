@@ -232,8 +232,14 @@ function registerForbiddenMutation(channel) {
 let codexFixtureStatus = 'available';
 let commandPluginRead = null, codexReadGate = null;
 let softwareUpdateFixtureHandler = null;
+let updateCenterFixture = {items:[],error:null};
 
 function registerMockApi() {
+  registerRead('v2:update-center',request => {
+    assert.ok(['status','read'].includes(request.action));
+    if (request.action === 'read') updateCenterFixture = {...updateCenterFixture,items:updateCenterFixture.items.map(item => request.ids.includes(item.id) ? {...item,unread:false} : item)};
+    return updateCenterFixture;
+  });
   registerRead('v2:codex-integration', async ({ action }) => {
     if (codexReadGate) await codexReadGate();
     assert.equal(action, 'status', '基础 UI 测试只能检测模拟 Codex 配置');
@@ -4092,7 +4098,7 @@ async function assertSecurity(win) {
     styleAttributeProbe.remove();
     return result;
   })()`,true);
-  assert.equal(snapshot.apiNames.length,116);
+  assert.equal(snapshot.apiNames.length,118);
   assert.equal(snapshot.hasRequire,false);
   assert.equal(snapshot.hasProcess,false);
   assert.equal(snapshot.inlineStyleAttributeWidth,'13px');
@@ -4186,6 +4192,19 @@ async function run() {
       process.stdout.write('软件更新 UI 专项通过：来源选择、检查、下载进度、取消、切页恢复和安装确认；无外部请求。\n');
       return;
     }
+    if (app.commandLine.hasSwitch('update-center-only')) {
+      await require('./update-center-ui.cjs')({
+        evaluate:code => win.webContents.executeJavaScript(code,true),
+        waitFor:(expression,label) => waitFor(win,expression,label),
+        pressKey:key => pressKey(win,key),
+        publish:(items,event = {kind:'changed'}) => { updateCenterFixture = {items,error:null}; win.webContents.send('v2:update-center',event); },
+        capture:screenshotRoot ? async () => fs.writeFileSync(path.join(screenshotRoot,'update-center.png'),(await captureRenderedFrame(win)).toPNG()) : null,
+      });
+      await collectWindowErrorDiagnostics(win);
+      assert.deepEqual(externalRequests,[]); assert.deepEqual(rendererErrors,[]); assert.deepEqual(rendererWindowErrors,[]);
+      process.stdout.write('更新提醒 UI 专项通过：角标、已读、稍后处理、版本定位、系统通知跳转与空状态。\n');
+      return;
+    }
     if (process.env.RUNBOOK_BRIDGE_EDITOR_LAYOUT_REGRESSION_ONLY === '1') {
       await assertSecurity(win);
       await selectVisualScope(win,'project');
@@ -4225,7 +4244,7 @@ async function run() {
           order:buttons.map(button => button.dataset.testid),
           belowProjects:Boolean(group && viewport && group.getBoundingClientRect().top >= viewport.getBoundingClientRect().bottom - 1),
           confirmationInGroup:Boolean(group?.contains(confirmation)),
-          singleRow:buttons.length === 3 && buttons.every(button => Math.abs(button.getBoundingClientRect().top - buttons[0].getBoundingClientRect().top) <= 1),
+          singleRow:buttons.length === 4 && buttons.every(button => Math.abs(button.getBoundingClientRect().top - buttons[0].getBoundingClientRect().top) <= 1),
           noOverlap:buttons.slice(1).every((button,index) => button.getBoundingClientRect().left >= buttons[index].getBoundingClientRect().right),
           compact:styles.every(style => style.height === 32 && style.borderWidth === '0px'),
           height:group?.getBoundingClientRect().height,
@@ -4243,7 +4262,7 @@ async function run() {
     }))()`,true);
     assert.equal(initial.selected,'project-operations');
     assert.deepEqual(initial.utilityNavigation,{
-      order:['confirmation-center','workspace-switcher','settings-open'],belowProjects:true,
+      order:['confirmation-center','workspace-switcher','updates-open','settings-open'],belowProjects:true,
       confirmationInGroup:true,singleRow:true,noOverlap:true,compact:true,height:46,emptyWorkspaceCountHidden:true,
     },'底部全局工具使用单行入口，空工作区不显示零角标');
     assert.equal(initial.addProjectAboveProjects,true);
@@ -4851,7 +4870,7 @@ async function run() {
       'v2:project-list','v2:workspace-overview','v2:environment-list','v2:environment-status',
       'v2:plugin-list','v2:runbook-read','v2:quick-question-opening-get','v2:quick-question-list',
       'v2:plugin-assess','v2:plugin-credential-status','v2:plugin-databases','v2:audit-list',
-      'v2:confirmation-list','v2:cloud-config','v2:codex-integration','v2:software-update',
+      'v2:confirmation-list','v2:cloud-config','v2:codex-integration','v2:software-update','v2:update-center',
     ]);
     await collectWindowErrorDiagnostics(win);
     process.stdout.write(`React smoke final diagnostics: ${JSON.stringify({

@@ -1,5 +1,6 @@
 import type { CloudConfigData, CloudConfigRequest } from "@/features/cloud-config/cloud-types"
 import type { SoftwareUpdateRequest, SoftwareUpdateState } from "@/features/software-update/software-update-types"
+import type { UpdateCenterRequest, UpdateCenterState, UpdateCenterEvent } from "@/features/updates/update-types"
 
 export interface PublicError {
   readonly code: string
@@ -883,6 +884,8 @@ export interface AiOpsV2Api {
   codexIntegration(payload: { action: "copy" }): Promise<IpcResult<{ copied: boolean }>>
   cloudConfig(payload: CloudConfigRequest): Promise<IpcResult<CloudConfigData>>
   softwareUpdate(payload: SoftwareUpdateRequest): Promise<IpcResult<SoftwareUpdateState>>
+  updateCenter(payload: UpdateCenterRequest): Promise<IpcResult<UpdateCenterState>>
+  onUpdateCenter(callback: (event: UpdateCenterEvent) => void): Unsubscribe
   serverDockerRead(payload: DockerReadRequest): Promise<IpcResult<DockerReadResult>>
   serverDockerCancel(payload: PluginScope & { requestId?: string }): Promise<IpcResult<{ stopped: boolean }>>
 
@@ -1004,6 +1007,8 @@ export const AI_OPS_V2_API_NAMES = [
   "codexIntegration",
   "cloudConfig",
   "softwareUpdate",
+  "updateCenter",
+  "onUpdateCenter",
   "serverDockerRead",
   "serverDockerCancel",
   "redisEditOpen",

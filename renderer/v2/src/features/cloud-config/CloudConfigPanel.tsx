@@ -17,10 +17,11 @@ import { useCloudConfig } from "./CloudConfigProvider"
 import { CloudProjectActions, CloudProjectIcon, cloudStatusLabels } from "./CloudProjectActions"
 import { CloudProjectMenu, useCloudProjectManagement } from "./CloudProjectManagement"
 import { CloudBackups } from "./CloudBackups"
+import type { UpdateSettingsTarget } from "@/features/updates/update-types"
 
 const randomPassword = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), b => b.toString(16).padStart(2, "0")).join("")
 
-export function CloudConfigPanel({ api, onBusyChange }: { api: AiOpsV2Api; onChanged: () => void; onBusyChange: (busy: boolean) => void }) {
+export function CloudConfigPanel({ api, onBusyChange, target }: { api: AiOpsV2Api; onChanged: () => void; onBusyChange: (busy: boolean) => void; target?: UpdateSettingsTarget | null }) {
   const cloud = useCloudConfig()
   const management = useCloudProjectManagement()
   const repositories = cloud.data.repositories ?? []
@@ -38,6 +39,10 @@ export function CloudConfigPanel({ api, onBusyChange }: { api: AiOpsV2Api; onCha
   const [showPassword, setShowPassword] = useState(false)
   const [query, setQuery] = useState("")
   const [filter, setFilter] = useState("all")
+  useEffect(() => {
+    if (target?.section !== "cloud") return
+    setRepositoryId(target.repositoryId ?? ""); setQuery(""); setFilter(target.deleted ? "deleted" : "all"); setView("projects")
+  }, [target])
   const [repositoryName, setRepositoryName] = useState("")
   const projects = (cloud.data.cloudProjects ?? []).filter(p => p.repositoryId === repository?.repositoryId)
   const matchesSearch = (name: string) => name.normalize("NFKC").toLowerCase().includes(query.normalize("NFKC").toLowerCase().trim())

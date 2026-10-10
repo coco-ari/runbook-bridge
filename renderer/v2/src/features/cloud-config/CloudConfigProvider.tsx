@@ -95,15 +95,12 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
   }, [call, refresh])
   useEffect(() => {
     active.current = true
-    void refresh().then(() => { if (active.current) void check() })
+    void refresh()
     return () => { active.current = false; sequence.current++ }
   }, [refresh, check])
-  const interval = data.checkIntervalMinutes ?? 15
   useEffect(() => {
-    if (!interval) return
-    const timer = window.setInterval(() => { void check() }, interval * 60_000)
-    return () => window.clearInterval(timer)
-  }, [interval, check])
+    return api.onUpdateCenter(event => { if (event.kind === "cloud") void refresh() })
+  }, [api, refresh])
   const run = useCallback(async (request: CloudConfigRequest) => {
     if (busyRef.current) return null
     busyRef.current = true
@@ -141,13 +138,14 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
     else setUploadId(projectId)
   }, [data.repositories, run])
   const busy = working || plan !== null
+  const conflict = plan?.rows?.some(row => row.conflict) ?? false
   return <CloudContext.Provider value={{ data, busy, checking, loading, error, operationError, clearOperationError: () => { if (error === operationError?.message) setError(""); setOperationError(null) }, refresh, check, run, upload }}>
     {children}
     <AlertDialog open={Boolean(plan)} onOpenChange={open => { if (!open && !working) setPlan(null) }}>
       <AlertDialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl" data-testid="cloud-update-confirmation">
         <AlertDialogHeader>
-          <AlertDialogTitle>{plan?.direction === "restore" ? "恢复本机备份" : plan?.historical ? "恢复云端历史版本？" : "覆盖本地修改？"}</AlertDialogTitle>
-          <AlertDialogDescription>{plan?.direction === "restore" ? "选中项目将用备份完整替换。" : plan?.historical ? "选中项目将用所选历史版本完整替换。" : "以下项目存在本地修改。选中项目将用云端配置完整替换。"}覆盖前自动备份，原连接将断开。</AlertDialogDescription>
+          <AlertDialogTitle>{plan?.direction === "restore" ? "恢复本机备份" : plan?.historical ? "恢复云端历史版本？" : conflict ? "覆盖本地修改？" : "查看云端配置变更"}</AlertDialogTitle>
+          <AlertDialogDescription>{plan?.direction === "restore" ? "选中项目将用备份完整替换。" : plan?.historical ? "选中项目将用所选历史版本完整替换。" : conflict ? "以下项目存在本地修改。选中项目将用云端配置完整替换。" : "确认后将用云端配置更新选中的项目。"}覆盖前自动备份，原连接将断开。</AlertDialogDescription>
         </AlertDialogHeader>
         <div className="max-h-[50vh] space-y-3 overflow-y-auto">{plan?.rows?.map(row => <div key={row.rowId} className="space-y-2"><label className="flex items-start gap-2 text-xs">
           <Checkbox checked={choices[row.rowId] === "cloud"} disabled={working} onCheckedChange={checked => setChoices(current => ({ ...current, [row.rowId]: checked ? "cloud" : "local" }))} />
@@ -155,7 +153,7 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
         </label><CloudFieldDiff diff={row.diff} /></div>)}</div>
         <AlertDialogFooter>
           <Button variant="outline" disabled={working} onClick={() => setPlan(null)}>保留本地</Button>
-          <Button disabled={working} data-testid="cloud-confirm-update" onClick={() => { const current = plan; setPlan(null); if (current?.planId) void run({ action: "confirm", planId: current.planId, choices }) }}>确认覆盖</Button>
+          <Button disabled={working} data-testid="cloud-confirm-update" onClick={() => { const current = plan; setPlan(null); if (current?.planId) void run({ action: "confirm", planId: current.planId, choices }) }}>{conflict || plan?.historical || plan?.direction === "restore" ? "确认覆盖" : "确认更新"}</Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

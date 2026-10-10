@@ -25,6 +25,7 @@ export function registerCloudConfigIpc(ipcMain,services) {
       }
       if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Object.hasOwn(ACTIONS,payload.action) || Object.keys(payload).some(key => key !== 'action' && !ACTIONS[payload.action].includes(key))) throw cloudError('INVALID_ARGUMENT','云配置请求参数无效。');
       const {action,...input} = payload;
+      services.updateCoordinator?.activate(owner);
       return {ok:true,data:await service.invoke(owner,action,input)};
     } catch (error) {
       // 外部配置验证器的错误详情可能含输入值，因此仅公开固定的云配置错误。

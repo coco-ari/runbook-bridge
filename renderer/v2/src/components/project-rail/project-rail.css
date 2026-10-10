@@ -6,11 +6,16 @@
 /* 按项目栏实际宽度收起文字，拖动分栏和紧凑模式共用一套入口。 */
 @container project-rail (max-width: 215px) {
   .project-utility-navigation {
-    gap: 6px;
+    gap: 2px;
+  }
+
+  .project-utility-navigation > button {
+    width: 26px;
+    padding-inline: 0;
   }
 
   .project-utility-button {
-    width: 32px;
+    width: 26px;
     padding-inline: 0;
     gap: 0;
   }

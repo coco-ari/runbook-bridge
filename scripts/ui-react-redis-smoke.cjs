@@ -159,6 +159,7 @@ function mocks(redisKeySearch) {
   for (const [, channel] of fs.readFileSync(path.join(root, 'src', 'preload.cjs'), 'utf8').matchAll(/ipcRenderer\.invoke\('([^']+)'/gu)) {
     if (!channels.has(channel)) register(channel, async (_event,payload) => {
       if (channel === 'v2:cloud-config' && ['status','check'].includes(payload?.action)) return ok({repositories:[],cloudProjects:[],checkIntervalMinutes:0});
+      if (channel === 'v2:update-center' && payload?.action === 'status') return ok({items:[],error:null});
       forbidden.push(channel); return fail('FORBIDDEN', '测试禁止此操作');
     });
   }

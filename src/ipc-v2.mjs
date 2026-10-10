@@ -4,6 +4,7 @@ import { createPluginConfigurationService } from './plugin-configuration-service
 import crypto from 'node:crypto';
 import { registerCloudConfigIpc } from './cloud-config-ipc.mjs';
 import { registerSoftwareUpdateIpc } from './software-update-ipc.mjs';
+import { registerUpdateNotificationsIpc } from './update-notifications-ipc.mjs';
 import { registerCodexIntegrationIpc } from './codex-integration.mjs';
 import { registerServerWorkspaceIpc } from './server-workspace-ipc.mjs';
 import { registerMysqlEditIpc } from './mysql-edit-ipc.mjs';
@@ -128,6 +129,7 @@ export function registerV2Ipc(ipcMain, services) {
   registerServerWorkspaceIpc(ipcMain, services);
   registerCloudConfigIpc(ipcMain, services);
   registerSoftwareUpdateIpc(ipcMain, services);
+  registerUpdateNotificationsIpc(ipcMain, services);
   registerRedisWorkspaceIpc(ipcMain, services);
   registerRedisEditIpc(ipcMain, services);
   registerMysqlEditIpc(ipcMain, services);
@@ -219,7 +221,10 @@ export function registerV2Ipc(ipcMain, services) {
     return withPluginConfigurationMutation(projectId,environmentId,...args);
   };
 
-  ipcMain.on('v2:network-changed', () => connectionManager.networkChanged('renderer-network-change').catch(() => undefined));
+  ipcMain.on('v2:network-changed', event => {
+    if (event?.sender && event.senderFrame === event.sender.mainFrame && services.isWorkspaceRenderer?.(event.sender) === true) services.updateCoordinator?.wake();
+    connectionManager.networkChanged('renderer-network-change').catch(() => undefined);
+  });
 
   const requirePluginEditSessionManager = () => {
     if (!pluginEditSessionManager) {

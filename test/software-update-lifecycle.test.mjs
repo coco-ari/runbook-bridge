@@ -61,9 +61,8 @@ test('自动检查启动立即执行，每十五分钟重试且只通知每个�
   t.mock.timers.tick(15 * 60_000 - 1); await flush();
   assert.equal(calls.length,2);
   t.mock.timers.tick(1); await flush();
-  assert.deepEqual(calls,['status','check','status']);
+  assert.deepEqual(calls,['status','check','status','check']);
   assert.deepEqual(notifications,['2.1.0']);
-  state = {...state,phase:'error'};
   availableVersion = '2.2.0';
   t.mock.timers.tick(15 * 60_000); await flush();
   assert.deepEqual(notifications,['2.1.0','2.2.0']);
@@ -78,7 +77,7 @@ test('自动检查仅处理允许的空闲阶段，下载和安装状态不重�
     }});
     await controller.checkNow();
     controller.dispose();
-    assert.deepEqual(calls,['idle','current','error','no-source','source-required'].includes(phase) ? ['status','check'] : ['status']);
+    assert.deepEqual(calls,['idle','current','error','no-source','source-required','available'].includes(phase) ? ['status','check'] : ['status']);
   }
   const calls = [];
   const unsupported = startSoftwareUpdateChecks({invoke:async action => { calls.push(action); return {phase:'idle',supported:false}; }});
@@ -124,6 +123,6 @@ test('检查异常或通知异常不影响后续检查，通知失败也不重�
   fail = false;
   t.mock.timers.tick(1000); await flush();
   t.mock.timers.tick(1000); await flush();
-  assert.deepEqual(calls,['status','status','status']);
+  assert.deepEqual(calls,['status','status','check','status','check']);
   assert.equal(notices,1);
 });

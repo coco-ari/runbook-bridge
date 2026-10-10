@@ -1,6 +1,6 @@
 import { softwareUpdateError } from './software-update-service.mjs';
 
-const CHECKABLE_PHASES = new Set(['idle','current','error','no-source','source-required']);
+const CHECKABLE_PHASES = new Set(['idle','current','error','no-source','source-required','available']);
 const DEFAULT_CHECK_INTERVAL_MS = 15 * 60_000;
 
 export function assertSoftwareUpdateIdle(v2) {

@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import crypto from 'node:crypto';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -51,6 +52,18 @@ async function openRelease(directory,route) {
     if (error?.code?.startsWith('CLOUD_')) throw error;
     reject(404,'CLOUD_UPDATE_NOT_FOUND');
   }
+}
+
+export async function readReleaseRevision(directory,platform,arch) {
+  if (!directory) reject(404,'CLOUD_UPDATES_UNCONFIGURED');
+  const route = releaseRoute({url:`/updates/${platform}/${arch}/${platform === 'win32' ? 'latest.yml' : 'latest-mac.yml'}`});
+  const {file,size} = await openRelease(directory,route);
+  try {
+    const buffer = Buffer.alloc(size);
+    const {bytesRead} = await file.read(buffer,0,size,0);
+    if (bytesRead !== size || (await file.stat()).size !== size) reject(404,'CLOUD_UPDATE_NOT_FOUND');
+    return crypto.createHash('sha256').update(buffer).digest('hex');
+  } finally { await file.close(); }
 }
 
 function rangeFor(header,size,response) {

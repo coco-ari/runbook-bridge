@@ -19,6 +19,7 @@ import {
 import { StatusIndicator, statusLabel } from "@/components/app-shell/StatusIndicator"
 import { WorkspaceSwitcherButton } from "@/features/plugins/WorkspaceNavigation"
 import { SettingsButton } from "@/features/settings/SettingsButton"
+import { UpdatesButton } from "@/features/updates/UpdateCenter"
 import {
   Alert,
   AlertDescription,
@@ -668,6 +669,7 @@ export function ProjectRail({
             className={utilityButtonClassName}
             labelLayout="compact"
           />
+          <UpdatesButton iconOnly />
           <SettingsButton
             className="ml-auto shrink-0 text-muted-foreground"
             iconOnly

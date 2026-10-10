@@ -760,7 +760,7 @@ async function main() {
     assert.equal(inspection.noPageOverflow, true);
     assert.equal(inspection.overviewOk, true);
     assert.equal(inspection.projectCount, 0);
-    assert.equal(inspection.apiCount, 116);
+    assert.equal(inspection.apiCount, 118);
     const sqlExportContract = await running.cdp.evaluate("(async () => window.aiOps.v2.mysqlExportSave({fileName:'../blocked.sql',sql:'SELECT 1;'}))()");
     assert.equal(sqlExportContract.ok, false);
     assert.equal(sqlExportContract.error.code, 'INVALID_ARGUMENT');
@@ -807,6 +807,14 @@ async function main() {
     assert.equal(updateContract.unknown.ok,false);
     assert.equal(updateContract.invalid.error.code,'UPDATE_INVALID_ARGUMENT');
     assert.equal(updateContract.unknown.error.code,'UPDATE_INVALID_ARGUMENT');
+    const noticeContract = await running.cdp.evaluate("(async () => ({status:await window.aiOps.v2.updateCenter({action:'status'}),invalid:await window.aiOps.v2.updateCenter({action:'install'}),extra:await window.aiOps.v2.updateCenter({action:'status',repositoryId:'other'})}))()");
+    assert.equal(noticeContract.status.ok,true);
+    assert.deepEqual(noticeContract.status.data.items,[]);
+    assert.equal(noticeContract.invalid.ok,false);
+    assert.equal(noticeContract.extra.ok,false);
+    await running.cdp.evaluate('document.querySelector("[data-testid=updates-open]").click()');
+    await waitForThemeUi(running.cdp,'document.querySelector("[data-testid=update-center]")?.textContent.includes("暂无待处理更新")','打包客户端更新面板空状态');
+    await running.cdp.evaluate('document.querySelector("[data-testid=update-center] [data-slot=dialog-close]").click()');
     await running.cdp.call('Page.bringToFront');
     await require('./settings-ui.cjs')({
       evaluate: code => running.cdp.evaluate(code), install: true,
@@ -914,7 +922,7 @@ async function main() {
     assert.deepEqual(inspection.externalResources, []);
     assert.deepEqual(running.httpRequests, []);
     if (process.argv.includes('--desktop-contracts-only')) {
-      process.stdout.write('Packaged desktop contracts passed (116 preload APIs, file editing owner/parameter guards, isolated empty workspace, no external requests)\n');
+      process.stdout.write('Packaged desktop contracts passed (118 preload APIs, file editing owner/parameter guards, isolated empty workspace, no external requests)\n');
       return;
     }
     await exerciseThemePreferences(running.cdp);
@@ -964,7 +972,7 @@ async function main() {
       return {ok: overview?.ok === true, projectCount: Array.isArray(overview?.data) ? overview.data.length : -1,
         apiCount: Object.keys(window.aiOps.v2).length};
     })()`);
-    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 116});
+    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 118});
     assert.deepEqual(running.httpRequests, []);
     await selectThemePreference(running.cdp, 'system');
     await emulateSystemTheme(running.cdp, 'dark');
@@ -984,7 +992,7 @@ async function main() {
         availableWidth: compactSearch.availableWidth, nativeTextBox: compactSearch.nativeBox?.source ?? 'conservative-cancel-budget'},
     })}\n`);
     process.stdout.write(
-      `Packaged React UI smoke passed (116 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
+      `Packaged React UI smoke passed (118 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
     );
   } catch (error) {
     if (running) {

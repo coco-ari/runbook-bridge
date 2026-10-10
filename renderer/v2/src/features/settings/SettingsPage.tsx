@@ -6,6 +6,8 @@ import { ThemeMenu } from "@/components/app-shell/ThemeMenu"
 import { Button } from "@/components/ui/button"
 import { CloudConfigPanel } from "@/features/cloud-config/CloudConfigPanel"
 import { SoftwareUpdatePanel } from "@/features/software-update/SoftwareUpdatePanel"
+import { UpdatesButton } from "@/features/updates/UpdateCenter"
+import type { UpdateSettingsTarget } from "@/features/updates/update-types"
 import { cn } from "@/lib/utils"
 import { CodexIntegrationPanel } from "./CodexIntegrationPanel"
 
@@ -16,16 +18,24 @@ const sections = [
   { id: "about", title: "关于", description: "查看应用版本与兼容性信息。", icon: Info },
 ] as const
 
-export function SettingsPage({ api, onBack, onChanged }: {
+export function SettingsPage({ api, onBack, onChanged, target }: {
   readonly api: AiOpsV2Api
   readonly onBack: () => void
   readonly onChanged: () => void
+  readonly target?: UpdateSettingsTarget | null
 }) {
-  const [section, setSection] = useState<(typeof sections)[number]["id"]>("appearance")
-  const [cloudVisited, setCloudVisited] = useState(false)
+  const [section, setSection] = useState<(typeof sections)[number]["id"]>(target?.section ?? "appearance")
+  const [cloudVisited, setCloudVisited] = useState(target?.section === "cloud")
   const [cloudBusy, setCloudBusy] = useState(false)
   const [agentBusy, setAgentBusy] = useState(false)
   const busy = cloudBusy || agentBusy
+  const appliedTarget = useRef<UpdateSettingsTarget | null>(null)
+  useEffect(() => {
+    if (!target || busy || appliedTarget.current === target) return
+    appliedTarget.current = target
+    setSection(target.section)
+    if (target.section === "cloud") setCloudVisited(true)
+  }, [target, busy])
   const [repositoryError, setRepositoryError] = useState("")
   const openRepository = async () => {
     setRepositoryError("")
@@ -42,6 +52,7 @@ export function SettingsPage({ api, onBack, onChanged }: {
     <aside className="flex shrink-0 flex-col border-b bg-sidebar p-3 sm:w-52 sm:border-r sm:border-b-0" aria-label="应用设置导航">
       <div className="hidden h-12 items-center gap-2 px-2 text-sm font-semibold sm:flex"><GearSix size={20} />应用设置</div>
       <Button className="justify-start sm:my-4" variant="ghost" size="sm" disabled={busy} data-testid="settings-back" onClick={onBack}><ArrowLeft />返回工作台</Button>
+      <UpdatesButton />
       <p className="mt-2 mb-2 hidden px-2 text-xs text-muted-foreground sm:block">应用配置</p>
       <nav className="grid grid-cols-2 gap-1 sm:flex sm:flex-col">
         {sections.map(item => <Button key={item.id} data-settings-nav className="justify-start aria-[current=page]:bg-surface-selected aria-[current=page]:text-primary aria-[current=page]:shadow-[inset_2px_0_var(--primary)]" variant={section === item.id ? "secondary" : "ghost"} size="sm" aria-current={section === item.id ? "page" : undefined} disabled={busy} data-testid={`settings-${item.id}`} onClick={() => {
@@ -68,7 +79,7 @@ export function SettingsPage({ api, onBack, onChanged }: {
           <dl className="space-y-3 border-t pt-4 text-sm"><div className="flex flex-wrap justify-between gap-2"><dt className="text-muted-foreground">当前版本</dt><dd className="font-mono" data-testid="about-version">{appVersion}</dd></div><div className="flex flex-wrap justify-between gap-2"><dt className="text-muted-foreground">开源许可</dt><dd>MIT</dd></div></dl>
           <div className="border-t pt-4"><h3 className="text-sm font-medium">版本兼容性</h3><p className="mt-2 text-xs leading-5 text-muted-foreground">版本号来自当前应用包。共享云仓库的设备请保持客户端功能兼容；使用生产/测试环境标识时，其他设备也需更新到支持此功能的版本。</p></div>
         </section><SoftwareUpdatePanel api={api} /></> : null}
-        {cloudVisited ? <div hidden={section !== "cloud"} className={section === "cloud" ? "flex min-h-0 flex-1 flex-col" : "hidden"}><CloudConfigPanel api={api} onChanged={onChanged} onBusyChange={setCloudBusy} /></div> : null}
+        {cloudVisited ? <div hidden={section !== "cloud"} className={section === "cloud" ? "flex min-h-0 flex-1 flex-col" : "hidden"}><CloudConfigPanel api={api} onChanged={onChanged} onBusyChange={setCloudBusy} target={target ?? null} /></div> : null}
       </div>
     </main>
   </div>
