@@ -337,6 +337,19 @@ export function ProjectRail({
             </span>
             <p className={cn("min-w-0 flex-1 truncate text-sm font-semibold tracking-tight", collapsed && "sr-only")}>AI 运维工具</p>
             <Button
+              aria-keyshortcuts="Control+K Meta+K"
+              aria-label="搜索全部资源"
+              className="shrink-0 text-muted-foreground hover:text-foreground"
+              data-testid="global-resource-search"
+              onClick={onOpenCommand}
+              size="icon-xs"
+              title={`搜索全部资源 (${shortcutLabel("K")})`}
+              type="button"
+              variant="ghost"
+            >
+              <MagnifyingGlass aria-hidden="true" />
+            </Button>
+            <Button
               aria-controls="project-panel"
               aria-expanded={!collapsed}
               aria-keyshortcuts="Control+B Meta+B"
@@ -354,11 +367,6 @@ export function ProjectRail({
               <SidebarSimple aria-hidden="true" />
             </Button>
           </div>
-          <Button aria-keyshortcuts="Control+K Meta+K" aria-label="搜索项目、环境和插件" className={cn("w-full justify-start gap-2", collapsed && "justify-center px-0")} data-testid="global-resource-search" onClick={onOpenCommand} size="sm" title={`搜索项目、环境和插件 (${shortcutLabel("K")})`} variant="outline">
-            <MagnifyingGlass aria-hidden="true" />
-            <span className={cn("min-w-0 flex-1 truncate text-left", collapsed && "sr-only")}>搜索资源</span>
-            <Kbd className={collapsed ? "sr-only" : undefined}>{shortcutLabel("K")}</Kbd>
-          </Button>
         </SidebarHeader>
 
         <SidebarSeparator />
