@@ -91,19 +91,14 @@ export function PluginOverview({
           <AlertDescription>请刷新插件列表后再管理连接；未知插件类型不会被自动执行。</AlertDescription>
         </Alert>
       )}
-      <section aria-labelledby="plugin-boundary-heading" className="space-y-2 px-1">
-        <div className="flex items-start gap-2">
-          <ShieldCheck aria-hidden="true" className="mt-0.5 shrink-0 text-primary" size={15} />
-          <div className="min-w-0 space-y-1">
-            <h3 className="text-xs font-medium" id="plugin-boundary-heading">Agent 能力边界</h3>
-            <p className="text-xs leading-5 text-muted-foreground">{capabilityBoundary(plugin.pluginType)}</p>
-          </div>
-        </div>
+      <details className="space-y-2 px-1">
+        <summary className="cursor-pointer rounded-sm text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">Agent 能力边界</summary>
+        <p className="flex items-start gap-2 text-xs leading-5 text-muted-foreground"><ShieldCheck aria-hidden="true" className="mt-0.5 shrink-0" size={15} />{capabilityBoundary(plugin.pluginType)}</p>
         <p className="flex items-start gap-2 text-xs leading-5 text-muted-foreground">
           <LockKey aria-hidden="true" className="mt-0.5 shrink-0" size={14} />
           只有已连接且获准的插件能力会进入新的 Agent context，凭据不会显示或复制。
         </p>
-      </section>
+      </details>
     </section>
   )
 }

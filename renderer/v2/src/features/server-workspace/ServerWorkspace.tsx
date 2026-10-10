@@ -392,7 +392,7 @@ export function ServerWorkspace({ backLabel = "返回服务器详情", api, entr
     <header className="server-workspace-header">
       <WorkspaceBackButton label={backLabel} testId="server-workspace-back" onClick={onBack} />
       <span className="h-5 w-px bg-border" />
-      <div className="server-workspace-heading"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold" title={entry.plugin.displayName}>{entry.plugin.displayName}</h1><EnvironmentTypeBadge /><WorkspaceConnectionStatus state={connection.state} recovery={terminalState.phase} /></div><p className="truncate text-xs text-muted-foreground">{entry.projectName} / {entry.environmentName}<span className="server-workspace-identity"> · {sshIdentity}</span></p></div>
+      <div className="server-workspace-heading"><div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold" title={entry.plugin.displayName}>{entry.plugin.displayName}</h1><EnvironmentTypeBadge compact /><WorkspaceConnectionStatus state={connection.state} recovery={terminalState.phase} /></div><p className="truncate text-xs text-muted-foreground">{entry.projectName} / {entry.environmentName}<span className="server-workspace-identity"> · {sshIdentity}</span></p></div>
       <ServerMetrics api={api} scope={scope} connected={connected} visible={visible} />
       <WorkspaceHeaderActions connected={connected} busy={connection.state.phase === "disconnecting" || connection.state.operation?.intent === "disconnect"}
         reconnecting={Boolean(connection.state.operation) || terminalState.phase === "connecting"}

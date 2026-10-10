@@ -1374,7 +1374,7 @@ function assertEditSavePayload(call,expectedStrategy,expectedRevision,index) {
   assert.equal(payload.editSessionId,`edit-session-${index}`);
   assert.equal(payload.expectedRevision,expectedRevision);
   assert.equal(payload.afterCommit,expectedStrategy);
-  assert.equal(payload.credentialIntent,'unchanged');
+  assert.equal(payload.credentialIntent,'rebind-existing','编辑已有插件继续绑定已保存凭据，不提交新凭据');
   assert.equal(payload.discardTemporarySecrets,true,'each edit submits only its current credential input');
   assert.deepEqual(payload.patch,{
     target:{host:'server.smoke.invalid',port:22,addressFamily:'ipv4Preferred'},
@@ -2193,7 +2193,7 @@ async function assertFirstPluginAfterDeletion(win) {
       assert.equal(created.payload.projectId,PROJECT_ID);
       assert.equal(created.payload.environmentId,ENVIRONMENT_ID);
       const probes = calls('v2:plugin-probe').slice(probeIndex);
-      assert.equal(probes.length,2,'explicit check and save each use a temporary probe');
+      assert.equal(probes.length,1,'只有显式检查进行临时探测，保存但不连接不得发起额外探测');
       for (const {payload} of probes) {
         assert.equal(payload.projectId,PROJECT_ID);
         assert.equal(payload.environmentId,ENVIRONMENT_ID);
@@ -2208,15 +2208,13 @@ async function assertFirstPluginAfterDeletion(win) {
     syntheticProbePassword = null;
     state.allowPluginDeletion = false;
   }
-  assert.equal(calls('v2:plugin-probe').length,initialProbeCount+4);
+  assert.equal(calls('v2:plugin-probe').length,initialProbeCount+2);
   assert.deepEqual(probeRuntimeCalls.slice(initialRuntimeCount),[
     {pluginType:'server',purpose:'server-auth',usesTemporaryCredentials:true},
-    {pluginType:'server',purpose:'server-auth',usesTemporaryCredentials:true},
-    {pluginType:'redis',purpose:'resource-access',usesTemporaryCredentials:false},
     {pluginType:'redis',purpose:'resource-access',usesTemporaryCredentials:false},
   ],'real probe validation reaches the mock runtime with only the explicit temporary credentials');
   assert.equal(calls('v2:connection-intent').length,initialConnectionCount,'checking and saving disconnected never starts a persistent connection');
-  assert.equal(mutationCalls.length,initialMutationCount+initialPluginCount+7,'re-add uses only reviewed deletes, four probes and two creates');
+  assert.equal(mutationCalls.length,initialMutationCount+initialPluginCount+5,'re-add uses only reviewed deletes, two explicit probes and two creates');
 }
 
 async function assertSmokeSafety() {
@@ -2464,7 +2462,7 @@ async function run() {
     await captureSurfaceEvidence(win,{
       name:'strong-confirmation-gated',
       selector:'[data-confirmation-id="confirmation-strong-smoke"]',
-      restoreFocusSelector:'#confirmation-ack-confirmation-strong-smoke',
+      restoreFocusSelector:'[data-confirmation-id="confirmation-strong-smoke"] [role="checkbox"]',
     });
 
     await clickText(win,'确认一次','[data-confirmation-id="confirmation-standard-smoke"]');
@@ -2472,7 +2470,7 @@ async function run() {
     assert.equal(calls('v2:confirmation-approve')[0].payload,'confirmation-standard-smoke');
     assert.equal(calls('v2:confirmation-approve').length,1);
 
-    await click(win,'#confirmation-ack-confirmation-strong-smoke','strong confirmation acknowledgement');
+    await click(win,'[data-confirmation-id="confirmation-strong-smoke"] [role="checkbox"]','strong confirmation acknowledgement');
     const strongGateAfter = await win.webContents.executeJavaScript(`(() => {
       const article = document.querySelector('[data-confirmation-id="confirmation-strong-smoke"]');
       const action = [...(article?.querySelectorAll('button') ?? [])].find((button) => button.textContent?.includes('确认执行一次'));
@@ -2482,7 +2480,7 @@ async function run() {
     await captureSurfaceEvidence(win,{
       name:'strong-confirmation-ready',
       selector:'[data-confirmation-id="confirmation-strong-smoke"]',
-      restoreFocusSelector:'#confirmation-ack-confirmation-strong-smoke',
+      restoreFocusSelector:'[data-confirmation-id="confirmation-strong-smoke"] [role="checkbox"]',
     });
     await clickText(win,'确认执行一次','[data-confirmation-id="confirmation-strong-smoke"]');
     await waitForCall('v2:confirmation-approve',1);

@@ -1,7 +1,7 @@
 import {
   CheckCircle,
-  CircleDashed,
-  ClockCountdown,
+  Circle,
+  SpinnerGap,
   LockKey,
   WarningCircle,
   XCircle,
@@ -28,14 +28,14 @@ const statusDefinitions = {
     badgeVariant: "success",
   },
   disconnected: {
-    Icon: CircleDashed,
+    Icon: Circle,
     label: "未连接",
     className: "!text-muted-foreground",
-    badgeClassName: "!bg-transparent !text-muted-foreground",
+    badgeClassName: "!border-transparent !bg-transparent !text-muted-foreground",
     badgeVariant: "outline",
   },
   connecting: {
-    Icon: ClockCountdown,
+    Icon: SpinnerGap,
     label: "连接中",
     className: "!text-info",
     badgeClassName: "!bg-info/10 !text-info",
@@ -93,7 +93,7 @@ export function StatusIndicator({
 
   const content = (
     <>
-      <Icon aria-hidden="true" size={13} weight={status === "connected" ? "fill" : "regular"} />
+      <Icon aria-hidden="true" className={cn(status === "disconnected" ? "size-2.5" : "size-3.5", status === "connecting" && "animate-spin motion-reduce:animate-none")} size={status === "disconnected" ? 10 : 13} weight={status === "connected" ? "fill" : "regular"} />
       <span className={compact ? "sr-only" : undefined}>{label ?? definition.label}</span>
     </>
   )

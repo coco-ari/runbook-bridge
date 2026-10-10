@@ -44,6 +44,7 @@ const databaseCalls = [];
 const forbiddenCalls = [];
 const externalRequests = [];
 const rendererErrors = [];
+let currentUiStep = 'bootstrap';
 const releases = new Set();
 const state = { sequence:1, failList:false, failDescribe:false, failPreview:false, browseFixture:false, holdNext:null };
 const ok = (data) => ({ok:true,data});
@@ -255,6 +256,7 @@ function registerMockApi() {
 }
 
 async function waitFor(win,expression,label,timeoutMs = 10000) {
+  currentUiStep = label;
   const deadline = Date.now()+timeoutMs;
   while (Date.now() < deadline) {
     if (await win.webContents.executeJavaScript(expression,true)) return;
@@ -681,7 +683,10 @@ async function run() {
   win.webContents.on('will-attach-webview',(event) => event.preventDefault());
   win.webContents.on('will-navigate',(event) => event.preventDefault());
   win.webContents.on('console-message',(_event,level,message) => {
-    if (level >= 2) rendererErrors.push(message);
+    if (level >= 2) {
+      rendererErrors.push(message);
+      console.error('Database renderer diagnostic:',JSON.stringify({step:currentUiStep,message}));
+    }
   });
   try {
     await win.loadFile(pagePath);
@@ -732,6 +737,24 @@ async function run() {
     await assertFullWindow(win);
     await textContains(win,'mysql-table-list','orders');
     assert.deepEqual(databaseCalls[0],{channel:'v2:mysql-list-tables',payload:{...scope(PRIMARY_ID),limit:100}});
+    if (process.argv.includes('--resize-recovery')) {
+      await fill(win,testId('mysql-sql-editor'),'SELECT 1');
+      for (let index=0; index<3; index++) {
+        plugins[0].assessment=assessment('disconnected');
+        state.sequence++;
+        win.webContents.send('v2:environment-status-changed',runtime());
+        plugins[0].assessment=assessment('connected');
+        state.sequence++;
+        win.webContents.send('v2:environment-status-changed',runtime());
+        await wait(300);
+      }
+      assert.equal(await win.webContents.executeJavaScript(`document.querySelector('${testId('mysql-sql-editor')}').value`,true),'SELECT 1','快速重连保留 SQL 文本');
+      assert.deepEqual(forbiddenCalls,[]);
+      assert.deepEqual(externalRequests,[]);
+      assert.deepEqual(rendererErrors,[]);
+      console.log('数据库快速重连布局通过：连续重连保留 SQL，无尺寸监听错误。');
+      return;
+    }
     await require('./workspace-controls-ui.cjs')({evaluate:source=>win.webContents.executeJavaScript(source,true),click:selector=>click(win,selector),until:(expression,label)=>waitFor(win,expression,label),win,root:'[data-testid=mysql-database-workspace]'});
     await require('./workspace-layout-ui.cjs')({evaluate:source=>win.webContents.executeJavaScript(source,true),until:(expression,label)=>waitFor(win,expression,label),win,root:'[data-testid=mysql-database-workspace]'});
     assert.equal(databaseCalls.length,1,'主题切换不得重新请求数据库');

@@ -692,7 +692,7 @@ export function QuickQuestionsFeature({
       />
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="grid min-w-0 items-start gap-6 p-1 pb-2 pr-2 @4xl/quick-questions:grid-cols-[minmax(0,1fr)_17rem]">
+        <div className="grid min-w-0 items-start gap-4 p-1 pb-2 pr-2 @4xl/quick-questions:grid-cols-[minmax(0,1fr)_17rem]">
           <div className="min-w-0 space-y-4">
             <section className="space-y-3" data-testid="quick-question-composer">
               <Field className="gap-2.5">

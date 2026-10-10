@@ -33,12 +33,12 @@ export function cloudUpdateNotices(state,status) {
 }
 
 export function softwareUpdateNotices(state,platform,arch) {
-  if (!state?.source || !state.availableVersion || !['available','downloading','downloaded','installing'].includes(state.phase)) return [];
+  if (!state?.source || !state.availableVersion || !['available','downloading','downloaded','installing','error'].includes(state.phase)) return [];
   const ready = ['downloaded','installing'].includes(state.phase);
   return [{id:identity(['software',state.source.repositoryId,state.source.origin,platform,arch,state.availableVersion,ready]),
-    type:'software',kind:ready ? 'downloaded' : 'available',repositoryId:state.source.repositoryId,repositoryName:label(state.source.name),
+    type:'software',version:state.availableVersion,kind:ready ? 'downloaded' : 'available',repositoryId:state.source.repositoryId,repositoryName:label(state.source.name),
     title:ready ? `新版本 ${state.availableVersion} 已下载` : `发现新版本 ${state.availableVersion}`,
-    description:ready ? '准备好后可重启并更新。' : '查看版本说明，选择何时下载和安装。'}];
+    description:ready ? '新版本已就绪，立即更新将重启应用。' : '下载新版本，完成后即可更新。'}];
 }
 
 export function notificationChannel(mode,focused) {
@@ -59,8 +59,8 @@ export class UpdateNotificationDelivery {
   flush() {
     clearTimeout(this.timer); this.timer = null;
     const state = this.current();
-    // 发送前重新确认状态，忽略合并等待期间已读、延后或已移除的项目。
-    const items = state.items.filter(item => this.pending.has(item.id) && item.unread && !item.snoozedUntil);
+    // 仅发送仍未完成的消息；相同内容的系统通知由 notified 记录去重。
+    const items = state.items.filter(item => this.pending.has(item.id));
     this.pending.clear();
     if (items.length) this.send(items,state.notificationMode);
   }
@@ -81,19 +81,19 @@ export class UpdateNotifications {
   async init() {
     try {
       const saved = await this.workspace.unseal(await fs.readFile(this.file,'utf8'));
-      if (![1,2].includes(saved.schemaVersion) || !saved.records || typeof saved.records !== 'object' || Array.isArray(saved.records)
-        || Object.keys(saved.records).length > 8192 || Object.entries(saved.records).some(([id,r]) => !/^[a-f0-9]{64}$/.test(id) || !r || typeof r.read !== 'boolean' || typeof r.notified !== 'boolean'
+      if (![1,2,3].includes(saved.schemaVersion) || !saved.records || typeof saved.records !== 'object' || Array.isArray(saved.records)
+        || Object.keys(saved.records).length > 8192 || Object.entries(saved.records).some(([id,r]) => !/^[a-f0-9]{64}$/.test(id) || !r || saved.schemaVersion < 3 && typeof r.read !== 'boolean' || typeof r.notified !== 'boolean'
           || ['firstSeenAt','snoozedUntil'].some(key => r[key] != null && (!Number.isSafeInteger(r[key]) || r[key] < 0 || r[key] > 8.64e15)))
-        || saved.schemaVersion === 2 && !['app','background','always'].includes(saved.notificationMode)) throw new Error();
-      this.records = saved.records;
+        || saved.schemaVersion >= 2 && !['app','background','always'].includes(saved.notificationMode)) throw new Error();
+      this.records = Object.fromEntries(Object.entries(saved.records).map(([id,r]) => [id,{notified:r.notified,...(r.firstSeenAt != null ? {firstSeenAt:r.firstSeenAt} : {})}]));
       this.notificationMode = saved.notificationMode ?? 'background';
+      if (saved.schemaVersion < 3) await this.persist(this.records);
     } catch (error) { if (error.code !== 'ENOENT') this.error = '无法读取本机提醒记录，原文件已保留。'; }
   }
-  snapshot() { return {items:this.items.map(item => ({...item,unread:!this.records[item.id]?.read,
-    firstSeenAt:this.records[item.id]?.firstSeenAt,snoozedUntil:this.records[item.id]?.snoozedUntil ?? null})),notificationMode:this.notificationMode,error:this.error}; }
+  snapshot() { return {items:this.items.map(item => ({...item,firstSeenAt:this.records[item.id]?.firstSeenAt})),notificationMode:this.notificationMode,error:this.error}; }
   enqueue(run) { const next = this.queue.catch(() => undefined).then(run); this.queue = next; return next; }
   async persist(records,notificationMode = this.notificationMode) {
-    await this.workspace.writeSealed(this.file,{schemaVersion:2,records,notificationMode});
+    await this.workspace.writeSealed(this.file,{schemaVersion:3,records,notificationMode});
     this.records = records;
     this.notificationMode = notificationMode;
   }
@@ -106,10 +106,8 @@ export class UpdateNotifications {
       const now = this.now();
       for (const item of items) {
         const record = records[item.id];
-        const due = record?.snoozedUntil != null && record.snoozedUntil <= now;
-        if (!record?.notified || due) fresh.push(item);
-        records[item.id] = {read:due ? false : record?.read ?? false,notified:true,
-          firstSeenAt:record?.firstSeenAt ?? now,snoozedUntil:due ? null : record?.snoozedUntil ?? null};
+        if (!record?.notified) fresh.push(item);
+        records[item.id] = {notified:true,firstSeenAt:record?.firstSeenAt ?? now};
       }
       const activeIds = new Set(items.map(item => item.id));
       for (const id of Object.keys(records)) {
@@ -123,34 +121,8 @@ export class UpdateNotifications {
       }
       if (this.disposed || !isCurrent()) return;
       this.items = items;
-      this.scheduleReminder();
       if (before !== JSON.stringify(this.snapshot())) this.onChanged();
       if (saved && fresh.length) this.onNotify(fresh);
-    });
-  }
-  read(ids) {
-    return this.enqueue(async () => {
-      if (this.error) throw new Error('提醒记录不可用。');
-      const records = {...this.records};
-      for (const item of this.items) if (ids.includes(item.id) && records[item.id]) records[item.id] = {...records[item.id],read:true};
-      await this.persist(records);
-      this.onChanged();
-      return this.snapshot();
-    });
-  }
-  snooze(ids,duration) {
-    return this.enqueue(async () => {
-      if (this.error) throw new Error('提醒记录不可用。');
-      const tomorrow = new Date(this.now());
-      tomorrow.setDate(tomorrow.getDate()+1); tomorrow.setHours(9,0,0,0);
-      const until = duration === 'hour' ? this.now()+3_600_000 : duration === 'tomorrow' ? tomorrow.getTime() : null;
-      const records = {...this.records};
-      for (const item of this.items) if (ids.includes(item.id) && records[item.id]) {
-        records[item.id] = {...records[item.id],read:duration !== 'cancel',snoozedUntil:until};
-      }
-      await this.persist(records);
-      this.scheduleReminder(); this.onChanged();
-      return this.snapshot();
     });
   }
   preferences(notificationMode) {
@@ -160,18 +132,6 @@ export class UpdateNotifications {
       return this.snapshot();
     });
   }
-  scheduleReminder() {
-    clearTimeout(this.reminder);
-    if (this.disposed || this.error) return;
-    const due = this.items.map(item => this.records[item.id]?.snoozedUntil).filter(value => value != null);
-    if (!due.length) return;
-    this.reminder = setTimeout(() => {
-      const items = this.items;
-      // 仅重新提醒仍待处理的当前项目；解绑或完成更新后不再唤起旧提醒。
-      void this.reconcile(items,() => this.items === items);
-    },Math.max(1,Math.min(2_147_483_647,Math.min(...due)-this.now())));
-    this.reminder.unref?.();
-  }
-  clear() { this.items = []; clearTimeout(this.reminder); }
+  clear() { this.items = []; }
   dispose() { this.disposed = true; this.clear(); }
 }

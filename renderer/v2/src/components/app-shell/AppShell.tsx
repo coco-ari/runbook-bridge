@@ -37,8 +37,7 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
-import { ConfirmationCenterContext, GlobalConfirmationCenter } from "@/features/confirmations/GlobalConfirmationCenter"
-import { confirmationEnvironments, type ConfirmationEnvironment } from "@/features/confirmations/global-confirmation-model"
+import { type ConfirmationEnvironment } from "@/features/confirmations/global-confirmation-model"
 import { countActiveConfirmations } from "@/features/confirmations/confirmation-count-model"
 import { useConfirmationCount } from "@/features/confirmations/use-confirmation-count"
 import type { ConfirmationScope } from "@/features/confirmations/ConfirmationsFeature"
@@ -145,7 +144,6 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
   const confirmations = useConfirmationCount()
   const confirmationsRef = useRef(confirmations)
   confirmationsRef.current = confirmations
-  const [confirmationCenterOpen, setConfirmationCenterOpen] = useState(false)
   const [commandOpen, setCommandOpen] = useState(false)
   const [environmentWorkspaceTarget, setEnvironmentWorkspaceTarget] = useState<{ projectId: string; environmentId: string; pluginInstanceId: string } | null>(null)
   const workspaceSessions = usePluginWorkspaceSessions(api)
@@ -784,8 +782,6 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       const open = () => setProjectSurface({ kind: action.type === "delete-project" ? "delete" : "settings", project: action.project })
       if (pluginWorkMode || (action.type === "delete-project" && selection.projectId === action.project.projectId)) requestNavigation(open)
       else open()
-    } else if (action.type === "open-confirmations") {
-      setConfirmationCenterOpen(true)
     }
   }, [pluginWorkMode, rememberFocus, requestNavigation, selection.projectId])
 
@@ -796,7 +792,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
         ?.environments.find(environment => environment.environmentId === scope.environmentId)
       if (!latestWorkspace || !target) { toast.error("目标环境已不存在或不可用"); return }
       if (confirmationsRef.current.unavailable || !countActiveConfirmations(confirmationsRef.current.items, scope)) {
-        toast.info("该环境的待确认操作已处理、过期或暂不可用，请重新查看全局待确认")
+        toast.info("该环境的待确认操作已处理、过期或暂不可用，请重新查看消息中心")
         return
       }
       workspaceSessions.back()
@@ -964,9 +960,8 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
         workspaceSessions.back()
         enterPluginEditor(environment, entry.plugin)
       }}>
-    <ConfirmationCenterContext.Provider value={{ ...confirmations, open: () => setConfirmationCenterOpen(true) }}>
     <SettingsNavigationContext.Provider value={openSettings}>
-    <UpdateCenterProvider api={api} onNavigate={openUpdateSettings}>
+    <UpdateCenterProvider api={api} onNavigate={openUpdateSettings} confirmations={confirmations} projects={workspace.data?.projects ?? []} onConfirmationNavigate={openConfirmationEnvironment}>
     <div className="h-full max-h-full min-h-0 relative w-full min-w-0 overflow-hidden bg-background text-foreground" data-shell-ready="true" data-testid="react-app-shell">
       <a
         className="fixed left-3 top-2 z-[70] -translate-y-14 rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground shadow-sm outline-none transition-transform focus:translate-y-0 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background"
@@ -999,10 +994,6 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
             onReload={workspace.reload}
             onSelectProject={selectProject}
             onToggleCollapsed={() => setProjectCollapsed(!compactProjectRail)}
-            pendingConfirmationCount={confirmations.count}
-            confirmationsLoading={confirmations.loading}
-            confirmationsUnavailable={confirmations.unavailable}
-            onRetryConfirmations={confirmations.retry}
             onOpenCommand={() => setCommandOpen(true)}
             projects={navigationProjects}
             cloudRepositories={cloud.data.repositories ?? []}
@@ -1235,11 +1226,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       <span className="sr-only">当前范围：{shellLabel}</span>
     </div>
     </UpdateCenterProvider>
-    <GlobalConfirmationCenter open={confirmationCenterOpen} onOpenChange={setConfirmationCenterOpen}
-      groups={confirmationEnvironments(confirmations.items)} projects={workspace.data?.projects ?? []}
-      loading={confirmations.loading} unavailable={confirmations.unavailable} onRetry={confirmations.retry} onNavigate={openConfirmationEnvironment} />
     </SettingsNavigationContext.Provider>
-    </ConfirmationCenterContext.Provider>
     </WorkspaceNavigationProvider>
   )
 }

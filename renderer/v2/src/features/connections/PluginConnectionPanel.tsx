@@ -153,7 +153,7 @@ export function PluginConnectionPanel({
     ? "bg-danger"
     : connection.state.phase === "partial" || connection.state.phase === "blocked" || !configReady
       ? "bg-warning"
-      : connection.state.phase === "connected" ? "bg-success" : "bg-primary"
+      : connection.state.phase === "connected" ? "bg-success" : "bg-border"
   const facts = draft.pluginType === "server"
     ? [
         ["SSH 目标", `${draft.auth.username || "未配置"}@${draft.target.host}:${draft.target.port}`],
@@ -230,8 +230,9 @@ export function PluginConnectionPanel({
       <Card className="relative gap-0 overflow-hidden py-0" data-status={connection.state.phase} data-testid="plugin-status-console">
         <span aria-hidden="true" className={`absolute inset-y-0 left-0 w-0.5 ${statusRailTone}`} data-testid="plugin-status-rail" />
         <CardContent className="space-y-3 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-start gap-3">
-            <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-surface-inset text-muted-foreground">
+            <span className="mt-0.5 shrink-0 text-muted-foreground">
               {editingBlocked
                 ? <SpinnerGap aria-hidden="true" className="animate-spin" size={18} />
                 : <Plugs aria-hidden="true" size={18} />}
@@ -283,6 +284,7 @@ export function PluginConnectionPanel({
               </Button>
             ) : null}
           </ButtonGroup>
+          </div>
 
           {connection.state.error && !connection.state.challenge ? (
             <Alert variant="destructive">
@@ -309,15 +311,14 @@ export function PluginConnectionPanel({
         <CardHeader className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2.5">
           <CardTitle><h3 className="text-section font-medium" id="plugin-config-title">配置摘要</h3></CardTitle>
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <Badge variant="outline">{pluginTypeLabel(draft.pluginType)}</Badge>
+            <span className="text-xs text-muted-foreground">{pluginTypeLabel(draft.pluginType)}</span>
             {!configReady ? <Badge variant="warning">{plugin.configState === "draft" ? "待完善" : "配置未知"}</Badge> : null}
-            <span className="text-xs text-muted-foreground">配置修订 {plugin.revision}</span>
           </div>
         </CardHeader>
         <CardContent className="p-3">
-          <ItemGroup className="gap-2 @md/plugin-connection:hidden" aria-label="插件连接配置摘要">
+          <ItemGroup className="gap-1 @md/plugin-connection:hidden" aria-label="插件连接配置摘要">
             {facts.map(([label, value]) => (
-              <Item className="min-w-0 bg-surface-inset" key={label} role="listitem" size="xs" variant="muted">
+              <Item className="min-w-0 px-0 py-1.5" key={label} role="listitem" size="xs">
                 <ItemContent>
                   <ItemDescription>{label}</ItemDescription>
                   <ItemTitle className="line-clamp-none w-full break-all font-mono text-xs">{value}</ItemTitle>

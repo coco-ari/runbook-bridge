@@ -642,17 +642,17 @@ async function emulateSystemTheme(cdp, theme) {
 
 async function assertThemeState(cdp, preference, actual, label, {persisted = true} = {}) {
   // 隔离空工作区的全局待确认列表也应继承主题，且不需要选中环境。
-  await clickThemeControl(cdp, 'confirmation-center');
+  await clickThemeControl(cdp, 'updates-open');
   await waitForThemeUi(cdp, `(() => {
     const toasters = [...document.querySelectorAll('[data-sonner-toaster]')];
     return document.documentElement.dataset.themePreference === '${preference}'
       && document.documentElement.dataset.theme === '${actual}'
       && (!${persisted} || localStorage.getItem('${THEME_STORAGE_KEY}') === '${preference}')
-      && document.querySelector('[data-testid="global-confirmation-center"]')
+      && document.querySelector('[data-testid="update-center"]')
       && toasters.every((toaster) => toaster.dataset.sonnerTheme === '${actual}');
   })()`, label);
-  await cdp.evaluate(`document.querySelector('[data-testid="global-confirmation-center"] [data-slot="dialog-close"]').click()`);
-  await waitForThemeUi(cdp, `!document.querySelector('[data-testid="global-confirmation-center"]')`, "关闭全局待确认列表");
+  await cdp.evaluate(`document.querySelector('[data-testid="updates-close"]').click()`);
+  await waitForThemeUi(cdp, `!document.querySelector('[data-testid="update-center"]')`, "关闭全局待确认列表");
 }
 
 async function assertThemeControlGeometry(cdp, compact) {
@@ -817,12 +817,12 @@ async function main() {
     const noticePreferences = await running.cdp.evaluate("(async () => ({saved:await window.aiOps.v2.updateCenter({action:'preferences',notificationMode:'app'}),status:await window.aiOps.v2.updateCenter({action:'status'}),snooze:await window.aiOps.v2.updateCenter({action:'snooze',ids:[],duration:'hour'}),invalid:await window.aiOps.v2.updateCenter({action:'snooze',ids:[],duration:'hour',until:1}),restored:await window.aiOps.v2.updateCenter({action:'preferences',notificationMode:'background'})}))()");
     assert.equal(noticePreferences.saved.data.notificationMode,'app');
     assert.equal(noticePreferences.status.data.notificationMode,'app');
-    assert.equal(noticePreferences.snooze.ok,true);
+    assert.equal(noticePreferences.snooze.ok,false,'消息中心不再接受延后提醒');
     assert.equal(noticePreferences.invalid.ok,false);
     assert.equal(noticePreferences.restored.data.notificationMode,'background');
     await running.cdp.evaluate('document.querySelector("[data-testid=updates-open]").click()');
-    await waitForThemeUi(running.cdp,'document.querySelector("[data-testid=update-center]")?.textContent.includes("暂无待处理更新")','打包客户端更新面板空状态');
-    await running.cdp.evaluate('document.querySelector("[data-testid=update-center] [data-slot=sheet-close]").click()');
+    await waitForThemeUi(running.cdp,'document.querySelector("[data-testid=update-center]")?.textContent.includes("暂无消息")','打包客户端更新面板空状态');
+    await running.cdp.evaluate('document.querySelector("[data-testid=updates-close]").click()');
     await running.cdp.call('Page.bringToFront');
     await require('./settings-ui.cjs')({
       evaluate: code => running.cdp.evaluate(code), install: true,
@@ -843,12 +843,12 @@ async function main() {
     const existingDefaultConfig = require('smol-toml').stringify({ mcp_servers: { 'agent-ops': defaultEntry } });
     await fsp.writeFile(path.join(isolation.env.CODEX_HOME, 'config.toml'), existingDefaultConfig);
     await require('./settings-ui.cjs')({
-      evaluate: code => running.cdp.evaluate(code), initialCodexStatus: '已配置',
+      evaluate: code => running.cdp.evaluate(code), initialCodexStatus: process.platform === 'win32' ? '已配置' : '配置需要更新',
       paint: () => running.cdp.call('Page.captureScreenshot', { format: 'png', fromSurface: true, captureBeyondViewport: false }),
     });
     assert.equal(await fsp.readFile(path.join(isolation.env.CODEX_HOME, 'config.toml'), 'utf8'), existingDefaultConfig, '识别已有默认配置时不得自动改写文件');
     assert.equal((await fsp.readdir(isolation.env.CODEX_HOME)).filter(file => file.endsWith('.bak')).length, 2, '只读检测不得创建备份');
-    process.stdout.write('包内 Codex 默认配置识别通过：省略数据目录仍显示已配置，无需重新接入。\n');
+    process.stdout.write(process.platform === 'win32' ? '包内 Codex 默认配置识别通过：省略数据目录仍显示已配置。\n' : '包内 Codex 自定义目录识别通过：省略隔离数据目录时提示更新，不误认成本机默认目录。\n');
     await fsp.writeFile(path.join(isolation.env.CODEX_HOME, 'config.toml'), '# 旧接入配置\n[mcp_servers.agent-ops]\ncommand = "old-workbench"\nenabled = false\ndisabled_tools = ["blocked-fixture-tool"]\n');
     await require('./settings-ui.cjs')({
       evaluate: code => running.cdp.evaluate(code), install: true, initialCodexStatus: '配置需要更新',

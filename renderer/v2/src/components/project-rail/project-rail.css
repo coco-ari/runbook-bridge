@@ -4,18 +4,18 @@
 }
 
 /* 按项目栏实际宽度收起文字，拖动分栏和紧凑模式共用一套入口。 */
-@container project-rail (max-width: 260px) {
+@container project-rail (max-width: 205px) {
   .project-utility-navigation {
     gap: 2px;
   }
 
   .project-utility-navigation > button {
-    width: 26px;
+    width: 32px;
     padding-inline: 0;
   }
 
   .project-utility-button {
-    width: 26px;
+    width: 32px;
     padding-inline: 0;
     gap: 0;
   }
@@ -26,7 +26,15 @@
 
   .project-utility-button [data-utility-count] {
     position: absolute;
-    top: -2px;
-    right: -2px;
+    top: 0;
+    right: 0;
+  }
+}
+
+@container project-rail (max-width: 150px) {
+  .project-utility-navigation > button,
+  .project-utility-button {
+    width: 26px;
+    flex-shrink: 0;
   }
 }

@@ -236,9 +236,7 @@ let updateCenterFixture = {items:[],error:null};
 
 function registerMockApi() {
   registerRead('v2:update-center',request => {
-    assert.ok(['status','read','snooze','preferences'].includes(request.action));
-    if (request.action === 'read') updateCenterFixture = {...updateCenterFixture,items:updateCenterFixture.items.map(item => request.ids.includes(item.id) ? {...item,unread:false} : item)};
-    if (request.action === 'snooze') updateCenterFixture = {...updateCenterFixture,items:updateCenterFixture.items.map(item => request.ids.includes(item.id) ? {...item,unread:request.duration === 'cancel',snoozedUntil:request.duration === 'cancel' ? null : Date.now()+3_600_000} : item)};
+    assert.ok(['status','preferences'].includes(request.action));
     if (request.action === 'preferences') updateCenterFixture = {...updateCenterFixture,notificationMode:request.notificationMode};
     return updateCenterFixture;
   });
@@ -363,6 +361,7 @@ async function collectWindowErrorDiagnostics(win) {
 async function pressKey(win,keyCode,modifiers = []) {
   // Desktop focus can move to another app while a long smoke is running.
   // Native keyboard assertions require the fixture's own window to be active.
+  if (process.platform === 'darwin') app.focus({steal:true});
   win.focus();
   win.webContents.focus();
   if (process.platform === 'darwin') modifiers = modifiers.map(value => value === 'control' ? 'meta' : value);
@@ -778,6 +777,7 @@ async function assertDetailCollapseViewportPersistence(win) {
 }
 
 async function assertRendererKeyboardFocus(win) {
+  if (process.platform === 'darwin') app.focus({steal:true});
   win.focus();
   win.webContents.focus();
   await wait(100);
@@ -910,18 +910,18 @@ async function selectThemePreference(win,preference) {
 
 async function assertThemeState(win,preference,actual,label,{persisted = true,toast = true} = {}) {
   // 全局入口在未选择环境时也能打开只读列表，并继承当前主题。
-  if (toast) await clickThemeControl(win,'confirmation-center');
+  if (toast) await clickThemeControl(win,'updates-open');
   await waitFor(win,`(() => {
     const root = document.documentElement;
     const toasters = [...document.querySelectorAll('[data-sonner-toaster]')];
     return root.dataset.themePreference === ${JSON.stringify(preference)}
       && root.dataset.theme === ${JSON.stringify(actual)}
       && (${persisted} === false || localStorage.getItem('${THEME_STORAGE_KEY}') === ${JSON.stringify(preference)})
-      && (!${toast} || (document.querySelector('[data-testid="global-confirmation-center"]') && toasters.every((toaster) => toaster.dataset.sonnerTheme === ${JSON.stringify(actual)})));
+      && (!${toast} || (document.querySelector('[data-testid="update-center"]') && toasters.every((toaster) => toaster.dataset.sonnerTheme === ${JSON.stringify(actual)})));
   })()`,`${label}: preference, effective theme, persistence and global dialog agree`);
   if (toast) {
-    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="global-confirmation-center"] [data-slot="dialog-close"]')?.click()`,true);
-    await waitFor(win,`!document.querySelector('[data-testid="global-confirmation-center"]')`,'关闭全局待确认列表');
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="updates-close"]')?.click()`,true);
+    await waitFor(win,`!document.querySelector('[data-testid="update-center"]')`,'关闭全局待确认列表');
   }
 }
 
@@ -1023,9 +1023,9 @@ async function assertManualThemePreferences(win) {
   await waitFor(win,`document.querySelector('[data-testid="project-search"]')?.value === ''`,'clear the theme regression search through native input');
   await win.webContents.executeJavaScript('delete window.__themeWorkspaceProbe',true);
   await waitFor(win,`document.querySelector('[data-sonner-toast]') === null`,'theme evidence toasts dismiss before existing geometry assertions');
-  assert.equal(readCalls.length,readCount,'theme controls perform no read IPC');
+  assert.deepEqual(readCalls.slice(readCount).filter(call => call.channel !== 'v2:update-center' || call.args[0]?.action !== 'status'),[],'主题切换不读取业务数据，仅打开消息中心时刷新消息');
   assert.equal(mutationCalls.length,mutationCount,'theme controls perform no mutation IPC');
-  process.stdout.write('Theme preference evidence: light, dark, live system changes, native menu keyboard/focus, matching Toaster, no IPC\n');
+  process.stdout.write('Theme preference evidence: light, dark, live system changes, native menu keyboard/focus, matching Toaster, message status reads only\n');
 }
 
 async function assertEnvironmentAccordionNavigation(win) {
@@ -1196,18 +1196,22 @@ async function assertConfirmationReviewAndRecovery(win) {
   win.webContents.send('v2:confirmations-changed',clone(confirmations));
   await win.webContents.executeJavaScript(`document.querySelector('[data-project-id="project-data"]').click()`,true);
   await waitFor(win,`document.querySelector('#detail-main')?.dataset.selectionKind === "project"`,'未选择环境也能看到全局待确认');
-  await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute("aria-label") === "全局 3 项待确认操作"`,'全局数量跨项目保留');
+  await waitFor(win,`document.querySelector('[data-testid="updates-open"]')?.getAttribute("aria-label") === "消息中心，3 项待确认操作"`,'全局数量跨项目保留');
   await win.webContents.executeJavaScript(
-    `document.querySelector('[data-testid="confirmation-center"]')?.click()`,
+    `document.querySelector('[data-testid="updates-open"]')?.click()`,
     true,
   );
-  await waitFor(win,`document.querySelector('[data-testid="global-confirmation-center"]')`,'全局确认列表');
-  assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('[data-confirmation-environment]').length`,true),2,'所有项目的请求均可见');
+  await waitFor(win,`document.querySelector('[data-testid="update-center"]')`,'全局确认列表');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('[data-confirmation-environment]').length`,true),3,'所有项目的请求均可见');
   win.webContents.send('v2:confirmations-changed',[...confirmations,{...confirmations[0],requestId:'short-lived-global',environmentId:'env-preview',expiresAt:Date.now()+1500}]);
   await waitFor(win,`document.querySelector('[data-confirmation-environment="env-preview"]')`,'打开的全局列表实时收到其他环境请求');
   await waitFor(win,`!document.querySelector('[data-confirmation-environment="env-preview"]')`,'过期后无需切换环境即可移除列表项');
+  await waitFor(win,`document.querySelector('[data-testid="updates-open"]')?.getAttribute('aria-label') === '消息中心，3 项待确认操作'`,'过期后全局计数同步减少');
   assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-confirmation-environment="environment-archive"] button').disabled`,true),true,'已删除环境的请求仍可见但不能跳转');
   await win.webContents.executeJavaScript(`document.querySelector('[data-confirmation-environment="env-production-east"] button').click()`,true);
+  await waitFor(win,`document.querySelector('[data-testid="confirmation-review"] [data-confirmation-id]')`,'在小弹窗内核对操作');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('#detail-main')?.dataset.selectionKind`,true),'project','查看详情不切换当前项目或环境');
+  await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-review-page"]').click()`,true);
   await waitFor(
     win,
     `document.querySelector('[data-feature="confirmations"]') !== null`,
@@ -1223,7 +1227,7 @@ async function assertConfirmationReviewAndRecovery(win) {
       .find((tab) => tab.getAttribute('aria-selected') === 'true')?.textContent?.trim() ?? null,
     selected:document.querySelector('[data-feature="confirmations"]') !== null,
     crossScopeVisible:document.body.textContent?.includes('跨范围请求不得显示') === true,
-    scopedCount:document.querySelector('[data-testid="confirmation-center"]')
+    scopedCount:document.querySelector('[data-testid="updates-open"]')
       ?.getAttribute('aria-label')?.includes('3 项') === true,
   }))()`,true);
   assert.deepEqual(confirmationTab,{
@@ -1267,7 +1271,7 @@ async function assertConfirmationReviewAndRecovery(win) {
   );
   await waitFor(
     win,
-    `document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('1 项') === true`,
+    `document.querySelector('[data-testid="updates-open"]')?.getAttribute('aria-label')?.includes('1 项') === true`,
     'confirmation counter subscription',
   );
   await assertConfirmationCountRecovery(win);
@@ -1286,17 +1290,17 @@ async function assertConfirmationCountRecovery(win) {
   });
   try {
     await win.webContents.executeJavaScript(`document.querySelector('[data-testid="environment-trigger-env-preview"]')?.click()`,true);
-    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-center"]').click()`,true);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="updates-open"]').click()`,true);
     await waitFor(win,`document.querySelector('[data-testid="global-confirmations-refresh"]')`,'打开全局队列');
     await win.webContents.executeJavaScript(`document.querySelector('[data-testid="global-confirmations-refresh"]').click()`,true);
-    await waitFor(win,`document.querySelector('[data-testid="global-confirmation-center"]')?.textContent.includes('暂时不可用')`,'全局读取失败');
-    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="global-confirmation-center"] [data-slot="dialog-close"]').click()`,true);
-    await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.textContent?.includes('待确认不可用')`,'读取失败显示不可用');
+    await waitFor(win,`document.querySelector('[data-testid="update-center"]')?.textContent.includes('暂时不可用')`,'全局读取失败');
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="updates-close"]').click()`,true);
+    await waitFor(win,`document.querySelector('[data-testid="updates-open"]')?.getAttribute('aria-label')?.includes('待确认不可用')`,'读取失败显示不可用');
     const unavailable = await win.webContents.executeJavaScript(`(() => {
-      const entry = document.querySelector('[data-testid="confirmation-center"]');
+      const entry = document.querySelector('[data-testid="updates-open"]');
       return {name:entry?.getAttribute('aria-label'),count:entry?.querySelector('[data-utility-count]') !== null,projects:document.querySelectorAll('[data-project-id]').length};
     })()`,true);
-    assert.match(unavailable.name,/全局.*不可用.*重新读取/u);
+    assert.match(unavailable.name,/消息中心.*不可用/u);
     assert.equal(unavailable.count,false,'失败状态不能显示确定数量');
     assert.equal(unavailable.projects,workspaceProjects.length,'计数失败不会让项目导航进入加载状态');
     await selectVisualTab(win,'confirmations','[data-testid="confirmation-queue-count"]','确认页面读取失败');
@@ -1313,8 +1317,9 @@ async function assertConfirmationCountRecovery(win) {
     await waitFor(win,`document.querySelector('[data-testid="confirmation-queue-count"]')?.dataset.queueState === 'ready'
       && document.querySelector('[data-testid="confirmation-queue-count"]')?.textContent === '0 项待处理'
       && document.querySelector('[data-testid="confirmation-queue-error"]') === null`,'确认页面重读恢复已知空队列');
-    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-center"]')?.click()`,true);
-    await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('3 项待确认操作')`,'全局重读恢复所有环境的请求');
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="updates-open"]')?.click()`,true);
+    await waitFor(win,`document.querySelector('[data-testid="updates-open"]')?.getAttribute('aria-label')?.includes('3 项待确认操作')`,'全局重读恢复所有环境的请求');
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid=updates-close]').click()`,true);
     mode = 'fail';
     await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-queue-refresh"]')?.click()`,true);
     await waitFor(win,`document.querySelector('[data-testid="confirmation-queue-count"]')?.dataset.queueState === 'stale'
@@ -1348,22 +1353,22 @@ async function assertConfirmationCountRecovery(win) {
     await selectVisualTab(win,'overview','[data-testid="environment-overview"]','退出确认页面验证独立底栏');
     await win.webContents.executeJavaScript(`document.querySelector('[data-testid="environment-trigger-env-preview"]')?.click()`,true);
     await selectVisualTab(win,'overview','[data-testid="environment-overview"]','预发布环境概览');
-    await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('1 项待确认操作')`,'切换环境保留全局订阅数量');
+    await waitFor(win,`document.querySelector('[data-testid="updates-open"]')?.getAttribute('aria-label')?.includes('1 项待确认操作')`,'切换环境保留全局订阅数量');
     mode = 'hold';
     await win.webContents.executeJavaScript(`document.querySelector('[data-testid="environment-trigger-env-production-east"]')?.click()`,true);
-    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-center"]').click()`,true);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="updates-open"]').click()`,true);
     await waitFor(win,`document.querySelector('[data-testid="global-confirmations-refresh"]')`,'打开全局队列以测试在途读取');
     await win.webContents.executeJavaScript(`document.querySelector('[data-testid="global-confirmations-refresh"]').click()`,true);
     for (let attempt = 0; attempt < 50 && !releaseRead; attempt += 1) await wait(20);
     assert.equal(typeof releaseRead,'function','首次读取保持在途');
     win.webContents.send('v2:confirmations-changed',[confirmations[0]]);
-    await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('1 项待确认操作')`,'订阅先到更新真实计数');
+    await waitFor(win,`document.querySelector('[data-testid="updates-open"]')?.getAttribute('aria-label')?.includes('1 项待确认操作')`,'订阅先到更新真实计数');
     releaseRead({ok:false,error:{code:'CONFIRMATION_FAILED',message:'合成旧读取失败'}});
     releaseRead = null;
     await captureRenderedFrame(win);
-    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('1 项待确认操作')`,true),true,'旧读取失败不覆写更新的订阅计数');
-    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="global-confirmation-center"] [data-slot="dialog-close"]').click()`,true);
-    await waitFor(win,`!document.querySelector('[data-testid="global-confirmation-center"]')`,'恢复后关闭全局列表');
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-testid="updates-open"]')?.getAttribute('aria-label')?.includes('1 项待确认操作')`,true),true,'旧读取失败不覆写更新的订阅计数');
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="updates-close"]').click()`,true);
+    await waitFor(win,`!document.querySelector('[data-testid="update-center"]')`,'恢复后关闭全局列表');
   } finally {
     releaseRead?.(ok([]));
     ipcMain.removeHandler(channel);
@@ -1574,14 +1579,14 @@ async function assertCompactProjectRail(win,theme) {
     assert.deepEqual(snapshot,{open:true,portalFocus:true,rowHovered:false,rowFocused:false,actionOpacity:1,statusOpacity:0},
       `${collapsed ? 'compact' : 'expanded'} open project menu must hide status after pointer and focus leave the row`);
     await pressKey(win,'ESCAPE');
-    await waitFor(win,`document.querySelector('[role="menu"][data-state="open"]') === null`,
-      'project more menu closes without changing selection');
+    await waitFor(win,`document.querySelector('[role="menu"]') === null && document.activeElement === document.querySelector('[data-sidebar="menu-item"]:has([data-project-id="project-operations"]) [data-sidebar="menu-action"]')`,
+      'project more menu unmounts and restores trigger focus before the next focus move');
     await focusSeparator();
   };
   const rememberStableRail = () => win.webContents.executeJavaScript(`(() => {
     const rail = document.querySelector('[data-testid="project-rail"]');
     const selectors = ['[data-slot="sidebar-header"]','[data-testid="project-search"]',
-      '[data-slot="sidebar-group-label"]','[data-testid="confirmation-center"]',
+      '[data-slot="sidebar-group-label"]','[data-testid="updates-open"]',
       '[data-testid="add-project-header"]',...Array.from(rail.querySelectorAll('[data-project-id]'))
         .flatMap((row) => ['[data-project-id="' + row.dataset.projectId + '"]',
           '[data-project-id="' + row.dataset.projectId + '"] [data-project-name]',
@@ -1785,7 +1790,7 @@ async function assertCompactProjectRail(win,theme) {
       const footer = rail.querySelector('[data-testid="project-utility-navigation"]');
       const add = rail.querySelector('[data-testid="add-project-header"]');
       const addStyle = add && getComputedStyle(add);
-      const confirmation = rail.querySelector('[data-testid="confirmation-center"]');
+      const confirmation = rail.querySelector('[data-testid="updates-open"]');
       const confirmationLabel = confirmation?.querySelector('[data-utility-label]');
       const viewport = rail.querySelector('[data-slot="scroll-area-viewport"]');
       const before = footer?.getBoundingClientRect();
@@ -1827,7 +1832,7 @@ async function assertCompactProjectRail(win,theme) {
     assert.equal(snapshot.footerToggle,false);
     const selectedScope = workspaceProjects.find(project => project.projectId === snapshot.selected);
     assert.ok(selectedScope,'确认计数验收绑定实际选中的合成项目');
-    assert.match(snapshot.confirmation.label,/全局 \d+ 项待确认操作/u,'全局数量不依赖当前选择');
+    assert.match(snapshot.confirmation.label,/消息中心/u,'全局数量不依赖当前选择');
     assert.equal(snapshot.confirmation.labelHidden,true,'窄栏保留可访问名称并收起工具文字');
     assert.deepEqual(snapshot.footer,{height:46,visible:true,fixed:true});
     assert.deepEqual(snapshot.add,{height:32,label:'新增项目',iconOnly:true,borderless:true});
@@ -2434,11 +2439,11 @@ async function captureVisualScenario(win,{name,readySelector,theme,viewports = v
         const badges = [...panel.querySelectorAll('[data-testid="environment-plugin-list"] [data-status]')].filter(visible);
         const names = controls.filter((button) => button.dataset.testid?.startsWith('environment-plugin-detail-'));
         return {
-          controlsInside:controls.every((button) => fits(button,button.closest('[data-slot="card"]'))),
+          controlsInside:controls.every((button) => fits(button,button.closest('[data-slot="card"]') ?? panel)),
           badgesInside:badges.every((badge) => fits(badge,badge.closest('[data-slot="card"]'))),
           namesFit:names.every((button) => button.scrollWidth <= button.clientWidth + 1),
           mobileStatusClear:names.every((button) => {
-            const item = button.closest('[data-slot="item"]');
+            const item = button.closest('[role="listitem"]');
             const badge = item?.querySelector('[data-status]');
             if (!badge) return true;
             const nameRect = button.getBoundingClientRect();
@@ -3774,9 +3779,10 @@ async function assertViewport(win,width,height,theme,capture) {
           && (!typeBadge || (contained(typeRect,triggerRect) && contained(typeLabelRect,typeRect) && !intersects(typeRect,actionsRect)))
           && name && contained(name.getBoundingClientRect(),triggerRect) && name.getBoundingClientRect().width >= 16),
         statusIdentity:Boolean(status?.getAttribute('title') && statusText?.textContent.trim() === status.getAttribute('title')),
-        statusCompactMatchesWidth:resourceRect.width < 280 ? statusTextHidden : !statusTextHidden,
+        statusCompactMatchesWidth:resourceRect.width < 400 ? statusTextHidden : !statusTextHidden,
         environmentType:typeBadge?.dataset.environmentType ?? null,
         environmentTypeReadable:!typeBadge || (typeRect.width >= 24 && parseFloat(getComputedStyle(typeBadge).fontSize) >= 12),
+        environmentTypeAligned:!typeBadge || Boolean(statusRect && Math.abs((typeRect.top + typeRect.bottom - statusRect.top - statusRect.bottom) / 2) <= 1),
         expansionEvidence:{titleExists:Boolean(trigger),expandExists:Boolean(expand),nested:Boolean(trigger && expand && trigger.contains(expand)),titleExpanded:trigger?.getAttribute('aria-expanded'),expandExpanded:expand?.getAttribute('aria-expanded'),rowExpanded:row.dataset.expanded,expandName:expand?.getAttribute('aria-label'),controls:expand?.getAttribute('aria-controls'),contentMounted:Boolean(content),contentId:content?.id},
         expanded:row.dataset.expanded === 'true',
         boxShadow,
@@ -3860,6 +3866,7 @@ async function assertViewport(win,width,height,theme,capture) {
       const tabHeights = tabRects.map((rect) => rect.height);
       const activeTab = tabs.find((tab) => tab.getAttribute('aria-selected') === 'true');
       const activeStyle = activeTab ? getComputedStyle(activeTab) : null;
+      const activeLine = activeTab ? getComputedStyle(activeTab,"::after") : null;
       const initialViewportRect = viewport.getBoundingClientRect();
       const initialLastRect = last.getBoundingClientRect();
       const initialLastVisible = initialLastRect.left >= initialViewportRect.left - 1
@@ -3869,10 +3876,12 @@ async function assertViewport(win,width,height,theme,capture) {
       const viewportRect = viewport.getBoundingClientRect();
       const lastRect = last.getBoundingClientRect();
       const result = {
-        activeFill:Boolean(
-          activeStyle
-          && activeStyle.backgroundColor !== 'rgba(0, 0, 0, 0)'
+        activeUnderline:Boolean(
+          activeStyle && activeLine
           && activeStyle.color !== getComputedStyle(list).color
+          && parseFloat(activeLine.opacity) === 1
+          && parseFloat(activeLine.height) >= 2
+          && parseFloat(activeLine.bottom) === 0
         ),
         contentSized:listRect.width < initialViewportRect.width - 1 || viewport.scrollWidth > viewport.clientWidth + 1,
         equalHeights:Math.max(...tabHeights) - Math.min(...tabHeights) <= 1,
@@ -3883,10 +3892,9 @@ async function assertViewport(win,width,height,theme,capture) {
         listHeight:listRect.height,
         listWidth:listRect.width,
         overflow:viewport.scrollWidth > viewport.clientWidth + 1,
-        singleContainer:
-          parseFloat(listStyle.borderTopLeftRadius) >= 8
-          && listStyle.backgroundColor !== 'rgba(0, 0, 0, 0)'
-          && listStyle.boxShadow !== 'none',
+        quietNavigation:
+          listStyle.backgroundColor === 'rgba(0, 0, 0, 0)'
+          && listStyle.boxShadow === 'none',
         triggersBorderless:tabStyles.every((style) => [
           style.borderTopWidth,
           style.borderRightWidth,
@@ -4017,6 +4025,7 @@ async function assertViewport(win,width,height,theme,capture) {
     assert.equal(row.statusIdentity,true,`${width}x${height} 紧凑状态仍保留完整文字与提示`);
     assert.equal(row.statusCompactMatchesWidth,true,`${width}x${height} 运行状态按实际资源栏宽度展示：${JSON.stringify(row.childContentEvidence)}`);
     assert.equal(row.environmentTypeReadable,true,`${width}x${height} 生产/测试身份保持完整12px文字`);
+    assert.equal(row.environmentTypeAligned,true,`${width}x${height} 环境类型和连接状态保持同一水平中线：${JSON.stringify(row.childContentEvidence)}`);
     assert.equal(row.environmentType,operationEnvironments.find(environment => environment.environmentId === row.id)?.environmentType === 'unspecified'
       ? null : operationEnvironments.find(environment => environment.environmentId === row.id)?.environmentType,`${width}x${height} 环境身份按真实数据保留`);
     assert.equal(row.independentExpansion,true,`${width}x${height} 环境展开和选择按钮互相独立：${row.id} ${JSON.stringify(row.expansionEvidence)}`);
@@ -4051,8 +4060,8 @@ async function assertViewport(win,width,height,theme,capture) {
   );
   assert.equal(snapshot.detailTabStrip.lastVisible,true,`${width}x${height} last detail tab cannot scroll into view`);
   assert.equal(snapshot.detailTabStrip.labelsFit,true,`${width}x${height} detail tab labels clipped`);
-  assert.equal(snapshot.detailTabStrip.singleContainer,true,`${width}x${height} detail tabs are not one shadcn navigation surface`);
-  assert.equal(snapshot.detailTabStrip.activeFill,true,`${width}x${height} active detail tab fill missing`);
+  assert.equal(snapshot.detailTabStrip.quietNavigation,true,`${width}x${height} detail tabs add a competing filled navigation surface`);
+  assert.equal(snapshot.detailTabStrip.activeUnderline,true,`${width}x${height} active detail tab underline missing or clipped`);
   assert.equal(snapshot.detailTabStrip.triggersBorderless,true,`${width}x${height} detail tabs repeat borders`);
   assert.equal(snapshot.detailTabStrip.equalHeights,true,`${width}x${height} detail tabs have uneven heights`);
   assert.ok(
@@ -4199,6 +4208,19 @@ async function run() {
       process.stdout.write('确认窄回归通过：完整命令、高对比真实复选框、失败重读、旧请求标记及订阅恢复。\n');
       return;
     }
+    if (app.commandLine.hasSwitch('confirmation-center-only')) {
+      await require('./confirmation-center-ui.cjs')({win,confirmations,publishUpdates:items => { updateCenterFixture={items,error:null}; win.webContents.send('v2:update-center',{kind:'changed'}); },waitFor:(expression,label) => waitFor(win,expression,label),captureRenderedFrame,screenshotRoot,
+        restoreHandlers:() => {
+          ipcMain.handle('v2:confirmation-list',async () => ok(clone(confirmations)));
+          for (const channel of ['v2:confirmation-approve','v2:confirmation-reject']) registerForbiddenMutation(channel);
+        },
+      });
+      await collectWindowErrorDiagnostics(win);
+      assert.deepEqual(mutationCalls,[]); assert.deepEqual(externalRequests,[]);
+      assert.deepEqual(rendererErrors,[]); assert.deepEqual(rendererWindowErrors,[]);
+      process.stdout.write('全局确认弹窗专项通过：就地批准与拒绝、单次参数绑定、强确认、作用域隔离、执行反馈及窄屏；无外部请求。\n');
+      return;
+    }
     if (app.commandLine.hasSwitch('software-update-only')) {
       await require('./software-update-ui.cjs')({
         evaluate:code => win.webContents.executeJavaScript(code,true),
@@ -4215,8 +4237,10 @@ async function run() {
       return;
     }
     if (app.commandLine.hasSwitch('update-center-only')) {
+      win.webContents.send('v2:confirmations-changed',[]);
       await require('./update-center-ui.cjs')({
         click:async selector => {
+          if (process.platform === 'darwin') app.focus({steal:true});
           win.focus(); win.webContents.focus(); await captureRenderedFrame(win);
           const point = await win.webContents.executeJavaScript(`(() => { const target=document.querySelector(${JSON.stringify(selector)}),rect=target.getBoundingClientRect(); const x=Math.round(rect.left+rect.width/2),y=Math.round(rect.top+rect.height/2); if(!target.contains(document.elementFromPoint(x,y))) throw new Error('更新面板原生点击目标被遮挡'); return {x,y}; })()`,true);
           win.webContents.sendInputEvent({type:'mouseMove',...point});
@@ -4227,13 +4251,14 @@ async function run() {
         evaluate:code => win.webContents.executeJavaScript(code,true),
         waitFor:(expression,label) => waitFor(win,expression,label),
         pressKey:key => pressKey(win,key),
+        setSoftwareHandler:handler => { softwareUpdateFixtureHandler = handler; },
         publish:(items,event = {kind:'changed'}) => { updateCenterFixture = {...updateCenterFixture,items,error:null}; win.webContents.send('v2:update-center',event); },
         capture:screenshotRoot ? async (name = 'update-center') => { fs.mkdirSync(screenshotRoot,{recursive:true}); fs.writeFileSync(path.join(screenshotRoot,`${name}.png`),(await captureRenderedFrame(win)).toPNG()); } : null,
         resize:async (width,height) => { win.setContentSize(width,height); await new Promise(resolve => setTimeout(resolve,200)); },
       });
       await collectWindowErrorDiagnostics(win);
       assert.deepEqual(externalRequests,[]); assert.deepEqual(rendererErrors,[]); assert.deepEqual(rendererWindowErrors,[]);
-      process.stdout.write('更新提醒 UI 专项通过：侧边面板、项目提示、未读角标、延后和恢复、通知偏好、窄屏及导航。\n');
+      process.stdout.write('更新提醒 UI 专项通过：统一浮层、持续消息、直接下载与安装确认、通知偏好、窄屏滚动及导航。\n');
       return;
     }
     if (process.env.RUNBOOK_BRIDGE_EDITOR_LAYOUT_REGRESSION_ONLY === '1') {
@@ -4260,7 +4285,7 @@ async function run() {
       selected:document.querySelector('[data-project-id][aria-current="page"]')?.dataset.projectId ?? null,
       utilityNavigation:(() => {
         const group = document.querySelector('[data-testid="project-utility-navigation"]');
-        const confirmation = document.querySelector('[data-testid="confirmation-center"]');
+        const confirmation = document.querySelector('[data-testid="updates-open"]');
         const viewport = document.querySelector('[data-testid="project-list-scroll"]');
         const buttons = group ? [...group.querySelectorAll('button')] : [];
         const styles = buttons.map(button => {
@@ -4275,7 +4300,7 @@ async function run() {
           order:buttons.map(button => button.dataset.testid),
           belowProjects:Boolean(group && viewport && group.getBoundingClientRect().top >= viewport.getBoundingClientRect().bottom - 1),
           confirmationInGroup:Boolean(group?.contains(confirmation)),
-          singleRow:buttons.length === 4 && buttons.every(button => Math.abs(button.getBoundingClientRect().top - buttons[0].getBoundingClientRect().top) <= 1),
+          singleRow:buttons.length === 3 && buttons.every(button => Math.abs(button.getBoundingClientRect().top - buttons[0].getBoundingClientRect().top) <= 1),
           noOverlap:buttons.slice(1).every((button,index) => button.getBoundingClientRect().left >= buttons[index].getBoundingClientRect().right),
           compact:styles.every(style => style.height === 32 && style.borderWidth === '0px'),
           height:group?.getBoundingClientRect().height,
@@ -4293,7 +4318,7 @@ async function run() {
     }))()`,true);
     assert.equal(initial.selected,'project-operations');
     assert.deepEqual(initial.utilityNavigation,{
-      order:['confirmation-center','workspace-switcher','updates-open','settings-open'],belowProjects:true,
+      order:['workspace-switcher','updates-open','settings-open'],belowProjects:true,
       confirmationInGroup:true,singleRow:true,noOverlap:true,compact:true,height:46,emptyWorkspaceCountHidden:true,
     },'底部全局工具使用单行入口，空工作区不显示零角标');
     assert.equal(initial.addProjectAboveProjects,true);

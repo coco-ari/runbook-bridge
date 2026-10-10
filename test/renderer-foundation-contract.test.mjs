@@ -109,8 +109,8 @@ test('shared shadcn controls expose consistent focus and localized accessibility
   assert.match(sidebar,/<SheetTitle>侧边栏<\/SheetTitle>/u);
   assert.match(sidebar,/<SheetDescription>显示移动端侧边栏。<\/SheetDescription>/u);
   assert.match(sidebar,/aria-label="切换侧边栏"/u);
-  assert.match(tabs,/data-active:bg-primary\/\[0\.14\]/u);
-  assert.doesNotMatch(tabs,/variant=navigation[^\n]*data-active:after/u);
+  assert.match(tabs,/data-active:after:opacity-100/u);
+  assert.match(tabs,/variant=navigation[^\n]*data-active:after/u);
 });
 
 test('foundation screenshot geometry follows the actual resized viewport and a fresh rendered frame', async () => {

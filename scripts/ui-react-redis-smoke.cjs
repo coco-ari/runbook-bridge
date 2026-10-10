@@ -867,6 +867,20 @@ async function run() {
     await require('./workspace-layout-ui.cjs')({evaluate:source=>win.webContents.executeJavaScript(source,true),until:(expression,label)=>waitFor(win,expression,label),win,root:'[data-testid=redis-workspace]'});
     assert.ok(await win.webContents.executeJavaScript('document.querySelector(".redis-key-pane").getBoundingClientRect().width >= 259', true), '展开后保持最小宽度');
     await assertCompactSearch(win);
+    const headerGeometry = await win.webContents.executeJavaScript(`(() => {
+      const header = document.querySelector('.redis-workspace-header');
+      const bounds = header.getBoundingClientRect();
+      return {
+        nameWidth: header.querySelector('h1').getBoundingClientRect().width,
+        nameContentWidth: header.querySelector('h1').scrollWidth,
+        actionsFit: [...header.querySelectorAll('button')].every(button => {
+          const rect = button.getBoundingClientRect();
+          return rect.left >= bounds.left && rect.right <= bounds.right && Boolean(button.getAttribute('aria-label'));
+        }),
+      };
+    })()`, true);
+    assert.ok(headerGeometry.nameWidth >= Math.min(headerGeometry.nameContentWidth, 96), '窄窗口保留完整短名称或至少六个汉字的宽度：' + JSON.stringify(headerGeometry));
+    assert.equal(headerGeometry.actionsFit, true, '公共工具入口均在页头内且具备可访问名称');
     await shot(win, 'redis-narrow');
     win.setContentSize(1280, 820);
     await captureFrame(win);

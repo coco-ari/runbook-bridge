@@ -262,7 +262,7 @@ function EnvironmentGroup({
               aria-current={environmentSelected ? "page" : undefined}
               className={cn(
                 "h-auto min-h-12 min-w-0 flex-1 shrink justify-start gap-2 overflow-hidden rounded-none border-0 px-1.5 py-1.5 text-left @max-[280px]/resource-navigation:gap-1 @max-[280px]/resource-navigation:px-1",
-                "transition-colors duration-150 hover:bg-transparent focus-visible:ring-inset",
+                "shadow-none transition-colors duration-150 hover:bg-transparent focus-visible:ring-inset",
                 environmentSelected && "bg-surface-selected text-primary",
               )}
               data-shell-nav-item
@@ -280,9 +280,9 @@ function EnvironmentGroup({
               <ItemMedia
                 asChild
                 className={cn(
-                  "grid size-7 shrink-0 place-items-center self-center rounded-md text-muted-foreground @max-[280px]/resource-navigation:hidden",
+                  "grid size-7 shrink-0 place-items-center self-center rounded-md text-muted-foreground @max-[360px]/resource-navigation:hidden",
                   "transition-[color,background-color,border-color] duration-150",
-                  environmentScopeSelected && "bg-primary/12 text-primary",
+                  environmentSelected && "text-primary",
                 )}
                 variant="icon"
               >
@@ -294,7 +294,7 @@ function EnvironmentGroup({
                     <span>{environment.name}</span>
                   </ItemTitle>
                   <ItemDescription asChild className={cn(
-                    "flex min-w-0 items-center gap-1.5 font-mono text-xs leading-4",
+                    "flex min-w-0 items-center gap-1.5 text-xs leading-4",
                     environmentScopeSelected && "dark:text-primary/75",
                   )}>
                     <span>
@@ -303,16 +303,15 @@ function EnvironmentGroup({
                           ? "暂无插件"
                           : `配置完成 ${environment.readyPluginCount}/${environment.pluginCount}`}
                       </span>
-                      <EnvironmentTypeBadge compact type={environment.environmentType} />
                     </span>
                   </ItemDescription>
                 </span>
               </ItemContent>
-              <ItemActions asChild className="shrink-0 self-center">
+              <ItemActions asChild className="shrink-0 items-center self-center gap-1.5">
                 <span>
+                  <EnvironmentTypeBadge compact type={environment.environmentType} />
                   <StatusIndicator
-                    appearance="badge"
-                    className="h-5 max-w-full px-1.5 font-mono text-xs [&>svg]:shrink-0 @max-[280px]/resource-navigation:px-0 @max-[280px]/resource-navigation:[&>span]:sr-only"
+                    className="h-5 max-w-full text-xs [&>svg]:shrink-0 @max-[400px]/resource-navigation:[&>span]:sr-only"
                     status={environment.status}
                   />
                 </span>
@@ -452,7 +451,7 @@ function EnvironmentGroup({
               >
                 <Button
                   aria-current={selected ? "page" : undefined}
-                  className="h-auto min-w-0 flex-1 justify-start gap-2 rounded-none px-2 py-1 text-left hover:bg-transparent focus-visible:ring-inset"
+                  className="h-auto min-w-0 flex-1 justify-start gap-2 rounded-none px-2 py-1 text-left shadow-none hover:bg-transparent focus-visible:ring-inset"
                   data-shell-nav-item
                   data-testid={`plugin-trigger-${plugin.pluginInstanceId}`}
                   onClick={() => onSelectPlugin(plugin.pluginInstanceId)}
@@ -471,7 +470,7 @@ function EnvironmentGroup({
                     className={cn(
                       "grid size-7 place-items-center self-center rounded-md text-muted-foreground",
                       "transition-colors duration-150",
-                      selected && "bg-primary/12 text-primary",
+                      selected && "text-primary",
                     )}
                     variant="icon"
                   >
@@ -483,7 +482,7 @@ function EnvironmentGroup({
                         <span>{plugin.displayName}</span>
                       </ItemTitle>
                       <ItemDescription asChild className={cn(
-                        "flex min-w-0 items-center gap-1.5 font-mono text-xs leading-4",
+                        "flex min-w-0 items-center gap-1.5 text-xs leading-4",
                         selected && "dark:text-primary/75",
                       )}>
                         <span>
@@ -497,7 +496,6 @@ function EnvironmentGroup({
                   <ItemActions asChild className="self-center">
                     <span>
                       <StatusIndicator
-                        appearance="badge"
                         className="size-5 justify-center p-0"
                         compact
                         status={plugin.status}

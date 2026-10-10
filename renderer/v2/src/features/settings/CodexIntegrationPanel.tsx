@@ -81,39 +81,39 @@ export function CodexIntegrationPanel({ api, onBusyChange }: {
     requestAnimationFrame(() => advancedRef.current?.querySelector("summary")?.focus())
   }
 
-  return <div className="max-w-2xl space-y-5" data-testid="codex-integration-panel" aria-busy={busy}>
+  return <div className="max-w-2xl space-y-4" data-testid="codex-integration-panel" aria-busy={busy}>
     <section className={cn("overflow-hidden rounded-lg border bg-card", configured && "border-success/30")} aria-labelledby="codex-title">
-      <div className="p-5 sm:p-6">
+      <div className="p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 id="codex-title" className="text-base font-semibold">Codex</h2>
           <Button size="sm" variant="ghost" className="text-muted-foreground" disabled={busy} data-testid="codex-refresh" onClick={() => void run("status")}>
             {busy && pendingAction === "status" ? <SpinnerGap className="animate-spin motion-reduce:animate-none" /> : <ArrowClockwise />}重新检测
           </Button>
         </div>
-        <div className="mt-5 flex items-start gap-4" role="status" aria-atomic="true" data-testid="codex-status-summary">
-          <div className={cn("flex size-12 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground", configured && "bg-success/10 text-success", needsAttention && !configured && "bg-warning/10 text-warning")}>
-            {configured ? <CheckCircle size={32} weight="fill" className="text-success" aria-hidden="true" /> : !state && !error ? <SpinnerGap size={28} className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : needsAttention ? <WarningCircle size={28} className="text-warning" aria-hidden="true" /> : <PlugsConnected size={28} aria-hidden="true" />}
+        <div className="mt-4 flex items-start gap-3" role="status" aria-atomic="true" data-testid="codex-status-summary">
+          <div className={cn("flex size-10 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground", configured && "bg-success/10 text-success", needsAttention && !configured && "bg-warning/10 text-warning")}>
+            {configured ? <CheckCircle size={24} weight="fill" className="text-success" aria-hidden="true" /> : !state && !error ? <SpinnerGap size={24} className="animate-spin motion-reduce:animate-none" aria-hidden="true" /> : needsAttention ? <WarningCircle size={24} className="text-warning" aria-hidden="true" /> : <PlugsConnected size={24} aria-hidden="true" />}
           </div>
           <div className="min-w-0 space-y-2">
-            <h3 ref={statusHeadingRef} tabIndex={-1} className={cn("text-2xl leading-8 font-semibold tracking-tight outline-none", configured && "text-success")} data-testid="codex-status">{title}</h3>
+            <h3 ref={statusHeadingRef} tabIndex={-1} className={cn("text-lg leading-6 font-semibold tracking-tight outline-none", configured && "text-success")} data-testid="codex-status">{title}</h3>
             <p className="text-sm leading-6 text-muted-foreground">{description}</p>
           </div>
         </div>
-        {canInstall ? <div className="mt-5 space-y-2 sm:pl-16">
+        {canInstall ? <div className="mt-4 space-y-2 sm:pl-[52px]">
           <Button disabled={busy || !state?.approvalId} data-testid="codex-install" onClick={() => void run("install")}>
             {busy && pendingAction === "install" ? <SpinnerGap className="animate-spin motion-reduce:animate-none" /> : <PlugsConnected />}
             {pendingAction === "install" ? "正在配置…" : state?.status === "outdated" ? "更新配置" : "一键接入 Codex"}
           </Button>
           <p className="text-xs leading-5 text-muted-foreground">自动备份已有配置，保留其他接入和工具限制。</p>
-        </div> : state?.status === "conflict" || state?.status === "error" || (!state && error) ? <div className="mt-5 sm:pl-16">
+        </div> : state?.status === "conflict" || state?.status === "error" || (!state && error) ? <div className="mt-4 sm:pl-[52px]">
           <Button variant="outline" onClick={openAdvanced} data-testid="codex-help">查看处理方式<CaretRight /></Button>
         </div> : null}
         {error ? <p role="alert" className="mt-4 text-sm leading-6 text-destructive">{error}</p> : null}
         {notice ? <p role="status" className="mt-4 rounded-md bg-success/10 p-3 text-sm leading-6" data-testid="codex-notice">{notice}</p> : null}
       </div>
-      {configured ? <div className="space-y-4 border-t p-5 sm:p-6" data-testid="codex-next-steps">
+      {configured ? <div className="space-y-4 border-t p-4" data-testid="codex-next-steps">
         <h3 className="text-sm font-medium">接下来怎么用</h3>
-        <ol className="space-y-4">
+        <ol className="space-y-3">
           <li className="flex gap-3"><span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground" aria-hidden="true">1</span><div className="space-y-1"><p className="text-sm font-medium">在工作台连接需要使用的资源</p><p className="text-xs leading-5 text-muted-foreground">选择项目和环境，连接服务器、数据库或缓存，并保持工作台运行。</p></div></li>
           <li className="flex gap-3"><span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground" aria-hidden="true">2</span><div className="space-y-1"><p className="text-sm font-medium">打开 Codex，直接提问</p><p className="text-xs leading-5 text-muted-foreground">例如：“查看当前环境有哪些可用资源。”</p></div></li>
         </ol>

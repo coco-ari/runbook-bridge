@@ -1,23 +1,15 @@
 import { CloudFieldDiff } from "./CloudFieldDiff"
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react"
 import { toast } from "sonner"
 import type { AiOpsV2Api, PublicError } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import type { CloudConfigData, CloudConfigRequest, CloudRow } from "./cloud-types"
+import type { CloudConfigData, CloudConfigRequest } from "./cloud-types"
 
-export function changeSummary(diff: CloudRow["diff"]): string {
-  const changes: string[] = []
-  if (diff.added || diff.modified || diff.removed) changes.push(`插件：新增 ${diff.added}、修改 ${diff.modified}、删除 ${diff.removed}`)
-  if (diff.environmentsAdded || diff.environmentsRemoved) changes.push(`环境：新增 ${diff.environmentsAdded}、删除 ${diff.environmentsRemoved}`)
-  if (diff.metadataChanged) changes.push("项目或环境信息有变更")
-  if (diff.runbooksChanged) changes.push(`${diff.runbooksChanged} 份运维说明有变更`)
-  if (diff.questionsChanged) changes.push("快捷提问有变更")
-  if (diff.credentialsChanged) changes.push("凭据有变更")
-  return changes.join("；") || "将完整替换项目配置"
-}
+import { changedCloudRows, changeSummary } from "./cloud-diff-presentation"
+export { changeSummary } from "./cloud-diff-presentation"
 
 interface CloudController {
   readonly data: CloudConfigData
@@ -47,6 +39,7 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
   const [error, setError] = useState("")
   const [operationError, setOperationError] = useState<PublicError | null>(null)
   const [plan, setPlan] = useState<(CloudConfigData & { historical: boolean }) | null>(null)
+  const diffId = useId()
   const [choices, setChoices] = useState<Record<string, "local" | "cloud">>({})
   const [uploadId, setUploadId] = useState<string | null>(null)
   const active = useRef(false)
@@ -110,7 +103,7 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
       if (!active.current) return null
       if (result.planId) {
         setPlan({ ...result, historical: request.action === "prepare" && Boolean(request.snapshotId) })
-        setChoices(Object.fromEntries((result.rows ?? []).map(row => [row.rowId, "cloud"])))
+        setChoices(Object.fromEntries((result.rows ?? []).map(row => [row.rowId, row.diff.contentChanged ? "cloud" : "local"])))
       }
       if (result.results) {
         const failed = result.results.filter(row => row.status === "failed")
@@ -138,22 +131,36 @@ export function CloudConfigProvider({ api, onChanged, children }: { api: AiOpsV2
     else setUploadId(projectId)
   }, [data.repositories, run])
   const busy = working || plan !== null
-  const conflict = plan?.rows?.some(row => row.conflict) ?? false
+  const changedRows = changedCloudRows(plan?.rows)
+  const conflict = changedRows.some(row => row.conflict)
+  const selectedCount = changedRows.filter(row => choices[row.rowId] === "cloud").length
   return <CloudContext.Provider value={{ data, busy, checking, loading, error, operationError, clearOperationError: () => { if (error === operationError?.message) setError(""); setOperationError(null) }, refresh, check, run, upload }}>
     {children}
     <AlertDialog open={Boolean(plan)} onOpenChange={open => { if (!open && !working) setPlan(null) }}>
-      <AlertDialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl" data-testid="cloud-update-confirmation">
-        <AlertDialogHeader>
+      <AlertDialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden data-[size=default]:max-w-[calc(100vw-2rem)] data-[size=default]:sm:max-w-2xl" data-testid="cloud-update-confirmation">
+        <AlertDialogHeader className="shrink-0">
           <AlertDialogTitle>{plan?.direction === "restore" ? "恢复本机备份" : plan?.historical ? "恢复云端历史版本？" : conflict ? "覆盖本地修改？" : "查看云端配置变更"}</AlertDialogTitle>
           <AlertDialogDescription>{plan?.direction === "restore" ? "选中项目将用备份完整替换。" : plan?.historical ? "选中项目将用所选历史版本完整替换。" : conflict ? "以下项目存在本地修改。选中项目将用云端配置完整替换。" : "确认后将用云端配置更新选中的项目。"}覆盖前自动备份，原连接将断开。</AlertDialogDescription>
         </AlertDialogHeader>
-        <div className="max-h-[50vh] space-y-3 overflow-y-auto">{plan?.rows?.map(row => <div key={row.rowId} className="space-y-2"><label className="flex items-start gap-2 text-xs">
-          <Checkbox checked={choices[row.rowId] === "cloud"} disabled={working} onCheckedChange={checked => setChoices(current => ({ ...current, [row.rowId]: checked ? "cloud" : "local" }))} />
-          <span className="min-w-0"><span className="block break-words font-medium">{row.name}</span><span className="text-muted-foreground">{changeSummary(row.diff)}</span></span>
-        </label><CloudFieldDiff diff={row.diff} /></div>)}</div>
-        <AlertDialogFooter>
+        <div className="shrink-0 space-y-2 border-y py-3" data-testid="cloud-change-summary">
+          <p className="text-sm font-medium">{changedRows.length} 个项目有变化{(plan?.rows?.length ?? 0) > changedRows.length ? <span className="ml-2 text-xs font-normal text-muted-foreground">已隐藏 {(plan?.rows?.length ?? 0) - changedRows.length} 个无变化项目</span> : null}</p>
+          <div className="flex max-h-24 flex-wrap gap-1.5 overflow-y-auto">{changedRows.map((row, index) => <Button key={row.rowId} variant="secondary" size="xs" className="max-w-full" onClick={() => document.getElementById(`${diffId}-${index}`)?.scrollIntoView({block:"nearest",behavior:"smooth"})}><span className="truncate">{row.name}</span></Button>)}</div>
+        </div>
+        <div className="min-h-0 max-h-[50vh] space-y-4 overflow-y-auto" data-testid="cloud-changed-projects">
+          {!changedRows.length ? <p className="py-6 text-center text-sm text-muted-foreground">所选项目已是最新，没有需要更新的改动。</p> : changedRows.map((row, index) => <section key={row.rowId} id={`${diffId}-${index}`} className="space-y-3 rounded-lg border p-3" data-cloud-change-project={row.rowId}>
+            <label className="flex items-start gap-2">
+              <Checkbox checked={choices[row.rowId] === "cloud"} disabled={working} aria-label={`更新 ${row.name}`} onCheckedChange={checked => setChoices(current => ({ ...current, [row.rowId]: checked ? "cloud" : "local" }))} />
+              <span className="min-w-0 flex-1"><span className="block break-words text-sm font-semibold">{row.name}</span><span className="mt-1 block text-xs text-muted-foreground">{changeSummary(row.diff)}</span></span>
+              {row.conflict ? <span className="shrink-0 rounded bg-warning/10 px-1.5 py-0.5 text-[11px] text-warning">本地有修改</span> : null}
+            </label>
+            <CloudFieldDiff diff={row.diff} />
+            {row.warnings.length ? <ul className="space-y-1 text-xs text-warning">{row.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul> : null}
+          </section>)}
+        </div>
+        <AlertDialogFooter className="shrink-0">
+          <span className="mr-auto self-center text-xs text-muted-foreground">已选择 {selectedCount} 个项目</span>
           <Button variant="outline" disabled={working} onClick={() => setPlan(null)}>保留本地</Button>
-          <Button disabled={working} data-testid="cloud-confirm-update" onClick={() => { const current = plan; setPlan(null); if (current?.planId) void run({ action: "confirm", planId: current.planId, choices }) }}>{conflict || plan?.historical || plan?.direction === "restore" ? "确认覆盖" : "确认更新"}</Button>
+          <Button disabled={working || !selectedCount} data-testid="cloud-confirm-update" onClick={() => { const current = plan; setPlan(null); if (current?.planId) void run({ action: "confirm", planId: current.planId, choices }) }}>{conflict || plan?.historical || plan?.direction === "restore" ? "确认覆盖" : "确认更新"}</Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

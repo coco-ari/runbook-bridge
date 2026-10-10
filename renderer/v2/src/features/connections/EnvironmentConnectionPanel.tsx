@@ -138,10 +138,9 @@ export function EnvironmentConnectionPanel({
   const PrimaryIcon = primaryAction.icon
 
   return (
-    <section aria-labelledby="environment-connection-title" className="space-y-4 @container/environment-connection" data-testid="environment-connection-panel">
-      <Card size="sm" className="gap-0">
-        <CardContent className="flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0 space-y-2">
+    <section aria-labelledby="environment-connection-title" className="space-y-3 @container/environment-connection" data-testid="environment-connection-panel">
+        <div className="flex flex-wrap items-center justify-between gap-3 py-1">
+          <div className="min-w-0 space-y-1.5">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-sm font-medium" id="environment-connection-title" title="打开详情和刷新状态不会自动连接">环境连接</h3>
               <Badge aria-live="polite" role="status" variant={phase.variant}>{phase.label}</Badge>
@@ -159,10 +158,9 @@ export function EnvironmentConnectionPanel({
               </Button>
               {detail.summary.connected > 0 && ["partial", "blocked", "error"].includes(connection.state.phase) ? <Button disabled={busy} onClick={() => void connection.disconnect()} size="sm" type="button" variant="outline"><LinkBreak />断开全部</Button> : null}
             </ButtonGroup>
-            <Button data-testid="environment-connection-refresh" disabled={busy || connection.state.phase === "connecting" || connection.state.phase === "disconnecting"} onClick={() => void connection.refresh()} size="sm" type="button" variant="outline"><ArrowClockwise />刷新</Button>
+            <Button aria-label="刷新环境连接状态" title="刷新状态" data-testid="environment-connection-refresh" disabled={busy || connection.state.phase === "connecting" || connection.state.phase === "disconnecting"} onClick={() => void connection.refresh()} size="icon-sm" type="button" variant="ghost"><ArrowClockwise /></Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
 
       {dependencyCount > 0 && !actions.some((action) => action.kind === "dependency") ? (
         <Alert data-testid="environment-dependency-state">
@@ -199,10 +197,9 @@ export function EnvironmentConnectionPanel({
         </Alert>
       ) : null}
 
-      <Card data-testid="environment-plugin-list" size="sm">
-        <CardHeader className="border-b">
+      <Card className="gap-0 py-0" data-testid="environment-plugin-list" size="sm">
+        <CardHeader className="border-b px-3 py-2.5">
           <CardTitle>插件</CardTitle>
-          <p className="text-xs leading-5 text-muted-foreground">直接连接插件或进入工作区；点击名称查看配置与详情。</p>
           {detail.partial ? (
             <p className="text-xs leading-5 text-muted-foreground">部分插件信息或运行状态尚未读取，列表保留上次已知状态。</p>
           ) : null}
@@ -216,8 +213,8 @@ export function EnvironmentConnectionPanel({
             </EmptyHeader>
           </Empty>
         ) : (
-          <CardContent>
-            <div aria-label="环境插件状态" className="divide-y divide-border" role="list">
+          <CardContent className="px-3">
+            <div aria-label="环境插件状态" className="divide-y divide-border/60" role="list">
               {detail.rows.map(row => <EnvironmentPluginRow key={row.plugin.pluginInstanceId} api={api} environment={environment} row={row} runtime={connection.state.runtime} onRuntime={onRuntime} onOpenPlugin={onOpenPlugin} onConfigurePlugin={onConfigurePlugin} onOpenWorkspace={onOpenWorkspace} workspace={workspaceActions[row.plugin.pluginInstanceId]} />)}
             </div>
           </CardContent>

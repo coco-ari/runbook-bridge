@@ -19,7 +19,7 @@ import {
 import { StatusIndicator, statusLabel } from "@/components/app-shell/StatusIndicator"
 import { WorkspaceSwitcherButton } from "@/features/plugins/WorkspaceNavigation"
 import { SettingsButton } from "@/features/settings/SettingsButton"
-import { UpdatesButton } from "@/features/updates/UpdateCenter"
+import { ConfirmationNotice, UpdatesButton } from "@/features/updates/UpdateCenter"
 import { ProjectUpdateIndicator, SoftwareUpdateHint } from "@/features/updates/UpdateHints"
 import {
   Alert,
@@ -119,7 +119,6 @@ export type ProjectRailAction =
   | Readonly<{ type: "create-environment"; project: WorkspaceProjectReadModel }>
   | Readonly<{ type: "edit-project"; project: WorkspaceProjectReadModel }>
   | Readonly<{ type: "delete-project"; project: WorkspaceProjectReadModel }>
-  | Readonly<{ type: "open-confirmations" }>
 
 interface ProjectRailProps {
   readonly cloudRepositories?: readonly CloudRepository[]
@@ -138,12 +137,8 @@ interface ProjectRailProps {
   readonly onProjectKeyDown?: ((event: React.KeyboardEvent<HTMLElement>, projectId: string) => void) | undefined
   readonly onReload?: (() => void) | undefined
   readonly onOpenCommand: () => void
-  readonly onRetryConfirmations: () => void
   readonly onSelectProject: (projectId: string) => void
   readonly onToggleCollapsed: () => void
-  readonly pendingConfirmationCount: number | null
-  readonly confirmationsLoading: boolean
-  readonly confirmationsUnavailable: boolean
   readonly projects: readonly WorkspaceProjectReadModel[]
   readonly selectedProjectId: string | null
 }
@@ -255,12 +250,8 @@ export function ProjectRail({
   onProjectKeyDown,
   onReload,
   onOpenCommand,
-  onRetryConfirmations,
   onSelectProject,
   onToggleCollapsed,
-  pendingConfirmationCount,
-  confirmationsLoading,
-  confirmationsUnavailable,
   projects,
   selectedProjectId,
 }: ProjectRailProps) {
@@ -281,12 +272,6 @@ export function ProjectRail({
     projects: displayedProjects.filter(project => !project.projectId.startsWith("cloud:")),
     query: projectQuery,
   })
-  const confirmationCount = pendingConfirmationCount
-  const confirmationDescription = confirmationsUnavailable
-    ? "全局待确认数量不可用，点击重新读取"
-    : confirmationsLoading
-      ? "正在读取全局待确认数量"
-      : `全局 ${confirmationCount ?? 0} 项待确认操作`
   const toggleDisabled = collapsed && expandDisabled
   const utilityButtonClassName = "project-utility-button relative h-8 gap-0.5 px-0.5 text-xs leading-4 [&_svg]:size-4"
 
@@ -647,28 +632,13 @@ export function ProjectRail({
         </SidebarContent>
 
         <SoftwareUpdateHint compact={collapsed} />
+        <ConfirmationNotice />
         <SidebarFooter aria-label="全局工具" className="project-utility-navigation h-[46px] shrink-0 flex-row items-center gap-0.5 border-t border-sidebar-border bg-sidebar px-1.5 py-1.5" data-testid="project-utility-navigation" role="group">
-          <Button
-            aria-label={confirmationDescription}
-            className={utilityButtonClassName}
-            data-testid="confirmation-center"
-            onClick={() => confirmationsUnavailable ? onRetryConfirmations() : onAction({ type: "open-confirmations" })}
-            size="sm"
-            title={confirmationDescription}
-            type="button"
-            variant="ghost"
-          >
-            <ShieldWarning aria-hidden="true" className={confirmationsUnavailable || (confirmationCount ?? 0) > 0 ? "text-warning" : undefined} />
-            <span data-utility-label>{confirmationsUnavailable ? "待确认不可用" : confirmationsLoading ? "读取待确认" : "全局待确认"}</span>
-            {confirmationCount !== null && confirmationCount > 0 ? <span aria-hidden="true" className="min-w-3.5 shrink-0 rounded-sm bg-warning/15 px-0.5 text-center text-[10px] font-medium leading-4 text-warning tabular-nums" data-utility-count>
-              {confirmationCount > 9 ? "9+" : confirmationCount}
-            </span> : null}
-          </Button>
           <WorkspaceSwitcherButton
             className={utilityButtonClassName}
             labelLayout="compact"
           />
-          <UpdatesButton iconOnly />
+          <UpdatesButton className={utilityButtonClassName} compact />
           <SettingsButton
             className="ml-auto shrink-0 text-muted-foreground"
             iconOnly

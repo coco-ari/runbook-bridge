@@ -8,9 +8,8 @@ module.exports = async function assertEnvironmentWorkspaceUi({win,click,fill,wai
   await waitFor(win,"document.querySelector('#detail-main')?.dataset.selectionKind === 'environment'",'选择环境详情');
   await waitFor(win,`document.querySelector('${entry(PRIMARY_ID)}')?.disabled === false`,'环境详情直接工作区入口就绪');
   const before = databaseCalls.length;
-  assert.equal(await evaluate(`document.querySelector('${entry(OFFLINE_ID)}').disabled`),true,'离线插件禁止进入工作区');
-  await evaluate(`document.querySelector('${entry(OFFLINE_ID)}').click()`);
-  assert.equal(databaseCalls.length,before,'浏览环境详情与点击离线入口不会访问数据库');
+  assert.equal(await evaluate(`document.querySelector('${entry(OFFLINE_ID)}') === null`),true,'未保留的离线插件不显示不可用的工作区入口');
+  assert.equal(databaseCalls.length,before,'浏览环境详情不会访问数据库');
   const size=win.getContentSize();
   await setExactViewport(win,1680,980);
   await screenshot(win,'environment-workspace-entry-wide');
@@ -65,5 +64,5 @@ module.exports = async function assertEnvironmentWorkspaceUi({win,click,fill,wai
   assert.equal(await evaluate("document.querySelector('[data-testid=mysql-sql-editor]').value.includes('environment_entry_draft')"),false,'环境详情的不同插件工作区不串用 SQL');
   await returnToDetails(win);
   assert.equal(await evaluate("document.querySelector('#detail-main')?.dataset.selectionKind"),'environment');
-  process.stdout.write('环境详情工作区入口通过：未保留离线禁用、已保留离线恢复、直接进入、返回焦点、SQL 保留、跨插件隔离与窄屏布局。\n');
+  process.stdout.write('环境详情工作区入口通过：未保留离线入口隐藏、已保留离线恢复、直接进入、返回焦点、SQL 保留、跨插件隔离与窄屏布局。\n');
 };

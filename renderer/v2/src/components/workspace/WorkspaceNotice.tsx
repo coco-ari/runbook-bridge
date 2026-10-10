@@ -7,6 +7,6 @@ export function WorkspaceNotice({ children, className, variant = "default", ...p
   const Icon = variant === "destructive" ? WarningCircle : Info
   return <Alert {...props} variant={variant} className={cn("shrink-0 rounded-none border-x-0 border-t-0 px-3 py-2", className)}>
     <Icon aria-hidden="true" />
-    <AlertDescription className="flex min-w-0 items-center justify-between gap-2 text-xs">{children}</AlertDescription>
+    <AlertDescription className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs">{children}</AlertDescription>
   </Alert>
 }

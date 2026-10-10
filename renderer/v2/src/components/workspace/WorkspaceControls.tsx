@@ -1,10 +1,9 @@
-import { ConfirmationCenterButton } from "@/features/confirmations/GlobalConfirmationCenter"
 import { WorkspaceSwitcherButton } from "@/features/plugins/WorkspaceNavigation"
 import type { ComponentProps } from "react"
 import { ArrowClockwise, ArrowLeft, ArrowsIn, ArrowsOut, LinkBreak, Plus, X } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
 import { SettingsButton } from "@/features/settings/SettingsButton"
-import { UpdatesButton } from "@/features/updates/UpdateCenter"
+import { ConfirmationNotice, UpdatesButton } from "@/features/updates/UpdateCenter"
 
 type IconButtonProps = Omit<ComponentProps<typeof Button>, "children" | "aria-label"> & {
   readonly action: "refresh" | "close" | "add" | "maximize" | "restore"
@@ -19,7 +18,7 @@ export function WorkspaceIconButton({ action, label, busy = false, title, disabl
 }
 
 export function WorkspaceBackButton({ onClick, testId, label }: { readonly onClick: () => void; readonly testId: string; readonly label: string }) {
-  return <Button size="sm" variant="ghost" type="button" data-testid={testId} aria-label={label} title="返回详情并保留工作区" onClick={onClick}><ArrowLeft aria-hidden="true" />返回详情</Button>
+  return <Button className="workspace-back-button" size="sm" variant="ghost" type="button" data-testid={testId} aria-label={label} title="返回详情并保留工作区" onClick={onClick}><ArrowLeft aria-hidden="true" />返回详情</Button>
 }
 
 export function WorkspaceHeaderActions({ connected, busy, reconnecting, awaitingConfirmation, canCancel = false, cancelling = false, onCancel, disabled = false, onDisconnect, onReconnect, onClose, prefix, closeLabel, closeTitle }: {
@@ -32,10 +31,10 @@ export function WorkspaceHeaderActions({ connected, busy, reconnecting, awaiting
   const label = cancelling ? "取消中…" : cancelAvailable ? "取消连接" : busy ? "断开中…" : awaitingConfirmation ? "等待确认" : reconnecting ? "连接中…" : connected ? "断开连接" : prefix === "server-workspace" ? "重新连接服务器" : "重新连接"
   const Icon = connected || busy ? LinkBreak : ArrowClockwise
   return <>
-    <ConfirmationCenterButton />
-    <WorkspaceSwitcherButton />
-    <SettingsButton />
+    <ConfirmationNotice inline />
+    <WorkspaceSwitcherButton className="workspace-global-button" />
     <UpdatesButton iconOnly />
+    <SettingsButton className="workspace-global-button" />
     <Button data-testid={prefix + (connected || busy ? "-disconnect" : "-reconnect")} size="sm" variant="outline" type="button" aria-label={label} aria-description={label} disabled={cancelling || busy || (!cancelAvailable && (reconnecting || awaitingConfirmation || (connected && disabled)))} onClick={cancelAvailable ? onCancel : connected ? onDisconnect : onReconnect}><Icon aria-hidden="true" />{label}</Button>
     <WorkspaceIconButton action="close" data-testid={prefix + "-close"} label={closeLabel} title={closeTitle} onClick={onClose} />
   </>

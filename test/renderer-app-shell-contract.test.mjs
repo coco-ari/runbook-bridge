@@ -127,10 +127,10 @@ test('production React shell composes shadcn/Radix with the typed desktop bridge
   assert.match(projectRail,/DropdownMenu/u);
   assert.match(projectRail,/ContextMenu/u);
   assert.match(projectRail,/Empty/u);
-  assert.match(projectRail,/data-testid="confirmation-center"/u);
+  assert.match(projectRail,/<ConfirmationNotice/u);
   assert.match(projectRail,/data-testid="add-project-header"/u);
   assert.ok(
-    projectRail.lastIndexOf('data-testid="confirmation-center"') >
+    projectRail.lastIndexOf('<ConfirmationNotice') >
       projectRail.lastIndexOf('</SidebarContent>'),
     '全局操作确认放在项目列表下方的工具导航中',
   );
@@ -170,9 +170,9 @@ test('production React shell composes shadcn/Radix with the typed desktop bridge
   assert.match(tabsSource,/orientation=\{orientation\}/u);
   assert.match(tabsSource,/navigation:/u);
   assert.match(tabsSource,/variant=navigation/u);
-  assert.match(tabsSource,/rounded-lg bg-surface-inset\/80/u);
-  assert.match(tabsSource,/data-active:bg-primary\/\[0\.14\]/u);
-  assert.doesNotMatch(tabsSource,/variant=navigation[^\n]*data-active:after/u);
+  assert.match(tabsSource,/navigation: "gap-1 rounded-none bg-transparent/u);
+  assert.match(tabsSource,/data-active:after:opacity-100/u);
+  assert.match(tabsSource,/variant=navigation[^\n]*data-active:after/u);
   assert.match(workspaceDetail,/DetailTabIcon/u);
   assert.match(workspaceDetail,/ProjectOverview/u);
   assert.match(workspaceDetail,/EnvironmentOverview/u);

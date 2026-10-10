@@ -201,7 +201,7 @@ export function RedisWorkspace({ backLabel = "返回 Redis 详情", api, scope, 
     <header className="redis-workspace-header">
       <WorkspaceBackButton label={backLabel} testId="redis-workspace-back" onClick={onBack} />
       <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold">{plugin.displayName}</h1><EnvironmentTypeBadge /><WorkspaceConnectionStatus state={connection.state} /></div>
+        <div className="flex min-w-0 items-center gap-2"><h1 className="truncate text-base font-semibold">{plugin.displayName}</h1><EnvironmentTypeBadge compact /><WorkspaceConnectionStatus state={connection.state} /></div>
         <p className="truncate text-xs text-muted-foreground" title={projectName + " / " + environmentName}>{projectName} / {environmentName} · DB {String(plugin.target?.db ?? 0)}</p>
       </div>
       <WorkspaceHeaderActions connected={connected} busy={disconnecting || connection.state.phase === "disconnecting"}

@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react"
+import { useState } from "react"
 import { ArrowClockwise, DownloadSimple, SpinnerGap } from "@phosphor-icons/react"
 import type { AiOpsV2Api } from "@/bridge/ai-ops-v2"
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { SelectControl, SelectItem } from "@/components/ui/select"
-import type { SoftwareUpdateRequest, SoftwareUpdateState } from "./software-update-types"
+import type { SoftwareUpdateState } from "./software-update-types"
+
+import { useSoftwareUpdate } from "./use-software-update"
+import { SoftwareUpdateConfirmation } from "./SoftwareUpdateConfirmation"
 
 const labels: Record<SoftwareUpdateState["phase"], string> = {
   idle: "尚未检查更新", "no-source": "尚未连接云仓库", "source-required": "请选择更新来源",
@@ -20,51 +22,8 @@ function formatTime(value: string | null) {
 }
 
 export function SoftwareUpdatePanel({ api }: { readonly api: AiOpsV2Api }) {
-  const [state, setState] = useState<SoftwareUpdateState | null>(null)
-  const [error, setError] = useState("")
-  const [pending, setPending] = useState<SoftwareUpdateRequest["action"] | null>(null)
+  const { state, error, pending, run } = useSoftwareUpdate(api)
   const [confirmInstall, setConfirmInstall] = useState(false)
-  const mounted = useRef(false)
-  const actionInFlight = useRef<SoftwareUpdateRequest["action"] | null>(null)
-  const generation = useRef(0)
-
-  useEffect(() => {
-    mounted.current = true
-    let active = true
-    let timer: ReturnType<typeof setTimeout>
-    const poll = async () => {
-      const started = generation.current
-      try {
-        const result = await api.softwareUpdate({ action: "status" })
-        if (!active || started !== generation.current) return
-        if (result.ok) setState(result.data)
-        else setError(result.error.message)
-      } catch { if (active && started === generation.current) setError("暂时无法读取更新状态，请重试。") }
-      finally { if (active) timer = setTimeout(() => { void poll() }, 1000) }
-    }
-    void poll()
-    return () => { active = false; mounted.current = false; clearTimeout(timer) }
-  }, [api])
-
-  const run = async (request: SoftwareUpdateRequest) => {
-    if (actionInFlight.current && request.action !== "cancel") return
-    const current = ++generation.current
-    actionInFlight.current = request.action
-    setPending(request.action); setError("")
-    try {
-      const result = await api.softwareUpdate(request)
-      if (!mounted.current || current !== generation.current) return
-      if (result.ok) setState(result.data)
-      else setError(result.error.message)
-    } catch { if (mounted.current && current === generation.current) setError("更新操作未完成，请检查网络后重试。") }
-    finally {
-      if (current === generation.current) {
-        generation.current += 1
-        actionInFlight.current = null
-        if (mounted.current) setPending(null)
-      }
-    }
-  }
 
   const phase = state?.phase
   const working = phase === "checking" || phase === "downloading" || phase === "installing"
@@ -74,7 +33,7 @@ export function SoftwareUpdatePanel({ api }: { readonly api: AiOpsV2Api }) {
   const percent = state?.progress ? Math.min(100, Math.max(0, state.progress.percent)) : null
   const visibleError = error || state?.error?.message
 
-  return <section className="max-w-xl space-y-4 rounded-lg border bg-card p-5 sm:p-6" aria-labelledby="software-update-title" data-testid="software-update-panel">
+  return <section className="max-w-2xl space-y-4 rounded-lg border bg-card p-4" aria-labelledby="software-update-title" data-testid="software-update-panel">
     <div className="space-y-1"><h2 id="software-update-title" className="text-section font-medium">软件更新</h2><p className="text-xs leading-5 text-muted-foreground">通过已连接的云仓库检查和下载新版本，安装前由你确认重启。</p></div>
     {state?.sources.length ? <div className="space-y-2">
       <label htmlFor="software-update-source" className="text-xs text-muted-foreground">更新来源</label>
@@ -93,15 +52,13 @@ export function SoftwareUpdatePanel({ api }: { readonly api: AiOpsV2Api }) {
     </div>
     {visibleError ? <p role="alert" className="text-xs leading-5 text-destructive" data-testid="software-update-error">{visibleError}</p> : null}
     <div className="flex flex-wrap gap-2">
-      <Button variant={phase === "available" || phase === "downloaded" ? "outline" : "default"} size="sm" disabled={!canCheck} data-testid="software-update-check" onClick={() => { void run({ action: "check" }) }}><ArrowClockwise />检查更新</Button>
-      {phase === "available" ? <Button size="sm" disabled={blocked} data-testid="software-update-download" onClick={() => { void run({ action: "download" }) }}><DownloadSimple />下载更新</Button> : null}
+      <Button variant="outline" size="sm" disabled={!canCheck} data-testid="software-update-check" onClick={() => { void run({ action: "check" }) }}><ArrowClockwise />检查更新</Button>
+      {phase === "available" ? <Button size="sm" disabled={blocked} data-testid="software-update-download" onClick={() => { void run({ action: "download" }) }}><DownloadSimple />下载新版本</Button> : null}
       {phase === "downloading" ? <Button variant="outline" size="sm" disabled={pending === "cancel"} data-testid="software-update-cancel" onClick={() => { void run({ action: "cancel" }) }}>{pending === "cancel" ? "正在取消…" : "取消下载"}</Button> : null}
-      {phase === "downloaded" ? <Button size="sm" disabled={blocked} data-testid="software-update-install" onClick={() => setConfirmInstall(true)}><ArrowClockwise />重启并更新</Button> : null}
+      {phase === "downloaded" ? <Button size="sm" disabled={blocked} data-testid="software-update-install" onClick={() => setConfirmInstall(true)}><ArrowClockwise />立即更新</Button> : null}
     </div>
     {state?.checkedAt ? <p className="text-xs text-muted-foreground">上次检查：{formatTime(state.checkedAt)}</p> : null}
     {state?.releaseNotes ? <details className="border-t pt-3" data-testid="software-update-notes"><summary className="cursor-pointer rounded-sm text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring/60">版本说明{state.releaseDate ? ` · ${formatTime(state.releaseDate)}` : ""}</summary><p className="mt-3 max-h-64 overflow-y-auto break-words whitespace-pre-wrap text-xs leading-5 text-muted-foreground">{state.releaseNotes}</p></details> : null}
-    <AlertDialog open={confirmInstall} onOpenChange={setConfirmInstall}>
-      <AlertDialogContent data-testid="software-update-confirm"><AlertDialogHeader><AlertDialogTitle>重启并更新到 {state?.availableVersion}？</AlertDialogTitle><AlertDialogDescription>更新将关闭当前工作区和连接，保留本机项目配置与已保存凭据。请先保存工作内容并结束 SQL 事务和文件传输；仍有活动任务时会阻止安装。更新后重新打开 Agent 客户端以恢复接入。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel data-testid="software-update-install-cancel">稍后再说</AlertDialogCancel><AlertDialogAction data-testid="software-update-install-confirm" disabled={phase !== "downloaded" || blocked} onClick={() => { void run({ action: "install" }) }}>确认重启更新</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
-    </AlertDialog>
+    <SoftwareUpdateConfirmation open={confirmInstall} onOpenChange={setConfirmInstall} version={state?.availableVersion ?? null} disabled={phase !== "downloaded" || blocked} onInstall={() => { void run({ action: "install" }) }} />
   </section>
 }

@@ -146,7 +146,7 @@ function ConnectionActionButton({
             }}
             size="xs"
             type="button"
-            variant={action.variant}
+            variant={action.variant === "default" ? "outline" : action.variant}
           >
             <ActionIcon className={action.pending ? "animate-spin" : undefined} size={12} />
             {action.kind === "configure" ? configureLabel : action.label}

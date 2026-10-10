@@ -8,14 +8,12 @@ export interface UpdateNotice {
   readonly localProjectId?: string
   readonly title: string
   readonly description: string
-  readonly unread: boolean
+  readonly version?: string
   readonly firstSeenAt?: number
-  readonly snoozedUntil?: number | null
 }
 export type NotificationMode = "app" | "background" | "always"
 export interface UpdateCenterState { readonly items: readonly UpdateNotice[]; readonly error: string | null; readonly notificationMode?: NotificationMode }
-export type UpdateCenterRequest = { action: "status" } | { action: "read"; ids: string[] }
-  | { action: "snooze"; ids: string[]; duration: "hour" | "tomorrow" | "cancel" }
+export type UpdateCenterRequest = { action: "status" }
   | { action: "preferences"; notificationMode: NotificationMode }
 export interface UpdateTarget { readonly type: "software" | "cloud"; readonly repositoryId: string; readonly kind: string; readonly projectId?: string }
 export interface UpdateCenterEvent {

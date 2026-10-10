@@ -417,6 +417,7 @@ export function WorkspaceDetail({
     ?? "disconnected"
   const title = plugin?.displayName ?? environment?.name ?? project?.name ?? "正在读取工作区"
   const scopePath = [project?.name, environment?.name, plugin?.displayName].filter(Boolean).join(" / ")
+  const parentPath = plugin ? [project?.name, environment?.name].filter(Boolean).join(" / ") : environment ? project?.name : "项目概览"
   const hasEnvironment = Boolean(project && environment)
   const hasPlugin = Boolean(hasEnvironment && plugin)
   const selectionKind = detailSelectionKind(hasEnvironment, plugin?.pluginType ?? null)
@@ -442,11 +443,11 @@ export function WorkspaceDetail({
       <header className="shrink-0 bg-surface">
         <div className="flex min-w-0 items-start gap-3 px-4 py-3">
           <div className="min-w-0 flex-1">
-            <p className="truncate text-xs text-muted-foreground" title={scopePath}>{scopePath || "本地工作区"}</p>
+            <p className="truncate text-xs text-muted-foreground" title={scopePath}>{parentPath || "本地工作区"}</p>
             <div className="mt-1 flex min-w-0 items-center gap-2">
               <h1 className="truncate text-base font-semibold tracking-tight" title={title}>{title}</h1>
-              <StatusIndicator appearance="badge" status={selectedStatus} />
-              <EnvironmentTypeBadge type={environment?.environmentType} />
+              <StatusIndicator status={selectedStatus} />
+              <EnvironmentTypeBadge compact type={environment?.environmentType} />
               {workspaceLoading || environmentLoading ? <Badge variant="info">正在刷新</Badge> : null}
             </div>
           </div>
@@ -463,7 +464,7 @@ export function WorkspaceDetail({
 
         {visibleTabs.length > 1 ? (
           <div
-            className="flex max-w-full items-center gap-1 border-y border-border/70 bg-background/35 px-1.5 py-1.5"
+            className="flex max-w-full items-center gap-1 border-b border-border/70 px-3"
             data-overflow={detailTabsOverflow.overflow}
             data-testid="detail-tabs-navigation"
           >

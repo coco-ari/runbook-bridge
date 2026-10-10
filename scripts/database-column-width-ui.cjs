@@ -6,6 +6,7 @@ module.exports=async function({win,click,waitFor,testId,databaseCalls,screenshot
   const key=async keyCode=>{win.webContents.sendInputEvent({type:'keyDown',keyCode});win.webContents.sendInputEvent({type:'keyUp',keyCode});await new Promise(resolve=>setTimeout(resolve,80));};
   const handlePoint=()=>evaluate(`(()=>{const e=document.querySelector('${selector}');e.scrollIntoView({block:'nearest',inline:'nearest'});const r=e.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
   const drag=async(delta,cancel=false)=>{
+    win.focus();
     win.webContents.focus();
     const point=await handlePoint();
     const hit=await evaluate(`document.elementFromPoint(${point.x},${point.y})?.outerHTML`);
@@ -13,7 +14,7 @@ module.exports=async function({win,click,waitFor,testId,databaseCalls,screenshot
     win.webContents.sendInputEvent({type:'mouseMove',...point});
     win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});
     await new Promise(resolve=>setTimeout(resolve,50));
-    win.webContents.sendInputEvent({type:'mouseMove',x:point.x+delta,y:point.y});
+    win.webContents.sendInputEvent({type:'mouseMove',button:'left',modifiers:['leftButtonDown'],x:point.x+delta,y:point.y});
     await new Promise(resolve=>setTimeout(resolve,100));
     if(cancel)await key('ESCAPE');
     win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,x:point.x+delta,y:point.y});

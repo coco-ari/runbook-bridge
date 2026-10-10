@@ -1704,7 +1704,7 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
   await waitFor(win,`document.querySelector('[data-confirmation-id="recover-approve"]') !== null`,'scoped confirmation queue');
   assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-confirmation-id="out-of-scope"]') === null`,true),true,'confirmation queue cannot expose another environment');
   assert.equal(await win.webContents.executeJavaScript(`[...document.querySelectorAll('[data-confirmation-id="recover-approve"] button')].find(button => button.textContent.trim() === '确认执行一次')?.disabled`,true),true,'strong approvals require explicit acknowledgement');
-  await click(win,'#confirmation-ack-recover-approve','acknowledge exact simulated command');
+  await click(win,'[data-confirmation-id="recover-approve"] [role="checkbox"]','acknowledge exact simulated command');
   await clickText(win,'确认执行一次','[data-confirmation-id="recover-approve"]');
   await waitFor(win,`document.querySelector('[data-feature="confirmations"] [role="alert"]') !== null`,'failed approval keeps retry available');
   await clickText(win,'确认执行一次','[data-confirmation-id="recover-approve"]');

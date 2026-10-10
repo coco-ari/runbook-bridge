@@ -2,18 +2,17 @@ import type { CloudRow } from "./cloud-types"
 
 export function CloudFieldDiff({ diff, historical = false }: { readonly diff: CloudRow["diff"]; readonly historical?: boolean }) {
   if (!diff.fields?.length) return null
-  return <details className="min-w-0 rounded-md border bg-surface p-2 text-xs" data-testid="cloud-field-diff">
-    <summary className="cursor-pointer font-medium focus-visible:outline-ring">查看字段变化 · {diff.fields.length}{diff.fieldsOmitted ? "+" : ""}</summary>
-    <p className="my-2 text-muted-foreground">{historical ? "上一版本 → 此版本" : "当前本地 → 覆盖后"}。凭据与自由文本仅提示变化。</p>
-    <div className="max-h-64 space-y-2 overflow-y-auto overscroll-contain">
-      {diff.fields.map((field, index) => <div key={index} className="min-w-0 border-t pt-2">
-        <p className="break-words font-medium [overflow-wrap:anywhere]">{field.scope} · {field.field}</p>
-        {field.redacted ? <p className="text-muted-foreground">已变化 · 内容不展示</p> : <div className="mt-1 grid grid-cols-2 gap-2">
-          <div className="min-w-0 break-words rounded bg-surface-inset p-1.5 [overflow-wrap:anywhere]"><span className="block text-muted-foreground">{historical ? "上一版本" : "本地"}</span>{field.before}</div>
-          <div className="min-w-0 break-words rounded bg-primary/5 p-1.5 [overflow-wrap:anywhere]"><span className="block text-muted-foreground">{historical ? "此版本" : "覆盖后"}</span>{field.after}</div>
-        </div>}
+  const scopes = [...new Set(diff.fields.map(field => field.scope))]
+  const content = <div className="space-y-3" data-testid="cloud-field-diff">
+    {scopes.map(scope => <section key={scope} className="min-w-0 overflow-hidden rounded-md border text-xs" aria-label={scope}>
+      <h4 className="break-words bg-muted/40 px-3 py-2 font-medium [overflow-wrap:anywhere]">{scope}</h4>
+      <div className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1fr)] border-t px-3 py-1.5 text-[11px] text-muted-foreground"><span>改动项</span><span>{historical ? "上一版本" : "修改前"}</span><span>{historical ? "此版本" : "更新后"}</span></div>
+      {diff.fields!.filter(field => field.scope === scope).map((field, index) => <div key={index} className="grid grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 border-t px-3 py-2 leading-5">
+        <span className="break-words font-medium [overflow-wrap:anywhere]">{field.field}</span>
+        {field.redacted ? <span className="col-span-2 text-muted-foreground">已变更，内容不展示</span> : <><span className="break-words text-muted-foreground [overflow-wrap:anywhere]">{field.before}</span><span className="break-words font-medium text-primary [overflow-wrap:anywhere]">{field.after}</span></>}
       </div>)}
-    </div>
-    {diff.fieldsOmitted ? <p className="mt-2 text-muted-foreground">另有 {diff.fieldsOmitted} 项变化未展开；确认后仍会完整替换项目。</p> : null}
-  </details>
+    </section>)}
+    {diff.fieldsOmitted ? <p className="text-xs text-muted-foreground">另有 {diff.fieldsOmitted} 项变化未展示；更新仍会完整替换所选项目。</p> : null}
+  </div>
+  return historical ? <details className="min-w-0 text-xs"><summary className="mb-2 cursor-pointer font-medium focus-visible:outline-ring">查看版本改动 · {diff.fields.length}{diff.fieldsOmitted ? "+" : ""}</summary>{content}</details> : content
 }

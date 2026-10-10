@@ -116,11 +116,10 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.doesNotMatch(header,/本地三栏工作台|confirmation-center/u);
   assert.match(projectRail,/<SidebarContent[^>]*id="project-navigation-content"/u);
   assert.doesNotMatch(footer,/project-expand|project-rail-toggle|CaretRight/u);
-  const footerButton = footer.slice(footer.indexOf('<Button'),footer.indexOf('</Button>'));
-  assert.match(footerButton,/variant="ghost"/u);
-  assert.match(footerButton,/data-testid="confirmation-center"/u);
-  assert.match(footerButton,/confirmationCount > 0 \?/u);
-  assert.doesNotMatch(footerButton,/<Kbd|\bcollapsed\b/u);
+  assert.match(footer,/<WorkspaceSwitcherButton/u);
+  assert.match(footer,/<UpdatesButton/u);
+  assert.match(footer,/<SettingsButton/u);
+  assert.doesNotMatch(footer,/confirmation-center|全局待确认/u);
   assert.doesNotMatch(projectRail,/AvatarFallback|data-project-monogram|data-project-short-name|buildProjectRailIdentities/u);
   assert.match(projectRail,/data-project-compact-name>\s*\{project.name\}/u);
   assert.match(projectRail,/"h-8 w-full justify-start/u);
@@ -184,8 +183,8 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(projectRail,/data-testid="global-resource-search"/u);
   assert.match(projectRail,/Control\+K Meta\+K/u);
   assert.match(projectRail,/shortcutLabel\("K"\)/u);
-  assert.match(projectRail,/全局.*项待确认操作/u);
-  assert.match(projectRail,/confirmationsUnavailable \? onRetryConfirmations\(\)/u);
+  assert.match(projectRail,/<ConfirmationNotice/u);
+  assert.match(projectRail,/<UpdatesButton/u);
   assert.match(resourcePane,/<ItemGroup className="gap-0">/u);
   assert.match(resourcePane,/environmentSelected && "bg-surface-selected before:bg-primary"/u);
   assert.match(resourcePane,/selected && "bg-surface-selected[^"]*before:bg-primary/u);

@@ -38,6 +38,6 @@ module.exports = async ({win,waitFor,workspaceProjects,pluginsByEnvironment,read
   await until("!document.querySelector('[data-testid=settings-page]')",'检测期间允许返回');
   await click('[data-testid=workspace-switcher]');
   await until("document.querySelector('[data-testid=workspace-manager]')?.textContent.includes('尚未打开工作区')",'工作区管理空态');
-  await click('[data-testid=workspace-manager] [data-slot=dialog-close]');
+  await click('[data-testid=workspace-manager-close]');
   process.stdout.write('交互优化通过：完整插件搜索、失败重试、禁用原因可聚焦、只读设置可离开、工作区管理入口。\n');
 };

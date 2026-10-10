@@ -264,12 +264,12 @@ export function RunbookFeature({
           )}
           </ButtonGroup>
         )}
-        description="说明保存在当前环境中；其他窗口已修改时会提示重新读取，避免覆盖他人的修改。"
-        meta={(
+        description="记录当前环境的部署方式、排查步骤和注意事项。"
+        meta={editing ? (
           <Badge variant={tooLarge ? "danger" : "outline"}>
             {draftBytes.toLocaleString("zh-CN")} / 65,536 字节
           </Badge>
-        )}
+        ) : null}
         title={`${projectName} / ${environmentName} 运维说明`}
         titleId="runbook-feature-title"
       />

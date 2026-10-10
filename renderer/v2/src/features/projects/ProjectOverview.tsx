@@ -146,13 +146,13 @@ export function ProjectOverview({
                 {project.environments.map((environment) => (
                   <Item className="min-w-0" key={environment.environmentId} role="listitem" size="xs" variant="muted">
                     <ItemContent>
-                      <ItemTitle className="flex w-full min-w-0 gap-2"><Button size="xs" variant="link" className="h-auto min-w-0 truncate p-0" onClick={() => onSelectEnvironment?.(environment.environmentId)}>{environment.name}</Button><EnvironmentTypeBadge type={environment.environmentType} /></ItemTitle>
+                      <ItemTitle className="flex w-full min-w-0 gap-2"><Button size="xs" variant="link" className="h-auto min-w-0 truncate p-0 text-foreground" onClick={() => onSelectEnvironment?.(environment.environmentId)}>{environment.name}</Button><EnvironmentTypeBadge compact type={environment.environmentType} /></ItemTitle>
                       <ItemDescription className="font-mono">
                         配置完成 {environment.readyPluginCount}/{environment.pluginCount}
                       </ItemDescription>
                     </ItemContent>
                     <ItemActions className="ml-auto">
-                      <StatusIndicator appearance="badge" compact status={environment.status} />
+                      <StatusIndicator status={environment.status} />
                     </ItemActions>
                   </Item>
                 ))}
@@ -170,13 +170,13 @@ export function ProjectOverview({
                     {project.environments.map((environment) => (
                       <TableRow key={environment.environmentId}>
                         <TableCell className="max-w-0 py-2">
-                          <div className="flex min-w-0 items-center gap-2"><Button size="xs" variant="link" className="h-auto min-w-0 truncate p-0" title={environment.name} onClick={() => onSelectEnvironment?.(environment.environmentId)}>{environment.name}</Button><EnvironmentTypeBadge type={environment.environmentType} /></div>
+                          <div className="flex min-w-0 items-center gap-2"><Button size="xs" variant="link" className="h-auto min-w-0 truncate p-0 text-foreground" title={environment.name} onClick={() => onSelectEnvironment?.(environment.environmentId)}>{environment.name}</Button><EnvironmentTypeBadge compact type={environment.environmentType} /></div>
                         </TableCell>
                         <TableCell className="py-2 text-right font-mono text-xs">
                           {environment.readyPluginCount}/{environment.pluginCount}
                         </TableCell>
                         <TableCell className="py-2 text-right">
-                          <StatusIndicator appearance="badge" compact status={environment.status} />
+                          <StatusIndicator status={environment.status} />
                         </TableCell>
                       </TableRow>
                     ))}

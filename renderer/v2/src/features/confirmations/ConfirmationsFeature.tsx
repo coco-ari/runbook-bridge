@@ -6,7 +6,7 @@ import {
   Warning,
   XCircle,
 } from "@phosphor-icons/react"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 
 import {
@@ -284,6 +284,9 @@ export interface ConfirmationsFeatureProps {
   readonly projectName: string
   readonly environmentName: string
   readonly pluginName?: string
+  readonly requestId?: string
+  readonly onDecided?: (decision: "approve" | "reject") => void
+  readonly compact?: boolean
   readonly onLocateScope?: (scope: ConfirmationScope) => void
   readonly onOpenAudit?: (scope: ConfirmationScope, confirmationId: string) => void
 }
@@ -296,10 +299,15 @@ export function ConfirmationsFeature({
   projectName,
   environmentName,
   pluginName,
+  compact = false,
+  requestId,
+  onDecided,
   onLocateScope,
   onOpenAudit,
 }: ConfirmationsFeatureProps) {
-  const scopeKey = JSON.stringify([projectId, environmentId, scopeMode, pluginInstanceId])
+  const instanceId = useId()
+  const titleId = `${instanceId}-confirmations-title`
+  const scopeKey = JSON.stringify([projectId, environmentId, scopeMode, pluginInstanceId, requestId])
   const [items, setItems] = useState<readonly ConfirmationItem[]>([])
   const [filter, setFilter] = useState<ConfirmationFilter>(
     scopeMode === "plugin" ? "plugin" : "environment",
@@ -323,8 +331,8 @@ export function ConfirmationsFeature({
     pluginInstanceId,
   }), [environmentId, pluginInstanceId, projectId, scopeMode])
   const matchesCurrentScope = useCallback(
-    (item: ConfirmationItem) => confirmationMatchesScope(item, matchScope),
-    [matchScope],
+    (item: ConfirmationItem) => (!requestId || item.requestId === requestId) && confirmationMatchesScope(item, matchScope),
+    [matchScope, requestId],
   )
 
   const rememberItems = useCallback((next: readonly ConfirmationItem[]) => {
@@ -486,6 +494,7 @@ export function ConfirmationsFeature({
         toast.success("操作已拒绝。")
       }
       await refresh()
+      onDecided?.(decision)
     } catch (caught) {
       setError(errorMessage(caught))
       if (caught instanceof FeatureApiError && ["CONFIRMATION_EXPIRED", "CONFIRMATION_NOT_FOUND"].includes(caught.code)) {
@@ -514,27 +523,34 @@ export function ConfirmationsFeature({
       value === "plugin" ? pluginName ?? "当前插件" : environmentName,
       filterCounts[value],
     ])
+  const QueueContainer = compact ? "div" : ScrollArea
+  const queueCount = <Badge data-queue-state={queuePresentation.phase} data-testid="confirmation-queue-count" variant={queuePresentation.variant}>{queuePresentation.label}</Badge>
+  const refreshButton = (
+    <Button data-testid="confirmation-queue-refresh" disabled={loading} onClick={() => void refresh()} size="xs" variant="outline">
+      {loading ? <SpinnerGap className="animate-spin" /> : <Hourglass />}
+      {currentRead.error ? "重新读取" : "刷新队列"}
+    </Button>
+  )
 
   return (
     <section
-      aria-labelledby="confirmations-feature-title"
-      className="flex min-h-0 flex-1 flex-col @container/confirmations"
+      aria-labelledby={titleId}
+      className={compact ? "flex flex-col @container/confirmations [&>div[role=alert]]:mx-0 [&>div[role=status]]:mx-0 [&>p]:mx-0" : "flex min-h-0 flex-1 flex-col @container/confirmations"}
       data-feature="confirmations"
+      data-compact={compact || undefined}
     >
-      <FeatureToolbar
-        actions={(
-          <Button data-testid="confirmation-queue-refresh" disabled={loading} onClick={() => void refresh()} size="xs" variant="outline">
-            {loading ? <SpinnerGap className="animate-spin" /> : <Hourglass />}
-            {currentRead.error ? "重新读取" : "刷新队列"}
-          </Button>
-        )}
+      {compact ? <div className="flex items-center justify-between gap-2 py-2">
+        <h3 id={titleId} className="sr-only">操作确认</h3>
+        {queueCount}{refreshButton}
+      </div> : <FeatureToolbar
+        actions={refreshButton}
         description="每次批准只绑定一组精确参数；内容、目标或环境变化后必须重新确认。"
-        meta={<Badge data-queue-state={queuePresentation.phase} data-testid="confirmation-queue-count" variant={queuePresentation.variant}>{queuePresentation.label}</Badge>}
+        meta={queueCount}
         title="操作确认"
-        titleId="confirmations-feature-title"
-      />
+        titleId={titleId}
+      />}
 
-      {filterOptions.length > 1 ? (
+      {!requestId && filterOptions.length > 1 ? (
         <nav aria-label="筛选待确认操作" className="mb-3 min-w-0">
           <ScrollArea className="max-w-full" orientation="horizontal" viewportClassName="pb-2">
             <ToggleGroup
@@ -619,7 +635,7 @@ export function ConfirmationsFeature({
         </Alert>
       )}
 
-      <ScrollArea className="min-h-0 flex-1">
+      <QueueContainer className={compact ? "min-w-0" : "min-h-0 flex-1"}>
         {loading && !currentRead.hasSnapshot ? (
           <div className="space-y-3 p-4" aria-label="正在读取确认队列">
             <Skeleton className="h-40 w-full" />
@@ -657,7 +673,7 @@ export function ConfirmationsFeature({
             </EmptyHeader>
           </Empty>
         ) : (
-          <div className="space-y-3 p-3">
+          <div className={compact ? "space-y-3 py-3" : "space-y-3 p-3"}>
             {visible.map((item) => {
               const names = itemNames(item, currentNames)
               const strong = item.approvalLevel === "strong"
@@ -672,14 +688,14 @@ export function ConfirmationsFeature({
                     <CardHeader className="px-3 py-3">
                       <header className="flex flex-wrap items-start gap-3">
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-xs text-muted-foreground">
+                          <p className={compact ? "break-words text-xs text-muted-foreground" : "truncate text-xs text-muted-foreground"}>
                             Agent 请求 / {names.project} / {names.environment}
                           </p>
                           <div className="mt-1 flex flex-wrap items-center gap-2">
                             <h3 className="text-section font-medium">{capabilityLabel(item)}</h3>
                             <Badge variant={strong ? "danger" : "warning"}>{riskLabel(item.riskLevel)}</Badge>
                           </div>
-                          <p className="mt-1 truncate text-xs text-muted-foreground" title={names.plugin}>目标插件：{names.plugin}</p>
+                          <p className={compact ? "mt-1 break-words text-xs text-muted-foreground" : "mt-1 truncate text-xs text-muted-foreground"} title={names.plugin}>目标插件：{names.plugin}</p>
                         </div>
                         {onLocateScope && (
                           <Button
@@ -766,7 +782,7 @@ export function ConfirmationsFeature({
                               <Checkbox
                                 checked={acknowledgedStrong}
                                 disabled={busy || !shell.complete}
-                                id={`confirmation-ack-${item.requestId}`}
+                                id={`${instanceId}-confirmation-ack-${item.requestId}`}
                                 onCheckedChange={(checked) => setAcknowledged((current) => {
                                   const next = new Set(current)
                                   if (checked === true) next.add(item.requestId)
@@ -774,7 +790,7 @@ export function ConfirmationsFeature({
                                   return next
                                 })}
                               />
-                              <FieldLabel className="text-foreground" htmlFor={`confirmation-ack-${item.requestId}`}>
+                              <FieldLabel className="text-foreground" htmlFor={`${instanceId}-confirmation-ack-${item.requestId}`}>
                                 我已核对完整命令、工作目录和目标环境
                               </FieldLabel>
                             </Field>
@@ -812,7 +828,7 @@ export function ConfirmationsFeature({
             })}
           </div>
         )}
-      </ScrollArea>
+      </QueueContainer>
     </section>
   )
 }

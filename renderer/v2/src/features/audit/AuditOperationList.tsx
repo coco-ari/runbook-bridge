@@ -10,6 +10,8 @@ export function AuditOperationList({ entries, expandAll = false }: { readonly en
       {entries.map((entry, index) => {
         const Icon = entry.actor === "agent" ? Robot : entry.actor === "user" ? User : Gear
         const events = entry.timeline.length ? entry.timeline : [entry]
+        const hasMetadata = entry.category !== "other" || entry.exitCode !== null || entry.changedColumns.length > 0
+          || entry.affectedRows !== null || entry.rowCount !== null || entry.durationMs !== null || entry.approval || entry.errorCode
         return (
           <Fragment key={entry.auditId}>
             {index === 0 || auditDay(entries[index - 1]?.time ?? null) !== auditDay(entry.time) ? (
@@ -27,8 +29,8 @@ export function AuditOperationList({ entries, expandAll = false }: { readonly en
                   <span>{entry.pluginName}</span>
                   {entry.target ? <span className="mt-0.5 block truncate text-left font-mono" dir="rtl" title={entry.target}><bdi dir="ltr">{entry.target}</bdi></span> : null}
                 </div>
-                <div className="col-span-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground @lg/audit:col-start-2">
-                  <span>{categoryLabels[entry.category]}</span>
+                {hasMetadata ? <div className="col-span-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground @lg/audit:col-start-2">
+                  {entry.category !== "other" ? <span>{categoryLabels[entry.category]}</span> : null}
                   {entry.exitCode !== null ? <span>退出码 {entry.exitCode}</span> : null}
                   {entry.changedColumns.length ? <span className="max-w-80 truncate" title={entry.changedColumns.join("、")}>字段 {entry.changedColumns.join("、")}</span> : null}
                   {entry.affectedRows !== null ? <span>修改 {entry.affectedRows} 行</span> : null}
@@ -36,7 +38,7 @@ export function AuditOperationList({ entries, expandAll = false }: { readonly en
                   {entry.durationMs !== null ? <span>耗时 {durationLabel(entry.durationMs)}</span> : null}
                   {entry.approval ? <span>{entry.approval === "approved" ? "用户已批准" : "用户已拒绝"}</span> : null}
                   {entry.errorCode ? <span className="text-danger">{entry.errorSummary || publicErrorLabel(entry.errorCode)}</span> : null}
-                </div>
+                </div> : null}
               </summary>
               <div className="mt-3 space-y-3 rounded-md border border-border/70 bg-surface-inset p-3 text-xs @lg/audit:ml-20" data-audit-detail>
                 {entry.target ? <div><span className="text-muted-foreground">操作目标</span><p className="mt-1 select-text break-all font-mono">{entry.target}</p></div> : null}
