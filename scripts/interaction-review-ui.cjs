@@ -21,6 +21,10 @@ module.exports = async ({win,waitFor,workspaceProjects,pluginsByEnvironment,read
   await until("document.querySelector('[data-testid=global-command]')?.textContent.includes('未展开搜索插件 8')",'搜索包含预览之外的第八个插件');
   await evaluate("(() => {const input=document.querySelector('[cmdk-input]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'未展开搜索插件 8');input.dispatchEvent(new Event('input',{bubbles:true}));})()");
   await until("[...document.querySelectorAll('[cmdk-item]')].some(item=>item.getClientRects().length && item.textContent.includes('未展开搜索插件 8'))",'按第八个插件名称搜索');
+  for (const query of ['未展开搜索环境 未展开搜索插件 8', '未展开搜索插件 8 未展开搜索环境', 'server 未展开搜索环境 插件 8']) {
+    await evaluate(`(() => {const input=document.querySelector('[cmdk-input]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(query)});input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+    await until("[...document.querySelectorAll('[cmdk-item]')].some(item=>item.getClientRects().length && item.textContent.includes('未展开搜索插件 8'))",'环境、类型和名称的组合搜索');
+  }
   await evaluate("[...document.querySelectorAll('[cmdk-item]')].find(item=>item.getClientRects().length && item.textContent.includes('未展开搜索插件 8')).click()");
   await until("document.querySelector('[data-testid=detail-workspace]')?.textContent.includes('未展开搜索插件 8')",'搜索结果跳转正确插件');
   await until("document.querySelector('[data-testid=plugin-open-workspace]')?.disabled === true",'新离线工作区不可打开');

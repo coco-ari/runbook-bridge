@@ -30,10 +30,11 @@ module.exports = async ({win,waitFor,captureRenderedFrame,screenshotRoot}) => {
       const label=zoom*100+'%缩放';
       await waitFor(win,`Math.abs(innerWidth-${1920/zoom})<=1&&Math.abs(innerHeight-${1080/zoom})<=1`,label+'后的桌面逻辑窗口');
       await captureRenderedFrame(win);
-      await waitFor(win,`(() => {const data=${geometry};return Math.abs(data.project-224)<2&&Math.abs(data.resource-320)<2;})()`,label+'导航保持内容宽度');
+      const compact = 1920 / zoom < 1120;
+      await waitFor(win,`(() => {const data=${geometry};return Math.abs(data.project-${compact ? 176 : 224})<2&&Math.abs(data.resource-${compact ? 240 : 320})<2;})()`,label+'导航按可用空间投影');
       const zoomed=await win.webContents.executeJavaScript(geometry);
       assert.equal(zoomed.overflow,false,label+'没有页面横向溢出');
-      assert.ok(Math.abs(zoomed.detail-(zoomed.width-546))<3,label+'详情获得剩余宽度');
+      assert.ok(Math.abs(zoomed.detail-(zoomed.width-(compact ? 418 : 546)))<3,label+'详情获得剩余宽度');
       evidence.push({...zoomed,zoom});
       if(screenshotRoot) fs.writeFileSync(path.join(screenshotRoot,`optimization-default-layout-${zoom*100}-percent.png`),(await captureRenderedFrame(win)).toPNG());
     }

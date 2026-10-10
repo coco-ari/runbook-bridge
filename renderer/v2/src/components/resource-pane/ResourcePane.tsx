@@ -16,7 +16,7 @@ import type {
   AiOpsV2Api,
   EnvironmentRuntime,
 } from "@/bridge/ai-ops-v2"
-import { StatusIndicator } from "@/components/app-shell/StatusIndicator"
+import { StatusIndicator, statusLabel } from "@/components/app-shell/StatusIndicator"
 import {
   Alert,
   AlertDescription,
@@ -261,7 +261,7 @@ function EnvironmentGroup({
             <Button
               aria-current={environmentSelected ? "page" : undefined}
               className={cn(
-                "h-auto min-h-12 min-w-0 flex-1 shrink justify-start gap-2 overflow-hidden rounded-none border-0 px-1.5 py-1.5 text-left @max-[280px]/resource-navigation:gap-1 @max-[280px]/resource-navigation:px-1",
+                "h-auto min-h-12 min-w-0 flex-1 shrink justify-start gap-2 overflow-hidden rounded-none border-0 px-1.5 py-1 text-left @max-[280px]/resource-navigation:gap-1 @max-[280px]/resource-navigation:px-1",
                 "shadow-none transition-colors duration-150 hover:bg-transparent focus-visible:ring-inset",
                 environmentSelected && "bg-surface-selected text-primary",
               )}
@@ -290,7 +290,7 @@ function EnvironmentGroup({
               </ItemMedia>
               <ItemContent asChild className="overflow-hidden self-center gap-0">
                 <span>
-                  <ItemTitle asChild className="block w-full truncate text-xs font-semibold leading-4" title={environment.name}>
+                  <ItemTitle asChild className="block w-full truncate text-sm font-semibold leading-5" title={environment.name}>
                     <span>{environment.name}</span>
                   </ItemTitle>
                   <ItemDescription asChild className={cn(
@@ -298,6 +298,7 @@ function EnvironmentGroup({
                     environmentScopeSelected && "dark:text-primary/75",
                   )}>
                     <span>
+                      <span className="hidden shrink-0 @max-[280px]/resource-navigation:inline-flex"><EnvironmentTypeBadge compact type={environment.environmentType} /></span>
                       <span className="min-w-0 flex-1 truncate">
                         {environment.pluginCount === 0
                           ? "暂无插件"
@@ -309,7 +310,7 @@ function EnvironmentGroup({
               </ItemContent>
               <ItemActions asChild className="shrink-0 items-center self-center gap-1.5">
                 <span>
-                  <EnvironmentTypeBadge compact type={environment.environmentType} />
+                  <span className="@max-[280px]/resource-navigation:hidden"><EnvironmentTypeBadge compact type={environment.environmentType} /></span>
                   <StatusIndicator
                     className="h-5 max-w-full text-xs [&>svg]:shrink-0 @max-[400px]/resource-navigation:[&>span]:sr-only"
                     status={environment.status}
@@ -451,7 +452,7 @@ function EnvironmentGroup({
               >
                 <Button
                   aria-current={selected ? "page" : undefined}
-                  className="h-auto min-w-0 flex-1 justify-start gap-2 rounded-none px-2 py-1 text-left shadow-none hover:bg-transparent focus-visible:ring-inset"
+                  className="h-auto min-w-0 flex-1 justify-start gap-2 rounded-none px-2 py-0.5 text-left shadow-none hover:bg-transparent focus-visible:ring-inset"
                   data-shell-nav-item
                   data-testid={`plugin-trigger-${plugin.pluginInstanceId}`}
                   onClick={() => onSelectPlugin(plugin.pluginInstanceId)}
@@ -478,7 +479,7 @@ function EnvironmentGroup({
                   </ItemMedia>
                   <ItemContent asChild className="self-center gap-0">
                     <span>
-                      <ItemTitle asChild className="block w-full truncate text-xs font-medium leading-4">
+                      <ItemTitle asChild className="block w-full truncate text-sm font-medium leading-5">
                         <span>{plugin.displayName}</span>
                       </ItemTitle>
                       <ItemDescription asChild className={cn(
@@ -487,7 +488,10 @@ function EnvironmentGroup({
                       )}>
                         <span>
                           <span className="min-w-0 flex-1 truncate">
-                            {pluginTypeLabel(plugin.pluginType)} · {pluginConfigLabel(plugin.configState)}
+                            {pluginTypeLabel(plugin.pluginType)} · {plugin.configState !== "ready"
+                              ? pluginConfigLabel(plugin.configState)
+                              : plugin.status === "error" ? "连接失败"
+                                : plugin.status === "blocked" ? "连接受阻" : statusLabel(plugin.status)}
                           </span>
                         </span>
                       </ItemDescription>

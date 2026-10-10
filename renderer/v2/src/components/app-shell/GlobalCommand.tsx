@@ -1,6 +1,8 @@
 import { getAiOpsV2 } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import { useCommandPlugins } from "./use-command-plugins"
+import { resourceSearchFilter } from "./resource-search"
+import { pluginTypeLabel } from "@/features/workspace/workspace-read-model"
 import { shortcutLabel } from "@/lib/platform"
 import { FolderSimple, Plus, TreeStructure } from "@phosphor-icons/react"
 import { pluginIcons } from "@/features/plugins/plugin-icons"
@@ -116,7 +118,7 @@ export function GlobalCommand({
       open={open}
       title="工作台命令"
     >
-      <Command data-testid="global-command">
+      <Command data-testid="global-command" filter={resourceSearchFilter}>
         <CommandInput autoFocus placeholder="搜索项目、环境、插件或操作" />
         {complete.loading ? <p role="status" className="px-3 py-2 text-xs text-muted-foreground">正在读取其余插件，搜索结果会继续补充…</p> : null}
         {complete.failed ? <div role="status" className="px-3 py-2 text-xs text-warning">部分插件未读取完整，当前搜索结果可能不全。<Button size="xs" variant="link" onClick={complete.retry}>重新读取全部插件</Button></div> : null}
@@ -158,6 +160,7 @@ export function GlobalCommand({
                 <Fragment key={environment.environmentId}>
                   <CommandItem
                     disabled={project.isolated}
+                    keywords={[project.name]}
                     onSelect={() =>
                       run(() => onSelectEnvironment(project.projectId, environment.environmentId))
                     }
@@ -174,6 +177,7 @@ export function GlobalCommand({
                     return (
                     <CommandItem
                       disabled={project.isolated}
+                      keywords={[project.name, environment.name, plugin.pluginType, pluginTypeLabel(plugin.pluginType)]}
                       key={plugin.pluginInstanceId}
                       onSelect={() =>
                         run(() =>
