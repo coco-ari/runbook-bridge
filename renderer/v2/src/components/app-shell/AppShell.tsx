@@ -9,6 +9,8 @@ import { useAppShellLayout } from "@/components/app-shell/use-app-shell-layout"
 import { shortcutLabel } from "@/lib/platform"
 import { SettingsPage } from "@/features/settings/SettingsPage"
 import { SettingsNavigationContext } from "@/features/settings/SettingsButton"
+import { UpdateCenterProvider } from "@/features/updates/UpdateCenter"
+import type { UpdateSettingsTarget } from "@/features/updates/update-types"
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import { toast } from "sonner"
 import { focusWorkspaceElement } from "@/lib/workspace-focus"
@@ -159,6 +161,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
   const [pendingSelection, setPendingSelection] = useState<PendingSelection | null>(null)
   const [projectSurface, setProjectSurface] = useState<ProjectMutationSurface>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [updateSettingsTarget, setUpdateSettingsTarget] = useState<UpdateSettingsTarget | null>(null)
   const settingsOpenRef = useRef(settingsOpen)
   settingsOpenRef.current = settingsOpen
   const settingsReturnFocusRef = useRef<HTMLElement | null>(null)
@@ -559,6 +562,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
     settingsReturnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     requestNavigation(() => {
       setCommandOpen(false)
+      setUpdateSettingsTarget(null)
       setSettingsOpen(true)
     })
   }, [requestNavigation])
@@ -570,6 +574,23 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       return trigger?.isConnected && !trigger.closest('[hidden],[inert]') ? trigger : document.querySelector<HTMLElement>('[data-testid="settings-open"]')
     })
   }, [scheduleWorkspaceFocus])
+
+  const openUpdateSettings = useCallback((target: UpdateSettingsTarget) => {
+    if (target.section === "cloud" && !cloud.data.repositories?.some(repo => repo.repositoryId === target.repositoryId)) {
+      toast.info("该云仓库已解除关联，请在云同步中重新选择。")
+      return
+    }
+    requestNavigation(() => {
+      setCommandOpen(false)
+      // 先经过工作台未保存内容守卫，再读取差异并进入原有确认流程。
+      if (target.section === "cloud" && target.repositoryId && target.projectId) {
+        void cloud.run({action:"prepare",direction:"download",repositoryId:target.repositoryId,projectIds:[target.projectId]})
+      } else {
+        setUpdateSettingsTarget(target)
+        setSettingsOpen(true)
+      }
+    })
+  }, [cloud, requestNavigation])
 
   const focusDetail = useCallback(() => {
     if (detailCollapsed) setDetailCollapsed(false)
@@ -944,6 +965,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
         enterPluginEditor(environment, entry.plugin)
       }}>
     <SettingsNavigationContext.Provider value={openSettings}>
+    <UpdateCenterProvider api={api} onNavigate={openUpdateSettings}>
     <div className="h-full max-h-full min-h-0 relative w-full min-w-0 overflow-hidden bg-background text-foreground" data-shell-ready="true" data-testid="react-app-shell">
       <a
         className="fixed left-3 top-2 z-[70] -translate-y-14 rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground shadow-sm outline-none transition-transform focus:translate-y-0 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background"
@@ -1122,7 +1144,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
         projects={navigationProjects.filter(project => !cloud.data.cloudProjects?.some(item => item.localId === project.projectId && !item.visible))}
       />
 
-      {settingsOpen ? <SettingsPage api={api} onBack={closeSettings} onChanged={workspace.reload} /> : null}
+      {settingsOpen ? <SettingsPage api={api} onBack={closeSettings} onChanged={workspace.reload} target={updateSettingsTarget} /> : null}
       <ProjectMutationSurfaces
         action={projectSurface}
         api={api}
@@ -1212,6 +1234,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       }} />
       <span className="sr-only">当前范围：{shellLabel}</span>
     </div>
+    </UpdateCenterProvider>
     </SettingsNavigationContext.Provider>
     </WorkspaceNavigationProvider>
   )

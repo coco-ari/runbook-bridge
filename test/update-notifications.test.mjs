@@ -1,0 +1,154 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { UpdateNotifications, UpdateNotificationDelivery, notificationChannel, cloudUpdateNotices, softwareUpdateNotices } from '../src/update-notifications.mjs';
+import { registerUpdateNotificationsIpc } from '../src/update-notifications-ipc.mjs';
+
+function fixture() {
+  const state = {repositories:[{repositoryId:'repo-a',name:'合成仓库',catalog:[{projectId:'project-a',name:'合成项目',digest:'new-digest'}]}],mappings:[{repositoryId:'repo-a',remoteId:'project-a',localId:'local-a',remoteDigest:'old-digest'}]};
+  const status = {repositories:[{repositoryId:'repo-a',unlocked:true}],cloudProjects:[{repositoryId:'repo-a',projectId:'project-a',downloaded:true,visible:true,syncStatus:'behind'}],deletedCloudProjects:[],projects:[{projectId:'local-a'}]};
+  return {state,status};
+}
+test('云提醒以项目内容去重，本地单独修改、上传完成、隐藏未下载和锁定仓库不提醒',() => {
+  const {state,status} = fixture();
+  const notices = cloudUpdateNotices(state,status);
+  assert.equal(notices.length,1); assert.equal(notices[0].kind,'changed');
+  assert.equal(notices[0].localProjectId,'local-a');
+  state.repositories[0].snapshotId = 'another-snapshot';
+  assert.equal(cloudUpdateNotices(state,status)[0].id,notices[0].id);
+  status.cloudProjects[0].syncStatus = 'modified';
+  assert.equal(cloudUpdateNotices(state,status)[0].kind,'conflict');
+  state.mappings[0].remoteDigest = 'new-digest';
+  assert.deepEqual(cloudUpdateNotices(state,status),[]);
+  status.cloudProjects[0].syncStatus = 'synced';
+  assert.deepEqual(cloudUpdateNotices(state,status),[]);
+  status.cloudProjects[0] = {...status.cloudProjects[0],downloaded:false,visible:false,syncStatus:'remote'};
+  assert.deepEqual(cloudUpdateNotices(state,status),[]);
+  status.cloudProjects[0].visible = true;
+  assert.equal(cloudUpdateNotices(state,status)[0].kind,'added');
+  status.repositories[0].unlocked = false;
+  assert.deepEqual(cloudUpdateNotices(state,status),[]);
+});
+test('删除提醒只针对现存本地副本，软件提醒绑定来源平台版本和下载阶段',() => {
+  const {state,status} = fixture();
+  state.repositories[0].catalog = [];
+  state.repositories[0].deletedProjects = [{projectId:'project-a',name:'合成项目',deletedAt:'2026-10-10T00:00:00Z'}];
+  status.deletedCloudProjects = [{repositoryId:'repo-a',projectId:'project-a'}];
+  assert.equal(cloudUpdateNotices(state,status)[0].kind,'deleted');
+  status.projects = []; assert.deepEqual(cloudUpdateNotices(state,status),[]);
+  const software = {phase:'available',availableVersion:'9.0.0',source:{repositoryId:'repo-a',name:'合成仓库',origin:'https://updates.example.invalid'}};
+  const id = softwareUpdateNotices(software,'win32','x64')[0].id;
+  software.phase = 'downloading'; assert.equal(softwareUpdateNotices(software,'win32','x64')[0].id,id);
+  software.phase = 'downloaded'; assert.notEqual(softwareUpdateNotices(software,'win32','x64')[0].id,id);
+  software.phase = 'available'; software.source.repositoryId = 'repo-b'; assert.notEqual(softwareUpdateNotices(software,'win32','x64')[0].id,id);
+});
+test('已读与待处理分离、重启后不重复提示，损坏记录保持原文件',async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(),'update-notices-'));
+  t.after(() => fs.rm(directory,{recursive:true,force:true}));
+  // 此夹具仅包含合成摘要；生产存储使用系统安全存储加密。
+  const workspace = {directory,unseal:JSON.parse,writeSealed:(file,value) => fs.writeFile(file,JSON.stringify(value))};
+  const messages = [], {state,status} = fixture(), notices = cloudUpdateNotices(state,status);
+  const service = new UpdateNotifications({workspace,onNotify:items => messages.push(items)});
+  await service.init(); await service.reconcile(notices); await service.reconcile(notices);
+  assert.equal(messages.length,1); assert.equal(service.snapshot().items[0].unread,true);
+  await service.read([notices[0].id]); assert.equal(service.snapshot().items.length,1); assert.equal(service.snapshot().items[0].unread,false);
+  const restarted = new UpdateNotifications({workspace,onNotify:() => assert.fail('不重复弹出')});
+  await restarted.init(); await restarted.reconcile(notices); assert.equal(restarted.snapshot().items[0].unread,false);
+  await restarted.reconcile([]); assert.deepEqual(restarted.snapshot().items,[]);
+  await fs.writeFile(service.file,'corrupt');
+  const broken = new UpdateNotifications({workspace,onNotify:() => assert.fail()});
+  await broken.init(); await broken.reconcile(notices);
+  assert.ok(broken.snapshot().error); assert.equal(await fs.readFile(service.file,'utf8'),'corrupt');
+});
+test('提醒 IPC 仅允许可信主窗口的状态、已读、延后和通知偏好精确参数',async () => {
+  let handler;
+  const sender = {mainFrame:{},isDestroyed:() => false};
+  registerUpdateNotificationsIpc({handle:(_name,fn) => { handler = fn; }},{isWorkspaceRenderer:value => value === sender,updateNotifications:{snapshot:() => ({items:[]}),read:async ids => ({items:[],ids}),snooze:async (ids,duration) => ({ids,duration}),preferences:async notificationMode => ({notificationMode})}});
+  const event = {sender,senderFrame:sender.mainFrame};
+  assert.equal((await handler(event,{action:'status'})).ok,true);
+  assert.equal((await handler(event,{action:'read',ids:['a'.repeat(64)]})).ok,true);
+  assert.equal((await handler(event,{action:'snooze',ids:['a'.repeat(64)],duration:'hour'})).data.duration,'hour');
+  assert.equal((await handler(event,{action:'preferences',notificationMode:'app'})).data.notificationMode,'app');
+  for (const payload of [{action:'snooze',ids:[],duration:'forever'},{action:'snooze',ids:[],duration:'hour',until:1},{action:'snooze',duration:'hour'},{action:'preferences',notificationMode:'remote'},{action:'preferences',notificationMode:'app',url:'https://bad.invalid'}]) assert.equal((await handler(event,payload)).ok,false);
+  for (const payload of [{action:'install'},{action:'status',url:'https://bad.invalid'},{action:'read',ids:['bad']},{action:'read'},{action:'read',ids:[],repositoryId:'other'}]) assert.equal((await handler(event,payload)).ok,false);
+  assert.equal((await handler({...event,senderFrame:{}},{action:'status'})).ok,false);
+  assert.equal((await handler({sender:{mainFrame:{}},senderFrame:{}},{action:'status'})).ok,false);
+});
+
+test('延后提醒跨重启保留，到时重新变为未读并只提醒一次，取消和明天按本机时间计算',async t => {
+  t.mock.timers.enable({apis:['setTimeout']});
+  let now = new Date(2026,9,10,20,30).getTime();
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(),'update-snooze-'));
+  t.after(() => fs.rm(directory,{recursive:true,force:true}));
+  const workspace = {directory,unseal:JSON.parse,writeSealed:(file,value) => fs.writeFile(file,JSON.stringify(value))};
+  const notices = cloudUpdateNotices(...Object.values(fixture()));
+  const service = new UpdateNotifications({workspace,now:() => now});
+  await service.init(); await service.reconcile(notices);
+  const firstSeenAt = service.snapshot().items[0].firstSeenAt;
+  await service.snooze([notices[0].id],'hour');
+  await service.preferences('app');
+  assert.equal(service.snapshot().items[0].unread,false);
+  assert.equal(service.snapshot().items[0].snoozedUntil,now+3_600_000);
+  service.dispose();
+  const messages = [];
+  const restarted = new UpdateNotifications({workspace,now:() => now,onNotify:items => messages.push(items)});
+  t.after(() => restarted.dispose());
+  await restarted.init(); await restarted.reconcile(notices);
+  assert.equal(restarted.snapshot().notificationMode,'app');
+  assert.equal(messages.length,0);
+  now += 3_600_000; t.mock.timers.tick(3_600_000); await restarted.queue;
+  assert.equal(restarted.snapshot().items[0].unread,true);
+  assert.equal(restarted.snapshot().items[0].snoozedUntil,null);
+  assert.equal(restarted.snapshot().items[0].firstSeenAt,firstSeenAt);
+  await restarted.reconcile(notices); assert.equal(messages.length,1);
+  await restarted.snooze([notices[0].id],'tomorrow');
+  assert.equal(restarted.snapshot().items[0].snoozedUntil,new Date(2026,9,11,9).getTime());
+  await restarted.snooze([notices[0].id],'cancel');
+  assert.equal(restarted.snapshot().items[0].unread,true);
+  assert.equal(restarted.snapshot().items[0].snoozedUntil,null);
+  assert.equal(messages.length,1,'主动移回待处理不再弹出提醒');
+});
+
+test('延后期间新内容仍会提醒，旧内容已同步或解绑后不会到时复活，旧记录可迁移',async t => {
+  t.mock.timers.enable({apis:['setTimeout']});
+  let now = Date.now();
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(),'update-snooze-stale-'));
+  t.after(() => fs.rm(directory,{recursive:true,force:true}));
+  const workspace = {directory,unseal:JSON.parse,writeSealed:(file,value) => fs.writeFile(file,JSON.stringify(value))};
+  const {state,status} = fixture(), notices = cloudUpdateNotices(state,status), messages = [];
+  const service = new UpdateNotifications({workspace,now:() => now,onNotify:items => messages.push(items)});
+  t.after(() => service.dispose());
+  await fs.writeFile(service.file,JSON.stringify({schemaVersion:1,records:{[notices[0].id]:{read:true,notified:true}}}));
+  await service.init(); await service.reconcile(notices);
+  assert.equal(service.snapshot().items[0].unread,false);
+  await service.snooze([notices[0].id],'hour');
+  state.repositories[0].catalog[0].digest = 'newer-digest';
+  await service.reconcile(cloudUpdateNotices(state,status));
+  assert.equal(messages.length,1); assert.equal(service.snapshot().items[0].unread,true);
+  await service.snooze([service.items[0].id],'hour');
+  await service.reconcile([]);
+  now += 3_600_000; t.mock.timers.tick(3_600_000); await service.queue;
+  assert.equal(messages.length,1); assert.deepEqual(service.snapshot().items,[]);
+  await service.reconcile(notices); await service.snooze([notices[0].id],'hour');
+  const before = messages.length;
+  service.clear(); now += 3_600_000; t.mock.timers.tick(3_600_000); await service.queue;
+  assert.equal(messages.length,before); assert.deepEqual(service.snapshot().items,[]);
+});
+
+test('合并提醒重新过滤已读、延后及移除内容，通知渠道遵守偏好且不会双重弹出',() => {
+  let state = {items:[{id:'a',unread:true},{id:'b',unread:true}],notificationMode:'background'};
+  const deliveries = [];
+  const delivery = new UpdateNotificationDelivery({current:() => state,send:(...args) => deliveries.push(args)});
+  delivery.enqueue([{id:'a'}]); delivery.enqueue([{id:'b'},{id:'a'},{id:'removed'}]);
+  state.items[0].unread = false;
+  delivery.flush();
+  assert.deepEqual(deliveries,[[[{id:'b',unread:true}],'background']]);
+  state = {...state,items:[{id:'b',unread:true,snoozedUntil:Date.now()+1000}]};
+  delivery.enqueue([{id:'b'}]); delivery.flush(); assert.equal(deliveries.length,1);
+  delivery.enqueue([{id:'b'}]); delivery.dispose(); delivery.flush(); assert.equal(deliveries.length,1);
+  assert.equal(notificationChannel('app',true),'app'); assert.equal(notificationChannel('app',false),null);
+  assert.equal(notificationChannel('background',true),'app'); assert.equal(notificationChannel('background',false),'system');
+  assert.equal(notificationChannel('always',true),'system'); assert.equal(notificationChannel('always',false),'system');
+});

@@ -18,6 +18,8 @@ import { EnvironmentConnectionManager } from '../src/environment-connection-mana
 import { RedisWorkspaceManager } from '../src/redis-workspace-manager.mjs';
 import { ServerDockerManager } from '../src/server-docker-manager.mjs';
 import { registerCloudConfigIpc } from '../src/cloud-config-ipc.mjs';
+import { UpdateNotifications } from '../src/update-notifications.mjs';
+import { UpdateCoordinator } from '../src/update-coordinator.mjs';
 
 const PASSWORD = 'synthetic-cloud-password-for-tests';
 const ADMIN = 'synthetic-admin-token-only-for-tests-12345';
@@ -1023,4 +1025,41 @@ test('软件更新来源通知的同步和异步异常不影响云绑定、解�
   await a.call('unbind',{repositoryId:created.repositoryId});
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(a.service.softwareUpdateSources(),[]);
+});
+
+test('两台客户端通过推送发现项目更新，本机上传不重复提醒，确认同步后清除且解绑停止订阅',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), b = await device(t,remote.client), p = await project(a);
+  const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  await upload(a,p.projectId);
+  const bound = await b.call('bind',{url:created.url,password:PASSWORD});
+  await download(b,p.projectId);
+  const notifications = new UpdateNotifications({workspace:b.workspace});
+  await notifications.init();
+  const software = {state:{source:null},platform:'win32',arch:'x64',invoke:async () => ({source:null,supported:false})};
+  const coordinator = new UpdateCoordinator({cloud:b.service,software,notifications,checkSoftware:async () => {}});
+  b.service.onStateChanged = () => coordinator.schedule();
+  b.service.onOwnerClosed = owner => coordinator.closeOwner(owner);
+  t.after(() => coordinator.dispose());
+  coordinator.activate('test-owner');
+  await coordinator.refresh();
+  assert.deepEqual(notifications.snapshot().items,[]);
+  await a.store.saveRunbook(p.projectId,'env-test','# 合成环境的新说明');
+  await upload(a,p.projectId);
+  const waitUntil = async predicate => {
+    const end = Date.now()+8000;
+    while (!predicate()) { if (Date.now()>end) assert.fail('客户端推送检测超时'); await new Promise(resolve => setTimeout(resolve,20)); }
+  };
+  await waitUntil(() => notifications.snapshot().items.length === 1);
+  const first = notifications.snapshot().items[0];
+  assert.equal(first.repositoryId,bound.repositoryId); assert.equal(first.kind,'changed');
+  assert.doesNotMatch(JSON.stringify(notifications.snapshot()),/synthetic-ssh-secret|synthetic-cloud-password|synthetic-mysql-secret/);
+  await download(b,p.projectId);
+  await waitUntil(() => notifications.snapshot().items.length === 0);
+  await b.store.saveRunbook(p.projectId,'env-test','# 本机再次上传');
+  await upload(b,p.projectId);
+  await coordinator.refresh();
+  assert.deepEqual(notifications.snapshot().items,[]);
+  await b.call('unbind',{repositoryId:bound.repositoryId});
+  assert.equal(coordinator.streams.size,0);
+  await coordinator.refresh(); assert.deepEqual(notifications.snapshot().items,[]);
 });

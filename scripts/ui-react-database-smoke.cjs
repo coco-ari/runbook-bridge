@@ -239,7 +239,11 @@ function registerMockApi() {
     }
     return ok({repositories:[],cloudProjects:[],checkIntervalMinutes:0});
   });
-  // Allow only the shell's read-only cloud status; all other unlisted channels stay forbidden.
+  register('v2:update-center',async (_event,payload) => {
+    if (payload?.action === 'status') return ok({items:[],error:null});
+    forbiddenCalls.push('v2:update-center'); return failed('数据库测试只允许读取提醒状态。');
+  });
+  // 工作台只允许读取云状态和提醒状态，其他未列出的通道继续拒绝。
   const preload = fs.readFileSync(path.join(root,'src','preload.cjs'),'utf8');
   for (const [,channel] of preload.matchAll(/ipcRenderer\.invoke\('([^']+)'/gu)) {
     if (registeredChannels.has(channel)) continue;

@@ -1,3 +1,4 @@
+import { ProjectUpdateBanner } from "@/features/updates/UpdateHints"
 import {
   ArrowClockwise,
   DotsThree,
@@ -676,6 +677,8 @@ export function ResourcePane({
           </Button>
         ) : null}
       </header>
+
+      <ProjectUpdateBanner {...(project ? {projectId:project.projectId} : {})} />
 
       {loading && !project ? (
         <div aria-busy="true" className="min-h-0 flex-1 space-y-2 px-2 py-3">

@@ -19,6 +19,8 @@ import {
 import { StatusIndicator, statusLabel } from "@/components/app-shell/StatusIndicator"
 import { WorkspaceSwitcherButton } from "@/features/plugins/WorkspaceNavigation"
 import { SettingsButton } from "@/features/settings/SettingsButton"
+import { UpdatesButton } from "@/features/updates/UpdateCenter"
+import { ProjectUpdateIndicator, SoftwareUpdateHint } from "@/features/updates/UpdateHints"
 import {
   Alert,
   AlertDescription,
@@ -519,7 +521,7 @@ export function ProjectRail({
                           tooltip={{ hidden: false, children: <span className="space-y-1"><span className="block font-semibold">{project.name}</span><span className="block text-xs">{cloudDescription}</span></span> }}
                           tabIndex={tabStopProjectId === project.projectId ? 0 : -1}
                           onClick={() => onOpenCloudProject?.(linked.repositoryId, linked.projectId)}>
-                          <span className="min-w-0 flex-1 truncate text-xs font-medium" data-project-name>{project.name}</span><ProjectListStatus project={project} linked={linked} hasActions={false} />
+                          <span className="min-w-0 flex-1 truncate text-xs font-medium" data-project-name>{project.name}</span><ProjectUpdateIndicator projectId={project.projectId} repositoryId={linked.repositoryId} remoteId={linked.projectId} /><ProjectListStatus project={project} linked={linked} hasActions={false} />
                         </SidebarMenuButton>
                       </SidebarMenuItem>
                       const selected =
@@ -607,6 +609,7 @@ export function ProjectRail({
                               <span aria-hidden="true" className="min-w-0 flex-1 truncate text-left text-xs font-medium leading-5" data-project-name data-project-compact-name>
                                 {project.name}
                               </span>
+                              <ProjectUpdateIndicator projectId={project.projectId} {...(linked ? {repositoryId:linked.repositoryId,remoteId:linked.projectId} : {})} />
                               <ProjectListStatus project={project} linked={linked} />
                               {project.isolated ? (
                                 <span className="sr-only" id={isolationDescriptionId}>
@@ -647,6 +650,7 @@ export function ProjectRail({
           </nav>
         </SidebarContent>
 
+        <SoftwareUpdateHint compact={collapsed} />
         <SidebarFooter aria-label="全局工具" className="project-utility-navigation h-[46px] shrink-0 flex-row items-center gap-0.5 border-t border-sidebar-border bg-sidebar px-1.5 py-1.5" data-testid="project-utility-navigation" role="group">
           <Button
             aria-label={confirmationDescription}
@@ -668,6 +672,7 @@ export function ProjectRail({
             className={utilityButtonClassName}
             labelLayout="compact"
           />
+          <UpdatesButton iconOnly />
           <SettingsButton
             className="ml-auto shrink-0 text-muted-foreground"
             iconOnly

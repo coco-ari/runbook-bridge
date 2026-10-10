@@ -19,6 +19,8 @@ import { SoftwareUpdateService, softwareUpdateError } from './software-update-se
 import { createSoftwareUpdateDriver } from './software-update-driver.mjs';
 import { assertSoftwareUpdateIdle, startSoftwareUpdateChecks } from './software-update-lifecycle.mjs';
 import { SoftwareUpdateShutdownGate } from './software-update-shutdown.mjs';
+import { UpdateNotifications, UpdateNotificationDelivery, notificationChannel } from './update-notifications.mjs';
+import { UpdateCoordinator } from './update-coordinator.mjs';
 import { PluginCredentialVault, pluginCredentialInternals } from './plugin-credential-vault.mjs';
 import { AddressResolver, SystemVpnGuard, RouteManager } from './route-manager.mjs';
 import { ServerPluginRuntime } from './server-plugin-runtime.mjs';
@@ -107,6 +109,9 @@ function createWindow() {
 async function closeForSoftwareUpdate() {
   app.__aiOpsClosing = true;
   updateChecks?.dispose();
+  v2?.updateCoordinator?.dispose();
+  v2?.updateNotifications?.dispose();
+  v2?.updateDelivery?.dispose();
   v2.networkWatcher.stop();
   v2.serverDocker.dispose();
   v2.v2Service.redisWorkspaceManager?.dispose();
@@ -223,7 +228,7 @@ if (process.argv.includes('--mcp')) {
           configurationJournal:configTransactionJournal,
           mutationCoordinator,
         });
-        const networkWatcher = new NetworkChangeWatcher((reason) => environmentConnectionManager.networkChanged(reason));
+        const networkWatcher = new NetworkChangeWatcher((reason) => { v2?.updateCoordinator?.wake(); return environmentConnectionManager.networkChanged(reason); });
         environmentConnectionManager.on('changed', () => networkWatcher.setActive(Object.values(environmentConnectionManager.listStates()).some((item) => item.desiredConnected)));
         serverRuntime.on('lifecycle', (event) => {
           if (event.type === 'lost') environmentConnectionManager.pluginLost(event.projectId, event.environmentId, event.pluginInstanceId, event.error).catch(() => undefined);
@@ -284,6 +289,39 @@ if (process.argv.includes('--mcp')) {
         });
         v2.softwareUpdateService = softwareUpdateService;
         await softwareUpdateService.init();
+        const updateNotifications = new UpdateNotifications({workspace:cloudWorkspace,
+          onChanged:() => broadcast('v2:update-center',{kind:'changed'}),
+          onNotify:items => updateDelivery.enqueue(items)});
+        await updateNotifications.init();
+        const updateDelivery = new UpdateNotificationDelivery({current:() => updateNotifications.snapshot(),
+          send:(items,mode) => {
+            const groups = Map.groupBy(items,item => item.type === 'software' ? item.id : item.repositoryId);
+            for (const notices of groups.values()) {
+              const first = notices[0];
+              const title = first.type === 'software' ? first.title : '云仓库有更新';
+              const body = first.type === 'software' ? first.description : `${first.repositoryName} 有 ${notices.length} 个项目需要查看。`;
+              const target = {type:first.type,repositoryId:first.repositoryId,kind:first.kind,...(notices.length === 1 && first.projectId ? {projectId:first.projectId} : {})};
+              const channel = notificationChannel(mode,mainWindow?.isFocused());
+              if (channel === 'app') broadcast('v2:update-center',{kind:'notice',title,body,target});
+              else if (channel === 'system' && Notification.isSupported()) {
+                const notification = new Notification({title,body});
+                notification.on('click',() => {
+                  if (mainWindow?.isMinimized()) mainWindow.restore();
+                  mainWindow?.show(); mainWindow?.focus();
+                  broadcast('v2:update-center',{kind:'open',target});
+                });
+                notification.show();
+              }
+            }
+          }});
+        v2.updateDelivery = updateDelivery;
+        const updateCoordinator = new UpdateCoordinator({cloud:cloudConfigService,software:softwareUpdateService,notifications:updateNotifications,
+          checkSoftware:() => updateChecks?.checkNow() ?? Promise.resolve(),broadcast});
+        v2.updateNotifications = updateNotifications;
+        v2.updateCoordinator = updateCoordinator;
+        cloudConfigService.onStateChanged = () => updateCoordinator.schedule();
+        cloudConfigService.onOwnerClosed = owner => updateCoordinator.closeOwner(owner);
+        softwareUpdateService.onStateChanged = () => updateCoordinator.schedule();
         const token = await rotateBrokerToken(dataRoot);
         // 统计所有 Agent 请求；更新停机后不再接受新操作。
         const brokerService = new Proxy(v2Service,{get:(target,key) => typeof target[key] === 'function'
@@ -341,17 +379,12 @@ if (process.argv.includes('--mcp')) {
         const menuTemplate = desktopMenuTemplate();
         if (menuTemplate) Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
         createWindow();
-        updateChecks = startSoftwareUpdateChecks(softwareUpdateService,{onAvailable:state => {
-          if (!Notification.isSupported()) return;
-          const notification = new Notification({title:'软件有新版本',body:`发现 ${state.availableVersion}，可在“设置 → 关于”下载并安装。`});
-          notification.on('click',() => { mainWindow?.show(); mainWindow?.focus(); });
-          notification.show();
-        }});
+        updateChecks = startSoftwareUpdateChecks(softwareUpdateService);
         cloudConfigService.onSoftwareUpdateSourcesChanged = async () => {
           await softwareUpdateService.invoke('status');
           return updateChecks.checkNow();
         };
-        powerMonitor.on('resume', () => environmentConnectionManager.networkChanged('system-resume').catch(() => undefined));
+        powerMonitor.on('resume', () => { updateCoordinator.wake(); environmentConnectionManager.networkChanged('system-resume').catch(() => undefined); });
         app.on('activate', () => {
           if (BrowserWindow.getAllWindows().length === 0) createWindow();
         });
@@ -368,6 +401,9 @@ if (process.argv.includes('--mcp')) {
       event.preventDefault();
       app.__aiOpsClosing = true;
       updateChecks?.dispose();
+      v2?.updateCoordinator?.dispose();
+      v2?.updateNotifications?.dispose();
+      v2?.updateDelivery?.dispose();
       v2?.softwareUpdateService?.dispose();
       v2?.networkWatcher?.stop();
       v2?.serverDocker?.dispose();

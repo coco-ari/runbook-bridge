@@ -88,7 +88,8 @@ export class CloudConfigService {
     };
     // Network checks run independently; only their small state commits join the
     // mutation queue. Read-only status never waits for an unreachable server.
-    return ['check','status','backups'].includes(method) ? run() : this.enqueue(run);
+    const result = ['check','status','backups'].includes(method) ? run() : this.enqueue(run);
+    return result.finally(() => { if (!['status','backups'].includes(method)) this.onStateChanged?.(); });
   }
   enqueue(run) {
     const current = this.queue.catch(() => undefined).then(run);
@@ -99,6 +100,7 @@ export class CloudConfigService {
     for (const flight of this.checkFlights.values()) if (predicate(flight)) flight.controller.abort();
   }
   closeOwner(owner) {
+    this.onOwnerClosed?.(owner);
     this.epochs.set(owner,(this.epochs.get(owner) ?? 0)+1);
     this.cancelChecks(flight => flight.owner === owner);
     for (const session of this.sessions.get(owner)?.values() ?? []) session.keys.encryption.fill(0);

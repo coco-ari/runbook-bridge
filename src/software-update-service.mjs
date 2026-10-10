@@ -135,10 +135,12 @@ export class SoftwareUpdateService {
     if (action === 'cancel') {
       if (this.state.phase === 'installing') throw softwareUpdateError('UPDATE_BUSY');
       this.invalidate();
+      this.onStateChanged?.();
       return this.snapshot();
     }
     this.assertSource();
-    return this[action]();
+    try { return await this[action](); }
+    finally { this.onStateChanged?.(); }
   }
 
   async refreshSources() {
@@ -191,6 +193,7 @@ export class SoftwareUpdateService {
       catch { throw softwareUpdateError('UPDATE_STATE_FAILED'); }
       this.selectedId = repositoryId;
       await this.refreshSources();
+      this.onStateChanged?.();
       return this.snapshot();
     };
     const task = this.selectionQueue.catch(() => undefined).then(select).finally(() => { this.selectionPending--; });

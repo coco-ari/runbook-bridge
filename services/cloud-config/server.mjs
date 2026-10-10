@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { CLOUD_MAX_BYTES, cloudHash, cloudId, validateCloudMeta, validateCloudEnvelope } from '../../src/cloud-config-crypto.mjs';
 import { serveSoftwareUpdate } from './software-updates.mjs';
+import { CloudEvents } from './events.mjs';
 
 function reject(status, code) { throw Object.assign(new Error(code),{status,code}); }
 function matches(actual, expected) {
@@ -26,7 +27,7 @@ async function body(request) {
   catch { reject(400,'CLOUD_FORMAT_INVALID'); }
 }
 
-export function createCloudServer({database = ':memory:',adminToken,retention = 20,now = Date.now,releasesDirectory} = {}) {
+export function createCloudServer({database = ':memory:',adminToken,retention = 20,now = Date.now,releasesDirectory,eventOptions} = {}) {
   if (typeof adminToken !== 'string' || adminToken.length < 32) throw new Error('管理员令牌至少需要 32 个字符。');
   const db = new DatabaseSync(database);
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
@@ -34,6 +35,7 @@ export function createCloudServer({database = ':memory:',adminToken,retention = 
     CREATE TABLE IF NOT EXISTS snapshots (id TEXT PRIMARY KEY, repo TEXT NOT NULL REFERENCES repositories(id), parent TEXT, envelope TEXT NOT NULL, created_at TEXT NOT NULL, sequence INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS snapshots_repo ON snapshots(repo,sequence);`);
   const buckets = new Map();
+  const events = new CloudEvents({...eventOptions,releasesDirectory});
   const send = (response,status,value) => {
     response.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
     response.end(JSON.stringify(value));
@@ -49,6 +51,13 @@ export function createCloudServer({database = ':memory:',adminToken,retention = 
       if (++bucket.count > 180 || bucket.failures >= 20) reject(429,'CLOUD_RATE_LIMITED');
       if (await serveSoftwareUpdate(request,response,{releasesDirectory})) return;
       const url = new URL(request.url,'http://localhost');
+      const softwareEvents = /^\/api\/v1\/updates\/(win32|darwin)\/(x64|arm64|ia32)\/events$/.exec(url.pathname);
+      if (softwareEvents && !(softwareEvents[1] === 'darwin' && softwareEvents[2] === 'ia32')) {
+        if (request.headers.authorization !== undefined || request.headers.cookie !== undefined || request.headers['proxy-authorization'] !== undefined) reject(400,'CLOUD_UPDATE_CREDENTIALS_FORBIDDEN');
+        if (request.method !== 'GET') reject(405,'CLOUD_METHOD_NOT_ALLOWED');
+        if (!releasesDirectory) reject(404,'CLOUD_UPDATES_UNCONFIGURED');
+        return events.subscribe(request,response,`software:${softwareEvents[1]}:${softwareEvents[2]}`);
+      }
       if (request.method === 'GET' && url.pathname === '/healthz') return send(response,200,{ok:true});
       const token = /^Bearer ([A-Za-z0-9_-]+)$/.exec(request.headers.authorization ?? '')?.[1] ?? '';
       if (request.method === 'POST' && url.pathname === '/api/v1/repos') {
@@ -60,13 +69,14 @@ export function createCloudServer({database = ':memory:',adminToken,retention = 
         db.prepare('INSERT INTO repositories (id,metadata,auth_hash) VALUES (?,?,?)').run(meta.repoId,JSON.stringify(meta),input.authHash);
         return send(response,201,meta);
       }
-      const route = /^\/api\/v1\/repos\/([^/]+)\/(meta|head|versions|snapshots(?:\/[^/]+)?)$/.exec(url.pathname);
+      const route = /^\/api\/v1\/repos\/([^/]+)\/(meta|head|events|versions|snapshots(?:\/[^/]+)?)$/.exec(url.pathname);
       if (!route) reject(404,'CLOUD_NOT_FOUND');
       const repoId = cloudId(route[1]);
       const repo = db.prepare('SELECT * FROM repositories WHERE id=?').get(repoId);
       if (!repo) reject(404,'CLOUD_NOT_FOUND');
       if (request.method === 'GET' && route[2] === 'meta') return send(response,200,JSON.parse(repo.metadata));
       if (!token || !matches(cloudHash(token),repo.auth_hash)) { bucket.failures++; reject(401,'CLOUD_AUTH_FAILED'); }
+      if (request.method === 'GET' && route[2] === 'events') return events.subscribe(request,response,`repo:${repoId}`,repo.head);
       if (request.method === 'GET' && route[2] === 'head') return send(response,200,{snapshotId:repo.head});
       if (request.method === 'GET' && route[2] === 'versions') {
         return send(response,200,{versions:db.prepare('SELECT id AS snapshotId, created_at AS createdAt, length(envelope) AS bytes FROM snapshots WHERE repo=? ORDER BY sequence DESC').all(repoId)});
@@ -92,6 +102,7 @@ export function createCloudServer({database = ':memory:',adminToken,retention = 
           db.prepare('DELETE FROM snapshots WHERE repo=? AND id NOT IN (SELECT id FROM snapshots WHERE repo=? ORDER BY sequence DESC LIMIT ?)').run(repoId,repoId,retention);
           db.exec('COMMIT');
         } catch (error) { db.exec('ROLLBACK'); throw error; }
+        events.publish(`repo:${repoId}`,envelope.snapshotId);
         return send(response,201,{snapshotId:envelope.snapshotId});
       }
       reject(405,'CLOUD_METHOD_NOT_ALLOWED');
@@ -104,6 +115,8 @@ export function createCloudServer({database = ':memory:',adminToken,retention = 
   });
   server.requestTimeout = 30_000;
   server.headersTimeout = 15_000;
+  const close = server.close.bind(server);
+  server.close = (...args) => { events.dispose(); return close(...args); };
   server.on('close',() => db.close());
   return server;
 }
