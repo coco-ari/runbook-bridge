@@ -142,7 +142,6 @@ interface ProjectRailProps {
   readonly onSelectProject: (projectId: string) => void
   readonly onToggleCollapsed: () => void
   readonly pendingConfirmationCount: number | null
-  readonly confirmationEnvironmentName: string | null
   readonly confirmationsLoading: boolean
   readonly confirmationsUnavailable: boolean
   readonly projects: readonly WorkspaceProjectReadModel[]
@@ -260,7 +259,6 @@ export function ProjectRail({
   onSelectProject,
   onToggleCollapsed,
   pendingConfirmationCount,
-  confirmationEnvironmentName,
   confirmationsLoading,
   confirmationsUnavailable,
   projects,
@@ -284,13 +282,11 @@ export function ProjectRail({
     query: projectQuery,
   })
   const confirmationCount = pendingConfirmationCount
-  const confirmationDescription = !confirmationEnvironmentName
-    ? "选择环境查看待确认操作"
-    : confirmationsUnavailable
-      ? `当前环境「${confirmationEnvironmentName}」的待确认数量不可用，点击重新读取`
-      : confirmationsLoading
-        ? `正在读取当前环境「${confirmationEnvironmentName}」的待确认数量`
-        : `当前环境「${confirmationEnvironmentName}」，${confirmationCount ?? 0} 项待确认操作`
+  const confirmationDescription = confirmationsUnavailable
+    ? "全局待确认数量不可用，点击重新读取"
+    : confirmationsLoading
+      ? "正在读取全局待确认数量"
+      : `全局 ${confirmationCount ?? 0} 项待确认操作`
   const toggleDisabled = collapsed && expandDisabled
   const utilityButtonClassName = "project-utility-button relative h-8 gap-0.5 px-0.5 text-xs leading-4 [&_svg]:size-4"
 
@@ -663,7 +659,7 @@ export function ProjectRail({
             variant="ghost"
           >
             <ShieldWarning aria-hidden="true" className={confirmationsUnavailable || (confirmationCount ?? 0) > 0 ? "text-warning" : undefined} />
-            <span data-utility-label>{!confirmationEnvironmentName ? "选择环境" : confirmationsUnavailable ? "待确认不可用" : confirmationsLoading ? "读取待确认" : "环境待确认"}</span>
+            <span data-utility-label>{confirmationsUnavailable ? "待确认不可用" : confirmationsLoading ? "读取待确认" : "全局待确认"}</span>
             {confirmationCount !== null && confirmationCount > 0 ? <span aria-hidden="true" className="min-w-3.5 shrink-0 rounded-sm bg-warning/15 px-0.5 text-center text-[10px] font-medium leading-4 text-warning tabular-nums" data-utility-count>
               {confirmationCount > 9 ? "9+" : confirmationCount}
             </span> : null}

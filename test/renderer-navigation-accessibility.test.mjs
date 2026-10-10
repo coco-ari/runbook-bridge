@@ -184,7 +184,7 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(projectRail,/data-testid="global-resource-search"/u);
   assert.match(projectRail,/Control\+K Meta\+K/u);
   assert.match(projectRail,/shortcutLabel\("K"\)/u);
-  assert.match(projectRail,/confirmationEnvironmentName/u);
+  assert.match(projectRail,/全局.*项待确认操作/u);
   assert.match(projectRail,/confirmationsUnavailable \? onRetryConfirmations\(\)/u);
   assert.match(resourcePane,/<ItemGroup className="gap-0">/u);
   assert.match(resourcePane,/environmentSelected && "bg-surface-selected before:bg-primary"/u);

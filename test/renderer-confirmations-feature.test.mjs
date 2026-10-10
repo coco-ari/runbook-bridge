@@ -317,7 +317,7 @@ test('React confirmation center preserves subscription, scope, expiry and approv
   assert.doesNotMatch(source, /\["all", "全部"|\["project", projectName/u);
   assert.match(source, /if \(!matchesCurrentScope\(item\)\) return/u);
   assert.match(countHook, /confirmationCountSnapshot/u);
-  assert.match(countHook, /if \(!scope\.projectId \|\| !scope\.environmentId\)/u);
+  assert.match(countHook, /scope && \(!scope\.projectId \|\| !scope\.environmentId\)/u);
   assert.match(countHook, /commit\(confirmationCountLoading\(scope\)\)/u);
   assert.match(countHook, /confirmationCountForScope\(state, scope\)/u);
   assert.match(countHook, /coordinator\.isReadCurrent\(ticket\)/u);

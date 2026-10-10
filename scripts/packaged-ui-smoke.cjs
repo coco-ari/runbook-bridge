@@ -641,16 +641,18 @@ async function emulateSystemTheme(cdp, theme) {
 }
 
 async function assertThemeState(cdp, preference, actual, label, {persisted = true} = {}) {
-  // The isolated empty workspace's confirmation entry displays a real toast
-  // without mutating data or introducing a special packaged testing API.
+  // 隔离空工作区的全局待确认列表也应继承主题，且不需要选中环境。
   await clickThemeControl(cdp, 'confirmation-center');
   await waitForThemeUi(cdp, `(() => {
     const toasters = [...document.querySelectorAll('[data-sonner-toaster]')];
     return document.documentElement.dataset.themePreference === '${preference}'
       && document.documentElement.dataset.theme === '${actual}'
       && (!${persisted} || localStorage.getItem('${THEME_STORAGE_KEY}') === '${preference}')
-      && toasters.length > 0 && toasters.every((toaster) => toaster.dataset.sonnerTheme === '${actual}');
+      && document.querySelector('[data-testid="global-confirmation-center"]')
+      && toasters.every((toaster) => toaster.dataset.sonnerTheme === '${actual}');
   })()`, label);
+  await cdp.evaluate(`document.querySelector('[data-testid="global-confirmation-center"] [data-slot="dialog-close"]').click()`);
+  await waitForThemeUi(cdp, `!document.querySelector('[data-testid="global-confirmation-center"]')`, "关闭全局待确认列表");
 }
 
 async function assertThemeControlGeometry(cdp, compact) {

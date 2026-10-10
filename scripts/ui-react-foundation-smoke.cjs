@@ -909,8 +909,7 @@ async function selectThemePreference(win,preference) {
 }
 
 async function assertThemeState(win,preference,actual,label,{persisted = true,toast = true} = {}) {
-  // This existing read-only action emits a real Sonner toast with no IPC while
-  // the initial/reloaded workspace has no selected environment.
+  // 全局入口在未选择环境时也能打开只读列表，并继承当前主题。
   if (toast) await clickThemeControl(win,'confirmation-center');
   await waitFor(win,`(() => {
     const root = document.documentElement;
@@ -918,8 +917,12 @@ async function assertThemeState(win,preference,actual,label,{persisted = true,to
     return root.dataset.themePreference === ${JSON.stringify(preference)}
       && root.dataset.theme === ${JSON.stringify(actual)}
       && (${persisted} === false || localStorage.getItem('${THEME_STORAGE_KEY}') === ${JSON.stringify(preference)})
-      && (!${toast} || (toasters.length > 0 && toasters.every((toaster) => toaster.dataset.sonnerTheme === ${JSON.stringify(actual)})));
-  })()`,`${label}: preference, effective theme, persistence and visible Toaster agree`);
+      && (!${toast} || (document.querySelector('[data-testid="global-confirmation-center"]') && toasters.every((toaster) => toaster.dataset.sonnerTheme === ${JSON.stringify(actual)})));
+  })()`,`${label}: preference, effective theme, persistence and global dialog agree`);
+  if (toast) {
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="global-confirmation-center"] [data-slot="dialog-close"]')?.click()`,true);
+    await waitFor(win,`!document.querySelector('[data-testid="global-confirmation-center"]')`,'关闭全局待确认列表');
+  }
 }
 
 async function assertThemeControlGeometry(win,{compact = false} = {}) {
@@ -1188,10 +1191,23 @@ async function assertEnvironmentAccordionNavigation(win) {
 }
 
 async function assertConfirmationReviewAndRecovery(win) {
+  // 此场景开始时发布新请求，避免前面的长时间布局验收消耗合成请求的有效期。
+  for (const item of confirmations) item.expiresAt = Date.now() + 600000;
+  win.webContents.send('v2:confirmations-changed',clone(confirmations));
+  await win.webContents.executeJavaScript(`document.querySelector('[data-project-id="project-data"]').click()`,true);
+  await waitFor(win,`document.querySelector('#detail-main')?.dataset.selectionKind === "project"`,'未选择环境也能看到全局待确认');
+  await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute("aria-label") === "全局 3 项待确认操作"`,'全局数量跨项目保留');
   await win.webContents.executeJavaScript(
     `document.querySelector('[data-testid="confirmation-center"]')?.click()`,
     true,
   );
+  await waitFor(win,`document.querySelector('[data-testid="global-confirmation-center"]')`,'全局确认列表');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('[data-confirmation-environment]').length`,true),2,'所有项目的请求均可见');
+  win.webContents.send('v2:confirmations-changed',[...confirmations,{...confirmations[0],requestId:'short-lived-global',environmentId:'env-preview',expiresAt:Date.now()+1500}]);
+  await waitFor(win,`document.querySelector('[data-confirmation-environment="env-preview"]')`,'打开的全局列表实时收到其他环境请求');
+  await waitFor(win,`!document.querySelector('[data-confirmation-environment="env-preview"]')`,'过期后无需切换环境即可移除列表项');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-confirmation-environment="environment-archive"] button').disabled`,true),true,'已删除环境的请求仍可见但不能跳转');
+  await win.webContents.executeJavaScript(`document.querySelector('[data-confirmation-environment="env-production-east"] button').click()`,true);
   await waitFor(
     win,
     `document.querySelector('[data-feature="confirmations"]') !== null`,
@@ -1208,7 +1224,7 @@ async function assertConfirmationReviewAndRecovery(win) {
     selected:document.querySelector('[data-feature="confirmations"]') !== null,
     crossScopeVisible:document.body.textContent?.includes('跨范围请求不得显示') === true,
     scopedCount:document.querySelector('[data-testid="confirmation-center"]')
-      ?.getAttribute('aria-label')?.includes('2 项') === true,
+      ?.getAttribute('aria-label')?.includes('3 项') === true,
   }))()`,true);
   assert.deepEqual(confirmationTab,{
     active:'操作确认',selected:true,crossScopeVisible:false,scopedCount:true,
@@ -1270,12 +1286,17 @@ async function assertConfirmationCountRecovery(win) {
   });
   try {
     await win.webContents.executeJavaScript(`document.querySelector('[data-testid="environment-trigger-env-preview"]')?.click()`,true);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-center"]').click()`,true);
+    await waitFor(win,`document.querySelector('[data-testid="global-confirmations-refresh"]')`,'打开全局队列');
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="global-confirmations-refresh"]').click()`,true);
+    await waitFor(win,`document.querySelector('[data-testid="global-confirmation-center"]')?.textContent.includes('暂时不可用')`,'全局读取失败');
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="global-confirmation-center"] [data-slot="dialog-close"]').click()`,true);
     await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.textContent?.includes('待确认不可用')`,'读取失败显示不可用');
     const unavailable = await win.webContents.executeJavaScript(`(() => {
       const entry = document.querySelector('[data-testid="confirmation-center"]');
       return {name:entry?.getAttribute('aria-label'),count:entry?.querySelector('[data-utility-count]') !== null,projects:document.querySelectorAll('[data-project-id]').length};
     })()`,true);
-    assert.match(unavailable.name,/当前环境「预发布环境」.*不可用.*重新读取/u);
+    assert.match(unavailable.name,/全局.*不可用.*重新读取/u);
     assert.equal(unavailable.count,false,'失败状态不能显示确定数量');
     assert.equal(unavailable.projects,workspaceProjects.length,'计数失败不会让项目导航进入加载状态');
     await selectVisualTab(win,'confirmations','[data-testid="confirmation-queue-count"]','确认页面读取失败');
@@ -1293,7 +1314,7 @@ async function assertConfirmationCountRecovery(win) {
       && document.querySelector('[data-testid="confirmation-queue-count"]')?.textContent === '0 项待处理'
       && document.querySelector('[data-testid="confirmation-queue-error"]') === null`,'确认页面重读恢复已知空队列');
     await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-center"]')?.click()`,true);
-    await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('0 项待确认操作')`,'重读成功显示已知空队列');
+    await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('3 项待确认操作')`,'全局重读恢复所有环境的请求');
     mode = 'fail';
     await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-queue-refresh"]')?.click()`,true);
     await waitFor(win,`document.querySelector('[data-testid="confirmation-queue-count"]')?.dataset.queueState === 'stale'
@@ -1327,9 +1348,12 @@ async function assertConfirmationCountRecovery(win) {
     await selectVisualTab(win,'overview','[data-testid="environment-overview"]','退出确认页面验证独立底栏');
     await win.webContents.executeJavaScript(`document.querySelector('[data-testid="environment-trigger-env-preview"]')?.click()`,true);
     await selectVisualTab(win,'overview','[data-testid="environment-overview"]','预发布环境概览');
-    await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('0 项待确认操作')`,'恢复底栏在途读取的空范围基线');
+    await waitFor(win,`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('1 项待确认操作')`,'切换环境保留全局订阅数量');
     mode = 'hold';
     await win.webContents.executeJavaScript(`document.querySelector('[data-testid="environment-trigger-env-production-east"]')?.click()`,true);
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-center"]').click()`,true);
+    await waitFor(win,`document.querySelector('[data-testid="global-confirmations-refresh"]')`,'打开全局队列以测试在途读取');
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="global-confirmations-refresh"]').click()`,true);
     for (let attempt = 0; attempt < 50 && !releaseRead; attempt += 1) await wait(20);
     assert.equal(typeof releaseRead,'function','首次读取保持在途');
     win.webContents.send('v2:confirmations-changed',[confirmations[0]]);
@@ -1338,6 +1362,8 @@ async function assertConfirmationCountRecovery(win) {
     releaseRead = null;
     await captureRenderedFrame(win);
     assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-testid="confirmation-center"]')?.getAttribute('aria-label')?.includes('1 项待确认操作')`,true),true,'旧读取失败不覆写更新的订阅计数');
+    await win.webContents.executeJavaScript(`document.querySelector('[data-testid="global-confirmation-center"] [data-slot="dialog-close"]').click()`,true);
+    await waitFor(win,`!document.querySelector('[data-testid="global-confirmation-center"]')`,'恢复后关闭全局列表');
   } finally {
     releaseRead?.(ok([]));
     ipcMain.removeHandler(channel);
@@ -1801,13 +1827,7 @@ async function assertCompactProjectRail(win,theme) {
     assert.equal(snapshot.footerToggle,false);
     const selectedScope = workspaceProjects.find(project => project.projectId === snapshot.selected);
     assert.ok(selectedScope,'确认计数验收绑定实际选中的合成项目');
-    if (snapshot.selectionKind === 'project') {
-      assert.equal(snapshot.confirmation.label,'选择环境查看待确认操作','无环境的项目明确待确认尚无范围');
-    } else {
-      assert.equal(['environment','plugin'].includes(snapshot.selectionKind),true,`紧凑栏计数与详情范围一致：${snapshot.selectionKind}`);
-      assert.match(snapshot.confirmation.label,/当前环境「[^」]+」，\d+ 项待确认操作/u);
-      assert.equal(selectedScope.environments.some(environment => snapshot.confirmation.label.includes(`当前环境「${environment.name}」`)),true,'计数范围属于实际选中的项目');
-    }
+    assert.match(snapshot.confirmation.label,/全局 \d+ 项待确认操作/u,'全局数量不依赖当前选择');
     assert.equal(snapshot.confirmation.labelHidden,true,'窄栏保留可访问名称并收起工具文字');
     assert.deepEqual(snapshot.footer,{height:46,visible:true,fixed:true});
     assert.deepEqual(snapshot.add,{height:32,label:'新增项目',iconOnly:true,borderless:true});
@@ -4277,6 +4297,11 @@ async function run() {
       confirmationInGroup:true,singleRow:true,noOverlap:true,compact:true,height:46,emptyWorkspaceCountHidden:true,
     },'底部全局工具使用单行入口，空工作区不显示零角标');
     assert.equal(initial.addProjectAboveProjects,true);
+    if (app.commandLine.hasSwitch('confirmation-regression-only')) {
+      await assertConfirmationReviewAndRecovery(win);
+      process.stdout.write('全局待确认专项回归通过：跨项目跳转、实时过期、不可用环境与读取恢复\n');
+      return;
+    }
     if (app.commandLine.hasSwitch('settings-regression-only')) {
       const states = { configured: '已配置', available: '尚未配置', outdated: '配置需要更新', conflict: '需要手动处理', error: '暂时无法检测' };
       if (screenshotRoot) fs.mkdirSync(screenshotRoot, { recursive: true });

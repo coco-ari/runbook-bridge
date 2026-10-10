@@ -37,6 +37,9 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable"
+import { ConfirmationCenterContext, GlobalConfirmationCenter } from "@/features/confirmations/GlobalConfirmationCenter"
+import { confirmationEnvironments, type ConfirmationEnvironment } from "@/features/confirmations/global-confirmation-model"
+import { countActiveConfirmations } from "@/features/confirmations/confirmation-count-model"
 import { useConfirmationCount } from "@/features/confirmations/use-confirmation-count"
 import type { ConfirmationScope } from "@/features/confirmations/ConfirmationsFeature"
 import {
@@ -139,10 +142,10 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
     workspaceSelectionReducer,
     INITIAL_WORKSPACE_SELECTION,
   )
-  const confirmations = useConfirmationCount({
-    projectId: selection.projectId,
-    environmentId: selection.environmentId,
-  })
+  const confirmations = useConfirmationCount()
+  const confirmationsRef = useRef(confirmations)
+  confirmationsRef.current = confirmations
+  const [confirmationCenterOpen, setConfirmationCenterOpen] = useState(false)
   const [commandOpen, setCommandOpen] = useState(false)
   const [environmentWorkspaceTarget, setEnvironmentWorkspaceTarget] = useState<{ projectId: string; environmentId: string; pluginInstanceId: string } | null>(null)
   const workspaceSessions = usePluginWorkspaceSessions(api)
@@ -453,6 +456,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
     if (
       selection.projectId !== project.projectId
       || selection.environmentId !== environment.environmentId
+      || (!pendingSelection.pluginInstanceId && selection.pluginInstanceId !== null)
     ) {
       dispatchSelection({
         type: "select-environment",
@@ -498,6 +502,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
     pluginList.loading,
     pluginList.scopeKey,
     selection.environmentId,
+    selection.pluginInstanceId,
     selection.projectId,
     scheduleWorkspaceFocus,
     workspace.data,
@@ -779,33 +784,28 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       const open = () => setProjectSurface({ kind: action.type === "delete-project" ? "delete" : "settings", project: action.project })
       if (pluginWorkMode || (action.type === "delete-project" && selection.projectId === action.project.projectId)) requestNavigation(open)
       else open()
-    } else if (selectedEnvironment && selectedProject) {
-      const projectId = selectedProject.projectId
-      const environmentId = selectedEnvironment.environmentId
-      requestNavigation(() => {
-        const latestWorkspace = latestWorkspaceRef.current
-        const target = latestWorkspace?.projects.find(
-          (project) => project.projectId === projectId && !project.isolated,
-        )?.environments.find(
-          (environment) => environment.environmentId === environmentId,
-        )
-        if (!latestWorkspace || !target) {
-          toast.error("当前环境已不存在或不可用")
-          return
-        }
-        dispatchSelection({
-          type: "select-environment",
-          projectId,
-          environmentId,
-          workspace: latestWorkspace,
-        })
-        setDetailTab("confirmations")
-        focusDetail()
-      })
-    } else {
-      toast.info("请先选择一个环境以查看确认队列")
+    } else if (action.type === "open-confirmations") {
+      setConfirmationCenterOpen(true)
     }
-  }, [focusDetail, pluginWorkMode, rememberFocus, requestNavigation, selectedEnvironment, selectedProject, selection.projectId])
+  }, [pluginWorkMode, rememberFocus, requestNavigation, selection.projectId])
+
+  const openConfirmationEnvironment = useCallback((scope: ConfirmationEnvironment) => {
+    requestNavigation(() => {
+      const latestWorkspace = latestWorkspaceRef.current
+      const target = latestWorkspace?.projects.find(project => project.projectId === scope.projectId && !project.isolated)
+        ?.environments.find(environment => environment.environmentId === scope.environmentId)
+      if (!latestWorkspace || !target) { toast.error("目标环境已不存在或不可用"); return }
+      if (confirmationsRef.current.unavailable || !countActiveConfirmations(confirmationsRef.current.items, scope)) {
+        toast.info("该环境的待确认操作已处理、过期或暂不可用，请重新查看全局待确认")
+        return
+      }
+      workspaceSessions.back()
+      setSettingsOpen(false)
+      setCommandOpen(false)
+      setPendingWorkspaceKey(null)
+      setPendingSelection({ projectId: scope.projectId, environmentId: scope.environmentId, tab: "confirmations" })
+    })
+  }, [requestNavigation, workspaceSessions.back])
 
   const openResourceAction = useCallback((action: ResourcePaneAction) => {
     rememberFocus()
@@ -964,6 +964,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
         workspaceSessions.back()
         enterPluginEditor(environment, entry.plugin)
       }}>
+    <ConfirmationCenterContext.Provider value={{ ...confirmations, open: () => setConfirmationCenterOpen(true) }}>
     <SettingsNavigationContext.Provider value={openSettings}>
     <UpdateCenterProvider api={api} onNavigate={openUpdateSettings}>
     <div className="h-full max-h-full min-h-0 relative w-full min-w-0 overflow-hidden bg-background text-foreground" data-shell-ready="true" data-testid="react-app-shell">
@@ -999,7 +1000,6 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
             onSelectProject={selectProject}
             onToggleCollapsed={() => setProjectCollapsed(!compactProjectRail)}
             pendingConfirmationCount={confirmations.count}
-            confirmationEnvironmentName={selectedEnvironment?.name ?? null}
             confirmationsLoading={confirmations.loading}
             confirmationsUnavailable={confirmations.unavailable}
             onRetryConfirmations={confirmations.retry}
@@ -1235,7 +1235,11 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       <span className="sr-only">当前范围：{shellLabel}</span>
     </div>
     </UpdateCenterProvider>
+    <GlobalConfirmationCenter open={confirmationCenterOpen} onOpenChange={setConfirmationCenterOpen}
+      groups={confirmationEnvironments(confirmations.items)} projects={workspace.data?.projects ?? []}
+      loading={confirmations.loading} unavailable={confirmations.unavailable} onRetry={confirmations.retry} onNavigate={openConfirmationEnvironment} />
     </SettingsNavigationContext.Provider>
+    </ConfirmationCenterContext.Provider>
     </WorkspaceNavigationProvider>
   )
 }

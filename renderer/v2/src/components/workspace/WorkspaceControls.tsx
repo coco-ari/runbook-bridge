@@ -1,3 +1,4 @@
+import { ConfirmationCenterButton } from "@/features/confirmations/GlobalConfirmationCenter"
 import { WorkspaceSwitcherButton } from "@/features/plugins/WorkspaceNavigation"
 import type { ComponentProps } from "react"
 import { ArrowClockwise, ArrowLeft, ArrowsIn, ArrowsOut, LinkBreak, Plus, X } from "@phosphor-icons/react"
@@ -31,6 +32,7 @@ export function WorkspaceHeaderActions({ connected, busy, reconnecting, awaiting
   const label = cancelling ? "取消中…" : cancelAvailable ? "取消连接" : busy ? "断开中…" : awaitingConfirmation ? "等待确认" : reconnecting ? "连接中…" : connected ? "断开连接" : prefix === "server-workspace" ? "重新连接服务器" : "重新连接"
   const Icon = connected || busy ? LinkBreak : ArrowClockwise
   return <>
+    <ConfirmationCenterButton />
     <WorkspaceSwitcherButton />
     <SettingsButton />
     <UpdatesButton iconOnly />

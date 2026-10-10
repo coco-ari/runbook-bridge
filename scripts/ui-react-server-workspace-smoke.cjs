@@ -1156,7 +1156,7 @@ async function run() {
     await click('[data-testid=server-workspace-back]');
     await assertWorkspaceCoexistence();
     await click('[data-testid=plugin-open-workspace]');
-    await require('./workspace-manager-ui.cjs')({evaluate,click,until,connectionRequests,opened,redisCalls,snapshot});
+    await require('./workspace-manager-ui.cjs')({evaluate,click,until,connectionRequests,opened,redisCalls,snapshot,win,scope});
     await testTerminalRecovery();
     assert.deepEqual(errors, [], '自动恢复没有渲染错误');
     completed = true;

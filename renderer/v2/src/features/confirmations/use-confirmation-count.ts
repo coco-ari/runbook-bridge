@@ -23,24 +23,28 @@ interface ConfirmationCountScope {
 }
 
 export function useConfirmationCount(
-  scope: ConfirmationCountScope,
+  scope?: ConfirmationCountScope,
   getApi: () => ConfirmationCountApi = getAiOpsV2,
-): ConfirmationCountSnapshot & { readonly retry: () => void } {
+): ConfirmationCountSnapshot & { readonly retry: () => void; readonly items: readonly ConfirmationRecord[] } {
   const coordinatorRef = useRef(new ConfirmationCountReadCoordinator())
   const [retryEpoch, setRetryEpoch] = useState(0)
+  const [items, setItems] = useState<readonly ConfirmationRecord[]>([])
   const retry = useCallback(() => setRetryEpoch((current) => current + 1), [])
   const [state, setState] = useState<ScopedConfirmationCountSnapshot>({ scopeKey: confirmationCountScopeKey(scope), ...confirmationCountLoading(scope) })
 
   useEffect(() => {
     const coordinator = coordinatorRef.current
     const ticket = coordinator.activateScope(scope)
-    const commit = (snapshot: ConfirmationCountSnapshot) => setState({ scopeKey: ticket.scopeKey, ...snapshot })
-    if (!scope.projectId || !scope.environmentId) {
+    let latestItems: readonly ConfirmationRecord[] = []
+    const commit = (snapshot: ConfirmationCountSnapshot) => {
+      setState({ scopeKey: ticket.scopeKey, ...snapshot })
+      setItems(snapshot.loading || snapshot.unavailable ? [] : latestItems)
+    }
+    if (scope && (!scope.projectId || !scope.environmentId)) {
       commit(confirmationCountSnapshot(null, scope))
       return () => coordinator.deactivateScope(ticket)
     }
     commit(confirmationCountLoading(scope))
-    let latestItems: readonly ConfirmationRecord[] = []
     let api: ConfirmationCountApi
     try {
       api = getApi()
@@ -52,8 +56,8 @@ export function useConfirmationCount(
     void Promise.resolve().then(() => api.listConfirmations()).then(
       (result) => {
         if (!coordinator.isReadCurrent(ticket)) return
-        if (result.ok) latestItems = result.data
-        commit(confirmationCountSnapshot(result.ok ? latestItems : null, scope))
+        if (result.ok && Array.isArray(result.data)) latestItems = result.data
+        commit(confirmationCountSnapshot(result.ok && Array.isArray(result.data) ? latestItems : null, scope))
       },
       () => {
         if (coordinator.isReadCurrent(ticket)) commit(confirmationCountSnapshot(null, scope))
@@ -63,7 +67,7 @@ export function useConfirmationCount(
     let unsubscribe: () => void = () => undefined
     try {
       unsubscribe = api.onConfirmations((items) => {
-        if (coordinator.acceptSubscription(ticket)) {
+        if (Array.isArray(items) && coordinator.acceptSubscription(ticket)) {
           latestItems = items
           commit(confirmationCountSnapshot(latestItems, scope))
         }
@@ -85,7 +89,8 @@ export function useConfirmationCount(
       window.clearInterval(timer)
       unsubscribe()
     }
-  }, [getApi, retryEpoch, scope.environmentId, scope.projectId])
+  }, [getApi, retryEpoch, scope?.environmentId, scope?.projectId])
 
-  return { ...confirmationCountForScope(state, scope), retry }
+  const snapshot = confirmationCountForScope(state, scope)
+  return { ...snapshot, retry, items: snapshot.loading || snapshot.unavailable ? [] : items }
 }

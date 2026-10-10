@@ -1,7 +1,33 @@
 const assert = require('node:assert/strict');
-module.exports = async ({evaluate,click,until,connectionRequests,opened,redisCalls,snapshot}) => {
+module.exports = async ({evaluate,click,until,connectionRequests,opened,redisCalls,snapshot,win,scope}) => {
   const server='[data-testid=server-workspace]';
   const connections=connectionRequests.length, terminals=opened.length, reads=redisCalls.length;
+  win.webContents.send('v2:confirmations-changed',[{requestId:'workspace-global-navigation',...scope,expiresAt:Date.now()+60000,capability:'fs.write',summary:'合成导航验证'}]);
+  await until(`document.querySelector('${server} [data-testid=workspace-confirmation-center]')?.getAttribute('aria-label') === '全局 1 项待确认操作'`,'工作区页头收到全局提醒');
+  const originalSize=win.getContentSize();
+  for (const width of [1440,1280,1000,800]) {
+    win.setContentSize(width,920);
+    await until(`innerWidth === ${width}`,'全局入口窄窗验收');
+    await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
+    const geometry=await evaluate(`(() => {
+      const header=document.querySelector('${server} header'), button=header.querySelector('[data-testid=workspace-confirmation-center]');
+      const rect=button.getBoundingClientRect();
+      return {overflow:header.scrollWidth>header.clientWidth,visible:rect.width>=28&&rect.left>=0&&rect.right<=innerWidth,label:button.getAttribute('aria-label')};
+    })()`);
+    assert.deepEqual(geometry,{overflow:false,visible:true,label:'全局 1 项待确认操作'},'新增入口保留数量且不撑破工作区页头：'+width);
+  }
+  win.setContentSize(...originalSize);
+  await until(`innerWidth === ${originalSize[0]}`,'恢复工作区宽度');
+  await click(server+' [data-testid=workspace-confirmation-center]');
+  await until("document.querySelector('[data-testid=confirmation-environment-open]')",'工作区打开环境列表');
+  await click('[data-testid=confirmation-environment-open]');
+  await until("document.querySelector('[data-feature=confirmations]') && document.querySelector('#detail-main')?.dataset.selectionKind === 'environment' && document.querySelector('[data-testid=server-workspace]')?.hidden",'跳转到环境确认页且保留原工作区');
+  await click('[data-testid=project-rail] [data-testid=workspace-switcher]');
+  await click('[data-workspace-resume=server-workspace-smoke]');
+  await until("document.querySelector('[data-testid=server-workspace-back]')?.getClientRects().length > 0",'可返回原工作区');
+  assert.equal(opened.length,terminals,'查看确认不重建终端');
+  assert.equal(connectionRequests.length,connections,'查看确认不自动连接或断开');
+  win.webContents.send('v2:confirmations-changed',[]);
   await click(server+' [data-testid=workspace-switcher]');
   await until("document.querySelector('[data-testid=workspace-manager]')?.textContent.includes('并存验证缓存')",'工作区列表显示后台 Redis');
   await snapshot('workspace-manager.png');
