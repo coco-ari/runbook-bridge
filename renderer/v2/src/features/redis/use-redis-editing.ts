@@ -2,13 +2,17 @@ import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import type { AiOpsV2Api, IpcResult, PluginScope, RedisEditData, RedisEditPlan, RedisEditStatus } from "@/bridge/ai-ops-v2"
 import type { RedisTab } from "./use-redis-workspace"
+import { runRedisValueWork } from "./use-redis-value-processing"
+import { REDIS_BROWSER_CACHE_BYTES, REDIS_EDITABLE_BYTES } from "./redis-desktop-limits"
 
 export interface RedisDraft {
+  initialValue: string
+  originalValue: string
   key: string; value: string; format: "text" | "json"; expiry: "keep" | "persistent" | "relative"; duration: string; unit: string
   creating: boolean; session: RedisEditData | null; plan: RedisEditPlan | null; busy: boolean; phase?: "prepare" | "commit" | "check" | "read" | undefined; stale: boolean; uncertain: boolean; error: string
 }
 const unwrap = <T,>(value: IpcResult<T>): T => { if (!value.ok) throw Object.assign(new Error(value.error.message), {code:value.error.code}); return value.data }
-const blank = (key: string, creating: boolean): RedisDraft => ({ key, value:"", format:"text", expiry:creating ? "persistent" : "keep", duration:"1", unit:"3600000", creating, session:null, plan:null, busy:false, stale:false, uncertain:false, error:"" })
+const blank = (key: string, creating: boolean): RedisDraft => ({ key, value:"", initialValue:"", originalValue:"", format:"text", expiry:creating ? "persistent" : "keep", duration:"1", unit:"3600000", creating, session:null, plan:null, busy:false, stale:false, uncertain:false, error:"" })
 export function useRedisEditing(api: AiOpsV2Api, scope: PluginScope, connected: boolean, connectionEpoch: number, onDirtyChange: (dirty: boolean) => void, saved: (id: string, key: string, removed: boolean, summary?: string) => void) {
   const [drafts, setDrafts] = useState<Record<string, RedisDraft>>({})
   const ref = useRef(drafts)
@@ -40,16 +44,27 @@ export function useRedisEditing(api: AiOpsV2Api, scope: PluginScope, connected: 
   async function open(tab: RedisTab, mode: "update" | "delete") {
     if (openingRef.current || !isConnected.current || tab.stale) return
     if (deletionRef.current?.uncertain) { setDeletionVisible(true); return }
+    tab.viewState?.capture?.()
     openingRef.current = true; setOpening({id:tab.id,mode}); setNotice("")
     const epoch = currentEpoch.current
     try {
-      const session = unwrap(await api.redisEditOpen({...scope,patternId:tab.patternId,key:tab.key,mode}))
+      const digest = mode === "update" ? tab.content?.value?.digest : undefined
+      const session = unwrap(await api.redisEditOpen({...scope,patternId:tab.patternId,key:tab.key,mode,...(digest ? { expectedDigest: digest } : {})}))
       if (!alive.current || epoch !== currentEpoch.current || !isConnected.current) { release(session); return }
       if (mode === "delete") { setDeletion({id:tab.id,patternId:tab.patternId,session,plan:null,busy:false,uncertain:false,error:""}); setDeletionVisible(true) }
       else {
+        const used = Object.values(ref.current).reduce((sum, draft) => sum + draft.value.length * 2, (session.value?.length ?? 0) * 2)
+        if (used > REDIS_BROWSER_CACHE_BYTES) { release(session); throw new Error("编辑草稿已达容量上限，请先保存或关闭其他编辑标签。") }
         let format: "text" | "json" = "text"
-        try { JSON.parse(session.value ?? ""); format = "json" } catch { /* 普通文本保持原样。 */ }
-        ref.current = {...ref.current,[tab.id]:{...blank(tab.key,false),session,value:session.value ?? "",format}}
+        let value = session.value ?? ""
+        try {
+          if (tab.viewState?.mode !== "text") {
+            const processed = await runRedisValueWork({ source: value, mode: "edit" })
+            if (!processed.error && processed.text !== null) { format = "json"; value = processed.text }
+          }
+        } catch { /* 后台识别失败时按原始文本打开。 */ }
+        if (!alive.current || epoch !== currentEpoch.current || !isConnected.current) { release(session); return }
+        ref.current = {...ref.current,[tab.id]:{...blank(tab.key,false),session,value,initialValue:value,originalValue:session.value ?? "",format}}
         setDrafts(ref.current)
       }
     } catch (error) { if (alive.current) toast.error(error instanceof Error ? error.message : "无法打开编辑") }
@@ -84,7 +99,9 @@ export function useRedisEditing(api: AiOpsV2Api, scope: PluginScope, connected: 
         update(id,{session,plan:null,stale:false,error:""})
       }
       if (!session) throw new Error("请重新读取并核对内容。")
-      const plan = unwrap(await api.redisEditPrepare({...scope,editId:session.editId,value:draft.value,format:draft.format,expiry:draft.expiry === "relative" ? {mode:"relative",milliseconds:Number(draft.duration)*Number(draft.unit)} : {mode:draft.expiry}}))
+      // 仅切换查看或编辑不重写原始空白；未改动正文时提交原始字节对应的文本。
+      const value = !draft.creating && draft.value === draft.initialValue ? draft.originalValue : draft.value
+      const plan = unwrap(await api.redisEditPrepare({...scope,editId:session.editId,value,format:draft.format,expiry:draft.expiry === "relative" ? {mode:"relative",milliseconds:Number(draft.duration)*Number(draft.unit)} : {mode:draft.expiry}}))
       if (!isCurrent()) return
       update(id,{plan,phase:"commit"}); attempted = true
       const status = unwrap(await api.redisEditCommit({...scope,editId:session.editId,planId:plan.planId}))
@@ -163,7 +180,7 @@ export function useRedisEditing(api: AiOpsV2Api, scope: PluginScope, connected: 
       if (!alive.current || epoch !== currentEpoch.current || !isConnected.current) return
       const info = unwrap(await api.redisWorkspaceInspect(payload))
       if (!alive.current || epoch !== currentEpoch.current || !isConnected.current) return
-      const content = info.exists && info.type === "string" ? unwrap(await api.redisWorkspaceRead({...payload,expectedType:info.type})) : null
+      const content = info.exists && info.type === "string" ? unwrap(await api.redisWorkspaceRead({...payload,expectedType:info.type,...(info.length !== null && info.length <= REDIS_EDITABLE_BYTES ? {full:true} : {})})) : null
       if (!alive.current || epoch !== currentEpoch.current || !isConnected.current) throw new Error("连接已变化，请重新核实。")
       setVerification({id,key,exists:content?.exists ?? info.exists,type:info.type,value:content?.value?.text ?? "",complete:Boolean(content?.value && content.value.text !== null && !content.value.truncated),deletion:remove})
     } catch (error) {

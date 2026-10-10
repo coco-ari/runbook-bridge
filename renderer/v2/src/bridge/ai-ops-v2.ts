@@ -818,6 +818,8 @@ export type DockerReadRequest = PluginScope & { readonly requestId: string } & (
 export type DockerReadResult = DockerContainerPage | DockerContainerDetails | DockerLogs | DockerStats
 
 export interface RedisValuePreview {
+  readonly digest?: string
+  readonly offsetBytes?: number
   readonly text: string | null
   readonly hex: string
   readonly bytes: number
@@ -886,15 +888,16 @@ export interface AiOpsV2Api {
   serverDockerRead(payload: DockerReadRequest): Promise<IpcResult<DockerReadResult>>
   serverDockerCancel(payload: PluginScope & { requestId?: string }): Promise<IpcResult<{ stopped: boolean }>>
 
-  redisEditOpen(payload: RedisKeyPayload & {mode: "create" | "update" | "delete"}): Promise<IpcResult<RedisEditData>>
+  redisEditOpen(payload: RedisKeyPayload & {mode: "create" | "update" | "delete"; expectedDigest?: string}): Promise<IpcResult<RedisEditData>>
   redisEditPrepare(payload: PluginScope & {editId: string; value?: string; format?: "text" | "json"; expiry?: RedisEditExpiry}): Promise<IpcResult<RedisEditPlan>>
   redisEditCommit(payload: PluginScope & {editId: string; planId: string}): Promise<IpcResult<RedisEditStatus>>
   redisEditStatus(payload: PluginScope & {editId: string; planId: string}): Promise<IpcResult<RedisEditStatus>>
   redisEditRelease(payload: PluginScope & {editId: string}): Promise<IpcResult<{released: boolean}>>
   redisWorkspaceScan(payload: PluginScope & { patternId: string; keyword?: string; cursor?: string | null; limit?: number }): Promise<IpcResult<RedisKeyPage>>
   redisWorkspaceInspect(payload: RedisKeyPayload): Promise<IpcResult<RedisKeyInfo>>
-  redisWorkspaceRead(payload: RedisKeyPayload & { cursor?: string | null; limit?: number; field?: string; expectedType?: string }): Promise<IpcResult<RedisContentPage>>
+  redisWorkspaceRead(payload: RedisKeyPayload & { cursor?: string | null; limit?: number; field?: string; expectedType?: string; full?: boolean }): Promise<IpcResult<RedisContentPage>>
   redisWorkspaceRelease(payload: PluginScope): Promise<IpcResult<{ released: boolean }>>
+  redisWorkspaceExport(payload: RedisKeyPayload): Promise<IpcResult<{ saved: boolean; bytes?: number }>>
 
   serverWorkspaceMetrics(payload: PluginScope & { kind?: "system" | "disks" }): Promise<IpcResult<ServerMetricsSnapshot & { retryAfterMs: number }>>
   serverWorkspaceStopMetrics(payload: PluginScope): Promise<IpcResult<{ stopped: boolean }>>
@@ -1015,6 +1018,7 @@ export const AI_OPS_V2_API_NAMES = [
   "redisWorkspaceInspect",
   "redisWorkspaceRead",
   "redisWorkspaceRelease",
+  "redisWorkspaceExport",
   "serverWorkspaceMetrics",
   "serverWorkspaceStopMetrics",
   "serverTerminalOpen",

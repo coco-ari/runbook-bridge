@@ -319,6 +319,12 @@ if (process.argv.includes('--mcp')) {
             const result = await dialog.showSaveDialog(window, {title:'导出 SQL', defaultPath:path.join(app.getPath('downloads'), name), filters:[{name:'SQL 文件',extensions:['sql']}], properties:['showOverwriteConfirmation']});
             return result.canceled ? null : result.filePath;
           },
+          pickRedisExportPath: async sender => {
+            const window = BrowserWindow.fromWebContents(sender);
+            if (!window || window.isDestroyed()) return null;
+            const result = await dialog.showSaveDialog(window, { title:'导出 Redis 原始内容', defaultPath:path.join(app.getPath('downloads'), 'redis-value.txt'), properties:['showOverwriteConfirmation'] });
+            return result.canceled ? null : result.filePath;
+          },
           revealServerDownload: target => shell.showItemInFolder(target),
           pickServerDownloadPath: async (sender, name, previousPath) => {
             const window = BrowserWindow.fromWebContents(sender);

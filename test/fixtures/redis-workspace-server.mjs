@@ -9,19 +9,19 @@ export function resp(value) {
   return Buffer.concat([Buffer.from('$' + bytes.length + '\r\n'), bytes, Buffer.from('\r\n')]);
 }
 
-export async function redisProtocolFixture(handler) {
+export async function redisProtocolFixture(handler, decoderOptions = {}) {
   const sockets = new Set();
   const calls = [];
   const server = net.createServer((socket) => {
     sockets.add(socket);
     socket.on('error', () => {});
     socket.on('close', () => sockets.delete(socket));
-    let decoder = new BoundedRespDecoder();
+    let decoder = new BoundedRespDecoder(decoderOptions);
     socket.on('data', async (chunk) => {
       try {
         if (!decoder.push(chunk)) return;
         const args = decoder.value.map((value) => value.toString('utf8'));
-        decoder = new BoundedRespDecoder();
+        decoder = new BoundedRespDecoder(decoderOptions);
         // 认证材料不进入调用记录；测试只检查是否使用正确的固定 DB。
         if (args[0] !== 'AUTH') calls.push(args);
         const result = args[0] === 'AUTH' || args[0] === 'SELECT' ? 'OK' : await handler(args, socket);

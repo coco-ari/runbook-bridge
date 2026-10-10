@@ -5,15 +5,18 @@ import { findRedisPattern, redisKeyAllowed } from './redis-plugin-runtime.mjs';
 import { normalizeRedisCursor } from './pagination-cursor.mjs';
 import { redisKeySearch } from './redis-key-search.mjs';
 import { REDIS_REPLY_BYTES } from './redis-workspace-reader.mjs';
+import desktopLimits from './redis-desktop-limits.json' with { type: 'json' };
+import { exportRedisValue } from './redis-value-export.mjs';
 
 const SCOPE = ['projectId', 'environmentId', 'pluginInstanceId'];
 const FIELDS = {
   scan: ['patternId', 'keyword', 'cursor', 'limit'],
   inspect: ['patternId', 'key'],
-  read: ['patternId', 'key', 'cursor', 'limit', 'field', 'expectedType'],
+  read: ['patternId', 'key', 'cursor', 'limit', 'field', 'expectedType', 'full'],
   release: [],
+  export: ['patternId', 'key'],
 };
-// 后端游标占 4 MiB，Renderer 占 12 MiB，工作区保留数据合计不超过 16 MiB。
+// 后端仅缓存集合分页余项，String 完整值不在这里额外保留副本。
 const MAX_CACHE_BYTES = 4 * 1024 * 1024;
 const CURSOR_AGE = 5 * 60 * 1000;
 const scopeKey = (value) => SCOPE.map((field) => value[field]).join('/');
@@ -32,7 +35,7 @@ export function prepareRedisWorkspaceRequest(payload, operation) {
     throw new AppError('INVALID_ARGUMENT', '请选择有效的 Key 范围。');
   }
   for (const name of ['key', 'field']) {
-    if ((name === 'key' && ['read', 'inspect'].includes(operation)) || payload[name] !== undefined) {
+    if ((name === 'key' && ['read', 'inspect', 'export'].includes(operation)) || payload[name] !== undefined) {
       if (typeof payload[name] !== 'string' || !payload[name] || Buffer.byteLength(payload[name]) > 1024 || Buffer.from(payload[name]).toString('utf8') !== payload[name]) {
         throw new AppError('INVALID_ARGUMENT', 'Key 或字段必须是长度不超过 1024 字节的非空文本。');
       }
@@ -43,6 +46,7 @@ export function prepareRedisWorkspaceRequest(payload, operation) {
   if (payload.limit !== undefined && (!Number.isInteger(payload.limit) || payload.limit < 1 || payload.limit > 1000)) throw new AppError('INVALID_ARGUMENT', '分页数量必须是 1 到 1000 的整数。');
   if (payload.expectedType !== undefined && !['string', 'hash', 'list', 'set', 'zset', 'stream', 'none'].includes(payload.expectedType)) throw new AppError('INVALID_ARGUMENT', 'Redis 数据类型无效。');
   if (payload.field !== undefined && payload.cursor) throw new AppError('INVALID_ARGUMENT', '精确字段读取不能包含分页参数。');
+  if (payload.full !== undefined && (typeof payload.full !== 'boolean' || payload.cursor || payload.field !== undefined)) throw new AppError('INVALID_ARGUMENT', '完整打开不能与分页或字段读取混用。');
   return { scope: Object.fromEntries(SCOPE.map((field) => [field, payload[field]])), capability: operation === 'scan' ? 'scan' : 'read' };
 }
 
@@ -64,7 +68,7 @@ function scanReply(value) {
   return { cursor: normalizeRedisCursor(buffer(value[0]).toString('ascii')), entries: value[1] };
 }
 
-export function redisValuePreview(value, budget, originalBytes = value.length) {
+export function redisValuePreview(value, budget, originalBytes = value.length, includeHex = true) {
   let size = Math.min(value.length, Math.max(0, budget));
   let textValue = isUtf8(value) && !value.includes(0);
   if (!textValue && !value.includes(0) && originalBytes > value.length) {
@@ -78,7 +82,7 @@ export function redisValuePreview(value, budget, originalBytes = value.length) {
     while (size > 0 && (value[size] & 0xc0) === 0x80) size -= 1;
   }
   const shown = value.subarray(0, size);
-  return { text: textValue ? shown.toString('utf8') : null, hex: shown.toString('hex'), bytes: originalBytes, shownBytes: size, truncated: size < originalBytes };
+  return { text: textValue ? shown.toString('utf8') : null, hex: includeHex || !textValue ? shown.toString('hex') : '', bytes: originalBytes, shownBytes: size, truncated: size < originalBytes };
 }
 
 // 工作区缓存只驻留内存，游标绑定窗口、配置、连接代次及完整查询参数。
@@ -101,6 +105,7 @@ export class RedisWorkspaceManager {
     clearTimeout(record.timer);
     record.cursors.clear();
     record.reader?.close();
+    record.exporter?.close();
   }
 
   closeOwner(ownerId) {
@@ -139,7 +144,7 @@ export class RedisWorkspaceManager {
     if (!record.active || this.records.get(record.id) !== record || this.runtime.require(record.plugin) !== record.session) throw stale();
   }
 
-  async execute(ownerId, plugin, operation, payload, verifyCurrent = async () => {}, assertOwner = () => {}) {
+  async execute(ownerId, plugin, operation, payload, verifyCurrent = async () => {}, assertOwner = () => {}, pickExportPath) {
     assertOwner();
     const resource = scopeKey(plugin);
     if (this.busy.has(resource)) throw new AppError('READ_BUSY', 'Redis 正在读取，请稍后重试。', { retryAfterMs: 200 });
@@ -149,6 +154,12 @@ export class RedisWorkspaceManager {
     this.busy.add(resource);
     const deadline = Date.now() + plugin.limits.timeoutMs;
     try {
+      if (operation === 'export') {
+        const connection = this.runtime.desktopEditConnection(plugin);
+        record.exporter = connection;
+        try { return await exportRedisValue(connection, plugin, payload.key, pickExportPath, () => { assertOwner(); this.assertCurrent(record); }, verifyCurrent); }
+        finally { connection.close(); record.exporter = null; }
+      }
       if (!record.reader || record.reader.closed) {
         record.reader = this.runtime.workspaceReader(plugin);
         const onClose = record.reader.onClose;
@@ -254,23 +265,27 @@ export class RedisWorkspaceManager {
     const type = kind(await command('TYPE', payload.key));
     if (type === 'none') return { key: payload.key, type, exists: false, rows: [], nextCursor: null, complete: true, truncated: false };
     if (payload.expectedType && payload.expectedType !== type) throw new AppError('REDIS_TYPE_CHANGED', 'Key 类型已经变化，请重新读取。');
+    if (payload.full && type !== 'string') throw new AppError('INVALID_ARGUMENT', '完整打开仅支持 String。');
     const budget = record.plugin.limits.maxValueBytes;
     let result;
     if (type === 'string') {
       if (payload.field !== undefined) throw new AppError('INVALID_ARGUMENT', 'String 不支持字段读取。');
       const state = this.takeCursor(record, payload, type, 50);
       const length = number(await command('STRLEN', payload.key));
+      if (payload.full && length > desktopLimits.editableBytes) throw new AppError('REDIS_VALUE_TOO_LARGE', '内容超过 20 MiB，请使用分段浏览或导出。');
       if (state.length !== undefined && state.length !== length) throw new AppError('REDIS_VALUE_CHANGED', '内容大小已经变化，请刷新后重新读取。');
       state.length = length;
-      const size = Math.min(length - state.offset, budget, REDIS_REPLY_BYTES - 64);
+      const full = !payload.cursor && (payload.full || length <= desktopLimits.autoOpenBytes);
+      const size = full ? length : Math.min(length - state.offset, budget, REDIS_REPLY_BYTES - 64);
       const raw = size ? buffer(await command('GETRANGE', payload.key, state.offset, state.offset + size - 1)) : Buffer.alloc(0);
       if (raw.length !== size || number(await command('STRLEN', payload.key)) !== length) throw new AppError('REDIS_VALUE_CHANGED', '内容大小已经变化，请刷新后重新读取。');
       // 在完整字符边界续读，避免 UTF-8 字符被拆开后丢失或重复。
-      const preview = redisValuePreview(raw, budget, length - state.offset);
+      const preview = redisValuePreview(raw, full ? size : budget, length - state.offset, false);
+      const offsetBytes = state.offset;
       state.offset += preview.shownBytes;
       state.complete = state.offset >= length;
       const nextCursor = this.saveCursor(record, state);
-      result = { value: { ...preview, bytes: length }, rows: [], nextCursor, complete: nextCursor === null };
+      result = { value: { ...preview, bytes: length, ...(length > desktopLimits.editableBytes ? { offsetBytes, truncated: true } : {}), ...(full ? { digest: crypto.createHash('sha256').update(raw).digest('hex') } : {}) }, rows: [], nextCursor, complete: nextCursor === null };
     } else if (type === 'hash' && payload.field !== undefined) {
       const length = number(await command('HSTRLEN', payload.key, payload.field));
       const raw = length <= budget ? await command('HGET', payload.key, payload.field) : null;

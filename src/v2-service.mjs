@@ -427,7 +427,7 @@ export class V2Service {
     }
   }
 
-  async invokeDesktopRedis(ownerId, payload, operation, assertOwner = () => {}) {
+  async invokeDesktopRedis(ownerId, payload, operation, assertOwner = () => {}, pickExportPath) {
     const { scope, capability } = prepareRedisWorkspaceRequest(payload, operation);
     assertOwner();
     const execute = async () => {
@@ -449,7 +449,7 @@ export class V2Service {
       }, 'user', (plugin) => this.redisWorkspaceManager.execute(ownerId, plugin, operation, payload, async () => {
         const current = (await resolve()).plugin;
         if (current.revision !== original.revision) throw new AppError('REDIS_WORKSPACE_STALE', 'Redis 配置已经变化，请重新打开工作区。');
-      }, assertOwner));
+      }, assertOwner, pickExportPath));
     };
     return this.mutationCoordinator
       ? this.mutationCoordinator.runEnvironmentOperation(scope.projectId, scope.environmentId, execute)

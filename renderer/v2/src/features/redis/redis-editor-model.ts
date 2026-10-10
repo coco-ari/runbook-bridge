@@ -1,4 +1,6 @@
-export const REDIS_EDITOR_MAX_LENGTH = 65536
+import { REDIS_EDITABLE_BYTES } from "./redis-desktop-limits.ts"
+
+export const REDIS_EDITOR_MAX_LENGTH = REDIS_EDITABLE_BYTES
 
 export function redisEditorLimit(value: string, maxBytes: number): "characters" | "bytes" | null {
   if (value.length > REDIS_EDITOR_MAX_LENGTH) return "characters"

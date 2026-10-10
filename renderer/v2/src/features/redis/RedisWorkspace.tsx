@@ -31,6 +31,7 @@ import { RedisKeyBrowser } from "./RedisKeyBrowser"
 import { RedisKeySearch, type RedisSearchEntry, type RedisSearchMode } from "./RedisKeySearch"
 import { redisFolderSearch } from "./redis-key-tree"
 import { RedisScopePicker } from "./RedisScopePicker"
+import { REDIS_EDITABLE_BYTES } from "./redis-desktop-limits"
 import "./redis-workspace.css"
 
 const ValueViewer = lazy(async () => ({ default: (await import("./RedisValueViewer")).RedisValueViewer }))
@@ -60,10 +61,11 @@ async function copy(value: string) {
 }
 function time(value: string) { return value ? new Date(value).toLocaleTimeString() : "尚未读取" }
 
-function KeyDocument({ connected, tab, refresh, more, field, clearField, actions, editor }: {
+function KeyDocument({ connected, tab, refresh, more, fullOpen, exportValue, field, clearField, actions, editor }: {
   readonly connected: boolean
   readonly actions?: ReactNode; readonly editor?: ReactNode
   readonly tab: RedisTab; readonly refresh: () => void; readonly more: () => void
+  readonly fullOpen: () => void; readonly exportValue: () => void
   readonly field: (name: string) => void; readonly clearField: () => void
 }) {
   const [fieldInput, setFieldInput] = useState("")
@@ -96,7 +98,7 @@ function KeyDocument({ connected, tab, refresh, more, field, clearField, actions
     {tab.stale && !tab.creating ? <p className="redis-notice" role="status" data-testid="redis-key-stale">当前数据已失效，请刷新后继续读取或编辑。</p> : null}
     {editor ? editor : metadata && !metadata.exists ? <div className="redis-empty" data-testid="redis-key-missing">Key 已过期或被删除。可刷新重新检查。</div>
       : content?.unsupported ? <div className="redis-empty">暂不支持 {content.type} 类型的内容查看，仍可查看类型与 TTL。</div>
-        : content?.value ? <RedisValueViewer value={content.value} {...(content.nextCursor ? { loadMore: more } : {})} loading={tab.loading} disabled={!connected || Boolean(tab.stale)} />
+        : content?.value ? <RedisValueViewer value={content.value} {...(content.nextCursor ? { loadMore: more } : {})} fullOpen={fullOpen} exportValue={exportValue} exporting={tab.exporting} viewState={tab.viewState} loading={tab.loading} disabled={!connected || Boolean(tab.stale)} />
           : content && ["hash", "list", "set", "zset"].includes(content.type) ? <>
             {content.type === "hash" ? <form className="redis-field-search" onSubmit={(event) => { event.preventDefault(); if (fieldInput) field(fieldInput) }}>
               <Input aria-label="精确 Hash 字段" placeholder="输入完整字段名" value={fieldInput} onChange={(event) => setFieldInput(event.target.value)} data-testid="redis-field-input" />
@@ -165,7 +167,17 @@ export function RedisWorkspace({ backLabel = "返回 Redis 详情", api, scope, 
   function closeKey(id: string) { editing.protect(() => state.closeTab(id),[id]) }
   function keyEditor(tab: RedisTab) {
     const draft = editing.drafts[tab.id]
-    return draft ? <RedisWriteEditor draft={draft} connected={connected} onChange={patch=>editing.update(tab.id,patch)} onSave={()=>void editing.save(tab.id,tab.patternId)} onVerify={()=>void editing.verify(tab.id,tab.patternId)} onCancel={()=>editing.protect(()=>{if(tab.creating)state.closeTab(tab.id)},[tab.id])} /> : null
+    return draft ? <RedisWriteEditor draft={draft} connected={connected} viewState={tab.viewState} onChange={patch=>editing.update(tab.id,patch)} onSave={()=>void editing.save(tab.id,tab.patternId)} onVerify={()=>void editing.verify(tab.id,tab.patternId)} onCancel={()=>editing.protect(()=>{if(tab.creating)state.closeTab(tab.id)},[tab.id])} /> : null
+  }
+  function keyActions(tab: RedisTab) {
+    if (tab.creating) return null
+    const reason = (tab.info?.length ?? 0) > REDIS_EDITABLE_BYTES ? "超过 20 MiB 在线编辑上限，可分段浏览或导出。" : redisValueReadOnlyReason(tab.content?.value)
+    const opening = editing.opening?.id === tab.id && editing.opening.mode === "update"
+    return <>
+      {!editing.drafts[tab.id] ? <Button size="xs" variant="outline" disabled={!connected || tab.stale || tab.exporting || editing.busy || tab.info?.type !== "string" || Boolean(reason)} title={reason || "编辑当前值"} data-testid="redis-edit-value" onClick={()=>{state.pin(tab.id);void editing.open(tab,"update")}}>{opening ? <OperationSpinner /> : <PencilSimple />}{opening ? "正在准备编辑…" : "编辑"}</Button> : null}
+      <Button size="xs" variant="ghost" className="text-danger" disabled={!connected || tab.stale || tab.loading || tab.exporting || editing.busy || !["string","hash","list","set","zset"].includes(tab.info?.type ?? "")} data-testid="redis-delete-key" onClick={()=>{state.pin(tab.id);void editing.open(tab,"delete")}}>{editing.opening?.id === tab.id && editing.opening.mode === "delete" ? <OperationSpinner /> : <Trash />}删除 Key</Button>
+      {tab.info?.type === "string" && reason ? <span className="text-xs text-muted-foreground">{reason}</span> : null}
+    </>
   }
   function submitSearch(query = search, mode = searchMode) {
     if (!connected || !state.patternId || !visible) return
@@ -257,7 +269,7 @@ export function RedisWorkspace({ backLabel = "返回 Redis 详情", api, scope, 
             </WorkspaceTabBar>
             {!state.tabs.length ? <Empty className="redis-welcome"><EmptyHeader><EmptyMedia variant="icon"><Database /></EmptyMedia><EmptyTitle>查看 Redis 数据</EmptyTitle><EmptyDescription>展开左侧目录查找 Key，或输入完整 Key 精确定位。<br />单击预览，双击固定标签；数据仅保留在当前会话。</EmptyDescription></EmptyHeader><Button variant="outline" disabled={!connected || !state.patternId} onClick={createKey}><Plus />新增 Key</Button></Empty> : null}
             {state.tabs.map((tab) => <div className="redis-tab-panel" key={tab.id} id={uniqueId + "-panel-" + tab.id} role="tabpanel" aria-labelledby={uniqueId + "-tab-" + tab.id} hidden={tab.id !== state.activeId} inert={tab.id !== state.activeId}>
-              <KeyDocument connected={connected} tab={tab} editor={keyEditor(tab)} actions={!tab.creating ? <><Button size="xs" variant="outline" disabled={!connected || tab.stale || tab.loading || editing.busy || Boolean(editing.drafts[tab.id]) || tab.info?.type !== "string" || Boolean(redisValueReadOnlyReason(tab.content?.value, plugin))} title={tab.info?.type !== "string" ? "当前仅支持编辑 String / JSON 文本" : redisValueReadOnlyReason(tab.content?.value, plugin) || "编辑当前值"} data-testid="redis-edit-value" onClick={()=>{state.pin(tab.id);void editing.open(tab,"update")}}>{editing.opening?.id === tab.id && editing.opening.mode === "update" ? <OperationSpinner /> : <PencilSimple />}编辑值</Button><Button size="xs" variant="ghost" className="text-danger" disabled={!connected || tab.stale || tab.loading || editing.busy || !["string","hash","list","set","zset"].includes(tab.info?.type ?? "")} data-testid="redis-delete-key" onClick={()=>{state.pin(tab.id);void editing.open(tab,"delete")}}>{editing.opening?.id === tab.id && editing.opening.mode === "delete" ? <OperationSpinner /> : <Trash />}删除 Key</Button>{tab.info?.type === "string" && redisValueReadOnlyReason(tab.content?.value, plugin) ? <span className="text-xs text-muted-foreground">{redisValueReadOnlyReason(tab.content?.value, plugin)}</span> : null}</> : null} refresh={() => editing.protect(()=>void state.readTab(tab.id),[tab.id])} more={() => void state.readTab(tab.id, true)} field={(name) => void state.readTab(tab.id, false, name)} clearField={() => state.clearField(tab.id)} />
+              <KeyDocument connected={connected} tab={tab} editor={keyEditor(tab)} actions={keyActions(tab)} refresh={() => editing.protect(()=>void state.readTab(tab.id),[tab.id])} more={() => void state.readTab(tab.id, true)} fullOpen={() => void state.readTab(tab.id, false, undefined, true)} exportValue={() => void state.exportTab(tab.id)} field={(name) => void state.readTab(tab.id, false, name)} clearField={() => state.clearField(tab.id)} />
             </div>)}
           </div>
         </ResizablePanel>

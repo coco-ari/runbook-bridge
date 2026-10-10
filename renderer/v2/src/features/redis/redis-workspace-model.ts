@@ -1,10 +1,11 @@
 import type { PluginConfigurationRecord } from "@/features/plugins/plugin-types"
 import type { PluginScope, RedisContentRow, RedisValuePreview } from "@/bridge/ai-ops-v2"
+import { REDIS_BROWSER_CACHE_BYTES, REDIS_EDITABLE_BYTES } from "./redis-desktop-limits.ts"
 
 export const REDIS_MAX_KEYS = 5000
 export const REDIS_MAX_TABS = 8
-// 另有 4 MiB 预算分配给主进程游标余项，合计 16 MiB。
-export const REDIS_CACHE_BYTES = 12 * 1024 * 1024
+// 按驻留字符串的 UTF-16 字节估算，主进程分页余项另有独立上限。
+export const REDIS_CACHE_BYTES = REDIS_BROWSER_CACHE_BYTES
 export interface RedisPattern { readonly patternId: string; readonly pattern: string; readonly displayName: string }
 
 export function redisPatterns(plugin: PluginConfigurationRecord): readonly RedisPattern[] {
@@ -38,7 +39,10 @@ export function mergeRedisRows(previous: readonly RedisContentRow[], incoming: r
 }
 
 export function redisCacheBytes(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value)).length
+  if (typeof value === "string") return value.length * 2
+  if (Array.isArray(value)) return value.reduce((total, entry) => total + redisCacheBytes(entry), 32)
+  if (value && typeof value === "object") return Object.values(value).reduce<number>((total, entry) => total + redisCacheBytes(entry), 64)
+  return 8
 }
 
 export function mergeRedisValue(previous: RedisValuePreview, incoming: RedisValuePreview): RedisValuePreview {
@@ -46,9 +50,9 @@ export function mergeRedisValue(previous: RedisValuePreview, incoming: RedisValu
     hex: previous.hex + incoming.hex, shownBytes: previous.shownBytes + incoming.shownBytes }
 }
 
-export function redisValueReadOnlyReason(value: RedisValuePreview | null | undefined, plugin: PluginConfigurationRecord): string {
-  if (!value || value.truncated || value.text === null) return "内容未完整读取或不是文本，仅支持查看。"
-  const configured = plugin.limits?.maxValueBytes
-  const limit = Math.min(65536, typeof configured === "number" ? configured : 65536)
-  return value.bytes > limit ? "内容超过编辑上限（" + redisBytes(limit) + "），仅支持查看。" : ""
+export function redisValueReadOnlyReason(value: RedisValuePreview | null | undefined): string {
+  if (!value) return ""
+  if (value.bytes > REDIS_EDITABLE_BYTES) return "超过 20 MiB 在线编辑上限，可分段浏览或导出。"
+  if (value.text === null) return "二进制内容暂不支持文本编辑。"
+  return ""
 }

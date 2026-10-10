@@ -1,22 +1,35 @@
 import net from 'node:net';
 import tls from 'node:tls';
 import { AppError } from './errors.mjs';
+import desktopLimits from './redis-desktop-limits.json' with { type: 'json' };
 
 export const REDIS_REPLY_BYTES = 1024 * 1024;
 const COMMANDS = new Set(['SCAN', 'TYPE', 'TTL', 'STRLEN', 'GETRANGE', 'HLEN', 'HSCAN', 'HSTRLEN', 'HGET', 'LLEN', 'LRANGE', 'SCARD', 'SSCAN', 'ZCARD', 'ZRANGE']);
 const protocolError = () => new AppError('REDIS_REPLY_INVALID', 'Redis 返回的数据格式无效。');
-const limitError = () => new AppError('REDIS_REPLY_TOO_LARGE', '内容超过 1 MiB 读取限制，请缩小读取范围。');
+const limitError = () => new AppError('REDIS_REPLY_TOO_LARGE', '内容超过本次读取限制，请缩小读取范围。');
+
+// 仅桌面有界 String 读取按请求长度扩容，其他命令仍使用原有回复上限。
+export function redisReplyBudget(args) {
+  if (args?.[0] !== 'GETRANGE') return REDIS_REPLY_BYTES;
+  const start = Number(args[2]), end = Number(args[3]);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end - start + 1 > desktopLimits.editableBytes) return REDIS_REPLY_BYTES;
+  return Math.max(REDIS_REPLY_BYTES, end - start + 1 + 64);
+}
 
 export class RedisReplyError extends AppError {}
 
 // 增量解析 RESP2；在分配正文及数组前检查声明长度，不接收任意大回复。
 export class BoundedRespDecoder {
-  constructor({ errorReplies = false } = {}) {
+  constructor({ errorReplies = false, maxBytes = REDIS_REPLY_BYTES } = {}) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > desktopLimits.editableBytes + 64) throw limitError();
+    this.maxBytes = maxBytes;
     this.errorReplies = errorReplies;
     this.buffer = Buffer.alloc(0);
     this.bytes = 0;
     this.stack = [];
     this.bulkLength = null;
+    this.bulk = null;
+    this.bulkOffset = 0;
     this.done = false;
     this.value = undefined;
     this.nodes = 0;
@@ -24,7 +37,7 @@ export class BoundedRespDecoder {
 
   push(chunk) {
     this.bytes += chunk.length;
-    if (this.bytes > REDIS_REPLY_BYTES) throw limitError();
+    if (this.bytes > this.maxBytes) throw limitError();
     this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk;
     let offset = 0;
     const accept = (value) => {
@@ -40,12 +53,17 @@ export class BoundedRespDecoder {
     };
     while (!this.done) {
       if (this.bulkLength !== null) {
-        if (this.buffer.length - offset < this.bulkLength + 2) break;
-        const end = offset + this.bulkLength;
-        if (this.buffer[end] !== 13 || this.buffer[end + 1] !== 10) throw protocolError();
-        const value = Buffer.from(this.buffer.subarray(offset, end));
-        offset = end + 2;
+        // 正文只分配一次，避免大值随网络分片反复拼接造成平方级复制。
+        const count = Math.min(this.buffer.length - offset, this.bulk.length - this.bulkOffset);
+        this.buffer.copy(this.bulk, this.bulkOffset, offset, offset + count);
+        this.bulkOffset += count;
+        offset += count;
+        if (this.bulkOffset < this.bulk.length) break;
+        if (this.bulk[this.bulkLength] !== 13 || this.bulk[this.bulkLength + 1] !== 10) throw protocolError();
+        const value = this.bulk.subarray(0, this.bulkLength);
         this.bulkLength = null;
+        this.bulk = null;
+        this.bulkOffset = 0;
         accept(value);
         continue;
       }
@@ -79,8 +97,9 @@ export class BoundedRespDecoder {
         else if (number === -1) accept(null);
         else if (number < 0) throw protocolError();
         else if (kind === 36) {
-          if (number > REDIS_REPLY_BYTES || this.bytes - this.buffer.length + offset + number + 2 > REDIS_REPLY_BYTES) throw limitError();
+          if (number > this.maxBytes || this.bytes - this.buffer.length + offset + number + 2 > this.maxBytes) throw limitError();
           this.bulkLength = number;
+          this.bulk = Buffer.allocUnsafe(number + 2);
         } else {
           if (number > 65536 || this.stack.length >= 16) throw limitError();
           if (!number) accept([]);
@@ -169,12 +188,12 @@ export class RedisWorkspaceReader {
       return Promise.reject(error);
     }
     return new Promise((resolve, reject) => {
-      this.pending = { resolve, reject, decoder: this.createDecoder(), timer: this.timer(deadline) };
+      this.pending = { resolve, reject, decoder: this.createDecoder(args), timer: this.timer(deadline) };
       this.socket.write(encode(args));
     });
   }
 
-  createDecoder() { return new BoundedRespDecoder(); }
+  createDecoder(args) { return new BoundedRespDecoder({ maxBytes: redisReplyBudget(args) }); }
 
   close(error = new AppError('REDIS_WORKSPACE_STALE', 'Redis 读取通道已关闭，请重新读取。')) {
     if (this.closed) return;

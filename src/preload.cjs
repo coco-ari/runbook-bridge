@@ -125,6 +125,7 @@ contextBridge.exposeInMainWorld('aiOps', {
     redisWorkspaceInspect: payload => ipcRenderer.invoke('v2:redis-workspace-inspect', payload),
     redisWorkspaceRead: payload => ipcRenderer.invoke('v2:redis-workspace-read', payload),
     redisWorkspaceRelease: payload => ipcRenderer.invoke('v2:redis-workspace-release', payload),
+    redisWorkspaceExport: payload => ipcRenderer.invoke('v2:redis-workspace-export', payload),
     mysqlListTables: (payload) => ipcRenderer.invoke('v2:mysql-list-tables', payload),
     mysqlDescribeTable: (payload) => ipcRenderer.invoke('v2:mysql-describe-table', payload),
     mysqlPreviewTable: (payload) => ipcRenderer.invoke('v2:mysql-preview-table', payload),

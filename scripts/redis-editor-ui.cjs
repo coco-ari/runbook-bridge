@@ -19,6 +19,7 @@ module.exports = async function ({win,fill,click,waitFor,active,writeValues}) {
   assert.equal(await evaluate('Boolean(document.querySelector(".redis-tab-panel:not([hidden]) .cm-lineNumbers"))'),true,'编辑模式提供行号');
   await waitFor(win,'Boolean(document.querySelector(".redis-tab-panel:not([hidden]) .redis-json-string"))','草稿JSON高亮');
   await click(win,active('redis-draft-format'));
+  await waitFor(win,'!document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-draft-format]").disabled','后台格式化完成');
   const formatted=await doc();
   assert.ok(formatted.includes('\n')&&formatted.includes('9007199254740993123')&&formatted.includes('1.2300')&&formatted.includes('1e+09')&&formatted.includes(String.raw`\u4e2d`),'显式格式化保留数字精度和转义');
   assert.equal((formatted.match(/"n"/g)||[]).length,2,'格式化保留重复字段');
@@ -49,15 +50,11 @@ module.exports = async function ({win,fill,click,waitFor,active,writeValues}) {
     if(!attached)win.webContents.debugger.detach();
   }
   assert.equal(await doc(),'中文😀','中文输入法及补充平面字符可编辑');
-  assert.ok(await evaluate('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-draft-bytes]").textContent.startsWith("10 / ")'),'UTF-8字节数使用完整字符计数');
+  await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-draft-bytes]")?.textContent.startsWith("10 / ")','UTF-8字节数使用完整字符计数');
   await fill(win,selector,'中'.repeat(21846));
-  assert.equal(await doc(),'中文😀','UTF-8超限输入保留原草稿');
-  await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) .redis-edit-error")?.textContent.includes("字节上限")','字节超限说明');
-  await fill(win,selector,'x'.repeat(65536));
-  assert.equal((await doc()).length,65536,'原有65536字符边界可用');
+  assert.equal(await doc(),'中'.repeat(21846),'超过 64 KiB 的中文可以编辑');
   await fill(win,selector,'x'.repeat(65537));
-  assert.equal((await doc()).length,65536,'超过原有字符上限不能进入草稿');
-  await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) .redis-edit-error")?.textContent.includes("个字符")','字符超限说明');
+  assert.equal((await doc()).length,65537,'不再使用旧字符上限');
   assert.equal(writeValues.has('cache:ui-created'),false,'查找、格式化和编辑不会触发写入');
   await fill(win,selector,'{"id":9007199254740993}');
   await click(win,active('redis-edit-format-json'));

@@ -29,7 +29,7 @@ export function registerRedisWorkspaceIpc(ipcMain, services) {
     if (!owners.has(owner)) owners.set(owner, { active: true, scopes: new Map() });
     return owner;
   };
-  for (const operation of ['scan', 'inspect', 'read', 'release']) {
+  for (const operation of ['scan', 'inspect', 'read', 'release', 'export']) {
     ipcMain.handle('v2:redis-workspace-' + operation, async (event, payload) => {
       try {
         const owner = ownerFor(event);
@@ -49,7 +49,8 @@ export function registerRedisWorkspaceIpc(ipcMain, services) {
         const assertOwner = () => {
           if (!state.active || state.scopes.get(scope) !== ticket || event.sender.isDestroyed?.()) throw new AppError('REDIS_WORKSPACE_STALE', '工作区已关闭，请重新打开。');
         };
-        const data = await services.v2Service.invokeDesktopRedis(owner, payload, operation, assertOwner);
+        const picker = typeof services.pickRedisExportPath === 'function' ? () => services.pickRedisExportPath(event.sender) : undefined;
+        const data = await services.v2Service.invokeDesktopRedis(owner, payload, operation, assertOwner, picker);
         return { ok: true, data };
       } catch (error) { return { ok: false, error: toPublicError(error) }; }
     });

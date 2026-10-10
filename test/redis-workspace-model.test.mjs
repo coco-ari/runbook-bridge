@@ -10,11 +10,11 @@ test('分段浏览合并文本与字节，二进制不伪装为可编辑文本',
   assert.equal(mergeRedisValue(first, { ...last, text: null }).text, null);
 });
 
-test('完整浏览后仍按插件限制与 64 KiB 上限禁用编辑', () => {
+test('普通文本允许直接进入编辑准备，超大值和二进制明确说明限制', () => {
   const value = { text: 'fixture', hex: '', bytes: 65536, shownBytes: 65536, truncated: false };
-  assert.equal(redisValueReadOnlyReason(value, {}), '');
-  assert.match(redisValueReadOnlyReason({ ...value, bytes: 65537 }, {}), /超过编辑上限/u);
-  assert.match(redisValueReadOnlyReason(value, { limits: { maxValueBytes: 256 } }), /256 B/u);
-  assert.match(redisValueReadOnlyReason({ ...value, truncated: true }, {}), /未完整读取/u);
-  assert.match(redisValueReadOnlyReason({ ...value, text: null }, {}), /不是文本/u);
+  assert.equal(redisValueReadOnlyReason(value), '');
+  assert.equal(redisValueReadOnlyReason({ ...value, bytes: 99*1024 }), '');
+  assert.match(redisValueReadOnlyReason({ ...value, bytes: 20*1024*1024+1 }), /20 MiB/u);
+  assert.equal(redisValueReadOnlyReason({ ...value, truncated: true }), '');
+  assert.match(redisValueReadOnlyReason({ ...value, text: null }), /二进制/u);
 });

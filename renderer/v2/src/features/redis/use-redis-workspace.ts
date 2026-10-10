@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react"
 import type { AiOpsV2Api, IpcResult, PluginScope, RedisContentPage, RedisKeyInfo } from "@/bridge/ai-ops-v2"
 import type { PluginConfigurationRecord } from "@/features/plugins/plugin-types"
 import { mergeRedisRows, mergeRedisValue, redisCacheBytes, redisPatterns, REDIS_CACHE_BYTES, REDIS_MAX_KEYS, REDIS_MAX_TABS } from "./redis-workspace-model"
+import type { RedisViewState } from "./RedisValueEditor"
+import { REDIS_EDITABLE_BYTES } from "./redis-desktop-limits"
 
 const SEARCH_PAGE_KEYS = 500
 const SEARCH_BUDGET_MS = 30_000
@@ -11,6 +13,9 @@ export interface RedisTab {
   readonly id: string
   readonly writeSummary?: string
   readonly creating?: boolean
+  readonly fullOpened?: boolean
+  readonly exporting?: boolean
+  readonly viewState?: RedisViewState
   readonly key: string
   readonly patternId: string
   readonly pinned: boolean
@@ -48,7 +53,16 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
   const keywordRef = useRef("")
   const [tabs, setTabs] = useState<readonly RedisTab[]>([])
   const tabsRef = useRef(tabs)
-  const [activeId, setActiveId] = useState("")
+  const [activeId, storeActiveId] = useState("")
+  const activeIdRef = useRef("")
+  function setActiveId(id: string) {
+    if (activeIdRef.current !== id) {
+      const previous = activeIdRef.current
+      tabSequences.current.delete(previous)
+      patchTab(previous, { loading: false })
+    }
+    activeIdRef.current = id; storeActiveId(id)
+  }
   const mounted = useRef(false)
   const visibleRef = useRef(visible)
   visibleRef.current = visible
@@ -60,10 +74,16 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
   const previousEpoch = useRef(connectionEpoch)
   const scanSequence = useRef(0)
   const tabSequences = useRef(new Map<string, number>())
+  const readSequence = useRef(0)
   const queue = useRef<Promise<unknown>>(Promise.resolve())
 
   function updateTabs(transform: (current: readonly RedisTab[]) => readonly RedisTab[]) {
-    const next = transform(tabsRef.current)
+    let next = transform(tabsRef.current)
+    // 淘汰非活动标签的浏览内容；编辑草稿在独立状态中保留。
+    for (const tab of next) {
+      if (redisCacheBytes({ keys: keysRef.current, tabs: next }) <= REDIS_CACHE_BYTES) break
+      if (tab.id !== activeIdRef.current && tab.content) next = next.map(item => item.id === tab.id ? { ...item, content: null, fieldContent: null, stale: true, error: "浏览内容已释放，点击刷新重新读取。" } : item)
+    }
     if (redisCacheBytes({ keys: keysRef.current, tabs: next }) > REDIS_CACHE_BYTES) {
       setNotice("浏览缓存已达上限，请关闭标签或收窄搜索。")
       return false
@@ -173,10 +193,10 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
     }
   }
 
-  async function readTab(id: string, more = false, field?: string) {
+  async function readTab(id: string, more = false, field?: string, full = false) {
     const tab = tabsRef.current.find((item) => item.id === id)
     if (!tab || !connection.current.connected || ((more || field !== undefined) && tab.stale) || (more && (tab.loading || !tab.content?.nextCursor))) return
-    const sequence = (tabSequences.current.get(id) ?? 0) + 1
+    const sequence = ++readSequence.current
     tabSequences.current.set(id, sequence)
     const captured = epoch.current
     const current = () => mounted.current && connection.current.connected && captured === epoch.current && tabSequences.current.get(id) === sequence && tabsRef.current.some((item) => item.id === id)
@@ -195,15 +215,16 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
           patchTab(id, { stale: false, content: { key: tab.key, type: info.type, exists: true, rows: [], complete: true, nextCursor: null, truncated: false, unsupported: true, readAt: info.readAt } })
           return
         }
-        const result = unwrap(await api.redisWorkspaceRead({ ...payload, expectedType: info.type, ...(more && tab.content?.nextCursor ? { cursor: tab.content.nextCursor } : {}), ...(field !== undefined ? { field } : {}) }))
+        const completeString = !more && field === undefined && info.type === "string" && (full || tab.fullOpened)
+        const result = unwrap(await api.redisWorkspaceRead({ ...payload, expectedType: info.type, ...(completeString ? { full: true } : {}), ...(more && tab.content?.nextCursor ? { cursor: tab.content.nextCursor } : {}), ...(field !== undefined ? { field } : {}) }))
         if (!current()) return
         if (!result.exists) { patchTab(id, { stale: false, info: { ...info, exists: false, type: "none", ttlSeconds: -2 }, content: null, fieldContent: null, fieldName: null }); return }
         const content = more && tab.content
           ? result.type === "string" && tab.content.value && result.value
-            ? { ...result, value: mergeRedisValue(tab.content.value, result.value) }
+            ? { ...result, value: result.value.bytes > REDIS_EDITABLE_BYTES ? result.value : mergeRedisValue(tab.content.value, result.value) }
             : { ...result, rows: mergeRedisRows(tab.content.rows, result.rows), truncated: tab.content.truncated || result.truncated }
           : { ...result, rows: mergeRedisRows([], result.rows) }
-        const accepted = patchTab(id, field !== undefined ? { fieldContent: result, fieldName: field } : { content, stale: false })
+        const accepted = patchTab(id, field !== undefined ? { fieldContent: result, fieldName: field } : { content, stale: false, fullOpened: Boolean(completeString) })
         if (!accepted) {
           if (tab.content) patchTab(id, { content: { ...tab.content, nextCursor: null, complete: false } })
           throw new Error("浏览缓存已达上限；本页未保留，请关闭标签后重新读取。")
@@ -218,18 +239,30 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
     } finally { if (current()) patchTab(id, { loading: false }) }
   }
 
+  async function exportTab(id: string) {
+    const tab = tabsRef.current.find(item => item.id === id)
+    if (!tab || tab.exporting || !connection.current.connected) return
+    patchTab(id, { exporting: true, error: "" })
+    try {
+      const result = await enqueue(() => api.redisWorkspaceExport({ ...scope, patternId: tab.patternId, key: tab.key }).then(unwrap))
+      if (mounted.current && result.saved) setNotice("已导出完整原始内容。")
+    } catch (error) { if (mounted.current) patchTab(id, { error: message(error) }) }
+    finally { if (mounted.current) patchTab(id, { exporting: false }) }
+  }
+
   function openKey(key: string, pinned = false, selectedPattern = patternId) {
     const existing = tabsRef.current.find((tab) => tab.key === key && tab.patternId === selectedPattern)
     if (existing) {
       if (pinned) patchTab(existing.id, { pinned: true })
       setActiveId(existing.id)
+      if (!existing.content && !existing.stale && connection.current.connected) void readTab(existing.id)
       return
     }
     if (!connection.current.connected) return
     const preview = tabsRef.current.find((tab) => !tab.pinned)
     if (!preview && tabsRef.current.length >= REDIS_MAX_TABS) { setNotice("最多打开 8 个标签，请先关闭已有标签。"); return }
     const id = crypto.randomUUID()
-    const tab: RedisTab = { id, key, patternId: selectedPattern, pinned, loading: false, error: "", info: null, content: null, fieldContent: null, fieldName: null }
+    const tab: RedisTab = { id, key, patternId: selectedPattern, pinned, loading: false, error: "", info: null, content: null, fieldContent: null, fieldName: null, viewState: {} }
     if (preview) tabSequences.current.delete(preview.id)
     updateTabs((current) => [...current.filter((item) => item.id !== preview?.id), tab])
     setActiveId(id)
@@ -239,7 +272,7 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
     if (!connection.current.connected) return null
     if (tabsRef.current.length >= REDIS_MAX_TABS) { setNotice("最多打开 8 个标签，请先关闭已有标签。"); return null }
     const id = crypto.randomUUID()
-    if (!updateTabs(current => [...current,{id,key:"",patternId,pinned:true,loading:false,error:"",info:null,content:null,fieldContent:null,fieldName:null,creating:true}])) return null
+    if (!updateTabs(current => [...current,{id,key:"",patternId,pinned:true,loading:false,error:"",info:null,content:null,fieldContent:null,fieldName:null,creating:true,viewState:{}}])) return null
     setActiveId(id)
     return id
   }
@@ -249,7 +282,7 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
       for (const tab of tabsRef.current.filter(tab => tab.key === key)) closeTab(tab.id)
       keysRef.current = keysRef.current.filter(value => value !== key); setKeys(keysRef.current)
     } else {
-      patchTab(id,{key,creating:false,pinned:true,writeSummary:summary}); void readTab(id)
+      patchTab(id,{key,creating:false,pinned:true,writeSummary:summary,fullOpened:true}); void readTab(id)
       if (!keywordRef.current && !keysRef.current.includes(key) && keysRef.current.length < REDIS_MAX_KEYS) { keysRef.current = [key,...keysRef.current]; setKeys(keysRef.current) }
       else if (!keysRef.current.includes(key)) setNotice("Key 已保存，当前搜索结果可能不包含它；右侧可查看最新内容。")
     }
@@ -282,7 +315,7 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, connectionEpoch])
   useEffect(() => {
-    if (!visible) stopScan()
+    if (!visible) { stopScan(); tabSequences.current.clear(); updateTabs(current => current.map(tab => ({ ...tab, loading: false }))) }
     // 隐藏后暂停自动续扫；重新打开只恢复已保留的结果。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible])
@@ -305,5 +338,5 @@ export function useRedisWorkspace(api: AiOpsV2Api, scope: PluginScope, plugin: P
 
   return { patterns, patternId, changePattern, keys, cursor, complete, scanStale, loading, error, notice, setNotice, readAt, keyword,
     createTab, written, pin: (id: string) => patchTab(id,{pinned:true}),
-    scan, stopScan, scanStatus, stopping, tabs, activeId, setActiveId, openKey, closeTab, readTab, clearField: (id: string) => patchTab(id, { fieldContent: null, fieldName: null }) }
+    scan, stopScan, scanStatus, stopping, tabs, activeId, setActiveId, openKey, closeTab, readTab, exportTab, clearField: (id: string) => patchTab(id, { fieldContent: null, fieldName: null }) }
 }

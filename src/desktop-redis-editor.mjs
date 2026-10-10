@@ -3,20 +3,22 @@ import { isUtf8 } from 'node:buffer';
 import { AppError } from './errors.mjs';
 import { findRedisPattern, redisKeyAllowed } from './redis-plugin-runtime.mjs';
 import { RedisReplyError } from './redis-workspace-reader.mjs';
+import desktopLimits from './redis-desktop-limits.json' with { type: 'json' };
 
 const SCOPE=['projectId','environmentId','pluginInstanceId'];
-const FIELDS={open:['patternId','key','mode'],prepare:['editId','value','format','expiry'],commit:['editId','planId'],status:['editId','planId'],release:['editId']};
+const FIELDS={open:['patternId','key','mode','expectedDigest'],prepare:['editId','value','format','expiry'],commit:['editId','planId'],status:['editId','planId'],release:['editId']};
 const fail=(code,message)=>new AppError(code,message);
 const stale=()=>fail('REDIS_EDIT_STALE','编辑会话已失效，请重新读取并核对内容。');
 const conflict=()=>fail('REDIS_EDIT_CONFLICT','Key 已变化或过期，内容未保存。请重新读取并核对。');
 const identity=plugin=>JSON.stringify([...SCOPE.map(name=>plugin[name]),plugin.revision,plugin.target.db]);
 const text=value=>Buffer.isBuffer(value)?value.toString('utf8'):value;
-const MAX_BYTES=65536,MAX_EDITS=24,LIFETIME=1800000,PLAN_MS=120000;
+const MAX_BYTES=desktopLimits.editableBytes,MAX_EDITS=24,LIFETIME=1800000,PLAN_MS=120000;
 
 export function prepareRedisEditRequest(payload,operation){
   if(!payload||typeof payload!=='object'||Array.isArray(payload)||!FIELDS[operation]||Object.keys(payload).some(name=>![...SCOPE,...FIELDS[operation]].includes(name))||SCOPE.some(name=>typeof payload[name]!=='string'||!payload[name]||payload[name].length>128||/[\\/\u0000-\u001f\u007f]/u.test(payload[name]))) throw fail('INVALID_ARGUMENT','Redis 编辑请求参数无效。');
   for(const name of ['editId','planId'].filter(name=>FIELDS[operation].includes(name))) if(typeof payload[name]!=='string'||!/^[a-f0-9-]{36}$/u.test(payload[name])) throw fail('INVALID_ARGUMENT','编辑会话或保存计划无效。');
   if(operation==='open'&&(typeof payload.patternId!=='string'||!payload.patternId||payload.patternId.length>128||typeof payload.key!=='string'||!payload.key||Buffer.byteLength(payload.key)>1024||Buffer.from(payload.key).toString('utf8')!==payload.key||!['create','update','delete'].includes(payload.mode))) throw fail('INVALID_ARGUMENT','请选择有效的 Key、范围和编辑方式。');
+  if(payload.expectedDigest!==undefined&&(operation!=='open'||payload.mode!=='update'||typeof payload.expectedDigest!=='string'||!/^[a-f0-9]{64}$/u.test(payload.expectedDigest)))throw fail('INVALID_ARGUMENT','内容校验标识无效。');
   return Object.fromEntries(SCOPE.map(name=>[name,payload[name]]));
 }
 
@@ -53,12 +55,14 @@ export class DesktopRedisEditor {
       const ttl=await command(['PTTL',payload.key]);
       if(!Number.isSafeInteger(ttl)||ttl < -2)throw stale();
       let value=null;
-      const maxBytes=Math.min(MAX_BYTES,plugin.limits.maxValueBytes);
+      const maxBytes=MAX_BYTES;
       if(payload.mode==='update'){
         const length=await command(['STRLEN',payload.key]);
-        if(!Number.isSafeInteger(length)||length<0||length>maxBytes)throw fail('REDIS_EDIT_READONLY','内容超过编辑大小上限，仅支持查看。');
-        const raw=await command(['GETRANGE',payload.key,0,maxBytes]);
+        if(!Number.isSafeInteger(length)||length<0||length>maxBytes)throw fail('REDIS_EDIT_READONLY','内容超过 20 MiB 在线编辑上限，请使用分段浏览或导出。');
+        const raw=await command(['GETRANGE',payload.key,0,Math.max(0,length-1)]);
         if(!Buffer.isBuffer(raw)||raw.length!==length||!isUtf8(raw)||raw.includes(0))throw fail('REDIS_EDIT_READONLY','内容不是完整 UTF-8 文本或已变化，无法安全编辑。');
+        if(await command(['STRLEN',payload.key])!==length)throw conflict();
+        if(payload.expectedDigest&&crypto.createHash('sha256').update(raw).digest('hex')!==payload.expectedDigest)throw fail('REDIS_EDIT_CONFLICT','内容已被其他客户端修改，请刷新后再编辑。');
         value=raw.toString('utf8');
       }
       assertOwner();if(session!==this.runtime.require(plugin))throw stale();
@@ -76,6 +80,8 @@ export class DesktopRedisEditor {
       args=['UNLINK',edit.key];
     }else{
       if(typeof payload.value!=='string'||Buffer.byteLength(payload.value)>edit.maxBytes||Buffer.from(payload.value).toString('utf8')!==payload.value||payload.value.includes('\0'))throw fail('REDIS_EDIT_VALUE_INVALID','请输入大小限制内的有效 UTF-8 文本。');
+      const used=[...this.edits.values()].reduce((total,item)=>total+(item===edit?0:item.plan?.bytes??0),Buffer.byteLength(payload.value));
+      if(used>desktopLimits.editPlanBytes)throw fail('REDIS_EDIT_BUSY','待保存内容已达容量上限，请先完成其他编辑。');
       if(!['text','json'].includes(payload.format))throw fail('INVALID_ARGUMENT','内容格式无效。');
       if(payload.format==='json')try{JSON.parse(payload.value);}catch{throw fail('REDIS_EDIT_VALUE_INVALID','JSON 格式无效，请修正后保存。');}
       const expiry=payload.expiry;
@@ -83,7 +89,7 @@ export class DesktopRedisEditor {
       // 不过期的 Key 无需 KEEPTTL；WATCH 仍会阻止其他客户端改动过期设置。
       args=['SET',edit.key,payload.value,edit.mode==='create'?'NX':'XX',...(expiry.mode==='keep'&&edit.ttl!==-1?['KEEPTTL']:expiry.mode==='relative'?['PX',String(expiry.milliseconds)]:[])];
     }
-    edit.plan={id:crypto.randomUUID(),status:'prepared',args,expiresAt:this.now()+PLAN_MS};
+    edit.plan={id:crypto.randomUUID(),status:'prepared',args,bytes:edit.mode==='delete'?0:Buffer.byteLength(payload.value),expiresAt:this.now()+PLAN_MS};
     return {planId:edit.plan.id,editId:edit.id,key:edit.key,type:edit.type,mode:edit.mode,expiresAt:edit.plan.expiresAt};
   }
   publicPlan(plan){return {planId:plan.id,status:plan.status,...(plan.error?{error:plan.error}:{}),...(plan.result?{result:plan.result}:{})};}
@@ -116,7 +122,7 @@ export class DesktopRedisEditor {
       plan.status=attempted?'unknown':'failed';
       plan.error=attempted?{code:'REDIS_EDIT_OUTCOME_UNKNOWN',message:'提交期间连接中断，结果不确定。请重新读取核实，勿重复提交。'}:error instanceof AppError?{code:error.code,message:error.message}:{code:'REDIS_EDIT_FAILED',message:'写入失败，请检查连接和账号权限。'};
       if(error instanceof RedisReplyError)plan.error={code:error.code,message:error.code==='REDIS_COMMAND_UNSUPPORTED'?'内容未保存：Redis 不支持本次写入选项；保留有效期需要 Redis 6.0.9 或更高版本。':error.code==='REDIS_PERMISSION_DENIED'?'内容未保存：当前 Redis 账号没有此写入权限。':'内容未保存：Redis 拒绝了本次写入，请检查服务端状态及账号权限。'};
-    }finally{this.close(edit);plan.args=[];}
+    }finally{this.close(edit);plan.args=[];plan.bytes=0;}
     const auditFailed=await this.store.appendAudit(plugin.projectId,{...base,type:'plugin-operation',result:plan.status==='success'?'success':plan.status==='unknown'?'unknown':'error',errorCode:plan.error?.code}).then(()=>false,()=>true);
     if(auditFailed&&plan.result)plan.result.auditWarning=true;
     return this.publicPlan(plan);

@@ -85,7 +85,7 @@ try {
   for (const module of ['server-workspace-manager.mjs', 'server-workspace-files.mjs', 'server-workspace-directory-cache.mjs', 'server-workspace-ipc.mjs']) {
     assert.ok(Object.hasOwn(renderer.sourceHashes, module), '安装包缺少服务器工作区模块：' + module);
   }
-  for (const module of ['redis-workspace-manager.mjs', 'redis-workspace-reader.mjs', 'redis-workspace-ipc.mjs', 'desktop-redis-editor.mjs', 'redis-edit-connection.mjs', 'redis-edit-ipc.mjs', 'desktop-mysql-editor.mjs', 'mysql-row-write-policy.mjs']) {
+  for (const module of ['redis-value-export.mjs', 'redis-desktop-limits.json', 'redis-workspace-manager.mjs', 'redis-workspace-reader.mjs', 'redis-workspace-ipc.mjs', 'desktop-redis-editor.mjs', 'redis-edit-connection.mjs', 'redis-edit-ipc.mjs', 'desktop-mysql-editor.mjs', 'mysql-row-write-policy.mjs']) {
     assert.ok(Object.hasOwn(renderer.sourceHashes, module), '安装包缺少 Redis 工作区模块：' + module);
   }
   const javascriptAssets = renderer.references.filter((item) => item.endsWith('.js'));
@@ -96,6 +96,7 @@ try {
     assert.ok(renderer.files.includes(asset), `missing packaged renderer asset: ${asset}`);
     assert.match(path.basename(asset), /-[A-Za-z0-9_-]{6,}\.(?:js|css)$/u);
   }
+  assert.ok(renderer.files.some(file => /redis-value-worker-[^/]+\.js$/u.test(file)), '安装包缺少 Redis 内容处理线程');
   assert.ok(renderer.files.includes('index.html'));
   assert.ok(!renderer.files.includes('react.html'));
   assert.equal(renderer.sourceRendererPresent, false, 'renderer source or legacy UI was packaged');

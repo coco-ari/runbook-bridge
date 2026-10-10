@@ -1,6 +1,6 @@
 import { jsonLanguage } from "@codemirror/lang-json"
 
-const MAX_FORMATTED_LENGTH = 2 * 1024 * 1024
+const MAX_FORMATTED_LENGTH = 40 * 1024 * 1024
 
 export function formatRedisJson(source: string, truncated = false): string | null {
   if (!source.trim() || source.length > MAX_FORMATTED_LENGTH) return null

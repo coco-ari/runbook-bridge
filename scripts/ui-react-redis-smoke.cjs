@@ -38,10 +38,11 @@ const channels = new Set();
 const markup = '<img id="redis-injection" src="https://untrusted.invalid/pixel" onerror="window.injected=true">';
 const longKey = 'cache:' + '很长的键名'.repeat(35);
 const keys = ['cache:text', 'cache:hash', 'cache:list', 'cache:set', 'cache:zset', 'cache:binary', 'cache:empty', 'cache:stream', longKey,
-  'cache:orders:pending:1001', 'cache:orders:pending:1002', 'cache:orders:completed:1000', 'cache:users:1001:profile', 'cache:users:1002:profile', 'cache:users', 'cache:settings:feature_flags', 'cache:platform:', 'cache:json-preview', 'cache:invalid-json', 'cache:large-json'];
+  'cache:orders:pending:1001', 'cache:orders:pending:1002', 'cache:orders:completed:1000', 'cache:users:1001:profile', 'cache:users:1002:profile', 'cache:users', 'cache:settings:feature_flags', 'cache:platform:', 'cache:json-preview', 'cache:invalid-json', 'cache:large-json', 'cache:medium-json', 'cache:huge-value'];
 const platformJson = '["example.Collection",[{"id":9007199254740993123,"name":"示例平台","enabled":true,"optional":null,"markup":' + JSON.stringify(markup) + ',"tags":["one","two"]},{"id":2,"name":"备用平台"}]]';
 const partialJson = '{"rows":[{"id":1,"name":"首条记录"},{"id":2,"name":"未读取完  ';
 const largeJson = JSON.stringify(Array.from({ length: 6000 }, (_, index) => ({ id: index, name: 'item-' + index, enabled: true })));
+const mediumJson = JSON.stringify({text:'x'.repeat(6*1024*1024),tail:'medium-tail'});
 const stamp = () => new Date().toISOString();
 const value = (text, truncated = false) => ({ text, hex: Buffer.from(text ?? [0, 255, 128]).toString('hex'), bytes: Buffer.byteLength(text ?? Buffer.from([0, 255, 128])), shownBytes: Buffer.byteLength(text ?? Buffer.from([0, 255, 128])), truncated });
 const typeOf = (key) => ({ 'cache:hash': 'hash', 'cache:list': 'list', 'cache:set': 'set', 'cache:zset': 'zset', 'cache:stream': 'stream' }[key] ?? 'string');
@@ -66,10 +67,11 @@ function mocks(redisKeySearch) {
   read('v2:runbook-read', () => ({ content: '', bytes: 0, hash: '0'.repeat(64), empty: true }));
   read('v2:quick-question-opening-get', () => ({ schemaVersion: 1, text: '只读排查', defaultText: '只读排查', revision: 1 }));
   read('v2:quick-question-list', () => ({ schemaVersion: 1, projectId, environmentId, revision: 1, items: [] }));
-  for (const operation of ['scan', 'inspect', 'read', 'release']) register('v2:redis-workspace-' + operation, async (_event, payload) => {
+  for (const operation of ['scan', 'inspect', 'read', 'release', 'export']) register('v2:redis-workspace-' + operation, async (_event, payload) => {
     calls.push({ operation, payload });
     assert.deepEqual({ projectId: payload.projectId, environmentId: payload.environmentId, pluginInstanceId: payload.pluginInstanceId }, scope);
     if (operation === 'release') return ok({ released: true });
+    if (operation === 'export') return ok({ saved:true, bytes:Buffer.byteLength(largeJson) });
     assert.ok(['cache', 'session'].includes(payload.patternId));
     if (state.hold?.operation === operation) {
       const hold = state.hold; state.hold = null;
@@ -95,19 +97,14 @@ function mocks(redisKeySearch) {
       return ok({key:payload.key,type:'string',exists:true,rows:[],nextCursor:null,complete:true,truncated:false,readAt:stamp(),value:value(current.value)});
     }
     if (operation === 'inspect') return ok({ key: payload.key, type: typeOf(payload.key), exists: payload.key !== 'cache:expired', ttlSeconds: payload.key === 'cache:expired' ? -2 : payload.key === 'cache:text' ? 1680 : -1,
-      length: typeOf(payload.key) === 'string' ? payload.key === 'cache:platform:' ? Buffer.byteLength(platformJson) : payload.key === 'cache:json-preview' ? 100000 : payload.key === 'cache:large-json' ? Buffer.byteLength(largeJson) : payload.key === 'cache:empty' ? 0 : 25 : null, cardinality: typeOf(payload.key) === 'string' ? null : 2, readAt: stamp() });
+      length: typeOf(payload.key) === 'string' ? payload.key === 'cache:platform:' ? Buffer.byteLength(platformJson) : payload.key === 'cache:medium-json' ? Buffer.byteLength(mediumJson) : payload.key === 'cache:huge-value' ? 21*1024*1024 : payload.key === 'cache:json-preview' ? 100000 : payload.key === 'cache:large-json' ? Buffer.byteLength(largeJson) : payload.key === 'cache:empty' ? 0 : 25 : null, cardinality: typeOf(payload.key) === 'string' ? null : 2, readAt: stamp() });
     const base = { key: payload.key, type: typeOf(payload.key), exists: true, rows: [], nextCursor: null, complete: true, truncated: false, readAt: stamp() };
     if (payload.field !== undefined) return ok({ ...base, field: payload.field, fieldExists: payload.field !== 'missing', value: payload.field === 'missing' ? null : value('精确字段内容') });
     if (payload.key === 'cache:platform:') return ok({ ...base, value: value(platformJson) });
     if (payload.key === 'cache:json-preview') return ok({ ...base, value: { ...value(partialJson, true), bytes: 100000 } });
-    if (payload.key === 'cache:large-json') {
-      if (payload.cursor && state.failValuePage) return fail('PLUGIN_TIMEOUT', '模拟后续内容读取失败，请刷新重试。');
-      const offset = payload.cursor ? Number.parseInt(payload.cursor, 16) : 0;
-      const end = Math.min(largeJson.length, offset + 65536);
-      const truncated = end < largeJson.length;
-      return ok({ ...base, nextCursor: truncated ? end.toString(16).padStart(48, '0') : null, complete: !truncated, truncated,
-        value: { ...value(largeJson.slice(offset, end), truncated), bytes: Buffer.byteLength(largeJson) } });
-    }
+    if (payload.key === 'cache:medium-json') return ok({...base,value:payload.full?value(mediumJson):{...value(mediumJson.slice(0,65536),true),bytes:Buffer.byteLength(mediumJson)}});
+    if (payload.key === 'cache:huge-value') return ok({...base,nextCursor:'a'.repeat(48),complete:false,truncated:true,value:{...value('large-preview',true),bytes:21*1024*1024,offsetBytes:0}});
+    if (payload.key === 'cache:large-json') return ok({ ...base, value: value(largeJson) });
     if (payload.key === 'cache:invalid-json') return ok({ ...base, value: value('{"broken":}') });
     if (base.type === 'string') return ok({ ...base, value: value(payload.key === 'cache:binary' ? null : payload.key === 'cache:empty' ? '' : '{"name":"示例","enabled":true}') });
     if (base.type === 'stream') return ok({ ...base, unsupported: true });
@@ -121,7 +118,7 @@ function mocks(redisKeySearch) {
       if(!payload.key.startsWith(payload.patternId+':'))return fail('POLICY_DENIED','Key 不在允许范围。');
       if(payload.mode==='create'&&keys.includes(payload.key))return fail('REDIS_KEY_EXISTS','Key 已存在。');
       const current=writeValues.get(payload.key),editId=require('node:crypto').randomUUID();
-      const session={editId,key:payload.key,mode:payload.mode,type:typeOf(payload.key),value:current?.value??'{"name":"示例","enabled":true}',ttlMilliseconds:(current?.ttl??-1)*1000,maxBytes:65536,expiresAt:Date.now()+1800000};
+      const session={editId,key:payload.key,mode:payload.mode,type:typeOf(payload.key),value:current?.value??(payload.key==='cache:medium-json'?mediumJson:payload.key==='cache:large-json'?largeJson:'{"name":"示例","enabled":true}'),ttlMilliseconds:(current?.ttl??-1)*1000,maxBytes:20*1024*1024,expiresAt:Date.now()+1800000};
       writeSessions.set(editId,session);return ok(session);
     }
     const session=writeSessions.get(payload.editId);
@@ -163,7 +160,9 @@ function mocks(redisKeySearch) {
     });
   }
 }
+let lastUiStep = '启动';
 async function waitFor(win, expression, label) {
+  lastUiStep = label;
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) { if (await win.webContents.executeJavaScript(expression, true)) return; await wait(30); }
   throw new Error('等待超时：' + label);
@@ -177,7 +176,7 @@ async function takeScanHold() {
   return release;
 }
 async function click(win, selector) {
-  await waitFor(win, `document.querySelector(${JSON.stringify(selector)})?.getClientRects().length > 0`, selector);
+  await waitFor(win, `document.querySelector(${JSON.stringify(selector)})?.getClientRects().length > 0 && !document.querySelector(${JSON.stringify(selector)}).disabled`, selector);
   await win.webContents.executeJavaScript(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); if(e.disabled) throw new Error('控件不可用'); e.click(); })()`, true);
   await wait(60);
 }
@@ -197,6 +196,7 @@ async function fill(win, selector, text) {
       const e=document.querySelector(${JSON.stringify(selector)}), view=e.cmTile.root.view;
       return document.activeElement===e && view.state.selection.main.from===0 && view.state.selection.main.to===view.state.doc.length;
     })()`,'原生全选覆盖完整 Redis 草稿');
+    await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-draft-bytes]")?.textContent.includes("/")','草稿字节校验完成');
     const byteLimit = await win.webContents.executeJavaScript(`Number(document.querySelector(${JSON.stringify(selector)}).closest('[data-testid=redis-value-editor]').querySelector('[data-testid=redis-draft-bytes]').textContent.split('/')[1].replace(/[^0-9]/g,''))`,true);
     assert.ok(Number.isSafeInteger(byteLimit)&&byteLimit>0,'编辑器显示有效的 UTF-8 字节预算');
     if (text) await win.webContents.insertText(text);
@@ -205,9 +205,9 @@ async function fill(win, selector, text) {
       win.webContents.sendInputEvent({type:'keyUp',keyCode:'Backspace'});
     }
     // 超限用例由编辑器拒绝并保留原文；普通输入则必须完整替换成请求文本。
-    if (text.length<=65536 && Buffer.byteLength(text,'utf8')<=byteLimit) await waitFor(win,`document.querySelector(${JSON.stringify(selector)}).cmTile.root.view.state.sliceDoc()===${JSON.stringify(text)}`,'Redis 草稿完整替换为输入原文');
+    if (text.length<=20*1024*1024 && Buffer.byteLength(text,'utf8')<=byteLimit) await waitFor(win,`document.querySelector(${JSON.stringify(selector)}).cmTile.root.view.state.sliceDoc()===${JSON.stringify(text)}`,'Redis 草稿完整替换为输入原文');
   } else await win.webContents.executeJavaScript(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(e instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(text)}); e.dispatchEvent(new Event('input',{bubbles:true})); })()`, true);
-  await wait(40);
+  await wait(250);
 }
 async function openMenu(win, id) {
   await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(testId(id))}).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`, true);
@@ -241,8 +241,13 @@ async function openKey(win, key, pin = false) {
   await click(win, selector);
   if (pin) await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(selector)}).dispatchEvent(new MouseEvent('dblclick',{bubbles:true}))`, true);
   await waitFor(win, `document.querySelector('.redis-tab-panel:not([hidden]) [data-testid="redis-key-meta"]')?.textContent.includes('读取于')`, 'Key 元数据');
+  if (typeOf(key)==='string' && key!=='cache:expired') {
+    await waitFor(win,'Boolean(document.querySelector(".redis-tab-panel:not([hidden]) .redis-value-viewer"))','值视图出现');
+    await waitFor(win,'!document.querySelector(".redis-tab-panel:not([hidden]) .redis-value-viewer")?.textContent.includes("正在识别内容格式")','内容识别完成');
+  }
 }
 async function captureFrame(win) {
+  lastUiStep = '等待画面帧';
   await win.webContents.capturePage();
   win.webContents.invalidate();
   await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))', true);
@@ -336,41 +341,81 @@ async function run() {
     assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector("#redis-injection") || window.injected)', true), false, 'JSON 中的 HTML 只显示为文本');
     await shot(win, 'redis-json-dark');
     await openKey(win, 'cache:json-preview');
-    await text(win, active('redis-value-truncation'), 'JSON 片段');
+    await text(win, active('redis-value-truncation'), '预览');
     await text(win, active('redis-value'), '未读取完');
     await click(win, active('redis-copy-content'));
     const fragment = await win.webContents.executeJavaScript('window.__redisCopies.at(-1)', true);
     assert.ok(fragment.endsWith('未读取完  '), '截断字符串不补齐，不丢弃尾部空白');
     assert.throws(() => JSON.parse(fragment));
     await shot(win, 'redis-json-partial');
-    await openKey(win, 'cache:large-json');
-    await text(win, active('redis-value-truncation'), 'JSON 片段');
-    await waitFor(win, 'document.querySelectorAll(".redis-tab-panel:not([hidden]) .cm-line").length > 0', '大 JSON 渲染');
-    assert.ok(await win.webContents.executeJavaScript('document.querySelectorAll(".redis-tab-panel:not([hidden]) .cm-line").length < 300', true), '大内容按视口渲染，避免创建全部行节点');
-    state.failValuePage = true;
-    await click(win, active('redis-value-more'));
-    await text(win, active('redis-key-error'), '模拟后续内容读取失败');
-    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-more]"))', true), false, '失败后不能重复消费旧游标');
-    await click(win, active('redis-copy-content'));
-    assert.ok((await win.webContents.executeJavaScript('window.__redisCopies.at(-1)', true)).includes('item-0'), '失败保留已加载片段');
-    state.failValuePage = false;
-    await click(win, active('redis-refresh-key'));
-    await waitFor(win, 'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-more]")?.disabled === false', '刷新后可重新续读');
-    for (let offset = 65536; offset < largeJson.length; offset += 65536) {
-      const before = calls.filter(entry => entry.operation === 'read').length;
-      await click(win, active('redis-value-more'));
-      await waitFor(win, '!document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-more]") || document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-more]").disabled === false', '分段读取结束');
-      assert.equal(calls.filter(entry => entry.operation === 'read').length, before + 1, '每次点击只读一个有界分段');
-    }
-    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-truncation]"))', true), false, '完整读取后不再提示截断');
-    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-edit-value]").disabled', true), true, '完整查看长 JSON 不放宽编辑上限');
+    await openKey(win, 'cache:large-json', true);
+    await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-view-json]")?.getAttribute("aria-pressed")==="true"','长 JSON 自动识别完成');
+    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-truncation]"))',true),false,'普通长 JSON 自动完整打开');
+    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-more]"))',true),false,'普通长 JSON 不要求续读');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-edit-value]").disabled',true),false,'完整长 JSON 可编辑');
+    assert.ok(await win.webContents.executeJavaScript('document.querySelectorAll(".redis-tab-panel:not([hidden]) .cm-line").length < 300',true),'大内容按视口渲染');
+    const heldPage = text => ({key:'cache:large-json',type:'string',exists:true,rows:[],value:value(text),nextCursor:null,complete:true,truncated:false,readAt:stamp()});
+    const oldRead = {operation:'read',data:heldPage('迟到快照')};
+    state.hold = oldRead;
+    await click(win,active('redis-refresh-key'));
+    assert.ok(oldRead.release);
+    await click(win,'[data-redis-key="cache:empty"]');
+    await click(win,'[data-redis-key="cache:large-json"]');
+    const nextRead = {operation:'read',data:heldPage(largeJson)};
+    state.hold = nextRead;
+    await click(win,active('redis-refresh-key'));
+    oldRead.release();
+    const readDeadline = Date.now()+5000;
+    while(!nextRead.release && Date.now()<readDeadline) await wait(20);
+    assert.ok(nextRead.release,'重新读取进入等待');
+    await wait(150);
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) .redis-value-viewer").textContent.includes("迟到快照")',true),false,'切回同一标签后旧请求不能冒充新请求');
+    nextRead.release();
+    await waitFor(win,'!document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-refresh-key]").getAttribute("aria-busy") || document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-refresh-key]").getAttribute("aria-busy")==="false"','重新读取结束');
+    await click(win,active('redis-value-export'));
+    await text(win,testId('redis-notice'),'已导出完整原始内容');
     await click(win, active('redis-copy-content'));
     assert.deepEqual(JSON.parse(await win.webContents.executeJavaScript('window.__redisCopies.at(-1)', true)), JSON.parse(largeJson), 'JSON 模式复制包含所有分段和尾部');
     await win.webContents.executeJavaScript('(()=>{const view=document.querySelector(".redis-tab-panel:not([hidden]) .cm-content").cmTile.root.view;view.dispatch({selection:{anchor:view.state.doc.length},scrollIntoView:true})})()', true);
     await waitFor(win, 'document.querySelector(".redis-tab-panel:not([hidden]) .cm-content")?.textContent.includes("item-5999")', '滚动到完整 JSON 末尾');
+    await waitFor(win,'document.querySelector(".redis-tab-panel:not([hidden]) .cm-scroller").scrollTop > 1000','长 JSON 滚动位置已落定');
+    await captureFrame(win);
+    const formattedLarge = await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) .cm-content").cmTile.root.view.state.doc.toString()',true);
+    const readingPosition = await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) .cm-content").cmTile.root.view.scrollSnapshot().value.range.anchor',true);
+    await click(win,active('redis-edit-value'));
+    await waitFor(win,'Boolean(document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-draft-value]"))','JSON 查看直接进入编辑');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) .cm-content").cmTile.root.view.state.doc.toString()',true),formattedLarge,'进入编辑保留 JSON 排版');
+    await captureFrame(win);
+    await waitFor(win,`Math.abs(document.querySelector(".redis-tab-panel:not([hidden]) .cm-content").cmTile.root.view.scrollSnapshot().value.range.anchor - ${readingPosition}) < 200`,'进入编辑保留实际阅读位置');
+    await click(win,active('redis-save-value'));
+    await waitFor(win,'Boolean(document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-edit-value]"))','未修改正文的保存完成');
+    assert.equal(writeValues.get('cache:large-json').value,largeJson,'未修改正文时保存保持原始空白');
     await click(win, active('redis-view-text'));
     await click(win, active('redis-copy-content'));
     assert.equal(await win.webContents.executeJavaScript('window.__redisCopies.at(-1)', true), largeJson, '原文模式复制逐字保持完整内容');
+    await click(win,active('redis-edit-value'));
+    await waitFor(win,'Boolean(document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-draft-value]"))','长 JSON 进入原地编辑');
+    await fill(win,'.redis-tab-panel:not([hidden]) [aria-label="Redis Value"]',largeJson.replace('item-5999','changed-5999'));
+    await click(win,active('redis-save-value'));
+    await waitFor(win,'Boolean(document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-edit-value]"))','长 JSON 保存完成');
+    assert.ok(writeValues.get('cache:large-json').value.includes('changed-5999'),'大于 64 KiB 的值可保存');
+    await click(win,'[aria-label="关闭 cache:large-json"]');
+    await openKey(win,'cache:medium-json');
+    await text(win,active('redis-value-truncation'),'完整打开后');
+    await click(win,active('redis-value-full'));
+    await waitFor(win,'!document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-truncation]")','一次完整打开 6 MiB');
+    await click(win,active('redis-view-text'));
+    await click(win,active('redis-copy-content'));
+    assert.equal(await win.webContents.executeJavaScript('window.__redisCopies.at(-1)',true),mediumJson,'大值完整打开不缺尾部');
+    await click(win,active('redis-edit-value'));
+    await waitFor(win,'Boolean(document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-draft-value]"))','6 MiB 可进入编辑');
+    await click(win,'[aria-label="关闭 cache:medium-json"]');
+    await click(win,testId('redis-discard-confirm'));
+    await openKey(win,'cache:huge-value');
+    await text(win,active('redis-value-truncation'),'大值模式');
+    assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-edit-value]").disabled',true),true,'超过 20 MiB 明确限制在线编辑');
+    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-value-full]"))',true),false,'超大值不提供误导性完整打开入口');
+    await click(win,active('redis-value-export'));
     await openKey(win, 'cache:invalid-json');
     assert.equal(await win.webContents.executeJavaScript('document.querySelector(".redis-tab-panel:not([hidden]) [data-testid=redis-view-json]").disabled', true), true);
     await text(win, active('redis-value'), '{"broken":}');
@@ -862,4 +907,5 @@ async function run() {
   } catch (error) { console.error('Redis 渲染错误', JSON.stringify(errors)); await shot(win, 'redis-failure').catch(() => {}); throw error; }
   finally { if (!win.isDestroyed()) win.destroy(); }
 }
-run().then(() => app.exit(0)).catch((error) => { process.stderr.write(String(error.stack ?? error) + '\n'); app.exit(1); });
+const progressTimer = setInterval(() => process.stdout.write('Redis UI 正在验证：' + lastUiStep + '\n'), 30000);
+run().then(() => { clearInterval(progressTimer); app.exit(0); }).catch((error) => { clearInterval(progressTimer); process.stderr.write(String(error.stack ?? error) + '\n'); app.exit(1); });

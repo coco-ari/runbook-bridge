@@ -456,16 +456,13 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
         assert.equal(info.ttlSeconds, 3600);
         const content = await success('redisWorkspaceRead', {...redisScope,patternId,key:'cache:fixture'});
         assert.equal(content.value.text, 'fixture-value');
-        let jsonCursor = null;
-        let jsonText = '';
-        do {
-          const page = await success('redisWorkspaceRead', { ...redisScope, patternId, key: 'cache:large-json', cursor: jsonCursor });
-          assert.ok(page.value.shownBytes <= 65536);
-          jsonText += page.value.text;
-          jsonCursor = page.nextCursor;
-          assert.equal(page.complete, jsonCursor === null);
-        } while (jsonCursor);
-        assert.equal(jsonText, redisLargeJson, '正式包 IPC 分段读取完整长 JSON');
+        const fullJson = await success('redisWorkspaceRead', { ...redisScope, patternId, key:'cache:large-json' });
+        assert.equal(fullJson.value.text, redisLargeJson, '正式包自动读取完整长 JSON');
+        assert.equal(fullJson.nextCursor, null);
+        assert.equal(fullJson.value.truncated, false);
+        assert.equal(fullJson.value.digest, crypto.createHash('sha256').update(redisLargeJson).digest('hex'));
+        const exportDenied = await invoke('redisWorkspaceExport', {...redisScope,patternId,key:'cache:fixture',path:'outside.txt'});
+        assert.equal(exportDenied.error.code,'INVALID_ARGUMENT');
         const denied = await invoke('redisWorkspaceRead', {...redisScope,patternId,key:'cache:fixture',command:'SET'});
         assert.equal(denied.error.code, 'INVALID_ARGUMENT');
         const normalAudit = await success('listAudit', {...redisScope,view:'operations',limit:100});

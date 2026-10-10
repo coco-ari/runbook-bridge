@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import crypto from 'node:crypto';
+import desktopLimits from '../src/redis-desktop-limits.json' with { type: 'json' };
 import { DesktopRedisEditor, prepareRedisEditRequest } from '../src/desktop-redis-editor.mjs';
 import { RedisEditConnection } from '../src/redis-edit-connection.mjs';
 import { RedisWorkspaceReader } from '../src/redis-workspace-reader.mjs';
@@ -79,9 +81,9 @@ test('常用五种类型可单 Key 删除，禁止目录和未登记范围',asyn
 
 test('JSON 校验、二进制与超限值、过期设置和未知字段被拒绝',async t=>{
   const h=harness();t.after(()=>h.editor.dispose());const session=await h.open();
-  for(const extra of [{format:'json',value:'{'},{value:'x'.repeat(65537)},{expiry:{mode:'relative',milliseconds:0}},{expiry:{mode:'keep',milliseconds:1}}])assert.throws(()=>prepare(h,session,extra));
+  for(const extra of [{format:'json',value:'{'},{value:'x'.repeat(desktopLimits.editableBytes+1)},{expiry:{mode:'relative',milliseconds:0}},{expiry:{mode:'keep',milliseconds:1}}])assert.throws(()=>prepare(h,session,extra));
   h.records.get('fixture:key').value=Buffer.from([0xff]);await assert.rejects(h.open(),{code:'REDIS_EDIT_READONLY'});
-  h.records.get('fixture:key').value=Buffer.alloc(65537,65);await assert.rejects(h.open(),{code:'REDIS_EDIT_READONLY'});
+  h.records.get('fixture:key').value=Buffer.alloc(desktopLimits.editableBytes+1,65);await assert.rejects(h.open(),{code:'REDIS_EDIT_READONLY'});
   assert.throws(()=>prepareRedisEditRequest({...scope,editId:session.editId,command:'FLUSHDB'},'prepare'),{code:'INVALID_ARGUMENT'});
 });
 
@@ -105,6 +107,52 @@ test('独立写入连接不扩大只读通道或任意命令入口',()=>{
   const reader=new RedisWorkspaceReader({}),writer=new RedisEditConnection({});reader.ready=true;writer.ready=true;
   assert.throws(()=>reader.command(['SET','fixture:key','value'],Date.now()+1000),{code:'POLICY_DENIED'});
   for(const command of ['FLUSHDB','EVAL','DEL','KEYS','SELECT'])assert.throws(()=>writer.command([command],Date.now()+1000),{code:'POLICY_DENIED'});
+});
+
+test('99 KiB、5 MiB 和 20 MiB 文本可编辑保存，保留原字节与 TTL',async t=>{
+  for(const size of [99*1024,desktopLimits.autoOpenBytes,desktopLimits.editableBytes]){
+    const h=harness();t.after(()=>h.editor.dispose());
+    const value='中😀'+ 'x'.repeat(size-7);
+    h.records.get('fixture:key').value=Buffer.from(value);
+    const session=await h.open();assert.equal(session.value,value);assert.equal(session.maxBytes,desktopLimits.editableBytes);
+    const plan=prepare(h,session,{value});assert.equal((await commit(h,session,plan)).status,'success');
+    assert.equal(h.records.get('fixture:key').value.toString(),value);assert.equal(h.records.get('fixture:key').ttl,10000);
+  }
+});
+
+test('预览指纹识别等长替换，编辑后等长修改仍由 WATCH 阻止',async t=>{
+  const h=harness();t.after(()=>h.editor.dispose());
+  const expectedDigest=crypto.createHash('sha256').update('original').digest('hex');
+  h.change('fixture:key',{type:'string',value:Buffer.from('modified'),ttl:10000});
+  await assert.rejects(h.editor.open('window-a',plugin,{patternId:'allowed',key:'fixture:key',mode:'update',expectedDigest}),{code:'REDIS_EDIT_CONFLICT'});
+  const session=await h.open(),plan=prepare(h,session);
+  h.change('fixture:key',{type:'string',value:Buffer.from('replaced'),ttl:10000});
+  assert.equal((await commit(h,session,plan)).error.code,'REDIS_EDIT_CONFLICT');
+});
+
+test('真实 RESP 通道可读取和写入 5 MiB 原文，准备与提交均不改变字节',async t=>{
+  const original='中😀'+'x'.repeat(desktopLimits.autoOpenBytes-7);
+  let saved;
+  const fixture=await redisProtocolFixture(args=>{
+    if(['WATCH','MULTI'].includes(args[0]))return 'OK';
+    if(args[0]==='TYPE')return 'string';
+    if(args[0]==='PTTL')return 10000;
+    if(args[0]==='STRLEN')return Buffer.byteLength(original);
+    if(args[0]==='GETRANGE')return Buffer.from(original);
+    if(args[0]==='SET'){saved=args[2];assert.ok(args.includes('KEEPTTL'));return 'QUEUED';}
+    if(args[0]==='EXEC')return ['OK'];
+    throw new Error('未登记测试命令');
+  },{maxBytes:desktopLimits.editableBytes+64});
+  const session={};
+  const editor=new DesktopRedisEditor({require:()=>session,desktopEditConnection:()=>new RedisEditConnection({socket:{host:'127.0.0.1',port:fixture.port},database:0})},{appendAudit:async()=>{}});
+  t.after(async()=>{editor.dispose();await fixture.close();});
+  const configured={...plugin,limits:{...plugin.limits,timeoutMs:10000}};
+  const edit=await editor.open('window-a',configured,{patternId:'allowed',key:'fixture:key',mode:'update'});
+  assert.equal(edit.value===original,true);
+  const next=original.slice(0,-1)+'z';
+  const plan=editor.prepare('window-a',configured,{editId:edit.editId,value:next,format:'text',expiry:{mode:'keep'}});
+  assert.equal((await editor.commit('window-a',configured,{editId:edit.editId,planId:plan.planId})).status,'success');
+  assert.equal(saved===next,true);
 });
 
 test('真实 RESP 写入区分服务器拒绝、事务冲突和提交断线，不泄露错误正文',async t=>{

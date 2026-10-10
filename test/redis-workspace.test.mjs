@@ -7,7 +7,8 @@ import { V2Service } from '../src/v2-service.mjs';
 import { registerRedisWorkspaceIpc } from '../src/redis-workspace-ipc.mjs';
 import { BoundedRespDecoder, REDIS_REPLY_BYTES } from '../src/redis-workspace-reader.mjs';
 import { redisProtocolFixture, resp } from './fixtures/redis-workspace-server.mjs';
-import { mergeRedisValue } from '../renderer/v2/src/features/redis/redis-workspace-model.ts';
+import crypto from 'node:crypto';
+import desktopLimits from '../src/redis-desktop-limits.json' with { type: 'json' };
 
 const scope = { projectId: 'fixture-project', environmentId: 'testing', pluginInstanceId: 'fixture-redis' };
 async function harness(t, handler, limits = {}) {
@@ -64,6 +65,30 @@ test('RESP2 增量解析支持碎片、嵌套、二进制和空值，并在声�
   }
   assert.throws(() => new BoundedRespDecoder().push(Buffer.from('$1\r\naXX')), { code: 'REDIS_REPLY_INVALID' });
   assert.throws(() => new BoundedRespDecoder().push(Buffer.from('-NOPERM private-payload\r\n')), (error) => error.code === 'REDIS_PERMISSION_DENIED' && !error.message.includes('private-payload'));
+});
+
+test('大回复解码按本次有界请求扩容，正文分片只使用一个缓冲区', () => {
+  const raw = Buffer.alloc(desktopLimits.editableBytes, 97);
+  const decoder = new BoundedRespDecoder({ maxBytes: raw.length + 64 });
+  decoder.push(Buffer.from('$' + raw.length + '\r\n'));
+  const allocated = decoder.bulk;
+  for (let offset = 0; offset < raw.length; offset += 65536) {
+    decoder.push(raw.subarray(offset, offset + 65536));
+    assert.equal(decoder.bulk, allocated);
+  }
+  decoder.push(Buffer.from('\r\n'));
+  assert.equal(decoder.value.equals(raw), true);
+  assert.throws(() => new BoundedRespDecoder({ maxBytes: desktopLimits.editableBytes + 65 }), { code:'REDIS_REPLY_TOO_LARGE' });
+});
+
+test('超大值不能强制完整打开，完整打开参数与导出路径不接受越权覆盖', async t => {
+  const h = await harness(t, args => args[0] === 'STRLEN' ? desktopLimits.editableBytes + 1 : standard(args));
+  assert.equal((await h.invoke('read', { key:'cache:text', full:true })).error.code, 'REDIS_VALUE_TOO_LARGE');
+  assert.equal((await h.invoke('read', { key:'cache:text', full:true, cursor:'a'.repeat(48) })).error.code, 'INVALID_ARGUMENT');
+  assert.equal((await h.invoke('export', { key:'cache:text', path:'outside.txt' })).error.code, 'INVALID_ARGUMENT');
+  assert.equal((await h.invoke('export', { key:'outside' })).error.code, 'POLICY_DENIED');
+  assert.equal((await h.invoke('export', { key:'cache:text' }, { ...h.event, senderFrame:{} })).error.code, 'WORKSPACE_ACCESS_DENIED');
+  assert.ok(!h.fixture.calls.some(args=>args[0]==='GETRANGE'));
 });
 
 test('桌面 Redis 来源、作用域、范围及参数覆盖在读取前被拒绝', async (t) => {
@@ -226,9 +251,9 @@ test('String 读取保留 UTF-8 字符边界，空字符串与不存在分开显
     return standard(args);
   }, { maxValueBytes: 256 });
   const preview = (await h.invoke('read', { key: 'cache:unicode' })).data.value;
-  assert.equal(preview.text, '中'.repeat(85));
-  assert.equal(preview.shownBytes, 255);
-  assert.equal(preview.truncated, true);
+  assert.equal(preview.text, '中'.repeat(100));
+  assert.equal(preview.shownBytes, 300);
+  assert.equal(preview.truncated, false);
   const empty = (await h.invoke('read', { key: 'cache:empty' })).data;
   assert.equal(empty.exists, true);
   assert.equal(empty.value.text, '');
@@ -236,42 +261,34 @@ test('String 读取保留 UTF-8 字符边界，空字符串与不存在分开显
   assert.equal((await h.invoke('read', { key: 'cache:gone' })).data.exists, false);
 });
 
-test('长 JSON 按单次预算续读并完整拼接，中文、大整数和尾部不丢失', async (t) => {
-  const source = '{"id":9007199254740993123,"text":"' + '中文😀'.repeat(12000) + '","tail":"完整末尾"}';
-  const raw = Buffer.from(source);
-  const h = await harness(t, args => {
-    if (args[0] === 'STRLEN') return raw.length;
-    if (args[0] === 'GETRANGE') return raw.subarray(Number(args[2]), Number(args[3]) + 1);
-    return standard(args);
-  });
-  let cursor = null;
-  let combined;
-  let offset = 0;
-  do {
-    const response = await h.invoke('read', { key: 'cache:text', cursor });
-    assert.equal(response.ok, true);
-    const page = response.data;
-    assert.equal(page.value.bytes, raw.length);
-    assert.ok(page.value.shownBytes <= 65536);
-    assert.ok(!page.value.text.includes('\ufffd'));
-    const call = h.fixture.calls.filter(args => args[0] === 'GETRANGE').at(-1);
-    assert.equal(Number(call[2]), offset);
-    assert.ok(Number(call[3]) - Number(call[2]) + 1 <= 65536);
-    offset += page.value.shownBytes;
-    combined = combined ? mergeRedisValue(combined, page.value) : page.value;
-    cursor = page.nextCursor;
-    assert.equal(page.complete, cursor === null);
-    assert.equal(page.truncated, cursor !== null);
-  } while (cursor);
-  assert.equal(combined.text, source);
-  assert.equal(combined.hex, raw.toString('hex'));
-  assert.equal(combined.shownBytes, raw.length);
-  assert.equal(combined.truncated, false);
-  assert.ok(!JSON.stringify(h.audits).includes('完整末尾'));
+test('长 JSON 自动原子读取完整内容，中文、大整数、指纹和尾部不丢失', async t => {
+  for (const size of [99*1024, desktopLimits.autoOpenBytes, desktopLimits.editableBytes]) {
+    const source = '{"id":9007199254740993123,"text":"' + '中😀'.repeat(Math.floor((size-80)/7)) + '","tail":"完整末尾"}';
+    const raw = Buffer.from(source);
+    const h = await harness(t, args => {
+      if (args[0] === 'STRLEN') return raw.length;
+      if (args[0] === 'GETRANGE') return raw.subarray(Number(args[2]), Number(args[3])+1);
+      return standard(args);
+    }, { timeoutMs: 10000 });
+    const initial = await h.invoke('read', {key:'cache:text'});
+    assert.equal(initial.ok, true, JSON.stringify(initial.error));
+    if (size > desktopLimits.autoOpenBytes) assert.equal(initial.data.value.truncated, true);
+    const response = size > desktopLimits.autoOpenBytes ? await h.invoke('read', {key:'cache:text',full:true}) : initial;
+    assert.equal(response.ok, true, JSON.stringify(response.error));
+    const value = response.data.value;
+    assert.equal(value.text === source, true);
+    assert.equal(value.hex, '');
+    assert.equal(value.shownBytes, raw.length);
+    assert.equal(value.truncated, false);
+    assert.equal(value.digest, crypto.createHash('sha256').update(raw).digest('hex'));
+    assert.equal(response.data.nextCursor, null);
+    assert.equal(h.fixture.calls.filter(args=>args[0]==='GETRANGE').length, size > desktopLimits.autoOpenBytes ? 2 : 1);
+    assert.ok(!JSON.stringify(h.audits).includes('完整末尾'));
+  }
 });
 
 test('String 游标单次消费并绑定 Key、窗口和配置，大小变化不能拼接旧值', async (t) => {
-  let raw = Buffer.alloc(700, 97);
+  let raw = Buffer.alloc(desktopLimits.autoOpenBytes + 700, 97);
   const h = await harness(t, args => {
     if (args[0] === 'TYPE') return 'string';
     if (args[0] === 'STRLEN') return raw.length;
@@ -285,7 +302,7 @@ test('String 游标单次消费并绑定 Key、窗口和配置，大小变化不
   assert.equal((await h.invoke('read', { key: 'cache:text', cursor })).ok, true);
   assert.equal((await h.invoke('read', { key: 'cache:text', cursor })).error.code, 'INVALID_CURSOR');
   const changed = await next();
-  raw = Buffer.alloc(701, 97);
+  raw = Buffer.alloc(desktopLimits.autoOpenBytes + 701, 97);
   assert.equal((await h.invoke('read', { key: 'cache:text', cursor: changed })).error.code, 'REDIS_VALUE_CHANGED');
   const revised = await next();
   h.plugin.revision++;
@@ -296,7 +313,7 @@ test('String 游标单次消费并绑定 Key、窗口和配置，大小变化不
 });
 
 test('String 分段读取为 RESP 头保留空间，读取中长度变化或短回复被拒绝', async (t) => {
-  const raw = Buffer.alloc(REDIS_REPLY_BYTES + 100, 97);
+  const raw = Buffer.alloc(desktopLimits.autoOpenBytes + 100, 97);
   let shorten = false;
   let changed = false;
   const h = await harness(t, args => {
@@ -312,8 +329,8 @@ test('String 分段读取为 RESP 头保留空间，读取中长度变化或短�
   assert.ok(first.data.value.shownBytes < REDIS_REPLY_BYTES);
   const last = await h.invoke('read', { key: 'cache:text', cursor: first.data.nextCursor });
   assert.equal(last.ok, true);
-  assert.equal(last.data.complete, true);
-  assert.equal(first.data.value.shownBytes + last.data.value.shownBytes, raw.length);
+  assert.equal(last.data.complete, false);
+  assert.ok(last.data.value.shownBytes < REDIS_REPLY_BYTES);
   shorten = true;
   assert.equal((await h.invoke('read', { key: 'cache:text' })).error.code, 'REDIS_VALUE_CHANGED');
 });
