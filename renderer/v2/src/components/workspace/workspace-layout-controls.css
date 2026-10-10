@@ -21,10 +21,11 @@
 .server-workspace-toolbar [data-slot="button"], .redis-toolbar [data-slot="button"], .redis-value-toolbar [data-slot="button"], .mysql-editor-toolbar [data-slot="button"], .mysql-table-toolbar > [data-slot="button"] { height: var(--control-height-compact); font-size: var(--text-xs); }
 
 
-/* 窄窗口优先保留资源名称，公共入口以图标和可访问名称呈现。 */
+/* 窄窗口收起入口文字，数量仍以角标显示。 */
 @media (max-width: 1400px) {
   .workspace-global-button { width: var(--control-height); height: var(--control-height); flex-shrink: 0; gap: 0; padding: 0; }
-  .workspace-global-button > span { display: none; }
+  .workspace-global-button > span:not([data-utility-count]) { display: none; }
+  .workspace-global-button > [data-utility-count] { position: absolute; top: -2px; right: -2px; }
 }
 @media (max-width: 900px) {
   .workspace-back-button { width: var(--control-height); height: var(--control-height); flex-shrink: 0; gap: 0; padding: 0; font-size: 0; }

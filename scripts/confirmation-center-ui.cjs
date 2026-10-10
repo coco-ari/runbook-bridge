@@ -56,6 +56,7 @@ module.exports = async ({win,confirmations,publishUpdates,waitFor,captureRendere
     publish(base);
     publishUpdates([{id:'merged-cloud',type:'cloud',kind:'changed',repositoryId:'fixture-one',repositoryName:'合成仓库',projectId:'demo',title:'合成项目更新',description:'云端有配置变化'}]);
     await waitFor(`document.querySelector('[data-testid="confirmation-notice"]')?.textContent.includes('3 项操作待确认')`,'侧栏持续提示');
+    await waitFor(`document.querySelector('[data-testid="updates-count"]')?.textContent === '4'`,'消息角标合计三项确认与一项更新');
     await click('[data-project-id="project-data"]');
     await open();
     assert.equal(await evaluate(`document.querySelector('#detail-main').dataset.selectionKind`),'project','确认详情保留原导航');
@@ -108,6 +109,7 @@ module.exports = async ({win,confirmations,publishUpdates,waitFor,captureRendere
     releaseDecision(); releaseDecision = null;
     await waitFor(`document.querySelector('[data-testid="message-decision-feedback"]')?.textContent.includes('等待 Agent 执行') && !document.querySelector('${review}')`,'授权后回消息列表且不误报执行成功');
     await waitFor(`document.querySelector('[data-testid="updates-open"]').getAttribute('aria-label') === '消息中心，2 项待确认操作，1 项更新'`,'两种计数独立');
+    assert.equal(await evaluate(`document.querySelector('[data-testid="updates-count"]').textContent`),'3','授权后消息总数同步减少');
     await select('confirmation-shell');
     failDecision = true;
     await click(reject('confirmation-shell'));
@@ -129,6 +131,7 @@ module.exports = async ({win,confirmations,publishUpdates,waitFor,captureRendere
     assert.equal(await evaluate(`document.querySelector('#detail-main').dataset.selectionKind`),'project','全部操作不跳转导航');
     publish([]);
     await waitFor(`!document.querySelector('[data-testid="confirmation-notice"]') && document.querySelector('[data-testid="update-notice"]')`,'确认处理完后提示条收起，更新仍保留');
+    assert.equal(await evaluate(`document.querySelector('[data-testid="updates-count"]').textContent`),'1','待确认归零后仍保留更新数量');
     const newRequest={...base[0],requestId:'merged-new-arrival',expiresAt:Date.now()+60000};
     publish([newRequest]);
     await waitFor(`document.querySelector('[data-sonner-toaster]')?.textContent.includes('有 1 项新操作需要确认')`,'新增请求轻提示');

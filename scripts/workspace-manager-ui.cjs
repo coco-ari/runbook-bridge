@@ -12,9 +12,13 @@ module.exports = async ({evaluate,click,until,connectionRequests,opened,redisCal
     const geometry=await evaluate(`(() => {
       const header=document.querySelector('${server} header'), button=header.querySelector('[data-testid=workspace-confirmation-notice]');
       const rect=button.getBoundingClientRect();
-      return {overflow:header.scrollWidth>header.clientWidth,visible:rect.width>=28&&rect.left>=0&&rect.right<=innerWidth,label:button.getAttribute('aria-label')};
+      const badge = selector => {
+        const element=header.querySelector(selector), bounds=element?.getBoundingClientRect();
+        return {count:element?.textContent,visible:Boolean(bounds?.width && bounds.height && bounds.left>=0 && bounds.right<=innerWidth && bounds.top>=0 && bounds.bottom<=innerHeight)};
+      };
+      return {overflow:header.scrollWidth>header.clientWidth,visible:rect.width>=28&&rect.left>=0&&rect.right<=innerWidth,label:button.getAttribute('aria-label'),workspace:badge('[data-testid=workspace-switcher] [data-utility-count]'),messages:badge('[data-testid=updates-count]')};
     })()`);
-    assert.deepEqual(geometry,{overflow:false,visible:true,label:'1 项操作待确认，打开消息中心'},'新增入口保留数量且不撑破工作区页头：'+width);
+    assert.deepEqual(geometry,{overflow:false,visible:true,label:'1 项操作待确认，打开消息中心',workspace:{count:'3',visible:true},messages:{count:'1',visible:true}},'宽窄窗口均保留工作区和消息数量且不撑破页头：'+width);
   }
   win.setContentSize(...originalSize);
   await until(`innerWidth === ${originalSize[0]}`,'恢复工作区宽度');
