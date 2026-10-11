@@ -118,7 +118,7 @@ function connectionGuidance(phase: ConnectionPhase, configReady: boolean) {
   if (phase === "unknown") {
     return { title: "连接状态尚未确认", description: "当前没有可用的连接状态，请刷新后核对；打开页面不会自动连接。" }
   }
-  return { title: "等待手动连接", description: "配置已保存。首次连接必须由用户明确触发，打开页面不会自动联网。" }
+  return { title: "等待连接", description: "配置已保存，可在此连接，也可由 Agent 按指令发起连接。打开页面不会自动连接。" }
 }
 
 export function PluginConnectionPanel({

@@ -43,6 +43,7 @@ async function exerciseAuditHistory({win,scope,root,dataRoot,ipcMain,registerRea
   await fill(win,'input[aria-label="搜索操作记录"]','history-oldest.log');
   await waitFor(win,'document.querySelectorAll("[data-audit-operation]").length === 1 && document.querySelector("[data-audit-operation]").textContent.includes("history-oldest.log")','搜索超过 200 条的历史');
   await fill(win,'input[aria-label="搜索操作记录"]','');
+  await win.webContents.executeJavaScript(`(() => {const toggle=document.querySelector('[data-testid=audit-filter-toggle]');if(toggle?.getClientRects().length&&toggle.getAttribute('aria-expanded')==='false')toggle.click();})()`,true);
   await click(win,'[aria-label="筛选参与方"]');
   await clickText(win,'用户','[role="listbox"]');
   await waitFor(win,'document.querySelectorAll("[data-audit-operation]").length === 4','用户筛选包含人工审批');

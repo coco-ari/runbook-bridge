@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   APP_SHELL_PANEL_IDS, APP_SHELL_LAYOUT_STORAGE_KEY,
   createDefaultAppShellLayout, isAppShellLayout, readAppShellLayoutState,
+  navigationPixelsForViewport,
 } from '../renderer/v2/src/state/layout-state.ts';
 
 test('新布局把宽屏新增空间交给详情，导航保持内容所需宽度', () => {
@@ -59,4 +60,15 @@ test('窄窗及损坏记录回退到可展开布局，迁移仍保留旧折叠�
     if (previous === undefined) delete globalThis.window;
     else globalThis.window = previous;
   }
+});
+
+test('窄窗临时释放详情空间，恢复宽窗和用户折叠状态不会丢失首选宽度', () => {
+  const preferred = Object.freeze({project:224,resource:320});
+  assert.deepEqual(navigationPixelsForViewport(960, preferred), {project:176,resource:240});
+  assert.deepEqual(navigationPixelsForViewport(1080, preferred), {project:198,resource:320});
+  assert.strictEqual(navigationPixelsForViewport(1280, preferred), preferred);
+  assert.strictEqual(navigationPixelsForViewport(960, preferred, true), preferred);
+  assert.strictEqual(navigationPixelsForViewport(640, preferred), preferred);
+  assert.equal(navigationPixelsForViewport(960, {project:128,resource:320}).project, 128);
+  assert.deepEqual(preferred, {project:224,resource:320});
 });

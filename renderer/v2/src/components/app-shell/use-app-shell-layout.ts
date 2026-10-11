@@ -3,6 +3,7 @@ import { useGroupRef, usePanelRef, type Layout, type LayoutChangedMeta, type Pan
 import {
   APP_SHELL_PANEL_IDS, persistAppShellLayoutState, projectCollapseIntentAfterResize,
   readAppShellLayoutState, type AppShellLayoutState,
+  navigationPixelsForViewport,
 } from "@/state/layout-state"
 
 export function useAppShellLayout(editorOpen: boolean) {
@@ -81,7 +82,7 @@ export function useAppShellLayout(editorOpen: boolean) {
 
   const restoreUserLayout = useCallback(() => {
     const panelSpace = Math.max(0, window.innerWidth - 2)
-    const pixels = stableNavigationPixelsRef.current
+    const pixels = navigationPixelsForViewport(window.innerWidth, stableNavigationPixelsRef.current, latestLayoutStateRef.current.detailCollapsed)
     // 窗口恢复只投影用户导航宽度，不改写已保存的比例；空间不足由面板库临时约束。
     const layout = panelSpace > pixels.project + pixels.resource + 48 ? {
       [APP_SHELL_PANEL_IDS.project]: pixels.project / panelSpace * 100,
@@ -100,6 +101,7 @@ export function useAppShellLayout(editorOpen: boolean) {
 
   useEffect(() => {
     const ticket = beginLayoutRestore()
+    if (window.innerWidth >= 960) restoreUserLayout()
     if (layoutState.projectCollapsed) projectPanelRef.current?.collapse()
     else if (window.innerWidth >= 720) {
       projectPanelRef.current?.expand()
@@ -162,6 +164,8 @@ export function useAppShellLayout(editorOpen: boolean) {
     if (!editorLayoutRef.current) commitLayoutState((current) => ({ ...current, projectCollapsed: collapsed }))
     finishLayoutRestore(ticket, () => {
       if (window.innerWidth < 960 || editorLayoutRef.current) return
+      // 窄窗折叠只保存开关，不能把响应式压缩后的资源宽度当作用户首选宽度。
+      if (window.innerWidth < 1120 && !resetWidth) return
       const layout = panelGroupRef.current?.getLayout()
       if (layout) rememberUserLayout(layout)
     })

@@ -1,5 +1,5 @@
-import { ArrowClockwise, ClockCounterClockwise, DotsThree, MagnifyingGlass, Trash, WarningCircle } from "@phosphor-icons/react"
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react"
+import { ArrowClockwise, ClockCounterClockwise, DotsThree, Funnel, MagnifyingGlass, Trash, WarningCircle, X } from "@phosphor-icons/react"
+import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { focusWorkspaceElement } from "@/lib/workspace-focus"
 import { getAiOpsV2, type IpcResult, type PublicError } from "@/bridge/ai-ops-v2"
@@ -87,6 +87,8 @@ export function AuditFeature({ requestId = null, projectId, environmentId, plugi
   const [customEnd, setCustomEnd] = useState("")
   const [customRange, setCustomRange] = useState<{ from: string; to: string } | null>(null)
   const [rangeError, setRangeError] = useState("")
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const filtersId = useId()
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
   const [hasUpdates, setHasUpdates] = useState(false)
@@ -100,6 +102,12 @@ export function AuditFeature({ requestId = null, projectId, environmentId, plugi
   const scopeKey = auditScopeKey(projectId, environmentId, pluginInstanceId)
   const managementHandoff = useMenuHandoff(scopeKey)
   const hasFilters = Boolean(focusedRequest || query || search || resultFilter !== "all" || actorFilter !== "all" || categoryFilter !== "all" || range !== "all" || includeRedisScans)
+  const extraFilters = [
+    ...(actorFilter !== "all" ? [{ label: `参与方：${actorLabels[actorFilter]}`, clear: () => setActorFilter("all") }] : []),
+    ...(categoryFilter !== "all" ? [{ label: `类型：${categoryLabels[categoryFilter]}`, clear: () => setCategoryFilter("all") }] : []),
+    ...(resultFilter !== "all" ? [{ label: `结果：${auditResultLabel(resultFilter as AuditResult)}`, clear: () => setResultFilter("all") }] : []),
+    ...(includeRedisScans ? [{ label: "包含 Redis 扫描", clear: () => setIncludeRedisScans(false) }] : []),
+  ]
   const clearFilters = () => {
     setFocusedRequest(null); setQuery(""); setSearch(""); setResultFilter("all"); setActorFilter("all"); setCategoryFilter("all"); setRange("all"); setIncludeRedisScans(false)
   }
@@ -225,23 +233,29 @@ export function AuditFeature({ requestId = null, projectId, environmentId, plugi
         description="查看谁做了什么，以及操作结果；展开记录可查看执行过程。"
         title={`${projectName} / ${pluginInstanceId ? pluginName ?? "当前插件" : environmentName} 操作记录`} titleId="audit-feature-title"
       />
-      <div className="mb-3 grid grid-cols-2 items-center gap-2 @xl/audit:grid-cols-4 @5xl/audit:grid-cols-[minmax(12rem,1fr)_repeat(4,7rem)]">
-        <InputGroup className="col-span-full min-w-0 @5xl/audit:col-span-1">
+      <div className="mb-2 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 @xl/audit:grid-cols-[minmax(0,1fr)_10rem]">
+        <InputGroup className="col-span-full min-w-0 @xl/audit:col-span-1">
           <InputGroupAddon><MagnifyingGlass aria-hidden="true" /></InputGroupAddon>
           <InputGroupInput aria-label="搜索操作记录" name="audit-search" autoComplete="off" spellCheck={false} onChange={event => { setFocusedRequest(null); setQuery(event.target.value) }} placeholder="搜索动作、目标或失败原因…" type="search" value={query} />
         </InputGroup>
+        <Select value={range} onValueChange={setRange}><SelectTrigger aria-label="筛选记录时间" className="w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部时间</SelectItem><SelectItem value="1">最近 24 小时</SelectItem><SelectItem value="7">最近 7 天</SelectItem><SelectItem value="30">最近 30 天</SelectItem><SelectItem value="custom">自定义时间</SelectItem></SelectContent></Select>
+        <Button className="justify-self-start @xl/audit:hidden" size="xs" variant="outline" data-testid="audit-filter-toggle" aria-expanded={filtersOpen} aria-controls={filtersId} onClick={() => setFiltersOpen(value => !value)}><Funnel aria-hidden="true" />{filtersOpen ? "收起筛选" : "更多筛选"}{extraFilters.length ? ` · ${extraFilters.length}` : ""}</Button>
+      </div>
+      <div id={filtersId} aria-label="更多筛选条件" role="group" className={`${filtersOpen ? "grid" : "hidden @xl/audit:grid"} mb-2 grid-cols-1 gap-2 @sm/audit:grid-cols-3`}>
         <Select value={actorFilter} onValueChange={setActorFilter}><SelectTrigger aria-label="筛选参与方" className="w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部参与方</SelectItem>{Object.entries(actorLabels).map(([key,label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select>
         <Select value={categoryFilter} onValueChange={setCategoryFilter}><SelectTrigger aria-label="筛选操作类型" className="w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部类型</SelectItem>{Object.entries(categoryLabels).map(([key,label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select>
         <Select value={resultFilter} onValueChange={setResultFilter}><SelectTrigger aria-label="筛选操作结果" className="w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部结果</SelectItem>{results.map(result => <SelectItem key={result} value={result}>{auditResultLabel(result)}</SelectItem>)}</SelectContent></Select>
-        <Select value={range} onValueChange={setRange}><SelectTrigger aria-label="筛选记录时间" className="w-full min-w-0"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部时间</SelectItem><SelectItem value="1">最近 24 小时</SelectItem><SelectItem value="7">最近 7 天</SelectItem><SelectItem value="30">最近 30 天</SelectItem><SelectItem value="custom">自定义时间</SelectItem></SelectContent></Select>
-        {hasFilters ? <Button data-testid="audit-clear-filters" disabled={clearing} onClick={clearFilters} size="xs" variant="ghost">清空筛选</Button> : null}
+        <label className="col-span-full flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><Checkbox checked={includeRedisScans} onCheckedChange={value => setIncludeRedisScans(value === true)} aria-label="显示 Redis 扫描" />显示 Redis 扫描<span className="text-muted-foreground/80">默认隐藏用户的成功扫描</span></label>
       </div>
       {range === "custom" ? <div className="mb-3 space-y-2 rounded-md border p-3" data-testid="audit-custom-range">
         <div className="flex flex-wrap items-end gap-2"><label className="space-y-1 text-xs">开始时间<Input aria-label="记录开始时间" type="datetime-local" value={customStart} onChange={event => setCustomStart(event.target.value)} /></label><label className="space-y-1 text-xs">结束时间<Input aria-label="记录结束时间" type="datetime-local" value={customEnd} onChange={event => setCustomEnd(event.target.value)} /></label><Button size="sm" variant="outline" onClick={() => { const value = auditTimeRange(customStart, customEnd); if (!value) { setRangeError("请填写有效的起止时间，结束不能早于开始。"); return }; setRangeError(""); setCustomRange(value) }}>应用时间范围</Button></div>
         <p className="text-xs text-muted-foreground">按本机时区 {Intl.DateTimeFormat().resolvedOptions().timeZone} 解释，包含结束分钟。{customRange ? "当前显示已应用范围内的记录。" : "尚未应用，当前显示全部时间。"}</p>
         {rangeError ? <p role="alert" className="text-xs text-destructive">{rangeError}</p> : null}
       </div> : null}
-      <label className="mb-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"><Checkbox checked={includeRedisScans} onCheckedChange={value => setIncludeRedisScans(value === true)} aria-label="显示 Redis 扫描" />显示 Redis 扫描<span className="text-muted-foreground/80">默认隐藏用户的成功扫描</span></label>
+      {hasFilters ? <div className="mb-2 flex flex-wrap items-center gap-1.5" aria-label="已应用的记录筛选">
+        {extraFilters.map(filter => <Button key={filter.label} aria-label={`移除筛选 ${filter.label}`} size="xs" variant="secondary" onClick={filter.clear}>{filter.label}<X aria-hidden="true" /></Button>)}
+        <Button data-testid="audit-clear-filters" disabled={clearing} onClick={clearFilters} size="xs" variant="ghost">清空筛选</Button>
+      </div> : null}
       {hasUpdates ? <div role="status" className="mb-2 flex items-center justify-between gap-2 rounded-md bg-surface-inset px-3 py-2 text-xs"><span>操作记录有更新</span><Button size="xs" variant="outline" disabled={loading || clearing} onClick={refreshAudit}>查看最新记录</Button></div> : null}
       {error ? <Alert className="mb-3 w-auto" variant="destructive"><WarningCircle aria-hidden="true" weight="fill" /><AlertTitle>操作记录读取失败</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
       <ScrollArea ref={scrollRef} className="min-h-0 flex-1">

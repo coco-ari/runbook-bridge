@@ -53,6 +53,21 @@ export function createDefaultAppShellLayout(viewportWidth = 1280): Layout {
 
 export const DEFAULT_APP_SHELL_LAYOUT: Layout = createDefaultAppShellLayout()
 
+export function navigationPixelsForViewport(
+  viewportWidth: number,
+  preferred: Readonly<{ project: number; resource: number }>,
+  detailCollapsed = false,
+): Readonly<{ project: number; resource: number }> {
+  if (viewportWidth < 960 || viewportWidth >= 1120 || detailCollapsed) return preferred
+  // 窄窗为详情争取 560px；导航仍保留可读的最小宽度。
+  // 只投影当前显示，不把临时压缩写回用户的导航宽度。
+  let excess = Math.max(0, preferred.project + preferred.resource + 560 - (viewportWidth - 2))
+  const projectReduction = Math.min(excess, Math.max(0, preferred.project - 176))
+  excess -= projectReduction
+  const resourceReduction = Math.min(excess, Math.max(0, preferred.resource - 240))
+  return { project: preferred.project - projectReduction, resource: preferred.resource - resourceReduction }
+}
+
 export const DEFAULT_APP_SHELL_LAYOUT_STATE: AppShellLayoutState = {
   detailCollapsed: false,
   layout: DEFAULT_APP_SHELL_LAYOUT,

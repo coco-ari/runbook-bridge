@@ -150,7 +150,7 @@ const TLS_MODE_LABELS: Readonly<Record<TlsMode, string>> = {
 
 function advancedConnectionSummary(draft: PluginFormDraft): string {
   if (draft.pluginType === "server") {
-    return SERVER_UPLINK_LABELS[draft.uplink?.type ?? "direct"]
+    return SERVER_UPLINK_LABELS[draft.uplink?.type ?? "direct"] + (draft.target.dockerSocket ? " · 自定义 Docker Socket" : "")
   }
   const transport = DATA_TRANSPORT_LABELS[draft.transport?.kind ?? "direct"]
   const tls = TLS_MODE_LABELS[draft.tls?.mode ?? "disabled"]
@@ -205,6 +205,7 @@ export function PluginEditorWorkspace({
   const closeBlocked = busy || discardInFlight
   const saveBlocked = !editingEnabled || closeBlocked || state.confirmation !== null || pendingLocalChange !== null
   useUnsavedWork(editor.isDirty || busy)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const fieldErrors = useMemo(
     () => Object.fromEntries(state.issues.map((issue) => [issue.field, issue.message])),
     [state.issues],
@@ -487,12 +488,6 @@ export function PluginEditorWorkspace({
                         <FieldError id="plugin-port-error">{issueFor(state.issues, "port")}</FieldError>
                       </Field>
                     </div>
-                    {draft.pluginType === "server" ? <Field data-invalid={Boolean(fieldErrors.dockerSocket)}>
-                      <FieldLabel htmlFor="plugin-docker-socket">Docker Socket（可选）</FieldLabel>
-                      <Input id="plugin-docker-socket" value={draft.target.dockerSocket ?? ""} placeholder="/var/run/docker.sock" maxLength={4096} onChange={event => updateTarget("dockerSocket", event.target.value)} />
-                      <FieldDescription>通过当前 SSH 连接访问；留空使用默认 Socket，不自动提权。</FieldDescription>
-                      <FieldError>{issueFor(state.issues, "dockerSocket")}</FieldError>
-                    </Field> : null}
                   </FieldSet>
 
                   <FieldSet className="gap-3 rounded-xl border border-border/70 bg-surface/40 p-4" disabled={saveBlocked}>
@@ -680,9 +675,9 @@ export function PluginEditorWorkspace({
                     </Field>
                   ) : null}
 
-                  <Collapsible defaultOpen={false}>
+                  <Collapsible open={advancedOpen || Boolean(fieldErrors.dockerSocket)} onOpenChange={setAdvancedOpen}>
                     <CollapsibleTrigger asChild>
-                      <Button className="group/advanced w-full justify-between" type="button" variant="outline">
+                      <Button className="group/advanced w-full justify-between" data-testid="plugin-advanced-toggle" type="button" variant="outline">
                         高级连接设置
                         <span className="flex min-w-0 items-center gap-1.5 text-xs font-normal text-muted-foreground">
                           <span className="truncate">{advancedConnectionSummary(draft)}</span>
@@ -694,6 +689,12 @@ export function PluginEditorWorkspace({
                       </Button>
                     </CollapsibleTrigger>
                     <CollapsibleContent className="mt-3 space-y-4 rounded-lg border border-border bg-surface-inset p-3">
+                      {draft.pluginType === "server" ? <Field data-invalid={Boolean(fieldErrors.dockerSocket)}>
+                        <FieldLabel htmlFor="plugin-docker-socket">Docker Socket（可选）</FieldLabel>
+                        <Input id="plugin-docker-socket" aria-invalid={Boolean(fieldErrors.dockerSocket)} aria-describedby={fieldErrors.dockerSocket ? "plugin-docker-socket-error" : undefined} value={draft.target.dockerSocket ?? ""} placeholder="/var/run/docker.sock" maxLength={4096} onChange={event => updateTarget("dockerSocket", event.target.value)} />
+                        <FieldDescription>通过当前 SSH 连接访问；留空使用默认 Socket，不自动提权。</FieldDescription>
+                        <FieldError id="plugin-docker-socket-error">{issueFor(state.issues, "dockerSocket")}</FieldError>
+                      </Field> : null}
                       <Field>
                         <FieldLabel>地址策略</FieldLabel>
                         <Select

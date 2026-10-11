@@ -1655,6 +1655,7 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
   await activateTab(win,'audit');
   await click(win,'[data-testid="audit-refresh-trigger"]','refresh recovery audit rows');
   await waitFor(win,`document.querySelector('[data-feature="audit"]')?.textContent.includes('业务成功记录') === true`,'audit rows available');
+  await win.webContents.executeJavaScript(`(() => {const toggle=document.querySelector('[data-testid=audit-filter-toggle]');if(toggle?.getClientRects().length&&toggle.getAttribute('aria-expanded')==='false')toggle.click();})()`,true);
   for (const [label,description] of [['结果未记录','只读操作开始记录'],['等待确认','写入操作确认记录']]) {
     await click(win,'[aria-label="筛选操作结果"]','filter audit lifecycle');
     await clickText(win,label,'[role="listbox"]');

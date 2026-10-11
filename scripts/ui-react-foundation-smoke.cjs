@@ -3736,7 +3736,7 @@ async function assertViewport(win,width,height,theme,capture) {
       const content = row.querySelector('[data-slot="accordion-content"]');
       const status = trigger?.querySelector('[data-status]');
       const statusText = status?.querySelector(':scope > span');
-      const typeBadge = trigger?.querySelector('[data-environment-type]');
+      const typeBadge = [...(trigger?.querySelectorAll('[data-environment-type]') ?? [])].find(element=>element.getClientRects().length);
       const name = trigger?.querySelector('[data-slot="item-title"]');
       const contained = (inner,outer) => Boolean(inner && outer
         && inner.left >= outer.left - 1 && inner.right <= outer.right + 1
@@ -3782,7 +3782,9 @@ async function assertViewport(win,width,height,theme,capture) {
         statusCompactMatchesWidth:resourceRect.width < 400 ? statusTextHidden : !statusTextHidden,
         environmentType:typeBadge?.dataset.environmentType ?? null,
         environmentTypeReadable:!typeBadge || (typeRect.width >= 24 && parseFloat(getComputedStyle(typeBadge).fontSize) >= 12),
-        environmentTypeAligned:!typeBadge || Boolean(statusRect && Math.abs((typeRect.top + typeRect.bottom - statusRect.top - statusRect.bottom) / 2) <= 1),
+        environmentTypeAligned:!typeBadge || (resourceRect.width < 280
+          ? Boolean(name && typeRect.top >= name.getBoundingClientRect().bottom - 1)
+          : Boolean(statusRect && Math.abs((typeRect.top + typeRect.bottom - statusRect.top - statusRect.bottom) / 2) <= 1)),
         expansionEvidence:{titleExists:Boolean(trigger),expandExists:Boolean(expand),nested:Boolean(trigger && expand && trigger.contains(expand)),titleExpanded:trigger?.getAttribute('aria-expanded'),expandExpanded:expand?.getAttribute('aria-expanded'),rowExpanded:row.dataset.expanded,expandName:expand?.getAttribute('aria-label'),controls:expand?.getAttribute('aria-controls'),contentMounted:Boolean(content),contentId:content?.id},
         expanded:row.dataset.expanded === 'true',
         boxShadow,
@@ -4025,7 +4027,7 @@ async function assertViewport(win,width,height,theme,capture) {
     assert.equal(row.statusIdentity,true,`${width}x${height} 紧凑状态仍保留完整文字与提示`);
     assert.equal(row.statusCompactMatchesWidth,true,`${width}x${height} 运行状态按实际资源栏宽度展示：${JSON.stringify(row.childContentEvidence)}`);
     assert.equal(row.environmentTypeReadable,true,`${width}x${height} 生产/测试身份保持完整12px文字`);
-    assert.equal(row.environmentTypeAligned,true,`${width}x${height} 环境类型和连接状态保持同一水平中线：${JSON.stringify(row.childContentEvidence)}`);
+    assert.equal(row.environmentTypeAligned,true,`${width}x${height} 环境类型在窄栏置于名称下方，宽栏与状态对齐：${JSON.stringify(row.childContentEvidence)}`);
     assert.equal(row.environmentType,operationEnvironments.find(environment => environment.environmentId === row.id)?.environmentType === 'unspecified'
       ? null : operationEnvironments.find(environment => environment.environmentId === row.id)?.environmentType,`${width}x${height} 环境身份按真实数据保留`);
     assert.equal(row.independentExpansion,true,`${width}x${height} 环境展开和选择按钮互相独立：${row.id} ${JSON.stringify(row.expansionEvidence)}`);
@@ -4193,6 +4195,13 @@ async function run() {
       `document.querySelector('[data-project-id="project-operations"]') !== null`,
       'workspace overview',
     );
+    if (app.commandLine.hasSwitch('experience-review-only')) {
+      await require('./ui-experience-review-ui.cjs')({win,waitFor,captureRenderedFrame,selectVisualScope,selectVisualTab,screenshotRoot,readCalls});
+      assert.deepEqual(mutationCalls,[]);
+      assert.deepEqual(externalRequests,[]);
+      assert.deepEqual(rendererErrors,[]);
+      return;
+    }
     if (process.env.RUNBOOK_BRIDGE_CONFIRMATION_REGRESSION_ONLY === '1') {
       win.setContentSize(1280,820);
       await waitFor(win,`innerWidth === 1280 && innerHeight === 820 && document.querySelector('[data-testid="environment-trigger-env-production-east"]') !== null`,'确认窄回归环境导航已挂载');

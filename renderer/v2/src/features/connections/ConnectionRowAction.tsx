@@ -135,7 +135,7 @@ function ConnectionActionButton({
           <Button
             aria-busy={action.pending || undefined}
             aria-label={help}
-            className="gap-1 px-2 text-xs"
+            className="gap-1 px-2 text-xs @max-[280px]/resource-navigation:w-7 @max-[280px]/resource-navigation:gap-0 @max-[280px]/resource-navigation:px-0"
             data-connection-intent={action.kind}
             data-testid={testId}
             disabled={action.disabled}
@@ -149,7 +149,7 @@ function ConnectionActionButton({
             variant={action.variant === "default" ? "outline" : action.variant}
           >
             <ActionIcon className={action.pending ? "animate-spin" : undefined} size={12} />
-            {action.kind === "configure" ? configureLabel : action.label}
+            <span className="@max-[280px]/resource-navigation:sr-only">{action.kind === "configure" ? configureLabel : action.label}</span>
           </Button>
         </TooltipTrigger>
         {!tooltipBlocked ? <TooltipContent>{help}</TooltipContent> : null}
