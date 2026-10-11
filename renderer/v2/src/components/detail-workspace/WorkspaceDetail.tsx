@@ -1,4 +1,7 @@
 import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
+import { ScopeIdentity } from "./ScopeIdentity"
+import { PluginSaveNotice } from "@/features/plugins/PluginSaveNotice"
+import type { PluginSaveOutcome } from "@/features/plugins/plugin-editor-model"
 import { pluginUi } from "@/features/plugins/plugin-ui-contributions"
 import {
   BookOpenText,
@@ -110,7 +113,7 @@ export interface WorkspaceDetailProps {
   readonly onToggleCollapsed: () => void
   readonly plugin: WorkspacePluginReadModel | null
   readonly pluginRecord: PluginConfigurationRecord | null
-  readonly saveNotice: string | null
+  readonly saveNotice: PluginSaveOutcome | null
   readonly project: WorkspaceProjectReadModel | null
   readonly rawRuntime: EnvironmentRuntime | null
   readonly runtime: EnvironmentRuntimeReadModel | null
@@ -417,7 +420,6 @@ export function WorkspaceDetail({
     ?? project?.status
     ?? "disconnected"
   const title = plugin?.displayName ?? environment?.name ?? project?.name ?? "正在读取工作区"
-  const scopePath = [project?.name, environment?.name, plugin?.displayName].filter(Boolean).join(" / ")
   const parentPath = plugin ? [project?.name, environment?.name].filter(Boolean).join(" / ") : environment ? project?.name : "项目概览"
   const hasEnvironment = Boolean(project && environment)
   const hasPlugin = Boolean(hasEnvironment && plugin)
@@ -444,7 +446,7 @@ export function WorkspaceDetail({
       <header className="shrink-0 bg-surface">
         <div className="flex min-w-0 items-start gap-3 px-4 py-3">
           <div className="min-w-0 flex-1">
-            <p className="truncate text-xs text-muted-foreground" title={scopePath}>{parentPath || "本地工作区"}</p>
+            <ScopeIdentity projectName={project?.name ?? "正在读取工作区"} environmentName={environment?.name} pluginName={plugin?.displayName} label={parentPath || "本地工作区"} />
             <div className="mt-1 flex min-w-0 items-center gap-2">
               <h1 className="truncate text-base font-semibold tracking-tight" title={title}>{title}</h1>
               <StatusIndicator status={selectedStatus} />
@@ -538,14 +540,7 @@ export function WorkspaceDetail({
         <ScrollArea className="h-full" viewportClassName={activeTab === "audit" ? "[&>div]:h-full" : ""}>
           <div className={activeTab === "audit" ? "mx-auto flex h-full min-h-0 w-full max-w-5xl flex-col px-4 py-4" : "mx-auto w-full max-w-5xl px-4 py-4"}>
             {saveNotice ? (
-              <Alert className="mb-4 border-warning/30 bg-warning/5" data-testid="plugin-save-recovery-notice">
-                <WarningDiamond aria-hidden="true" className="text-warning" />
-                <AlertTitle>保存已完成，仍有恢复事项</AlertTitle>
-                <AlertDescription>
-                  <p>{saveNotice}</p>
-                  <Button className="mt-2" onClick={onDismissSaveNotice} size="xs" variant="outline">知道了</Button>
-                </AlertDescription>
-              </Alert>
+              <PluginSaveNotice outcome={saveNotice} runtime={rawRuntime} unavailable={Boolean(environmentError)} onRefresh={onReloadEnvironment} onDismiss={onDismissSaveNotice} />
             ) : null}
             <PersistentTabsContent activeValue={activeTab} value="overview">
               {plugin ? (

@@ -98,8 +98,7 @@ test('production React shell composes shadcn/Radix with the typed desktop bridge
   assert.match(appShell,/editorLeave && !await editorLeave\(\)/u);
   assert.match(appShell,/PluginMetadataDialog/u);
   assert.match(appShell,/PluginDeleteDialog/u);
-  assert.match(appShell,/outcome\.saveStrategy === "connect-current"/u);
-  assert.match(appShell,/outcome\.saveStrategy === "restore-previous"/u);
+  assert.match(appShell,/pluginSaveFeedback\(outcome\)/u);
   assert.doesNotMatch(appShell,/APP_SHELL_FIXTURES|MockActionSurfaces/u);
   assert.match(appShell,/defaultLayout=/u);
   assert.match(appShell,/onLayoutChanged=/u);

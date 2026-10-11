@@ -72,6 +72,11 @@ function assessment(phase,label,action = null) {
 }
 
 const state = {
+  projectName:'插件阶段业务验证项目',
+  environmentName:'插件操作模拟环境',
+  credentialStatus:{saved:false,fields:{primary:false,proxy:false},legacyAvailable:false},
+  nextSaveResult:null,
+  preEditConnectedSet:null,
   projectRevision:4,
   environmentRevision:6,
   nextPreparationNumber:1,
@@ -134,6 +139,7 @@ const state = {
     },
   ],
   preparations:new Map(),
+  preparationConnections:new Map(),
   sessions:new Map(),
   cancelFailuresRemaining:0,
   deferNextEditCancel:false,
@@ -203,7 +209,7 @@ function environmentOverview() {
   return {
     projectId:PROJECT_ID,
     environmentId:ENVIRONMENT_ID,
-    name:'插件操作模拟环境',
+    name:state.environmentName,
     revision:state.environmentRevision,
     pluginCount:state.plugins.length,
     readyPluginCount:state.plugins.length,
@@ -227,7 +233,7 @@ function workspaceOverview() {
   return [{
     schemaVersion:2,
     projectId:PROJECT_ID,
-    name:'插件阶段业务验证项目',
+    name:state.projectName,
     revision:state.projectRevision,
     environmentCount:1,
     pluginCount:state.plugins.length,
@@ -361,7 +367,7 @@ async function registerMockApi() {
   registerRead('v2:plugin-assess',({pluginInstanceId}) => (
     findPlugin(pluginInstanceId)?.assessment ?? assessment('disconnected','未连接','connect')
   ));
-  registerRead('v2:plugin-credential-status',() => ({saved:false,fields:{primary:false,proxy:false},legacyAvailable:false}));
+  registerRead('v2:plugin-credential-status',() => state.credentialStatus);
   registerRead('v2:plugin-databases',() => ({databases:[],truncated:false}));
   registerRead('v2:audit-list',() => []);
   registerRead('v2:confirmation-list',() => state.confirmations);
@@ -409,8 +415,9 @@ async function registerMockApi() {
     assert.equal(payload.pluginInstanceId,SERVER_ID,'edit preparation must retain the selected plugin');
     assert.equal(payload.expectedRevision,findPlugin(SERVER_ID).revision,'edit preparation must bind the current revision');
     const prepareToken = `prepare-${state.nextPreparationNumber++}`;
+    const preEditConnectedSet = state.preEditConnectedSet ?? (state.nextEditNeedsImpact ? [SERVER_ID] : []);
     state.preparations.set(prepareToken,clone(payload));
-    const preEditConnectedSet = state.nextEditNeedsImpact ? [SERVER_ID] : [];
+    state.preparationConnections.set(prepareToken,preEditConnectedSet);
     state.nextEditNeedsImpact = false;
     return ok({
       prepareToken,
@@ -426,7 +433,9 @@ async function registerMockApi() {
     const editSessionId = `edit-session-${state.nextSessionNumber++}`;
     state.sessions.set(editSessionId,prepared);
     state.preparations.delete(payload.prepareToken);
-    return ok({editSessionId});
+    const preEditConnectedSet = state.preparationConnections.get(payload.prepareToken);
+    state.preparationConnections.delete(payload.prepareToken);
+    return ok({editSessionId,preEditConnectedSet});
   });
   registerMutation('v2:plugin-draft-validate',(payload) => ok({
     requestId:payload.requestId,
@@ -447,7 +456,9 @@ async function registerMockApi() {
       state.environmentRevision += 1;
       const runtimeWarning = state.nextSaveRecoveryWarning;
       state.nextSaveRecoveryWarning = false;
-      return ok({plugin,...(runtimeWarning ? {runtimeWarning:{code:'RESTORE_FAILED'}} : {})});
+      const extra = state.nextSaveResult;
+      state.nextSaveResult = null;
+      return ok({plugin,...(runtimeWarning ? {runtimeWarning:{code:'RESTORE_FAILED'}} : {}),...extra});
     };
     if (state.deferNextEditSave) {
       state.deferNextEditSave = false;
@@ -464,7 +475,10 @@ async function registerMockApi() {
         return {ok:false,error:{code:'EDIT_CANCEL_RESTORE_FAILED',message:'模拟编辑会话恢复暂时失败，请重试。'}};
       }
       if (payload.editSessionId) state.sessions.delete(payload.editSessionId);
-      if (payload.prepareToken) state.preparations.delete(payload.prepareToken);
+      if (payload.prepareToken) {
+        state.preparations.delete(payload.prepareToken);
+        state.preparationConnections.delete(payload.prepareToken);
+      }
       return ok({cancelled:true});
     };
     if (state.deferNextEditCancel) {
@@ -2512,6 +2526,7 @@ module.exports = {
   state,PROJECT_ID,ENVIRONMENT_ID,SERVER_ID,EDITOR_SELECTOR,DISCARD_SELECTOR,
   wait,waitFor,waitUntil,click,clickText,fill,openPopup,chooseSelectOption,activateTab,
   assertNoSensitivePayload,setExactViewport,captureSurfaceEvidence,
+  captureFreshFrame,openPluginEditor,calls,mutationCalls,externalRequests,rendererErrors,ensureNativeKeyboardFocus,
 };
 
 // Electron wraps its CommonJS entry, so require.main can differ from this module.

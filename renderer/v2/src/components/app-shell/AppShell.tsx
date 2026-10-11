@@ -63,6 +63,7 @@ import { PluginEditorHost } from "@/features/plugins/PluginEditorHost"
 import { pluginUi } from "@/features/plugins/plugin-ui-contributions"
 import { PluginMetadataDialog } from "@/features/plugins/PluginMetadataDialog"
 import type { PluginSaveOutcome } from "@/features/plugins/plugin-editor-model"
+import { pluginSaveFeedback } from "@/features/plugins/plugin-save-feedback"
 import {
   type PluginConfigurationRecord,
 } from "@/features/plugins/plugin-types"
@@ -176,7 +177,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
     projectId: string
     environmentId: string
     pluginInstanceId: string
-    message: string
+    outcome: PluginSaveOutcome
   }> | null>(null)
   const {
     layoutState, viewportWidth, projectPanelPixels, detailCollapsed, editorExpanded,
@@ -892,13 +893,11 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
     setPluginWorkMode(null)
     restoreEditorLayout()
     const { plugin } = outcome
-    setPluginSaveNotice(plugin && (outcome.persistenceRecoveryPending || outcome.runtimeWarning || outcome.manualReconnectRequired) ? {
+    setPluginSaveNotice(plugin ? {
       projectId: plugin.projectId,
       environmentId: plugin.environmentId,
       pluginInstanceId: plugin.pluginInstanceId,
-      message: outcome.persistenceRecoveryPending
-        ? "配置与凭据已保存，但本地恢复记录仍待处理。请重启应用完成恢复检查，不要重复保存。"
-        : "配置与凭据已保存，但连接恢复尚未完成。请在插件详情中查看状态并手动重连，不要重复保存配置。",
+      outcome,
     } : null)
     if (plugin) {
       setPendingSelection({
@@ -908,25 +907,9 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       })
     }
     scheduleWorkspaceFocus()
-    if (outcome.persistenceRecoveryPending) {
-      toast.warning("插件配置与凭据已保存", {
-        description: "本地恢复记录仍待处理。请重启应用完成恢复检查，不要重复保存。",
-      })
-    } else if (outcome.runtimeWarning || outcome.manualReconnectRequired) {
-      toast.warning("插件配置与凭据已保存", {
-        description: "运行连接恢复失败。请在详情中手动重新连接，不要重复保存配置。",
-      })
-    } else if (outcome.saveStrategy === "connect-current") {
-      toast.success("插件配置已保存并开始连接", {
-        description: "连接请求已经受理，可在插件详情中查看进度。",
-      })
-    } else if (outcome.saveStrategy === "restore-previous") {
-      toast.success("插件配置已保存", {
-        description: "正在恢复编辑前的连接状态，可在详情中查看进度。",
-      })
-    } else {
-      toast.success("插件配置已保存", { description: "可在插件详情中连接。" })
-    }
+    const feedback = pluginSaveFeedback(outcome)
+    const notify = feedback.tone === "warning" ? toast.warning : toast.success
+    notify(feedback.title, { description: feedback.message })
   }, [reloadSelectedScope, restoreEditorLayout, scheduleWorkspaceFocus])
 
   const locateConfirmationScope = useCallback((
@@ -1117,7 +1100,7 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
             saveNotice={pluginSaveNotice?.projectId === selection.projectId
               && pluginSaveNotice.environmentId === selection.environmentId
               && pluginSaveNotice.pluginInstanceId === selection.pluginInstanceId
-              ? pluginSaveNotice.message : null}
+              ? pluginSaveNotice.outcome : null}
             project={selectedProject}
             rawRuntime={rawRuntime}
             runtime={scopedRuntime}

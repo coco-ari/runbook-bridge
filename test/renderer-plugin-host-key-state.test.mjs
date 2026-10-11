@@ -7,6 +7,7 @@ import {runInNewContext} from 'node:vm';
 import * as model from '../renderer/v2/src/features/plugins/plugin-editor-model.ts';
 import * as types from '../renderer/v2/src/features/plugins/plugin-types.ts';
 import * as strategies from '../renderer/v2/src/features/plugins/plugin-save-strategy.ts';
+import * as feedback from '../renderer/v2/src/features/plugins/plugin-save-feedback.ts';
 
 const scope = {projectId:'project',environmentId:'environment'};
 const fingerprint = 'SHA256:fixture-host-key';
@@ -56,7 +57,7 @@ async function harness({existing = false,kind = 'server',respond = () => challen
   const same = (left,right) => left && right && left.length === right.length
     && left.every((value,index) => Object.is(value,right[index]));
   const hook = runInNewContext(`${source}\nusePluginEditor`,{
-    ...model,...types,...strategies,
+    ...model,...types,...strategies,...feedback,
     useReducer(reducer,initial) {
       const slot = slots[cursor++] ??= {value:initial};
       return [slot.value,action => {

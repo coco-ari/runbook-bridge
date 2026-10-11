@@ -27,11 +27,12 @@ export function StoredCredentialInput({ api, scope, field, credentialLabel, stor
           <InputGroupAddon align="inline-end">
             <Tooltip>
               <TooltipTrigger asChild>
-                <InputGroupButton ref={triggerRef} aria-label={viewLabel} aria-haspopup="dialog" data-testid={`stored-credential-view-${field}`} disabled={inputProps.disabled} onClick={() => setViewOpen(true)} size="icon-xs">
+                <InputGroupButton ref={triggerRef} aria-label={viewLabel} aria-haspopup="dialog" className="shrink-0 text-xs" data-testid={`stored-credential-view-${field}`} disabled={inputProps.disabled} onClick={() => setViewOpen(true)} size="xs">
                   <Eye aria-hidden="true" />
+                  查看已保存
                 </InputGroupButton>
               </TooltipTrigger>
-              <TooltipContent>{viewLabel}</TooltipContent>
+              <TooltipContent>{viewLabel}，在只读弹窗中展示，不显示或替换当前输入。</TooltipContent>
             </Tooltip>
           </InputGroupAddon>
         ) : null}

@@ -92,3 +92,37 @@ corepack pnpm exec electron scripts/ui-react-foundation-smoke.cjs --experience-r
 合并验证：语法检查覆盖 446 个文件，TypeScript 与 Vite 构建通过；全量单测 2020 项，其中 2018 通过、2 跳过、0 失败。UI 专项通过，并补充验证自定义时间范围在低频筛选收起时仍可编辑，起止时间与参与方条件共同发送给实际查询。
 
 本次合并运行的五组 UI 回归全部通过：体验专项、完整 foundation、business、plugins 和 plugin-matrix。覆盖基础布局与焦点、业务恢复、审计筛选、只读配置、插件保存/取消、凭据及各插件配置组合。合并日志位于 `/tmp/runbook-ui-merge-*.log`，分项结果位于 `/tmp/runbook-ui-merge-results.json`。
+
+## be412d4 后的插件详情与编辑样板
+
+依据同日增量 PDF 复审，先实现「插件详情 → 修改配置 → 保存恢复」样板。保留窄窗分栏、连接状态文字、组合搜索、操作记录筛选和精简表单。产品改动仅在 Renderer 展示及其状态解释，不修改 IPC、保存默认策略、连接协调、确认门禁或凭据处理。
+
+| 复审分类 | 本轮处理 | 可见验收 |
+| --- | --- | --- |
+| 已解决 | 保留此前导航、检索、审计与表单优化 | 三栏宽度和表单底栏继续沿用原规则 |
+| 部分改善 | 标题范围栏增加完整对象信息面板 | 详情、编辑均可用 Enter 展开项目 / 环境 / 插件全名，名称换行且可选择；Escape 返回触发按钮 |
+| 新增关注点 | 密码查看入口保留在输入框内，补充「查看已保存」可见文字 | 当前输入保持密码类型；提示明确进入独立只读弹窗，不改变输入值 |
+| 新增关注点 | 保存结果与连接恢复分别展示 | 请求未返回时等待结果；返回后持续显示无需恢复、恢复中、全部恢复、部分恢复、未恢复、待核实，并保留只读刷新 |
+| 仍待优化 | SQL / Redis 工具栏、复制提示、强调层级及连接动作分组 | 留待本样板评审后，重新获取当前版本相同状态截图再展开 |
+
+恢复判定使用开始编辑后返回的 `preEditConnectedSet`（旧兼容结果回退准备阶段集合），结合保存返回的同环境快照。只有明确的全部目标连接状态才显示全部恢复；新状态必须属于同环境且序号高于保存快照。旧状态、缺失目标、未知阶段、未知结果和读取失败均不当作成功。恢复提示按完整项目 / 环境 / 插件范围绑定，刷新只调用已有读取逻辑。
+
+专项验证入口：
+
+```sh
+corepack pnpm run test:ui:save-feedback
+node --test test/renderer-plugin-save-feedback.test.mjs test/renderer-plugin-host-key-state.test.mjs
+```
+
+对照截图使用相同模拟长名称、密码认证及「凭据已保存」元数据，覆盖 960×640、1280×820、1600×1000 和深浅主题。优化前后分别位于 `/private/tmp/runbook-plugin-feedback-before/` 与 `/private/tmp/runbook-plugin-feedback-after/`，由 `scripts/ui-react-plugin-save-feedback-smoke.cjs` 生成；旧版截图在修改 Renderer 前完成构建和采集。专项通过六类恢复状态、原生键盘进入 / 退出、状态更新、跨项目隔离、按钮可达和无横向溢出；没有读取凭据或外部请求，保存仅修改内存 mock。
+
+本机是 macOS。Electron 125% / 150% 内容缩放仅作为补充检查，不等同于真实 Windows 系统缩放；Windows 125% / 150% 与真实服务恢复仍未验证。测试脚手架已有云配置 / 更新中心缺少后台 handler 的日志，未将其列为产品缺陷。验收不包含完整 SQL / Redis 流程重新实拍。
+
+### 本样板验证结果与限制
+
+- TypeScript、语法检查、Vite 构建、`git diff --check` 通过。当前环境没有 Corepack，使用已安装的 Node / TypeScript / Vite / Electron 执行等价底层命令，没有安装或变更依赖。
+- 全量单测 2028 项：2026 通过、2 跳过、0 失败。沙箱内的回环服务和内核路由检查受限，允许本机模拟服务后完成验证；初次全量运行还有 SFTP 时序断言失败，最终复跑通过，没有修改相关实现或断言。
+- 插件身份与保存反馈专项通过，截图包含无需恢复、恢复中、部分恢复、未恢复、待核实及全部恢复；当前版本的 foundation、MySQL 编辑、Docker、Redis UI 分项通过。
+- 完整 UI 回归未全部通过：business 的快捷问题输入焦点、plugin-matrix 的 HTTP 代理选项、server-workspace 的工作区快捷键、database 的鼠标拖动检查失败，cloud 的确认弹窗关闭超时。尚未完成未修改基线的同条件运行，不能判定这些失败均为既有问题。
+- plugins 分项首次失败源于本次 mock 新增连接集合后，测试会话对象多出元数据。已将集合拆入独立映射以保留原有精确范围断言；前台分项未再次运行，因此不标记为通过。
+- 全量 UI 分项结果在 `/private/tmp/runbook-feedback-ui-results.json`，单测日志在 `/private/tmp/runbook-plugin-feedback-unit-final.log`。用户反馈前台测试窗口抢占桌面后，已停止继续执行前台验证并确认测试进程退出；未再启动基线对照窗口。真实键盘 / 鼠标焦点检查需要前台窗口，后续安排独立测试桌面或用户方便的时段，后台模拟不能替代这一验收。

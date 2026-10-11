@@ -13,6 +13,7 @@ import {
   type PluginFormDraft,
   type PluginFormIssue,
 } from "./plugin-types.ts"
+import type { PluginRecoveryEvidence } from "./plugin-save-feedback.ts"
 
 export type PluginEditorPhase =
   | "closed"
@@ -74,6 +75,7 @@ export interface PluginSaveOutcome {
   readonly runtimeWarning: boolean
   readonly persistenceRecoveryPending: boolean
   readonly manualReconnectRequired: boolean
+  readonly recovery?: PluginRecoveryEvidence
   readonly saveStrategy?: "disconnect" | "connect-current" | "restore-previous"
 }
 

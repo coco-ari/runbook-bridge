@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react"
+import { readPluginRecovery, recoveryTargetIds } from "./plugin-save-feedback"
 
 import type {
   AiOpsV2Api,
@@ -171,6 +172,7 @@ export function usePluginEditor({
   const sequenceRef = useRef(0)
   const preparationRef = useRef<string | null>(null)
   const sessionRef = useRef<string | null>(null)
+  const recoveryTargetsRef = useRef<readonly string[] | null>(null)
   const activeValidationRef = useRef<PluginValidationState | null>(null)
   const pendingValidationRequestRef = useRef<string | null>(null)
   const pendingValidationCancellationsRef = useRef(new Map<string, PluginValidationState>())
@@ -212,6 +214,7 @@ export function usePluginEditor({
     }
     preparationRef.current = null
     sessionRef.current = session.editSessionId
+    recoveryTargetsRef.current = recoveryTargetIds(session.preEditConnectedSet ?? preparation.preEditConnectedSet)
     dispatch({ type: "edit-started", editSessionId: session.editSessionId })
   }, [api, isCurrent])
 
@@ -227,6 +230,7 @@ export function usePluginEditor({
     pendingValidationRetryRef.current = null
     preparationRef.current = null
     sessionRef.current = null
+    recoveryTargetsRef.current = null
 
     if (!open) {
       dispatch({ type: "closed" })
@@ -707,7 +711,7 @@ export function usePluginEditor({
           ...(Object.keys(secrets).length > 0 ? { temporarySecrets: secrets } : {}),
           ...(forceCredentialReplacement ? { forceCredentialReplacement: true } : {}),
         }))
-        outcome = normalizePluginSaveOutcome(value)
+        outcome = { ...normalizePluginSaveOutcome(value), recovery: readPluginRecovery(value, plugin, recoveryTargetsRef.current) }
       } else {
         outcome = normalizePluginSaveOutcome(unwrap(await api.createPlugin({
           projectId: scope.projectId,

@@ -34,6 +34,7 @@
     "test:ui:cloud": "corepack pnpm run build:renderer && electron scripts/ui-react-cloud-smoke.cjs",
     "test:ui:business": "corepack pnpm run build:renderer && electron scripts/ui-react-business-smoke.cjs",
     "test:ui:plugins": "corepack pnpm run build:renderer && electron scripts/ui-react-plugin-operations-smoke.cjs",
+    "test:ui:save-feedback": "corepack pnpm run build:renderer && electron scripts/ui-react-plugin-save-feedback-smoke.cjs",
     "test:ui:redis": "corepack pnpm run build:renderer && electron scripts/ui-react-redis-smoke.cjs",
     "test:ui:mysql-edit": "corepack pnpm run build:renderer && electron scripts/ui-react-database-smoke.cjs --mysql-edit",
     "test:ui:database": "corepack pnpm run build:renderer && electron scripts/ui-react-database-smoke.cjs",

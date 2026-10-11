@@ -21,6 +21,7 @@ import { focusWorkspaceElement } from "@/lib/workspace-focus"
 
 import type { AiOpsV2Api, EnvironmentScope, EnvironmentType, PluginRecord } from "@/bridge/ai-ops-v2"
 import { EnvironmentTypeBadge } from "@/features/environments/EnvironmentTypeBadge"
+import { ScopeIdentity } from "@/components/detail-workspace/ScopeIdentity"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   AlertDialog,
@@ -368,9 +369,9 @@ export function PluginEditorWorkspace({
                 <TooltipTrigger asChild><Button aria-label="返回详情" disabled={closeBlocked} onClick={requestClose} size="icon-sm" variant="ghost"><ArrowLeft /></Button></TooltipTrigger>
                 <TooltipContent>返回详情，保留原浏览位置</TooltipContent>
               </Tooltip>
-              <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground" data-testid="plugin-editor-scope" title={`${projectName} / ${environmentName}`}>
-                {projectName} <span className="px-1 text-muted-foreground/50">/</span> {environmentName}
-              </p>
+              <div className="min-w-0 flex-1" data-testid="plugin-editor-scope">
+                <ScopeIdentity projectName={projectName} environmentName={environmentName} pluginName={plugin?.displayName} />
+              </div>
               <EnvironmentTypeBadge type={environmentType ?? "unspecified"} />
               <Tooltip>
                 <TooltipTrigger asChild><Button aria-label={expanded ? "恢复三栏宽度" : "拓宽编辑区"} data-testid="plugin-editor-expand" onClick={onToggleExpanded} size="icon-sm" variant="ghost">{expanded ? <ArrowsInSimple /> : <ArrowsOutSimple />}</Button></TooltipTrigger>
@@ -741,6 +742,7 @@ export function PluginEditorWorkspace({
           </ScrollArea>
 
           <footer className="shrink-0 border-t border-border bg-surface px-4 py-3 @min-[640px]/editor:px-6" data-testid="plugin-editor-footer">
+            {state.phase === "saving" ? <p className="mx-auto mb-2 max-w-4xl text-xs text-muted-foreground" data-testid="plugin-editor-save-progress" role="status">{editor.isCreating ? "正在提交配置，等待结果。" : "正在提交配置并处理连接恢复，等待结果。"}请勿重复操作。</p> : null}
             {state.error ? (
               <Alert className="mx-auto mb-3 max-w-4xl" data-testid="plugin-editor-error" variant="destructive">
                 <WarningCircle aria-hidden="true" weight="fill" />
@@ -805,7 +807,7 @@ export function PluginEditorWorkspace({
             </AlertDialogMedia>
             <AlertDialogTitle>放弃未保存的更改？</AlertDialogTitle>
             <AlertDialogDescription>
-              连接配置或替换凭据尚未保存。放弃后将恢复进入编辑前的连接状态，并清除本次输入的临时凭据。
+              连接配置或替换凭据尚未保存。放弃后将尝试恢复进入编辑前的连接状态，并清除本次输入的临时凭据。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
