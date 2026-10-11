@@ -174,11 +174,11 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.doesNotMatch(resourcePane,/<ButtonGroup|from "@\/components\/ui\/button-group"/u);
   assert.match(resourcePane,/group\/environment-card[\s\S]*?rounded-md border border-border\/35/u);
   assert.match(resourcePane,/data-testid=\{`environment-row-/u);
-  assert.match(resourcePane,/<Accordion[\s\S]*?className="gap-1 py-1"/u);
+  assert.match(resourcePane,/<Accordion[\s\S]*?className="gap-2 py-2"/u);
   assert.doesNotMatch(resourcePane,/\[&_\[data-slot=accordion-trigger-icon\]\]:hidden/u);
   assert.match(resourcePane,/min-h-12[\s\S]*?environment-trigger-/u);
   assert.match(resourcePane,/group\/plugin relative min-h-10/u);
-  assert.match(resourcePane,/配置完成 \$\{environment.readyPluginCount\}/u);
+  assert.match(resourcePane,/配置 \$\{environment.readyPluginCount\}/u);
   assert.match(resourcePane,/<EnvironmentTypeBadge compact type=\{environment.environmentType\}/u);
   assert.match(projectRail,/data-testid="global-resource-search"/u);
   assert.match(projectRail,/Control\+K Meta\+K/u);

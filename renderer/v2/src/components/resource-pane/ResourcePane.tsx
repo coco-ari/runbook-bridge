@@ -243,7 +243,7 @@ function EnvironmentGroup({
     >
       <Item
         className={cn(
-          "group/environment relative min-w-0 flex-nowrap items-stretch gap-0 overflow-hidden rounded-none border-0 bg-transparent p-0",
+          "group/environment relative min-w-0 flex-nowrap items-stretch gap-0 overflow-hidden rounded-none border-0 bg-surface-raised/65 p-0",
           "before:absolute before:inset-y-2 before:left-0 before:z-10 before:w-0.5 before:rounded-r-full before:bg-transparent",
           "transition-colors duration-150 hover:bg-accent/40",
           environmentSelected && "bg-surface-selected before:bg-primary",
@@ -277,32 +277,19 @@ function EnvironmentGroup({
               title={environment.name}
               variant="ghost"
             >
-              <ItemMedia
-                asChild
-                className={cn(
-                  "grid size-7 shrink-0 place-items-center self-center rounded-md text-muted-foreground @max-[360px]/resource-navigation:hidden",
-                  "transition-[color,background-color,border-color] duration-150",
-                  environmentSelected && "text-primary",
-                )}
-                variant="icon"
-              >
-                <span><TreeStructure aria-hidden="true" size={15} weight={expanded ? "fill" : "regular"} /></span>
-              </ItemMedia>
               <ItemContent asChild className="overflow-hidden self-center gap-0">
                 <span>
                   <ItemTitle asChild className="block w-full truncate text-sm font-semibold leading-5" title={environment.name}>
                     <span>{environment.name}</span>
                   </ItemTitle>
-                  <ItemDescription asChild className={cn(
-                    "flex min-w-0 items-center gap-1.5 text-xs leading-4",
-                    environmentScopeSelected && "dark:text-primary/75",
-                  )}>
+                  <ItemDescription asChild className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs leading-4">
                     <span>
                       <span className="hidden shrink-0 @max-[280px]/resource-navigation:inline-flex"><EnvironmentTypeBadge compact type={environment.environmentType} /></span>
-                      <span className="min-w-0 flex-1 truncate">
+                      <span className="shrink-0">环境</span>
+                      <span className="whitespace-nowrap">
                         {environment.pluginCount === 0
                           ? "暂无插件"
-                          : `配置完成 ${environment.readyPluginCount}/${environment.pluginCount}`}
+                          : `配置 ${environment.readyPluginCount}/${environment.pluginCount}`}
                       </span>
                     </span>
                   </ItemDescription>
@@ -395,7 +382,8 @@ function EnvironmentGroup({
         </ItemActions>
       </Item>
 
-      <AccordionContent className="border-t border-border/60 bg-surface-inset/36 p-0">
+      <AccordionContent className="border-t border-border/60 bg-surface-inset/36 py-1.5 pl-[var(--tree-indent)] pr-1">
+        <div className="border-l border-border pl-1">
           {pluginError || runtimeError ? (
             <NavigationReadFailure
               className="m-2 rounded-md"
@@ -439,7 +427,7 @@ function EnvironmentGroup({
             const row = (
               <Item
                 className={cn(
-                  "group/plugin relative min-h-10 min-w-0 flex-nowrap items-stretch gap-0 overflow-hidden rounded-none border-0 border-b border-border/50 p-0 last:border-b-0",
+                  "group/plugin relative min-h-10 min-w-0 flex-nowrap items-stretch gap-0 overflow-hidden rounded-md border-0 p-0",
                   "before:absolute before:inset-y-2 before:left-0 before:z-10 before:w-0.5 before:rounded-r-full before:bg-transparent",
                   "transition-colors duration-150 hover:bg-accent/55",
                   selected && "bg-surface-selected text-primary before:bg-primary",
@@ -452,7 +440,7 @@ function EnvironmentGroup({
               >
                 <Button
                   aria-current={selected ? "page" : undefined}
-                  className="h-auto min-w-0 flex-1 justify-start gap-2 rounded-none px-2 py-0.5 text-left shadow-none hover:bg-transparent focus-visible:ring-inset"
+                  className="h-auto min-w-0 flex-1 justify-start gap-2 rounded-md px-2 py-0.5 text-left shadow-none hover:bg-transparent focus-visible:ring-inset"
                   data-shell-nav-item
                   data-testid={`plugin-trigger-${plugin.pluginInstanceId}`}
                   onClick={() => onSelectPlugin(plugin.pluginInstanceId)}
@@ -479,7 +467,7 @@ function EnvironmentGroup({
                   </ItemMedia>
                   <ItemContent asChild className="self-center gap-0">
                     <span>
-                      <ItemTitle asChild className="block w-full truncate text-sm font-medium leading-5">
+                      <ItemTitle asChild className={cn("block w-full truncate text-sm font-normal leading-5", selected && "font-medium")}>
                         <span>{plugin.displayName}</span>
                       </ItemTitle>
                       <ItemDescription asChild className={cn(
@@ -544,21 +532,19 @@ function EnvironmentGroup({
             })}
           </ItemGroup> : null}
           <Button
-            className={cn(
-              "group h-8 w-full justify-start rounded-none border-0 border-border/60 bg-transparent text-primary shadow-none transition-colors duration-150 hover:bg-primary/[0.08]",
-              (plugins.length > 0 || loadingPlugins || pluginError || runtimeError) && "border-t",
-            )}
+            className="h-8 w-full justify-start gap-2 rounded-md border-0 bg-transparent px-2 text-muted-foreground shadow-none transition-colors duration-150 hover:bg-accent/55 hover:text-foreground"
             data-testid={"add-plugin-" + environment.environmentId}
             onClick={() => onAction({ type: "create-plugin", environment })}
             size="sm"
             type="button"
             variant="ghost"
           >
-            <span className="grid size-5 place-items-center rounded-md bg-primary/12 transition-colors group-hover:bg-primary/18">
-              <Plus size={12} weight="bold" />
+            <span className="grid size-7 shrink-0 place-items-center">
+              <Plus aria-hidden="true" size={16} />
             </span>
             新增插件
           </Button>
+        </div>
       </AccordionContent>
     </AccordionItem>
   )
@@ -757,7 +743,7 @@ export function ResourcePane({
                 )
               ) : (
                 <Accordion
-                  className="gap-1 py-1"
+                  className="gap-2 py-2"
                   onValueChange={setExpandedEnvironmentIds}
                   type="multiple"
                   value={[...expandedEnvironmentIds]}

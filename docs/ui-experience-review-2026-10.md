@@ -126,3 +126,9 @@ node --test test/renderer-plugin-save-feedback.test.mjs test/renderer-plugin-hos
 - 完整 UI 回归未全部通过：business 的快捷问题输入焦点、plugin-matrix 的 HTTP 代理选项、server-workspace 的工作区快捷键、database 的鼠标拖动检查失败，cloud 的确认弹窗关闭超时。尚未完成未修改基线的同条件运行，不能判定这些失败均为既有问题。
 - plugins 分项首次失败源于本次 mock 新增连接集合后，测试会话对象多出元数据。已将集合拆入独立映射以保留原有精确范围断言；前台分项未再次运行，因此不标记为通过。
 - 全量 UI 分项结果在 `/private/tmp/runbook-feedback-ui-results.json`，单测日志在 `/private/tmp/runbook-plugin-feedback-unit-final.log`。用户反馈前台测试窗口抢占桌面后，已停止继续执行前台验证并确认测试进程退出；未再启动基线对照窗口。真实键盘 / 鼠标焦点检查需要前台窗口，后续安排独立测试桌面或用户方便的时段，后台模拟不能替代这一验收。
+
+### 第二栏环境与插件的层级区分
+
+根据实际使用反馈，环境标题增加独立分组底色和「环境」标识，组间距改为 8px；插件区域使用 18px 层级缩进和左侧引导线，普通插件降低字重，新增入口归入插件层级。选中插件时不再把父环境的配置统计染成强调色。窄栏中的环境类型与配置数量可换行，保留完整数量。
+
+本轮 TypeScript、448 文件语法检查、Vite 构建通过；全量单测 2028 项，2026 通过、2 跳过、0 失败。使用实际 `ResourcePane` 组件及纯模拟数据，在无窗口 Chrome 中检查深浅主题和 240 / 280 / 320 / 440px 栏宽，验证层级缩进、按钮边界、环境与插件选择、键盘展开折叠及新增入口。未启动 Electron 前台测试，因此不把这一检查视为原生桌面焦点回归。截图位于本次任务的 `runbook-resource-hierarchy` 预览目录，单测日志为 `/private/tmp/runbook-resource-hierarchy-unit.log`。
