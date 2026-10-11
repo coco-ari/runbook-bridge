@@ -172,7 +172,7 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(resourcePane,/<ItemGroup/u);
   assert.match(resourcePane,/<Item\b/u);
   assert.doesNotMatch(resourcePane,/<ButtonGroup|from "@\/components\/ui\/button-group"/u);
-  assert.match(resourcePane,/group\/environment-card[\s\S]*?rounded-md border border-border\/35/u);
+  assert.match(resourcePane,/group\/environment-card[\s\S]*?rounded-lg border border-border/u);
   assert.match(resourcePane,/data-testid=\{`environment-row-/u);
   assert.match(resourcePane,/<Accordion[\s\S]*?className="gap-2 py-2"/u);
   assert.doesNotMatch(resourcePane,/\[&_\[data-slot=accordion-trigger-icon\]\]:hidden/u);
@@ -185,7 +185,7 @@ test('project and resource navigation expose one visible roving tab stop and val
   assert.match(projectRail,/shortcutLabel\("K"\)/u);
   assert.match(projectRail,/<ConfirmationNotice/u);
   assert.match(projectRail,/<UpdatesButton/u);
-  assert.match(resourcePane,/<ItemGroup className="gap-0">/u);
+  assert.match(resourcePane,/<ItemGroup className="gap-0 has-data-\[size=xs\]:gap-0">/u);
   assert.match(resourcePane,/environmentSelected && "bg-surface-selected before:bg-primary"/u);
   assert.match(resourcePane,/selected && "bg-surface-selected[^"]*before:bg-primary/u);
   assert.match(resourcePane,/className="my-1 mr-1 shrink-0 self-center gap-1"/u);

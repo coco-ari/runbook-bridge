@@ -80,6 +80,8 @@
   --color-surface: var(--surface);
   --color-surface-inset: var(--surface-inset);
   --color-surface-raised: var(--surface-raised);
+  --color-surface-group-header: var(--surface-group-header);
+  --color-border-group: var(--border-group);
   --color-surface-hover: var(--surface-hover);
   --color-surface-selected: var(--surface-selected);
   --color-text-faint: var(--text-faint);
@@ -150,6 +152,8 @@
   --surface: oklch(0.984 0.003 260);
   --surface-inset: oklch(0.944 0.008 260);
   --surface-raised: oklch(0.921 0.011 260);
+  --surface-group-header: #e4e9f1;
+  --border-group: #c2cbd8;
   --surface-hover: oklch(0.91 0.014 260);
   --surface-selected: #e0f0e8;
   --text-faint: oklch(0.50 0.016 264);
@@ -195,6 +199,8 @@
   --surface: #111116;
   --surface-inset: #0e0e12;
   --surface-raised: #1a1a21;
+  --surface-group-header: #242832;
+  --border-group: #39414f;
   --surface-hover: #202027;
   --surface-selected: #17372b;
   --folder-color: #ebc65d;

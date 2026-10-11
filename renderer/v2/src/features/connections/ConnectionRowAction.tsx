@@ -39,6 +39,7 @@ import {
   type PluginConnectionTarget,
 } from "@/features/connections/use-plugin-connection"
 import type { WorkspaceReadStatus } from "@/features/workspace/workspace-read-model"
+import { cn } from "@/lib/utils"
 
 function fallbackPhase(status: WorkspaceReadStatus): ConnectionPhase {
   return status
@@ -63,6 +64,7 @@ function ConnectionActionButton({
   testId,
   pluginInstanceId,
   configureLabel = "完善配置",
+  compact = false,
 }: {
   readonly connection: Readonly<{
     state: ConnectionState
@@ -81,6 +83,7 @@ function ConnectionActionButton({
   readonly testId: string
   readonly pluginInstanceId?: string
   readonly configureLabel?: string
+  readonly compact?: boolean
 }) {
   const connectionTriggerRef = useRef<HTMLButtonElement | null>(null)
   const [tooltipOpen, setTooltipOpen] = useState(false)
@@ -135,7 +138,10 @@ function ConnectionActionButton({
           <Button
             aria-busy={action.pending || undefined}
             aria-label={help}
-            className="gap-1 px-2 text-xs @max-[280px]/resource-navigation:w-7 @max-[280px]/resource-navigation:gap-0 @max-[280px]/resource-navigation:px-0"
+            className={cn(
+              "gap-1 px-2 text-xs @max-[280px]/resource-navigation:w-7 @max-[280px]/resource-navigation:gap-0 @max-[280px]/resource-navigation:px-0",
+              compact && "w-7 shrink-0 gap-0 px-0 text-muted-foreground hover:text-foreground",
+            )}
             data-connection-intent={action.kind}
             data-testid={testId}
             disabled={action.disabled}
@@ -144,12 +150,12 @@ function ConnectionActionButton({
               connectionTriggerRef.current = event.currentTarget
               run()
             }}
-            size="xs"
+            size={compact ? "icon-xs" : "xs"}
             type="button"
-            variant={action.variant === "default" ? "outline" : action.variant}
+            variant={compact ? "ghost" : action.variant === "default" ? "outline" : action.variant}
           >
             <ActionIcon className={action.pending ? "animate-spin" : undefined} size={12} />
-            <span className="@max-[280px]/resource-navigation:sr-only">{action.kind === "configure" ? configureLabel : action.label}</span>
+            <span className={compact ? "sr-only" : "@max-[280px]/resource-navigation:sr-only"}>{action.kind === "configure" ? configureLabel : action.label}</span>
           </Button>
         </TooltipTrigger>
         {!tooltipBlocked ? <TooltipContent>{help}</TooltipContent> : null}
@@ -175,6 +181,7 @@ export function EnvironmentConnectionRowAction({
   rawRuntime,
   ready,
   configureLabel,
+  compact,
 }: {
   readonly api: AiOpsV2Api
   readonly environment: EnvironmentConnectionTarget
@@ -183,6 +190,7 @@ export function EnvironmentConnectionRowAction({
   readonly onRuntime?: (runtime: EnvironmentRuntime) => void
   readonly rawRuntime: EnvironmentRuntime | null
   readonly configureLabel?: string
+  readonly compact?: boolean
   readonly ready: boolean
 }) {
   const connection = useEnvironmentConnection({
@@ -203,6 +211,7 @@ export function EnvironmentConnectionRowAction({
       }}
       scopeLabel={`环境“${environment.name}”`}
       {...(configureLabel ? {configureLabel} : {})}
+      {...(compact !== undefined ? {compact} : {})}
       testId={`environment-connection-${environment.environmentId}`}
     />
   )
@@ -218,6 +227,7 @@ export function PluginConnectionRowAction({
   runtime,
   scopeLabel,
   testId,
+  compact,
 }: {
   readonly api: AiOpsV2Api
   readonly fallbackStatus: WorkspaceReadStatus
@@ -228,6 +238,7 @@ export function PluginConnectionRowAction({
   readonly runtime: EnvironmentRuntime | null
   readonly scopeLabel: string
   readonly testId?: string
+  readonly compact?: boolean
 }) {
   const connection = usePluginConnection({
     api,
@@ -245,6 +256,7 @@ export function PluginConnectionRowAction({
       scope={{ projectId: plugin.projectId, environmentId: plugin.environmentId }}
       scopeLabel={`插件“${scopeLabel}”`}
       testId={testId ?? `plugin-connection-${plugin.pluginInstanceId}`}
+      {...(compact !== undefined ? {compact} : {})}
     />
   )
 }

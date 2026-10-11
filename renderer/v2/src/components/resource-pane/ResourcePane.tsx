@@ -82,6 +82,7 @@ import {
   reconcileEnvironmentExpansion,
   type EnvironmentNavigationTarget,
 } from "./environment-expansion"
+import "./resource-pane.css"
 
 function pluginConfigLabel(state: WorkspacePluginReadModel["configState"]): string {
   if (state === "ready") return "配置完整"
@@ -233,7 +234,7 @@ function EnvironmentGroup({
   return (
     <AccordionItem
       className={cn(
-        "group/environment-card mx-1 overflow-hidden rounded-md border border-border/35 bg-surface",
+        "group/environment-card mx-2 overflow-hidden rounded-lg border border-border-group bg-surface",
         "transition-colors duration-150",
       )}
       data-environment-id={environment.environmentId}
@@ -243,16 +244,16 @@ function EnvironmentGroup({
     >
       <Item
         className={cn(
-          "group/environment relative min-w-0 flex-nowrap items-stretch gap-0 overflow-hidden rounded-none border-0 bg-surface-raised/65 p-0",
+          "resource-environment-header group/environment relative min-w-0 flex-nowrap items-stretch gap-0 overflow-hidden rounded-none border-0 p-0",
           "before:absolute before:inset-y-2 before:left-0 before:z-10 before:w-0.5 before:rounded-r-full before:bg-transparent",
-          "transition-colors duration-150 hover:bg-accent/40",
+          "transition-colors duration-150",
           environmentSelected && "bg-surface-selected before:bg-primary",
         )}
         size="xs"
-        variant={expanded ? "muted" : "default"}
+        variant="default"
       >
-        <div className="ml-1 w-8 shrink-0 self-center">
-          <AccordionTrigger aria-label={`${expanded ? "收起" : "展开"}「${environment.name}」的插件`} className="h-8 w-8 flex-none items-center justify-center gap-0 rounded-md p-0 hover:no-underline [&_[data-slot=accordion-trigger-icon]]:ml-0 [&_[data-slot=accordion-trigger-icon]]:size-4" data-testid={`environment-expand-${environment.environmentId}`}>
+        <div className="ml-1 w-7 shrink-0 self-center">
+          <AccordionTrigger aria-label={`${expanded ? "收起" : "展开"}「${environment.name}」的插件`} className="h-7 w-7 flex-none items-center justify-center gap-0 rounded-md p-0 hover:bg-foreground/5 hover:no-underline [&_[data-slot=accordion-trigger-icon]]:ml-0 [&_[data-slot=accordion-trigger-icon]]:size-3.5" data-testid={`environment-expand-${environment.environmentId}`}>
             <span className="sr-only">{expanded ? "收起" : "展开"}插件</span>
           </AccordionTrigger>
         </div>
@@ -261,7 +262,7 @@ function EnvironmentGroup({
             <Button
               aria-current={environmentSelected ? "page" : undefined}
               className={cn(
-                "h-auto min-h-12 min-w-0 flex-1 shrink justify-start gap-2 overflow-hidden rounded-none border-0 px-1.5 py-1 text-left @max-[280px]/resource-navigation:gap-1 @max-[280px]/resource-navigation:px-1",
+                "h-auto min-h-12 min-w-0 flex-1 shrink justify-start gap-2 overflow-hidden rounded-none border-0 px-1 py-1 text-left",
                 "shadow-none transition-colors duration-150 hover:bg-transparent focus-visible:ring-inset",
                 environmentSelected && "bg-surface-selected text-primary",
               )}
@@ -279,13 +280,12 @@ function EnvironmentGroup({
             >
               <ItemContent asChild className="overflow-hidden self-center gap-0">
                 <span>
-                  <ItemTitle asChild className="block w-full truncate text-sm font-semibold leading-5" title={environment.name}>
+                  <ItemTitle asChild className="block w-full truncate text-section font-semibold leading-5" title={environment.name}>
                     <span>{environment.name}</span>
                   </ItemTitle>
-                  <ItemDescription asChild className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs leading-4">
+                  <ItemDescription asChild className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs leading-4 text-foreground/75">
                     <span>
-                      <span className="hidden shrink-0 @max-[280px]/resource-navigation:inline-flex"><EnvironmentTypeBadge compact type={environment.environmentType} /></span>
-                      <span className="shrink-0">环境</span>
+                      <EnvironmentTypeBadge compact type={environment.environmentType} />
                       <span className="whitespace-nowrap">
                         {environment.pluginCount === 0
                           ? "暂无插件"
@@ -297,9 +297,9 @@ function EnvironmentGroup({
               </ItemContent>
               <ItemActions asChild className="shrink-0 items-center self-center gap-1.5">
                 <span>
-                  <span className="@max-[280px]/resource-navigation:hidden"><EnvironmentTypeBadge compact type={environment.environmentType} /></span>
                   <StatusIndicator
-                    className="h-5 max-w-full text-xs [&>svg]:shrink-0 @max-[400px]/resource-navigation:[&>span]:sr-only"
+                    className="size-4 justify-center"
+                    compact
                     status={environment.status}
                   />
                 </span>
@@ -335,6 +335,7 @@ function EnvironmentGroup({
           {environmentScopeSelected && connectionControlsReady && rawRuntime ? (
             <EnvironmentConnectionRowAction
               api={api}
+              compact
               environment={environment}
               fallbackStatus={environment.status}
               configureLabel={environment.pluginCount ? "完善配置" : "新增插件"}
@@ -382,8 +383,7 @@ function EnvironmentGroup({
         </ItemActions>
       </Item>
 
-      <AccordionContent className="border-t border-border/60 bg-surface-inset/36 py-1.5 pl-[var(--tree-indent)] pr-1">
-        <div className="border-l border-border pl-1">
+      <AccordionContent className="border-t border-border-group bg-surface p-1">
           {pluginError || runtimeError ? (
             <NavigationReadFailure
               className="m-2 rounded-md"
@@ -418,7 +418,7 @@ function EnvironmentGroup({
               ))}
             </div>
           ) : null}
-          {plugins.length > 0 ? <ItemGroup className="gap-0">
+          {plugins.length > 0 ? <ItemGroup className="gap-0 has-data-[size=xs]:gap-0">
             {plugins.map((plugin) => {
             const PluginIcon = pluginIcons[plugin.pluginType]
             const selected =
@@ -429,8 +429,8 @@ function EnvironmentGroup({
                 className={cn(
                   "group/plugin relative min-h-10 min-w-0 flex-nowrap items-stretch gap-0 overflow-hidden rounded-md border-0 p-0",
                   "before:absolute before:inset-y-2 before:left-0 before:z-10 before:w-0.5 before:rounded-r-full before:bg-transparent",
-                  "transition-colors duration-150 hover:bg-accent/55",
-                  selected && "bg-surface-selected text-primary before:bg-primary",
+                  "transition-colors duration-150 hover:bg-surface-hover",
+                  selected && "bg-surface-selected before:bg-primary",
                 )}
                 data-plugin-id={plugin.pluginInstanceId}
                 data-testid={`plugin-row-${plugin.pluginInstanceId}`}
@@ -440,7 +440,7 @@ function EnvironmentGroup({
               >
                 <Button
                   aria-current={selected ? "page" : undefined}
-                  className="h-auto min-w-0 flex-1 justify-start gap-2 rounded-md px-2 py-0.5 text-left shadow-none hover:bg-transparent focus-visible:ring-inset"
+                  className="h-auto min-h-12 min-w-0 flex-1 justify-start gap-2 rounded-md px-2 py-1 text-left shadow-none hover:bg-transparent focus-visible:ring-inset"
                   data-shell-nav-item
                   data-testid={`plugin-trigger-${plugin.pluginInstanceId}`}
                   onClick={() => onSelectPlugin(plugin.pluginInstanceId)}
@@ -457,43 +457,36 @@ function EnvironmentGroup({
                   <ItemMedia
                     asChild
                     className={cn(
-                      "grid size-7 place-items-center self-center rounded-md text-muted-foreground",
+                      "grid size-7 place-items-center self-center rounded-md bg-surface-raised text-muted-foreground",
                       "transition-colors duration-150",
                       selected && "text-primary",
                     )}
                     variant="icon"
                   >
-                    <span><PluginIcon aria-hidden="true" size={14} weight={selected ? "fill" : "regular"} /></span>
+                    <span><PluginIcon aria-hidden="true" size={16} /></span>
                   </ItemMedia>
                   <ItemContent asChild className="self-center gap-0">
                     <span>
-                      <ItemTitle asChild className={cn("block w-full truncate text-sm font-normal leading-5", selected && "font-medium")}>
+                      <ItemTitle asChild className={cn("block w-full truncate text-sm font-normal leading-5 text-foreground", selected && "font-medium")}>
                         <span>{plugin.displayName}</span>
                       </ItemTitle>
-                      <ItemDescription asChild className={cn(
-                        "flex min-w-0 items-center gap-1.5 text-xs leading-4",
-                        selected && "dark:text-primary/75",
-                      )}>
+                      <ItemDescription asChild className="flex min-w-0 items-center gap-1.5 text-xs leading-4">
                         <span>
-                          <span className="min-w-0 flex-1 truncate">
-                            {pluginTypeLabel(plugin.pluginType)} · {plugin.configState !== "ready"
-                              ? pluginConfigLabel(plugin.configState)
-                              : plugin.status === "error" ? "连接失败"
-                                : plugin.status === "blocked" ? "连接受阻" : statusLabel(plugin.status)}
-                          </span>
+                          <span className="shrink-0">{pluginTypeLabel(plugin.pluginType)}</span>
+                          <span aria-hidden="true">·</span>
+                          {plugin.configState !== "ready" ? (
+                            <span className="truncate">{pluginConfigLabel(plugin.configState)}</span>
+                          ) : (
+                            <StatusIndicator
+                              className="min-w-0 shrink [&>span]:truncate"
+                              label={plugin.status === "error" ? "连接失败" : plugin.status === "blocked" ? "连接受阻" : statusLabel(plugin.status)}
+                              status={plugin.status}
+                            />
+                          )}
                         </span>
                       </ItemDescription>
                     </span>
                   </ItemContent>
-                  <ItemActions asChild className="self-center">
-                    <span>
-                      <StatusIndicator
-                        className="size-5 justify-center p-0"
-                        compact
-                        status={plugin.status}
-                      />
-                    </span>
-                  </ItemActions>
                 </Button>
                 {environmentScopeSelected && connectionControlsReady && rawRuntime ? (
                   <ItemActions
@@ -502,6 +495,7 @@ function EnvironmentGroup({
                   >
                     <PluginConnectionRowAction
                       api={api}
+                      compact
                       fallbackStatus={plugin.status}
                       onConfigure={() => onAction({ type: "edit-plugin", environment, plugin })}
                       {...(onRuntime ? { onRuntime } : {})}
@@ -532,7 +526,7 @@ function EnvironmentGroup({
             })}
           </ItemGroup> : null}
           <Button
-            className="h-8 w-full justify-start gap-2 rounded-md border-0 bg-transparent px-2 text-muted-foreground shadow-none transition-colors duration-150 hover:bg-accent/55 hover:text-foreground"
+            className="h-8 w-full justify-start gap-2 rounded-md border-0 bg-transparent px-2 text-xs font-normal text-muted-foreground shadow-none transition-colors duration-150 hover:bg-surface-hover hover:text-foreground"
             data-testid={"add-plugin-" + environment.environmentId}
             onClick={() => onAction({ type: "create-plugin", environment })}
             size="sm"
@@ -544,7 +538,6 @@ function EnvironmentGroup({
             </span>
             新增插件
           </Button>
-        </div>
       </AccordionContent>
     </AccordionItem>
   )

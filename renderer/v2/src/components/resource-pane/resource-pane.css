@@ -1,0 +1,6 @@
+@layer components {
+  .resource-environment-header {
+    /* 冷灰标题配合分组细边框，保留层级而不过度强调大面积底色。 */
+    background: var(--surface-group-header);
+  }
+}
