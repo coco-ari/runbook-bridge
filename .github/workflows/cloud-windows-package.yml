@@ -37,12 +37,13 @@ jobs:
           corepack pnpm exec electron scripts/ui-react-foundation-smoke.cjs --update-center-only
       - name: Build Windows x64 installer
         run: corepack pnpm run dist
-      - name: Verify packaged application and installation
+      - name: Verify packaged application
         run: |
           node scripts/verify-package.mjs "dist/win-unpacked/Agent运维工作台.exe"
           node scripts/packaged-mcp-smoke.mjs "dist/win-unpacked/Agent运维工作台.exe"
           node scripts/packaged-ui-smoke.cjs "dist/win-unpacked/Agent运维工作台.exe"
-          node scripts/install-upgrade-regression.cjs
+      - name: Verify installation and overwrite upgrade
+        run: node scripts/install-upgrade-regression.cjs
       - name: Prepare cloud update files
         run: |
           node scripts/prepare-cloud-update.mjs --platform win32 --arch x64

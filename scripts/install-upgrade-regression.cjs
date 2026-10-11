@@ -6,6 +6,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 const { packagedPaths } = require('./packaged-paths.cjs');
 
 const PROJECT_ID = 'upgrade-regression';
@@ -279,7 +280,13 @@ function rendererInspectionExpression(expectedPluginCount) {
 }
 
 async function inspectInstalledRenderer(cdp, expectedPluginCount) {
-  const result = await cdp.evaluate(rendererInspectionExpression(expectedPluginCount));
+  let result;
+  try {
+    result = await cdp.evaluate(rendererInspectionExpression(expectedPluginCount));
+  } catch (error) {
+    const rendererUrl = await cdp.evaluate('location.href').catch(() => 'unavailable');
+    throw new Error(`Installed renderer inspection failed (URL: ${rendererUrl})`, {cause:error});
+  }
   assert.equal(result.projectFound, true);
   assert.equal(result.pluginCount, result.expectedPluginCount);
   assert.equal(result.credentialsReadable, true);
@@ -458,6 +465,9 @@ async function orchestrate() {
   let installedApp = null;
   try {
     const executable = await install(installer, installDir, isolation.env);
+    const {appAsar} = packagedPaths(executable);
+    process.stdout.write(`Installed renderer expected URL: ${pathToFileURL(path.join(appAsar,'renderer-build','v2','index.html')).href}\n`);
+    process.stdout.write(`Installed executable real path: ${await fsp.realpath(executable)}\n`);
     installedApp = await startInstalledApp(executable, isolation);
     await seedInstalledRenderer(installedApp.cdp);
     await inspectInstalledRenderer(installedApp.cdp, 3);
@@ -528,5 +538,6 @@ async function orchestrate() {
 
 orchestrate().catch((error) => {
   process.stderr.write(`${error.stack || error.message}\n`);
+  if (error.cause) process.stderr.write(`${error.cause.stack || error.cause.message}\n`);
   process.exitCode = 1;
 });
