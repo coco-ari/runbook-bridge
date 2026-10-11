@@ -48,6 +48,8 @@ import { PluginDraftPromotionJournal } from './plugin-draft-promotion-journal.mj
 import { PluginProbeManager } from './plugin-probe-manager.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// 加载与 IPC 信任检查共用同一编码地址，避免 Windows 短路径中的 ~ 被不同编码。
+const workspaceRendererUrl = pathToFileURL(path.join(__dirname, '..', 'renderer-build', 'v2', 'index.html')).href;
 const dataRoot = defaultDataRoot();
 const store = new ProjectStore(dataRoot);
 let brokerServer;
@@ -110,7 +112,7 @@ function createWindow() {
   });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-  mainWindow.loadFile(path.join(__dirname, '..', 'renderer-build', 'v2', 'index.html'));
+  mainWindow.loadURL(workspaceRendererUrl);
 }
 
 async function closeForSoftwareUpdate() {
@@ -375,7 +377,7 @@ if (process.argv.includes('--mcp')) {
           quickQuestionClipboard:clipboard,
           terminalClipboard:clipboard,
           readServerClipboardFiles:readWindowsClipboardFiles,
-          isWorkspaceRenderer: (sender) => sender.getURL() === pathToFileURL(path.join(__dirname, '..', 'renderer-build', 'v2', 'index.html')).href,
+          isWorkspaceRenderer: (sender) => sender.getURL() === workspaceRendererUrl,
           pickMysqlExportPath: async (sender, name) => {
             const window = BrowserWindow.fromWebContents(sender);
             if (!window || window.isDestroyed()) return null;

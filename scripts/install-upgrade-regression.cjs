@@ -454,7 +454,8 @@ async function orchestrate() {
   assert.ok(['win32','darwin'].includes(process.platform),'安装回归只支持 Windows 和 macOS');
   if (process.platform === 'darwin') assert.ok(process.argv[2]?.endsWith('.dmg'),'Mac 安装回归必须传入本次构建的 DMG');
   await fsp.access(installer);
-  const temporaryRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'ai-ops-install-regression-'));
+  // ~ 在 Node 文件 URL 中编码为 %7E；真实安装回归覆盖加载地址与 IPC 信任检查一致。
+  const temporaryRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'ai-ops-install-regression-~'));
   const isolation = isolatedEnvironment(temporaryRoot);
   const installDir = path.join(temporaryRoot, 'InstalledApp');
   await Promise.all([

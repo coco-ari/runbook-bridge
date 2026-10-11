@@ -42,7 +42,7 @@ jobs:
           node scripts/verify-package.mjs "dist/win-unpacked/Agent运维工作台.exe"
           node scripts/packaged-mcp-smoke.mjs "dist/win-unpacked/Agent运维工作台.exe"
           node scripts/packaged-ui-smoke.cjs "dist/win-unpacked/Agent运维工作台.exe"
-      - name: Verify installation and overwrite upgrade
+      - name: Verify installation and overwrite upgrade in an encoded path
         run: node scripts/install-upgrade-regression.cjs
       - name: Prepare cloud update files
         run: |
