@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, type ReactNode } from "react"
 import { Stack } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
+import { UtilityButton, UtilityCount } from "@/components/ui/utility-button"
 import { UtilityPopover, useUtilityPopover } from "@/components/ui/utility-popover"
 import type { PluginWorkspaceEntry } from "./workspace-registry"
 
@@ -65,13 +66,13 @@ export function WorkspaceSwitcherButton({className, variant = "ghost", labelLayo
   readonly labelLayout?: "inline" | "split" | "compact"
 }) {
   const navigation = useContext(NavigationContext)
-  return navigation ? <Button className={className} size="sm" variant={variant} type="button" data-testid="workspace-switcher" aria-label={`管理已打开的工作区，${navigation.entries.length} 项`} title={`查看、切换或关闭已打开的工作区，当前 ${navigation.entries.length} 项`} onClick={event => navigation.manage(event.currentTarget)}>
+  return navigation ? <UtilityButton className={className} variant={variant} data-testid="workspace-switcher" aria-label={`管理已打开的工作区，${navigation.entries.length} 项`} title={`查看、切换或关闭已打开的工作区，当前 ${navigation.entries.length} 项`} onClick={event => navigation.manage(event.currentTarget)}>
     <Stack aria-hidden="true" />
     {labelLayout === "compact" ? <>
       <span data-utility-label>工作区</span>
-      {navigation.entries.length > 0 ? <span aria-hidden="true" className="min-w-3.5 shrink-0 rounded-sm bg-muted px-0.5 text-center text-[10px] leading-4 text-muted-foreground tabular-nums" data-utility-count>{navigation.entries.length > 9 ? "9+" : navigation.entries.length}</span> : null}
+      <UtilityCount count={navigation.entries.length} max={9} />
     </> : labelLayout === "split" ? <><span className="min-w-0 flex-1 truncate text-left">工作区</span><span className="min-w-4 shrink-0 text-center tabular-nums text-muted-foreground">{navigation.entries.length}</span></> : <span className="truncate">工作区 {navigation.entries.length}</span>}
-  </Button> : null
+  </UtilityButton> : null
 }
 
 export function useWorkspaceConfigure() {

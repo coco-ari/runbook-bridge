@@ -3,6 +3,7 @@ import { ArrowLeft, ArrowSquareOut, Bell, Cloud, Desktop, DownloadSimple, GearSi
 import { toast } from "sonner"
 import type { AiOpsV2Api } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
+import { UtilityButton, UtilityCount } from "@/components/ui/utility-button"
 import { UtilityPopover, useUtilityPopover } from "@/components/ui/utility-popover"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { useCloudConfig } from "@/features/cloud-config/CloudConfigProvider"
@@ -47,10 +48,10 @@ export function UpdatesButton({ iconOnly = false, compact = false, className = "
   const confirmations = updates.confirmations
   const messageCount = updates.count + (confirmations.count ?? 0)
   const label = ["消息中心", confirmations.unavailable ? "待确认不可用" : confirmations.loading ? "正在读取待确认" : confirmations.count ? `${confirmations.count} 项待确认操作` : "", updates.count ? `${updates.count} 项更新` : ""].filter(Boolean).join("，")
-  return <Button variant="ghost" size={iconOnly ? "icon-sm" : "sm"} className={`relative shrink-0 text-muted-foreground ${className}`} aria-label={label} aria-haspopup="dialog" aria-expanded={updates.isOpen} aria-controls={updates.isOpen ? updates.contentId : undefined} title={label} onClick={event => updates.open(event.currentTarget)} data-testid="updates-open">
+  return <UtilityButton size={iconOnly ? "icon-sm" : "sm"} className={className} aria-label={label} aria-haspopup="dialog" aria-expanded={updates.isOpen} aria-controls={updates.isOpen ? updates.contentId : undefined} title={label} onClick={event => updates.open(event.currentTarget)} data-testid="updates-open">
     <Bell aria-hidden="true" className={confirmations.unavailable || (confirmations.count ?? 0) > 0 ? "text-warning" : undefined} />{!iconOnly ? <span data-utility-label={compact || undefined}>消息中心</span> : null}
-    {messageCount > 0 ? <span className={iconOnly ? "absolute -top-0.5 -right-1 rounded bg-primary/10 px-1 text-[9px] leading-3 text-primary tabular-nums" : "rounded bg-primary/10 px-0.5 text-[10px] text-primary tabular-nums"} aria-hidden="true" data-utility-count={compact || undefined} data-testid="updates-count">{messageCount > 99 ? "99+" : messageCount}</span> : null}
-  </Button>
+    <UtilityCount count={messageCount} attention floating={iconOnly} data-testid="updates-count" />
+  </UtilityButton>
 }
 
 export function ConfirmationNotice({ inline = false }: { readonly inline?: boolean }) {

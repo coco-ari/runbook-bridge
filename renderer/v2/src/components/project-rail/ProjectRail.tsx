@@ -273,7 +273,7 @@ export function ProjectRail({
     query: projectQuery,
   })
   const toggleDisabled = collapsed && expandDisabled
-  const utilityButtonClassName = "project-utility-button relative h-8 gap-0.5 px-0.5 text-xs leading-4 [&_svg]:size-4"
+  const utilityButtonClassName = "project-utility-button gap-0.5 px-0.5"
 
   useEffect(() => {
     if (shortcutsDisabled) return
@@ -648,7 +648,7 @@ export function ProjectRail({
           />
           <UpdatesButton className={utilityButtonClassName} compact />
           <SettingsButton
-            className="ml-auto shrink-0 text-muted-foreground"
+            className="ml-auto"
             iconOnly
           />
         </SidebarFooter>

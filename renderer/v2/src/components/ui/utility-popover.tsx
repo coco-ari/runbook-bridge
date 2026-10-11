@@ -1,7 +1,7 @@
 import { useCallback, useId, useRef, useState, type ReactNode } from "react"
 import { X } from "@phosphor-icons/react"
 import { Button } from "./button"
-import { Popover, PopoverAnchor, PopoverContent } from "./popover"
+import { Popover, PopoverAnchor, PopoverContent, PopoverTitle } from "./popover"
 
 export function useUtilityPopover(triggerSelector: string) {
   const [open, setOpen] = useState(false)
@@ -49,10 +49,10 @@ export function UtilityPopover({ controller, title, summary, description, action
         if (!prevented && !outside.current && anchor.current?.isConnected && anchor.current.checkVisibility() && !anchor.current.closest('[hidden],[inert]')) anchor.current.focus()
       }}>
       <div className="flex shrink-0 items-center gap-2 border-b px-4 py-3">
-        <h2 id={`${id}-title`} className="text-sm font-semibold">{title}</h2>
+        <PopoverTitle id={`${id}-title`}>{title}</PopoverTitle>
         <span className="min-w-0 flex-1 text-[11px] text-muted-foreground">{summary}</span>
         {actions}
-        <Button size="icon-xs" variant="ghost" className="text-muted-foreground" aria-label={`关闭${title}`} onClick={() => setOpen(false)} data-testid={closeTestId ?? `${testId}-close`}><X /></Button>
+        <Button size="icon-xs" variant="ghost" className="text-muted-foreground hover:text-foreground" aria-label={`关闭${title}`} onClick={() => setOpen(false)} data-testid={closeTestId ?? `${testId}-close`}><X /></Button>
       </div>
       <p id={`${id}-description`} className="sr-only">{description}</p>
       <div className="min-h-0 overflow-y-auto overscroll-contain px-4 py-1" data-utility-popover-list>{children}</div>

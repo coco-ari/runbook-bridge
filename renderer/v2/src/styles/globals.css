@@ -143,7 +143,7 @@
   --muted-foreground: oklch(0.48 0.02 264);
   --accent: #e5f1eb;
   --accent-foreground: #075a41;
-  --destructive: oklch(0.54 0.2 25);
+  --destructive: var(--danger);
   --input: oklch(0.84 0.012 260);
   --control-border: oklch(0.59 0.016 264);
   --scrollbar-thumb: var(--control-border);
@@ -157,11 +157,11 @@
   --surface-hover: oklch(0.91 0.014 260);
   --surface-selected: #e0f0e8;
   --text-faint: oklch(0.50 0.016 264);
-  /* 状态文字单独校准，保留主按钮与实心危险按钮的原有颜色。 */
+  /* 错误文字、图标与弱背景统一语义色，实心危险按钮单独保证对比度。 */
   --success: #075a41;
   --warning: oklch(0.46 0.12 76);
   --danger: oklch(0.47 0.18 25);
-  --danger-solid: var(--destructive);
+  --danger-solid: oklch(0.54 0.2 25);
   --danger-foreground: oklch(0.985 0.004 260);
   --info: oklch(0.45 0.13 240);
   --sidebar: oklch(0.978 0.005 260);
@@ -190,7 +190,7 @@
   --muted-foreground: #a0a0ab;
   --accent: #22222b;
   --accent-foreground: var(--foreground);
-  --destructive: #f16d75;
+  --destructive: var(--danger);
   --input: #34343e;
   --control-border: #72727e;
   --scrollbar-thumb: var(--control-border);
@@ -207,7 +207,7 @@
   --text-faint: #8a8a96;
   --success: var(--primary);
   --warning: #f0b84b;
-  --danger: var(--destructive);
+  --danger: #f16d75;
   --danger-solid: #a92f3a;
   --danger-foreground: #fff5f5;
   --info: #62aaf7;

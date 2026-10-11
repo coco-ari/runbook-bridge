@@ -32,7 +32,7 @@ export function WorkspaceHeaderActions({ connected, busy, reconnecting, awaiting
   const Icon = connected || busy ? LinkBreak : ArrowClockwise
   return <>
     <ConfirmationNotice inline />
-    <WorkspaceSwitcherButton className="workspace-global-button relative" labelLayout="compact" />
+    <WorkspaceSwitcherButton className="workspace-global-button" labelLayout="compact" />
     <UpdatesButton iconOnly />
     <SettingsButton className="workspace-global-button" />
     <Button data-testid={prefix + (connected || busy ? "-disconnect" : "-reconnect")} size="sm" variant="outline" type="button" aria-label={label} aria-description={label} disabled={cancelling || busy || (!cancelAvailable && (reconnecting || awaitingConfirmation || (connected && disabled)))} onClick={cancelAvailable ? onCancel : connected ? onDisconnect : onReconnect}><Icon aria-hidden="true" />{label}</Button>

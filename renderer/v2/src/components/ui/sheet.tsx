@@ -74,7 +74,7 @@ function SheetContent({
           <SheetPrimitive.Close data-slot="sheet-close" asChild>
             <Button
               variant="ghost"
-              className="absolute top-3 right-3"
+              className="absolute top-3 right-3 text-muted-foreground hover:text-foreground"
               size="icon-sm"
             >
               <X aria-hidden="true"
@@ -116,7 +116,7 @@ function SheetTitle({
     <SheetPrimitive.Title
       data-slot="sheet-title"
       className={cn(
-        "text-base font-medium text-foreground",
+        "min-w-0 text-base leading-6 font-semibold [overflow-wrap:anywhere]",
         className
       )}
       {...props}
