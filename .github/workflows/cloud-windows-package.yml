@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - docs/releases/v*.md
+      - .github/workflows/cloud-windows-package.yml
 permissions:
   contents: read
 jobs:
@@ -28,10 +29,11 @@ jobs:
         run: |
           corepack pnpm run check
           corepack pnpm test
-      - name: Markdown, recovery and update center UI
+      - name: Markdown, recovery, settings and update center UI
         run: |
           corepack pnpm run test:ui:runbook
           corepack pnpm exec electron scripts/ui-react-business-smoke.cjs --recovery-only
+          corepack pnpm exec electron scripts/ui-react-foundation-smoke.cjs --settings-regression-only
           corepack pnpm exec electron scripts/ui-react-foundation-smoke.cjs --update-center-only
       - name: Build Windows x64 installer
         run: corepack pnpm run dist

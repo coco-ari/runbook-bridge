@@ -37,10 +37,12 @@ module.exports = async function exerciseSettings({ evaluate, install = false, in
   assert.equal(await evaluate('Boolean(document.querySelector("[data-testid=codex-next-steps]"))'), configured);
   if (configured) {
     if (paint) await paint();
-    assert.match(await evaluate('document.querySelector("[data-testid=codex-status-summary]").textContent'), /本机已完成.*无需重复配置/u);
+    const summary = await evaluate('document.querySelector("[data-testid=codex-status-summary]").textContent');
+    assert.match(summary, /仅表示配置文件正确/u);
+    assert.match(summary, /只读资源查询验证实际连接/u);
     const statusColors = await evaluate('(() => { const icon = document.querySelector("[data-testid=codex-status-summary] svg"); const title = document.querySelector("[data-testid=codex-status]"); return { icon: getComputedStyle(icon).color, title: getComputedStyle(title).color, iconClass: icon.getAttribute("class"), titleClass: title.className }; })()');
     assert.equal(statusColors.icon, statusColors.title, '确认图标与成功文字保持一致：' + JSON.stringify(statusColors));
-    assert.ok(await evaluate('parseFloat(getComputedStyle(document.querySelector("[data-testid=codex-status]")).fontSize) >= 24'), '成功状态应醒目');
+    assert.ok(await evaluate('(() => { const title = document.querySelector("[data-testid=codex-status]"); const description = document.querySelector("[data-testid=codex-status-summary] p"); return parseFloat(getComputedStyle(title).fontSize) > parseFloat(getComputedStyle(description).fontSize) && Number(getComputedStyle(title).fontWeight) >= 600; })()'), '配置状态标题应比说明文字醒目');
   }
   if (capture) await capture('settings-agent');
   const setAdvanced = async open => {
