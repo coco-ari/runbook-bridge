@@ -98,7 +98,7 @@ test('inline plugin editor remains mounted when collapsed and restores retained 
   assert.match(editor,/event\.target !== event\.currentTarget/u);
   assert.match(editor,/!workspaceRef\.current\?\.contains\(document\.activeElement\)/u);
   assert.match(editor,/data-testid="plugin-editor-footer"/u);
-  assert.match(editor,/@min-\[560px\]\/editor:flex-row/u);
+  assert.match(editor,/max-w-4xl justify-end gap-2/u);
   assert.match(editor,/if \(!state\.credentials\.primary\)/u);
   assert.match(editor,/plugin-local-change-confirmation/u);
 });
@@ -118,6 +118,7 @@ test('all scope action menus release Radix focus before handing off to another s
   const actions = sourceText.slice(sourceText.indexOf('function SelectionActions'),sourceText.indexOf('export function WorkspaceDetail'));
   assert.match(actions,/useMenuHandoff/u);
   assert.match(actions,/onOpenChange=\{handoff\.onOpenChange\}/u);
+  assert.doesNotMatch(actions,/StoredCredentialViewer|stored-credential-view/u);
   assert.match(actions,/onCloseAutoFocus=\{handoff\.onCloseAutoFocus\}/u);
   assert.match(actions,/handoff\.queueAction\(\(\) => onAction\(action\)\)/u);
   assert.doesNotMatch(actions,/onSelect=\{\(\) => onAction/u);

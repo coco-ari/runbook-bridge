@@ -41,8 +41,7 @@ test('first-plugin re-add smoke exercises the real temporary-probe boundary with
   assert.match(regression,/for \(const pluginType of \['server','redis'\]\)/u);
   assert.match(regression,/deletePluginThroughUi\(win,plugin\.pluginInstanceId\)/u);
   assert.match(regression,/state\.plugins\.length,0,'re-add starts only after deleting the last plugin'/u);
-  assert.match(regression,/clickText\(win,'检查连接',EDITOR_SELECTOR\)/u);
-  assert.match(regression,/plugin-save-disconnected/u);
+  assert.match(regression,/plugin-save/u);
   assert.match(regression,/Object\.hasOwn\(payload,'credentialIntent'\),false/u);
   assert.match(regression,/Object\.hasOwn\(payload,'oneTimeGrant'\),false/u);
   assert.match(regression,/usesTemporaryCredentials:true/u);
@@ -86,8 +85,6 @@ test('plugin operations smoke stays isolated, scoped and credential-free',async 
   }
 
   for (const rawStrategy of [
-    'stay-disconnected',
-    'connect-current',
     'restore-pre-edit-set',
   ]) {
     assert.match(source,new RegExp(`assertEditSavePayload\\([\\s\\S]*?'${rawStrategy}'`,'u'));
@@ -187,8 +184,6 @@ test('plugin smoke blocks dirty and busy navigation until exact edit-session cle
     'background refresh must not restart the edit session',
     'collapsing must not end the editor session',
     'collapsing must not cancel the editor',
-    'Escape closes only the save menu',
-    'save menu Escape restores its trigger',
     'navigation must not cancel before discard approval',
     'Escape dismisses only the dirty confirmation',
     'Escape must not cancel or leave the edit session',
@@ -246,11 +241,11 @@ test('runtime host-key prompts preserve explicit approval, exact correlation and
     'later trust must not consume a rejected challenge',
     'removed host-key trigger restores the stable detail-workspace fallback',
     'removing the challenge owner must not trust a host key',
-    'original plugin save strategies and workspace lifecycle retain the exact forty-one-call baseline',
+    'single plugin save and workspace lifecycle retain the exact forty-call baseline',
     '环境详情插件入口加入后只增加二十六次显式连接与确认调用',
   ]) assert.ok(source.includes(expectation),`missing host-key governance assertion: ${expectation}`);
-  assert.match(source,/assert\.equal\(mutationCalls\.length,41,/u);
-  assert.match(source,/assert\.equal\(mutationCalls\.length,67,/u);
+  assert.match(source,/assert\.equal\(mutationCalls\.length,40,/u);
+  assert.match(source,/assert\.equal\(mutationCalls\.length,66,/u);
   assert.match(source,/assert\.equal\(mutationCalls\.length,initialMutationCount\+26,/u);
   assert.ok(source.indexOf('await assertRuntimeHostKeyGovernance(win);') > source.indexOf('await assertPluginWorkspaceNavigation(win,'));
 });
@@ -272,7 +267,7 @@ test('late and simultaneous host-key challenges queue behind the active short di
     'single and simultaneous late host-key responses must never stack active modal surfaces',
     'queued dialogs must not save metadata or cause hidden mutations',
   ]) assert.ok(source.includes(expectation),`missing late-challenge assertion: ${expectation}`);
-  assert.match(source,/assert\.equal\(mutationCalls\.length,70,/u);
+  assert.match(source,/assert\.equal\(mutationCalls\.length,69,/u);
   assert.match(source,/assert\.equal\(mutationCalls\.length,initialMutationCount\+3,/u);
   assert.ok(source.indexOf('await assertDeferredHostKeyDialogs(win);') > source.indexOf('await assertRuntimeHostKeyGovernance(win);'));
 });
@@ -316,9 +311,9 @@ test('connection tooltip handoff is a mandatory native-focus regression after th
   assert.match(handoff,/assert\.equal\(calls\('v2:connection-challenge-confirm'\)\.length,initialConfirmCount,/u);
   assert.match(handoff,/assert\.equal\(mutationCalls\.length,initialMutationCount\+32,/u);
   assert.doesNotMatch(handoff,/process\.env|new FocusEvent|settleAnimations/u,'handoff coverage must always run with native focus and ordinary tooltip dismissal timing');
-  for (const count of [41,67,70,102]) {
+  for (const count of [40,66,69,101]) {
     assert.match(source,new RegExp(`assert\\.equal\\(mutationCalls\\.length,${count},`,'u'));
   }
   assert.ok(source.indexOf('await assertConnectionTooltipHandoff(win);') > source.indexOf('await assertDeferredHostKeyDialogs(win);'));
-  assert.ok(source.indexOf('assert.equal(mutationCalls.length,102,') > source.indexOf('await assertConnectionTooltipHandoff(win);'));
+  assert.ok(source.indexOf('assert.equal(mutationCalls.length,101,') > source.indexOf('await assertConnectionTooltipHandoff(win);'));
 });

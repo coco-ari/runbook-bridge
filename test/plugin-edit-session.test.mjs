@@ -365,3 +365,26 @@ test('credential resolution failure completes the correlated validation operatio
   assert.equal(validation.state,'failed');
   assert.equal(runtimeCalls,0);
 });
+
+for (const connected of [false,true]) {
+  test(`保存恢复原状态：${connected ? '仅恢复原先已连接的依赖范围' : '原先断开时不建立连接'}`,async () => {
+    const plugins = [plugin('server','server'),plugin('orders','mysql',{transport:{kind:'serverTunnel',serverPluginInstanceId:'server'}}),plugin('offline','redis',{transport:{kind:'serverTunnel',serverPluginInstanceId:'server'}}),plugin('unrelated')];
+    const values = fixture({plugins,runtime:{projectId:'p1',environmentId:'e1',sequence:1,plugins:{
+      server:{phase:connected ? 'connected' : 'disconnected'},orders:{phase:connected ? 'connected' : 'disconnected'},offline:{phase:'disconnected'},unrelated:{phase:'connected'},
+    }}});
+    const prepared = await values.manager.preparePluginConnectionEdit({projectId:'p1',environmentId:'e1',pluginInstanceId:'server',expectedRevision:1});
+    const session = await values.manager.beginPluginConnectionEdit({prepareToken:prepared.prepareToken});
+    values.manager.beginSave(session.editSessionId);
+    await values.manager.completeSave(session.editSessionId,{afterCommit:'restore-pre-edit-set'});
+    assert.equal(values.planRequests.length,connected ? 1 : 0);
+    if (connected) {
+      assert.deepEqual(values.planRequests[0].pluginInstanceIds,['orders','server']);
+      assert.equal(values.planRequests[0].projectId,'p1');
+      assert.equal(values.planRequests[0].environmentId,'e1');
+    }
+    assert.equal(values.getSnapshot().plugins.unrelated.phase,'connected');
+    assert.equal(values.getSnapshot().plugins.offline.phase,'disconnected');
+    assert.equal(values.manager.sessions.size,0);
+    assert.equal(values.mutationCoordinator.environmentFence('p1','e1'),null);
+  });
+}

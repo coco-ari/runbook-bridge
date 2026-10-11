@@ -18,6 +18,7 @@ let holdProbeCompletion = false;
 const heldEditProgress = [];
 let heldProbeReply = null;
 let failNextCreate = false;
+let retainDraftAfterValidation = false;
 let failNextProbeCancel = false;
 let failNextDelete = false;
 let holdCredentialReveal = false;
@@ -134,6 +135,7 @@ async function installMatrixApi(win) {
     ? edits.cancelPreparation(payload.prepareToken,{ownerId})
     : edits.cancelPluginConnectionEdit({...payload,ownerId}));
   replace('v2:plugin-connection-edit-save',async (payload) => {
+    if (retainDraftAfterValidation) throw new AppError('FIXTURE_SAVE_RETRY','模拟持久化失败，保留草稿以继续检查输入组合。');
     edits.captureCredentialIntent(payload.editSessionId,{...payload,ownerId});
     edits.beginSave(payload.editSessionId,{ownerId});
     const material = edits.commitMaterial(payload.editSessionId,{ownerId});
@@ -149,6 +151,7 @@ async function installMatrixApi(win) {
     return {committed:true,plugin:before};
   });
   replace('v2:plugin-create',(payload) => {
+    if (retainDraftAfterValidation) throw new AppError('FIXTURE_SAVE_RETRY','模拟持久化失败，保留草稿以继续检查输入组合。');
     assertScope(payload);
     if (failNextCreate) {
       failNextCreate = false;
@@ -222,14 +225,19 @@ async function openNew(win,kind) {
   if (kind !== 'Redis') await fill(win,'#plugin-username','operator');
 }
 
+// Exercise the single Save action. A controlled persistence failure keeps the
+// draft available for the next input combination, after real validation passed.
 async function checkPassed(win) {
-  await clickText(win,'检查连接',EDITOR_SELECTOR);
-  await waitFor(win,`document.querySelector('[data-testid="plugin-validation-progress"]')?.textContent?.includes('检查通过') === true`,'matrix validation success');
+  retainDraftAfterValidation = true;
+  try {
+    await click(win,'[data-testid="plugin-save"]','save validates before persistence');
+    await waitFor(win,`document.querySelector('[data-testid="plugin-validation-progress"]')?.textContent?.includes('检查通过') === true && document.querySelector('[data-testid="plugin-editor-error"]')?.textContent.includes('模拟持久化失败')`,'validated draft remains available after persistence failure');
+  } finally { retainDraftAfterValidation = false; }
 }
 
 async function saveAndClose(win) {
   const createCount = calls.filter((call) => call.channel === 'v2:plugin-create').length;
-  await click(win,'[data-testid="plugin-save-disconnected"]','matrix disconnected save');
+  await click(win,'[data-testid="plugin-save"]','matrix disconnected save');
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'matrix save closes');
   assert.equal(calls.filter((call) => call.channel === 'v2:plugin-create').length,createCount+1);
   return state.plugins.at(-1).pluginInstanceId;
@@ -244,7 +252,7 @@ async function discard(win) {
 
 async function advanced(win) {
   const trigger = await win.webContents.executeJavaScript(`(() => {
-    const button = [...document.querySelectorAll('button')].find((item) => item.textContent?.includes('高级连接设置'));
+    const button = [...document.querySelectorAll('button')].find((item) => item.textContent?.includes('高级设置'));
     if (!button) return false;
     if (button.getAttribute('aria-expanded') !== 'true') button.click();
     return true;
@@ -259,8 +267,6 @@ async function editPlugin(win,pluginInstanceId) {
   await waitFor(win,`document.querySelector('[data-testid="plugin-action-edit"]')?.disabled === false`,'matrix edit action');
   await click(win,'[data-testid="plugin-action-edit"]','matrix edit');
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) !== null && document.querySelector('[data-testid="plugin-editor-loading"]') === null`,'matrix edit preparation ready');
-  await click(win,'[data-testid="plugin-begin-edit"]','matrix explicit edit');
-  await waitFor(win,`document.querySelector('[data-testid="plugin-begin-edit"]') === null && document.querySelector('[data-testid="plugin-editor-loading"]') === null`,'matrix edit preparation');
   if (await win.webContents.executeJavaScript(`document.querySelector('[data-testid="plugin-editor-confirmation"]') !== null`,true)) {
     await clickText(win,'继续编辑','[data-testid="plugin-editor-confirmation"]');
   }
@@ -271,7 +277,7 @@ async function serverMatrix(win) {
   process.stdout.write('Plugin matrix: Server authentication, proxy defaults and saved credentials\n');
   await openNew(win,'Server');
   const beforeInvalid = runtimeCalls.length;
-  await clickText(win,'检查连接',EDITOR_SELECTOR);
+  await click(win,'[data-testid="plugin-save"]','save checks the draft');
   await waitFor(win,`document.querySelector('#plugin-primary-credential-error')?.textContent?.includes('SSH 密码') === true`,'missing Server password rejected');
   assert.equal(runtimeCalls.length,beforeInvalid);
   await chooseSelectOption(win,'[aria-label="SSH 认证方式"]','SSH Agent');
@@ -316,7 +322,7 @@ async function serverMatrix(win) {
     return {reachable:true};
   };
   await checkPassed(win);
-  await click(win,'[data-testid="plugin-save-disconnected"]','save cleared temporary credential');
+  await click(win,'[data-testid="plugin-save"]','save cleared temporary credential');
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'saved credential edit closes');
   assert.equal(fixtureCredentials.get(savedId).password === savedValue,true,'cleared temporary credentials must not overwrite the stored fixture');
   assert.equal(state.plugins.find(plugin => plugin.pluginInstanceId === savedId).target.host,'moved.matrix.invalid');
@@ -328,11 +334,26 @@ async function credentialViewMatrix(win) {
   const dialog = '[data-testid="stored-credential-dialog"]';
   const valueSelector = '[data-testid="stored-credential-value"]';
   const viewButton = field => `[data-testid="stored-credential-view-${field}"]`;
+  let activeField;
+  const openView = async field => {
+    activeField = field;
+    const inputId = field === 'proxyPassword' ? 'plugin-proxy-credential' : 'plugin-primary-credential';
+    const control = await win.webContents.executeJavaScript(`(() => {
+      const input = document.getElementById(${JSON.stringify(inputId)});
+      const button = document.querySelector(${JSON.stringify(viewButton(field))});
+      const group = input?.closest('[data-slot="input-group"]');
+      if (!button || !group?.contains(button)) return false;
+      const a = input.getBoundingClientRect(), b = button.getBoundingClientRect(), c = group.getBoundingClientRect();
+      return button.type === 'button' && button.textContent.trim() === '' && button.getAttribute('aria-label')?.startsWith('查看已保存') && b.left >= a.right && b.right <= c.right && Math.abs(b.top + b.height / 2 - c.top - c.height / 2) < 2;
+    })()`,true);
+    assert.equal(control,true,'密码查看必须是输入框右侧有可访问名称的图标按钮');
+    await click(win,viewButton(field),'explicit saved credential view');
+  };
   const closeView = async () => {
     await clickText(win,'隐藏并关闭',dialog);
     await waitFor(win,`document.querySelector(${JSON.stringify(valueSelector)}) === null`,'viewed credential cleared');
     await waitFor(win,`document.querySelector(${JSON.stringify(dialog)}) === null`,'credential dialog closed');
-    await waitFor(win,`document.activeElement?.getAttribute('data-testid')?.startsWith('stored-credential-view-') === true`,'credential view trigger regains keyboard focus');
+    await waitFor(win,`document.activeElement?.getAttribute('data-testid') === ${JSON.stringify('stored-credential-view-')} + ${JSON.stringify(activeField)}`,'credential eye regains keyboard focus');
   };
   for (const [kind,auth,field] of [
     ['Server','password','password'],['Server','privateKey','privateKeyPassphrase'],
@@ -357,30 +378,38 @@ async function credentialViewMatrix(win) {
     }
     const id = await saveAndClose(win);
     const beforeViews = calls.filter(call => call.channel === 'v2:plugin-credential-reveal').length;
+    await openPopup(win,'[data-testid="detail-scope-actions"]','saved credential menu');
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-testid^="stored-credential-view-"]') === null`,true),true,'详情菜单不再重复提供密码入口');
+    await win.webContents.executeJavaScript(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`,true);
+    await waitFor(win,`document.querySelector('[role="menu"]') === null`,'detail menu closed');
     await editPlugin(win,id);
     await waitFor(win,`document.querySelector(${JSON.stringify(viewButton(field))}) !== null`,'saved credential view button');
     assert.equal(calls.filter(call => call.channel === 'v2:plugin-credential-reveal').length,beforeViews,'打开编辑器不自动获取明文');
-    await click(win,viewButton(field),'explicit saved credential view');
+    const replacement = randomBytes(24).toString('hex');
+    await fill(win,'#plugin-primary-credential',replacement);
+    await openView(field);
     await waitFor(win,`document.querySelector(${JSON.stringify(valueSelector)})?.value === ${JSON.stringify(value)}`,'correct saved credential displayed');
-    assert.equal(await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(valueSelector)}).readOnly && document.querySelector('#plugin-primary-credential').value === ''`,true),true,'只读查看不填入替换字段');
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(valueSelector)}).readOnly && document.querySelector('#plugin-primary-credential').value === ${JSON.stringify(replacement)}`,true),true,'只读查看不会覆盖用户正在输入的新密码');
     await closeView();
+    await fill(win,'#plugin-primary-credential','');
     if (proxyValue) {
       await advanced(win);
-      await click(win,viewButton('proxyPassword'),'explicit proxy credential view');
+      await waitFor(win,`document.querySelector(${JSON.stringify(viewButton('proxyPassword'))}) !== null`,'proxy credential menu item');
+      await openView('proxyPassword');
       await waitFor(win,`document.querySelector(${JSON.stringify(valueSelector)})?.value === ${JSON.stringify(proxyValue)}`,'correct proxy credential displayed');
       assert.equal(await win.webContents.executeJavaScript(`document.querySelector('#plugin-proxy-credential').value === ''`,true),true);
       await closeView();
     }
     if (kind === 'Redis') {
       failNextCredentialReveal = true;
-      await click(win,viewButton(field),'unreadable saved credential');
-      await waitFor(win,`document.querySelector(${JSON.stringify(dialog)})?.querySelector('[role="alert"]') !== null`,'safe credential view failure');
+      await openView(field);
+      await waitFor(win,`Boolean(document.querySelector(${JSON.stringify(dialog)})?.querySelector('[role="alert"]'))`,'safe credential view failure');
       assert.equal(await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(valueSelector)}) === null`,true),true);
       await closeView();
       for (const reason of ['close','blur']) {
         holdCredentialReveal = true;
         releaseCredentialReveal = null;
-        await click(win,viewButton(field),'deferred credential view');
+        await openView(field);
         await waitUntil(() => releaseCredentialReveal !== null,'held credential request');
         if (reason === 'close') await closeView();
         else {
@@ -392,10 +421,11 @@ async function credentialViewMatrix(win) {
         await wait(120);
         assert.equal(await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(dialog)}) === null && document.querySelector(${JSON.stringify(valueSelector)}) === null`,true),true,'迟到明文不得重新显示');
       }
-      await click(win,viewButton(field),'timed credential view');
+      await openView(field);
       await waitFor(win,`document.querySelector(${JSON.stringify(valueSelector)}) !== null`,'credential timer starts');
       await waitFor(win,`document.querySelector(${JSON.stringify(dialog)}) === null && document.querySelector(${JSON.stringify(valueSelector)}) === null`,'credential timeout clears plaintext',35000);
     }
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('#plugin-primary-credential').value === ''`,true),true,'查看不会填入编辑草稿');
     await checkPassed(win);
     assert.equal(calls.at(-1).credentialFields.length,0,'查看不会把已保存明文作为临时凭据发送');
     await click(win,'[data-testid="plugin-editor-cancel"]','close unchanged credential viewer editor');
@@ -408,7 +438,7 @@ async function discoveryMatrix(win) {
   process.stdout.write('Plugin matrix: MySQL result envelope, late discovery and tunnel editing\n');
   await openNew(win,'MySQL');
   const beforeInvalid = runtimeCalls.length;
-  await clickText(win,'检查连接',EDITOR_SELECTOR);
+  await click(win,'[data-testid="plugin-save"]','save checks the draft');
   await waitFor(win,`document.querySelector('#plugin-database-error')?.textContent?.includes('数据库') === true`,'missing fixed database rejected');
   assert.equal(runtimeCalls.length,beforeInvalid);
   await clickText(win,'读取数据库',EDITOR_SELECTOR);
@@ -439,7 +469,7 @@ async function discoveryMatrix(win) {
   await chooseSelectOption(win,'[aria-label="选择可见数据库"]','orders');
   await advanced(win);
   await chooseSelectOption(win,'[aria-label="连接路径"]','Server 隧道');
-  await clickText(win,'检查连接',EDITOR_SELECTOR);
+  await click(win,'[data-testid="plugin-save"]','save checks the draft');
   await waitFor(win,`document.querySelector('#plugin-tunnel-server-error')?.textContent?.includes('Server') === true`,'missing tunnel target rejected');
   await chooseSelectOption(win,'[aria-label="隧道 Server"]',state.plugins.find((plugin) => plugin.pluginInstanceId === SERVER_ID).displayName);
   await checkPassed(win);
@@ -449,7 +479,7 @@ async function discoveryMatrix(win) {
   await fill(win,'#plugin-database','inventory');
   await checkPassed(win);
   assert.equal(runtimeCalls.at(-1).draft.target.database,'inventory');
-  await click(win,'[data-testid="plugin-save-disconnected"]','save edited MySQL database');
+  await click(win,'[data-testid="plugin-save"]','save edited MySQL database');
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'MySQL edit committed');
 }
 
@@ -458,7 +488,7 @@ async function cancellationMatrix(win,{probe,AppError}) {
   await openNew(win,'Redis');
   holdProbeCompletion = true;
   const createsBefore = calls.filter((call) => call.channel === 'v2:plugin-create').length;
-  await click(win,'[data-testid="plugin-save-disconnected"]','begin a save whose probe response is delayed');
+  await click(win,'[data-testid="plugin-save"]','begin a save whose probe response is delayed');
   await waitUntil(() => heldProbeReply !== null,'probe finishes before its IPC response is delivered');
   assert.equal(probe.requests.size,0);
   await clickText(win,'取消检查','[data-testid="plugin-validation-progress"]');
@@ -471,7 +501,7 @@ async function cancellationMatrix(win,{probe,AppError}) {
   assert.equal(await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) !== null`,true),true);
   const duplicateStart = calls.filter((call) => call.channel === 'v2:plugin-probe').length;
   await win.webContents.executeJavaScript(`(() => {
-    const button = document.querySelector('[data-testid="plugin-save-disconnected"]');
+    const button = document.querySelector('[data-testid="plugin-save"]');
     button.click();button.click();
   })()`,true);
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'duplicate save activation completes once');
@@ -486,7 +516,7 @@ async function cancellationMatrix(win,{probe,AppError}) {
   const runtimeBefore = runtimeCalls.length;
   const wrongRouteBefore = calls.filter((call) => call.channel === 'v2:plugin-probe-cancel').length;
   const editCancelBefore = calls.filter((call) => call.channel === 'v2:plugin-validation-cancel').length;
-  await clickText(win,'检查连接',EDITOR_SELECTOR);
+  await click(win,'[data-testid="plugin-save"]','save checks the draft');
   await waitUntil(() => runtimeCalls.length === runtimeBefore+1,'real edit validation is running before progress reaches Renderer');
   await clickText(win,'取消检查','[data-testid="plugin-validation-progress"]');
   assert.equal(calls.filter((call) => call.channel === 'v2:plugin-probe-cancel').length,wrongRouteBefore,'existing edits never cancel through the new-plugin probe API');
@@ -504,7 +534,7 @@ async function cancellationMatrix(win,{probe,AppError}) {
     signal.addEventListener('abort',() => reject(signal.reason),{once:true});
   });
   failNextProbeCancel = true;
-  await clickText(win,'检查连接',EDITOR_SELECTOR);
+  await click(win,'[data-testid="plugin-save"]','save checks the draft');
   await waitUntil(() => probe.requests.size === 1,'cancellable new-plugin runtime');
   await clickText(win,'取消检查','[data-testid="plugin-validation-progress"]');
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)})?.textContent?.includes('模拟取消暂时失败') === true`,'cancel failure is visible and retryable');
@@ -518,7 +548,7 @@ async function recoveryMatrix(win,{AppError}) {
   await openNew(win,'Redis');
   await fill(win,'#plugin-redis-db','16');
   const invalidBefore = runtimeCalls.length;
-  await clickText(win,'检查连接',EDITOR_SELECTOR);
+  await click(win,'[data-testid="plugin-save"]','save checks the draft');
   await waitFor(win,`document.querySelector('#plugin-redis-db-error')?.textContent?.includes('15') === true`,'out-of-range Redis DB rejected');
   assert.equal(runtimeCalls.length,invalidBefore);
   await fill(win,'#plugin-redis-db','3');
@@ -529,7 +559,7 @@ async function recoveryMatrix(win,{AppError}) {
     return {reachable:true};
   };
   const beforeTls = state.plugins.length;
-  await click(win,'[data-testid="plugin-save-disconnected"]','save with explicit TLS fallback');
+  await click(win,'[data-testid="plugin-save"]','save with explicit TLS fallback');
   await waitFor(win,`document.querySelector('[data-testid="plugin-editor-confirmation"]')?.textContent?.includes('目标不支持 TLS') === true`,'TLS fallback requires approval');
   assert.equal(state.plugins.length,beforeTls);
   await assertPendingTlsDecision(win);
@@ -538,7 +568,7 @@ async function recoveryMatrix(win,{AppError}) {
   await waitFor(win,`document.querySelector('[data-testid="plugin-editor-confirmation"]') === null`,'TLS fallback rejection closes the prompt');
   assert.equal(runtimeCalls.length,beforeTlsRejection,'rejecting TLS fallback must not retry or downgrade the connection');
   assert.equal(state.plugins.length,beforeTls,'rejecting TLS fallback must not save the draft');
-  await click(win,'[data-testid="plugin-save-disconnected"]','request TLS fallback approval again');
+  await click(win,'[data-testid="plugin-save"]','request TLS fallback approval again');
   await waitFor(win,`document.querySelector('[data-testid="plugin-editor-confirmation"]') !== null`,'fresh TLS approval');
   assert.equal(runtimeCalls.at(-1).draft.tls.mode,'required','rejected TLS fallback preserves encryption');
   await clickText(win,'关闭 TLS 并重试','[data-testid="plugin-editor-confirmation"]');
@@ -556,7 +586,7 @@ async function recoveryMatrix(win,{AppError}) {
     throw new AppError('MYSQL_AUTH_FAILED','模拟 TLS 确认后的认证失败');
   };
   const beforeTlsFailure = state.plugins.length;
-  await click(win,'[data-testid="plugin-save-disconnected"]','request TLS fallback before a real authentication failure');
+  await click(win,'[data-testid="plugin-save"]','request TLS fallback before a real authentication failure');
   await waitFor(win,`document.querySelector('[data-testid="plugin-editor-confirmation"]') !== null`,'MySQL TLS fallback approval');
   await assertPendingTlsDecision(win);
   await clickText(win,'关闭 TLS 并重试','[data-testid="plugin-editor-confirmation"]');
@@ -577,7 +607,7 @@ async function recoveryMatrix(win,{AppError}) {
   };
   const beforeTrust = state.plugins.length;
   const beforeRuntime = runtimeCalls.length;
-  await click(win,'[data-testid="plugin-save-disconnected"]','自动接受新主机指纹并保存');
+  await click(win,'[data-testid="plugin-save"]','自动接受新主机指纹并保存');
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'首次指纹自动重试完成保存');
   assert.equal(runtimeCalls.length,beforeRuntime+2);
   assert.equal(state.plugins.length,beforeTrust+1,'新指纹只保存一次');
@@ -585,7 +615,7 @@ async function recoveryMatrix(win,{AppError}) {
   const editedId = state.plugins.at(-1).pluginInstanceId;
   await editPlugin(win,editedId);
   await fill(win,'#plugin-host','changed.fixture.invalid');
-  await click(win,'[data-testid="plugin-save-disconnected"]','换地址后直接保存');
+  await click(win,'[data-testid="plugin-save"]','换地址后直接保存');
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'换地址后自动处理新指纹');
   assert.equal(state.plugins.find(plugin => plugin.pluginInstanceId === editedId).target.host,'changed.fixture.invalid');
   assert.equal(state.plugins.find(plugin => plugin.pluginInstanceId === editedId).target.hostKeyFingerprint,fingerprint);
@@ -600,7 +630,7 @@ async function recoveryMatrix(win,{AppError}) {
     });
     throw new AppError('SSH_AUTH_FAILED','模拟指纹确认后的认证失败');
   };
-  await click(win,'[data-testid="plugin-save-disconnected"]','check a host whose authentication will fail after trust');
+  await click(win,'[data-testid="plugin-save"]','check a host whose authentication will fail after trust');
   const beforeAuthFailure = state.plugins.length;
   try {
     await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)})?.textContent?.includes('模拟指纹确认后的认证失败') === true`,'real failure after fingerprint approval remains visible');
@@ -615,12 +645,12 @@ async function recoveryMatrix(win,{AppError}) {
 
   await openNew(win,'Redis');
   failNextCreate = true;
-  await click(win,'[data-testid="plugin-save-disconnected"]','trigger recoverable save failure');
+  await click(win,'[data-testid="plugin-save"]','trigger recoverable save failure');
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)})?.textContent?.includes('模拟保存失败') === true`,'save failure stays visible without closing the draft');
   const savedId = await saveAndClose(win);
   await editPlugin(win,savedId);
   await fill(win,'#plugin-redis-db','7');
-  await click(win,'[data-testid="plugin-save-disconnected"]','save edited Redis DB');
+  await click(win,'[data-testid="plugin-save"]','save edited Redis DB');
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'Redis edit committed');
   assert.equal(state.plugins.find((plugin) => plugin.pluginInstanceId === savedId).target.db,7);
 }

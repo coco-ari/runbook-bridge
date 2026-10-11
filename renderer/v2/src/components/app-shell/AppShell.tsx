@@ -922,10 +922,10 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       })
     } else if (outcome.saveStrategy === "restore-previous") {
       toast.success("插件配置已保存", {
-        description: "编辑前的连接集合已按原范围恢复。",
+        description: "正在恢复编辑前的连接状态，可在详情中查看进度。",
       })
     } else {
-      toast.success("插件配置已保存", { description: "保存后保持断开，连接需要再次明确点击。" })
+      toast.success("插件配置已保存", { description: "可在插件详情中连接。" })
     }
   }, [reloadSelectedScope, restoreEditorLayout, scheduleWorkspaceFocus])
 

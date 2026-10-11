@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Eye } from "@phosphor-icons/react"
 import type { AiOpsV2Api, PluginScope } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
 import {
-  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 
@@ -12,11 +11,12 @@ interface StoredCredentialViewerProps {
   readonly scope: PluginScope
   readonly field: "password" | "privateKeyPassphrase" | "proxyPassword"
   readonly label: string
-  readonly disabled: boolean
+  readonly onClose: () => void
+  readonly onCloseAutoFocus: React.ComponentProps<typeof DialogContent>["onCloseAutoFocus"]
 }
 
-export function StoredCredentialViewer({ api, scope, field, label, disabled }: StoredCredentialViewerProps) {
-  const [open, setOpen] = useState(false)
+export function StoredCredentialViewer({ api, scope, field, label, onClose, onCloseAutoFocus }: StoredCredentialViewerProps) {
+  const [open, setOpen] = useState(true)
   const [value, setValue] = useState("")
   const [loading, setLoading] = useState(false)
   const [failed, setFailed] = useState(false)
@@ -27,11 +27,8 @@ export function StoredCredentialViewer({ api, scope, field, label, disabled }: S
     setLoading(false)
     setFailed(false)
     setOpen(false)
-  }, [])
-
-  useEffect(() => {
-    if (disabled) close()
-  }, [disabled, close])
+    onClose()
+  }, [onClose])
 
   useEffect(() => {
     const hideWhenBackgrounded = () => { if (document.hidden) close() }
@@ -51,8 +48,8 @@ export function StoredCredentialViewer({ api, scope, field, label, disabled }: S
     return () => window.clearTimeout(timer)
   }, [open, close])
 
-  const reveal = async () => {
-    if (disabled || document.hidden) return
+  const reveal = useCallback(async () => {
+    if (document.hidden) return
     const request = ++requestRef.current
     setOpen(true)
     setValue("")
@@ -76,24 +73,16 @@ export function StoredCredentialViewer({ api, scope, field, label, disabled }: S
     } finally {
       if (requestRef.current === request) setLoading(false)
     }
-  }
+  }, [api, scope.projectId, scope.environmentId, scope.pluginInstanceId, field])
+
+  useEffect(() => {
+    void reveal()
+    return () => { requestRef.current += 1 }
+  }, [reveal])
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen) close() }}>
-      <DialogTrigger asChild>
-        <Button
-          className="w-fit"
-          data-testid={`stored-credential-view-${field}`}
-          disabled={disabled}
-          onClick={() => void reveal()}
-          size="xs"
-          type="button"
-          variant="outline"
-        >
-          <Eye aria-hidden="true" />查看已保存{label}
-        </Button>
-      </DialogTrigger>
-      <DialogContent data-testid="stored-credential-dialog">
+      <DialogContent data-testid="stored-credential-dialog" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>已保存{label}</DialogTitle>
           <DialogDescription>关闭、窗口失焦或 30 秒后自动隐藏。查看不会修改已保存凭据。</DialogDescription>

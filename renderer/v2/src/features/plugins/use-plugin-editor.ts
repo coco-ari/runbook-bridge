@@ -70,7 +70,7 @@ export interface UsePluginEditorResult {
   readonly validate: (purpose?: "validate" | "tls") => Promise<boolean>
   readonly cancelValidation: () => Promise<void>
   readonly discoverDatabases: () => Promise<void>
-  readonly save: (strategy?: PluginSaveStrategy) => Promise<void>
+  readonly save: () => Promise<void>
   readonly confirmCredentialReplacement: () => Promise<void>
   readonly cancel: () => Promise<boolean>
 }
@@ -770,7 +770,8 @@ export function usePluginEditor({
     }
   }, [api, isCurrent, onClosed, onSaved, open, plugin, scope.environmentId, scope.projectId])
 
-  const save = useCallback(async (strategy: PluginSaveStrategy = "disconnect") => {
+  const save = useCallback(async () => {
+    const strategy: PluginSaveStrategy = plugin ? "restore-previous" : "disconnect"
     if (!open || activeValidationRef.current || pendingValidationRequestRef.current || saveInFlightRef.current) return
     pendingValidationRetryRef.current = null
     if (!pluginSaveStrategyIsAvailable(strategy,plugin === null)) {

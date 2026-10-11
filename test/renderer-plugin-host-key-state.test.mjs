@@ -351,7 +351,7 @@ test('credential replacement requires explicit approval and preserves a real sav
     },
   }});
   h.current.setCredentials({primary:'synthetic-test-replacement',proxy:''});
-  await h.current.save('restore-previous');
+  await h.current.save();
   assert.equal(h.current.state.error,null);
   await h.current.confirmCredentialReplacement();
   assert.equal(saveCalls.length,2);
@@ -382,3 +382,21 @@ test('edit impact waits for a decision without an error or starting an edit sess
   assert.equal(h.current.state.phase,'closed');
   assert.equal(h.current.state.error,null);
 });
+
+for (const existing of [false,true]) {
+  test(`${existing ? '编辑' : '新建'}的单一保存动作自动校验并采用固定连接规则`,async () => {
+    const saves = [];
+    const connections = [];
+    const h = await harness({existing,kind:'redis',respond:() => ok({}),apiOverrides:{
+      createPlugin:async payload => { saves.push(payload); return ok({pluginInstanceId:'redis',pluginType:'redis',...scope}); },
+      savePluginConnectionEdit:async payload => { saves.push(payload); return ok({committed:true}); },
+      requestConnectionIntent:async payload => { connections.push(payload); return ok({outcome:'started'}); },
+    }});
+    await h.current.save();
+    assert.equal(h.calls.length,1,'保存自动检查一次');
+    assert.equal(saves.length,1);
+    assert.equal(saves[0].afterCommit,existing ? 'restore-pre-edit-set' : undefined);
+    assert.equal(connections.length,0,'保存入口不发起新的持久连接');
+    assert.equal(h.current.state.phase,'closed');
+  });
+}

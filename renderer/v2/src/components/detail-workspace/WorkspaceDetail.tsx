@@ -187,7 +187,6 @@ function SelectionActions({
 }) {
   const handoff = useMenuHandoff(`${project.projectId}:${project.revision}/${environment?.environmentId}:${environment?.revision}/${plugin?.pluginInstanceId}:${plugin?.revision}`)
   const queueAction = (action: WorkspaceDetailAction) => handoff.queueAction(() => onAction(action))
-
   return (
     <DropdownMenu onOpenChange={handoff.onOpenChange}>
       <DropdownMenuTrigger asChild>
@@ -203,7 +202,7 @@ function SelectionActions({
               <NotePencil />修改名称
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => queueAction({ type: "edit-plugin", plugin })}>
-              <GearSix />连接配置
+              <GearSix />修改配置
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => queueAction({ type: "delete-plugin", plugin })} variant="destructive">
@@ -453,7 +452,7 @@ export function WorkspaceDetail({
               {workspaceLoading || environmentLoading ? <Badge variant="info">正在刷新</Badge> : null}
             </div>
           </div>
-          {project ? <SelectionActions environment={environment} onAction={onAction} plugin={supportedPlugin} pluginSelected={hasPlugin} project={project} /> : null}
+          {project ? <SelectionActions key={`${project.projectId}/${environment?.environmentId}/${supportedPlugin?.pluginInstanceId}/${supportedPlugin?.revision}`} environment={environment} onAction={onAction} plugin={supportedPlugin} pluginSelected={hasPlugin} project={project} /> : null}
           <Tooltip>
             <TooltipTrigger asChild>
               <Button aria-label="折叠详情工作区" data-testid="detail-collapse" onClick={onToggleCollapsed} size="icon-xs" type="button" variant="ghost">

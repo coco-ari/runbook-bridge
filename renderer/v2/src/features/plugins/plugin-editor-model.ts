@@ -285,7 +285,7 @@ export function editPreparationDescription(
     const item = value as Record<string, unknown>
     return typeof item.displayName === "string" ? `${item.displayName}（${item.connected ? "将断开" : "未连接"}）` : ""
   }).filter(Boolean).join("、")
-  return `修改“${pluginName}”会影响 ${affected} 个插件。${connectionText}${activeText}${names ? `受影响插件：${names}。` : ""}取消编辑时可恢复原有连接。`
+  return `修改“${pluginName}”会影响 ${affected} 个插件。${connectionText}${activeText}${names ? `受影响插件：${names}。` : ""}保存或取消后将尝试恢复这些原有连接，原本未连接的插件保持断开。`
 }
 
 export function validationMatches(

@@ -3,18 +3,15 @@ import { useUnsavedWork } from "@/hooks/use-unsaved-work"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowLeft,
-  ArrowCounterClockwise,
   ArrowsOutSimple,
   ArrowsInSimple,
   CaretDown,
   CaretLeft,
   CaretRight,
   Database,
-  FloppyDisk,
   HardDrives,
   LockKey,
   Plugs,
-  PlugsConnected,
   ShieldWarning,
   Warning,
   WarningCircle,
@@ -38,7 +35,6 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { ButtonGroup } from "@/components/ui/button-group"
 import {
   Collapsible,
   CollapsibleContent,
@@ -55,14 +51,6 @@ import {
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -76,7 +64,7 @@ import type { WorkspaceLeaveRequest } from "@/components/detail-workspace/detail
 import { PluginEditorConfirmations } from "@/features/plugins/PluginEditorConfirmations"
 import { PluginValidationProgress } from "@/features/plugins/PluginValidationProgress"
 import { CredentialMigrationNotice } from "@/features/plugins/CredentialMigrationNotice"
-import { StoredCredentialViewer } from "@/features/plugins/StoredCredentialViewer"
+import { StoredCredentialInput } from "@/features/plugins/StoredCredentialInput"
 import type { PluginSaveOutcome } from "@/features/plugins/plugin-editor-model"
 import {
   PLUGIN_KIND_LABELS,
@@ -149,12 +137,18 @@ const TLS_MODE_LABELS: Readonly<Record<TlsMode, string>> = {
 }
 
 function advancedConnectionSummary(draft: PluginFormDraft): string {
-  if (draft.pluginType === "server") {
-    return SERVER_UPLINK_LABELS[draft.uplink?.type ?? "direct"] + (draft.target.dockerSocket ? " · 自定义 Docker Socket" : "")
+  const parts: string[] = []
+  if (draft.target.addressFamily !== "ipv4Preferred") {
+    parts.push({ipv4Only: "仅 IPv4", ipv6Preferred: "IPv6 优先", ipv6Only: "仅 IPv6"}[draft.target.addressFamily])
   }
-  const transport = DATA_TRANSPORT_LABELS[draft.transport?.kind ?? "direct"]
-  const tls = TLS_MODE_LABELS[draft.tls?.mode ?? "disabled"]
-  return `${transport}，${tls}`
+  if (draft.pluginType === "server") {
+    if (draft.uplink?.type && draft.uplink.type !== "direct") parts.push(SERVER_UPLINK_LABELS[draft.uplink.type])
+    if (draft.target.dockerSocket) parts.push("自定义 Docker Socket")
+  } else {
+    if (draft.transport?.kind && draft.transport.kind !== "direct") parts.push(DATA_TRANSPORT_LABELS[draft.transport.kind])
+    if (draft.tls?.mode && draft.tls.mode !== "disabled") parts.push(TLS_MODE_LABELS[draft.tls.mode])
+  }
+  return parts.join(" · ")
 }
 
 export function PluginEditorWorkspace({
@@ -176,11 +170,9 @@ export function PluginEditorWorkspace({
   onToggleExpanded,
   onSaved,
 }: PluginEditorWorkspaceProps) {
-  const [editingEnabled, setEditingEnabled] = useState(!plugin)
-  const [saveStrategy, setSaveStrategy] = useState<"disconnect" | "connect-current" | "restore-previous">("disconnect")
   const editor = usePluginEditor({
     api,
-    open: editingEnabled,
+    open: true,
     scope,
     plugin,
     initialKind,
@@ -201,9 +193,11 @@ export function PluginEditorWorkspace({
   const confirmationBusyRef = useRef(false)
   const workspaceRef = useRef<HTMLElement | null>(null)
   const draft = state.draft
+  const primaryCredentialStored = Boolean(state.credentialStatus?.fields.primary)
+    && (draft.pluginType !== "server" || draft.auth.type === (plugin?.auth?.type ?? "password"))
   const busy = ["preparing", "validating", "saving"].includes(state.phase) || confirmationInFlight
   const closeBlocked = busy || discardInFlight
-  const saveBlocked = !editingEnabled || closeBlocked || state.confirmation !== null || pendingLocalChange !== null
+  const saveBlocked = closeBlocked || state.confirmation !== null || pendingLocalChange !== null
   useUnsavedWork(editor.isDirty || busy)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const fieldErrors = useMemo(
@@ -390,10 +384,10 @@ export function PluginEditorWorkspace({
               </span>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <h1 className="text-base font-semibold tracking-tight" id="plugin-editor-title">{editor.isCreating ? "新增插件" : editingEnabled ? "编辑连接配置" : "查看连接配置"}</h1>
+                  <h1 className="min-w-0 truncate text-base font-semibold tracking-tight" title={plugin?.displayName} id="plugin-editor-title">{editor.isCreating ? "新增插件" : `编辑 ${plugin?.displayName}`}</h1>
                   {editor.isDirty ? <Badge variant="warning">未保存</Badge> : null}
                 </div>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">{editor.isCreating ? "配置新插件，并选择保存后的连接方式。" : !editingEnabled ? "查看配置保持现有连接。点击“修改连接配置”后将核对并处理受影响的连接。" : `${plugin?.displayName} · 保存前请确认下方连接方式。`}</p>
+                {!editor.isCreating ? <p className="mt-1 text-xs leading-5 text-muted-foreground">保存或取消后将尝试恢复编辑前的连接状态。</p> : null}
               </div>
             </div>
           </header>
@@ -410,9 +404,10 @@ export function PluginEditorWorkspace({
               <form
                 className="space-y-5"
                 id="plugin-editor-form"
+                noValidate
                 onSubmit={(event) => {
                   event.preventDefault()
-                  void editor.save(saveStrategy)
+                  void editor.save()
                 }}
               >
                 <FieldGroup className="gap-4" inert={saveBlocked}>
@@ -439,11 +434,11 @@ export function PluginEditorWorkspace({
                         </Select>
                       </Field>
                     ) : null}
+                    {editor.isCreating ? (
                     <Field data-invalid={Boolean(fieldErrors.displayName)}>
                       <FieldLabel htmlFor="plugin-display-name">名称</FieldLabel>
                       <Input
                         aria-describedby="plugin-display-name-description"
-                        readOnly={!editor.isCreating}
                         id="plugin-display-name"
                         maxLength={120}
                         onChange={(event) => editor.updateDraft((current) => ({
@@ -454,11 +449,10 @@ export function PluginEditorWorkspace({
                         value={draft.displayName}
                       />
                       <FieldDescription id="plugin-display-name-description">
-                        {editor.isCreating
-                          ? "留空时会根据类型和目标自动生成。"
-                          : "在插件详情的更多操作中修改名称；这里仅编辑连接配置。"}
+                        留空时自动生成。
                       </FieldDescription>
                     </Field>
+                    ) : null}
                     <div className="grid grid-cols-[minmax(0,1fr)_120px] gap-3">
                       <Field data-invalid={Boolean(fieldErrors.host)}>
                         <FieldLabel htmlFor="plugin-host">主机地址</FieldLabel>
@@ -491,16 +485,7 @@ export function PluginEditorWorkspace({
                   </FieldSet>
 
                   <FieldSet className="gap-3 rounded-xl border border-border/70 bg-surface/40 p-4" disabled={saveBlocked}>
-                    <div className="flex items-center justify-between gap-3">
-                      <FieldLegend>认证</FieldLegend>
-                      {state.credentialStatus?.saved ? (
-                        <Badge variant="success">已保存凭据</Badge>
-                      ) : plugin && state.credentialStatus === null ? (
-                        <Badge variant="warning">凭据状态未知</Badge>
-                      ) : (
-                        <Badge variant="outline">未保存凭据</Badge>
-                      )}
-                    </div>
+                    <FieldLegend>认证</FieldLegend>
                     {draft.pluginType === "server" ? (
                       <Field>
                         <FieldLabel>认证方式</FieldLabel>
@@ -556,7 +541,13 @@ export function PluginEditorWorkspace({
                             ? "私钥口令（可选）"
                             : "密码"}
                         </FieldLabel>
-                        <Input
+                        <StoredCredentialInput
+                          key={draft.auth.type}
+                          api={api}
+                          scope={plugin}
+                          field={draft.pluginType === "server" && draft.auth.type === "privateKey" ? "privateKeyPassphrase" : "password"}
+                          credentialLabel={draft.pluginType === "server" && draft.auth.type === "privateKey" ? "私钥口令" : "密码"}
+                          stored={primaryCredentialStored}
                           aria-describedby={
                             fieldErrors.primaryCredential
                               ? "plugin-primary-credential-description plugin-primary-credential-error"
@@ -569,24 +560,12 @@ export function PluginEditorWorkspace({
                             ...state.credentials,
                             primary: event.target.value,
                           })}
-                          placeholder={state.credentialStatus?.fields.primary
-                            ? "已保存；输入新值才会替换"
-                            : "输入凭据"}
+                          placeholder={draft.pluginType === "server" && draft.auth.type === "privateKey" ? "输入私钥口令" : "输入密码"}
                           type="password"
                           value={state.credentials.primary}
                         />
-                        {plugin && state.credentialStatus?.fields.primary && (plugin.pluginType !== "server" || draft.auth.type === plugin.auth?.type) ? (
-                          <StoredCredentialViewer
-                            key={`${plugin.projectId}/${plugin.environmentId}/${plugin.pluginInstanceId}/${plugin.revision}/${draft.auth.type}`}
-                            api={api}
-                            disabled={saveBlocked || collapsed}
-                            field={plugin.pluginType === "server" && plugin.auth?.type === "privateKey" ? "privateKeyPassphrase" : "password"}
-                            label={plugin.pluginType === "server" && plugin.auth?.type === "privateKey" ? "私钥口令" : "密码"}
-                            scope={plugin}
-                          />
-                        ) : null}
-                        <FieldDescription id="plugin-primary-credential-description">
-                          留空沿用此插件已保存的凭据，修改地址后也无需重新输入；输入新值才会替换。
+                        <FieldDescription className="empty:hidden" id="plugin-primary-credential-description">
+                          {primaryCredentialStored ? "已保存，留空不修改" : plugin && state.credentialStatus === null ? "凭据状态暂不可用" : ""}
                         </FieldDescription>
                         <FieldError id="plugin-primary-credential-error">
                           {issueFor(state.issues, "primaryCredential")}
@@ -675,10 +654,10 @@ export function PluginEditorWorkspace({
                     </Field>
                   ) : null}
 
-                  <Collapsible open={advancedOpen || Boolean(fieldErrors.dockerSocket)} onOpenChange={setAdvancedOpen}>
+                  <Collapsible open={advancedOpen || ["dockerSocket", "proxyHost", "proxyPort", "proxyCredential", "vpnAlias", "tunnelServer"].some(field => Boolean(fieldErrors[field]))} onOpenChange={setAdvancedOpen}>
                     <CollapsibleTrigger asChild>
                       <Button className="group/advanced w-full justify-between" data-testid="plugin-advanced-toggle" type="button" variant="outline">
-                        高级连接设置
+                        高级设置
                         <span className="flex min-w-0 items-center gap-1.5 text-xs font-normal text-muted-foreground">
                           <span className="truncate">{advancedConnectionSummary(draft)}</span>
                           <CaretDown
@@ -716,7 +695,6 @@ export function PluginEditorWorkspace({
                         <ServerUplinkFields
                           api={api}
                           plugin={plugin}
-                          revealDisabled={saveBlocked || collapsed}
                           draft={draft}
                           errors={fieldErrors}
                           onChange={(uplink) => editor.updateDraft((current) => ({ ...current, uplink }))}
@@ -746,6 +724,7 @@ export function PluginEditorWorkspace({
                               <SelectItem value="verifyIdentity">加密并校验身份</SelectItem>
                             </SelectContent>
                           </Select>
+                          <Button className="w-fit" disabled={saveBlocked} onClick={() => void editor.validate("tls")} size="xs" type="button" variant="outline">TLS 探测</Button>
                         </Field>
                       ) : null}
                     </CollapsibleContent>
@@ -762,7 +741,6 @@ export function PluginEditorWorkspace({
           </ScrollArea>
 
           <footer className="shrink-0 border-t border-border bg-surface px-4 py-3 @min-[640px]/editor:px-6" data-testid="plugin-editor-footer">
-            {!editingEnabled ? <div className="mx-auto flex max-w-4xl justify-end gap-2"><Button size="sm" variant="outline" onClick={requestClose}>返回详情</Button><Button size="sm" data-testid="plugin-begin-edit" onClick={() => setEditingEnabled(true)}>修改连接配置</Button></div> : <>
             {state.error ? (
               <Alert className="mx-auto mb-3 max-w-4xl" data-testid="plugin-editor-error" variant="destructive">
                 <WarningCircle aria-hidden="true" weight="fill" />
@@ -770,107 +748,14 @@ export function PluginEditorWorkspace({
                 <AlertDescription className="max-h-24 overflow-y-auto break-words" tabIndex={0}>{state.error.message}</AlertDescription>
               </Alert>
             ) : null}
-            <div className="mx-auto flex w-full max-w-4xl flex-col gap-3 @min-[560px]/editor:flex-row @min-[560px]/editor:items-center @min-[560px]/editor:justify-between">
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  disabled={saveBlocked}
-                  onClick={() => void editor.validate("validate")}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  检查连接
-                </Button>
-                {draft.pluginType !== "server" ? (
-                  <Button
-                    disabled={saveBlocked}
-                    onClick={() => void editor.validate("tls")}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                  >
-                    TLS 探测
-                  </Button>
-                ) : null}
-              </div>
-              <div className="flex w-full min-w-0 flex-wrap gap-2 @min-[560px]/editor:w-auto @min-[560px]/editor:justify-end">
-                <Select value={saveStrategy} onValueChange={value => setSaveStrategy(value as typeof saveStrategy)} disabled={saveBlocked}>
-                  <SelectTrigger aria-label="保存后的连接方式" className="w-40" data-testid="plugin-save-strategy"><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="disconnect">保存后保持断开</SelectItem><SelectItem value="connect-current">保存并连接当前插件</SelectItem>{!editor.isCreating ? <SelectItem value="restore-previous">保存并恢复原有连接</SelectItem> : null}</SelectContent>
-                </Select>
-                <Button className="shrink-0" data-testid="plugin-editor-cancel" disabled={closeBlocked} onClick={requestClose} size="sm" type="button" variant="outline">
-                  {discardInFlight ? "正在结束" : "取消"}
-                </Button>
-                <ButtonGroup aria-label="插件保存方式" className="min-w-0 flex-1 @min-[560px]/editor:flex-none">
-                  <Button
-                    className="min-w-0 flex-1 @min-[560px]/editor:flex-none"
-                    data-testid="plugin-save-disconnected"
-                    disabled={saveBlocked}
-                    form="plugin-editor-form"
-                    size="sm"
-                    type="submit"
-                  >
-                    <FloppyDisk aria-hidden="true" />
-                    <span className="truncate">
-                      {state.phase === "saving"
-                        ? "保存中"
-                        : saveStrategy === "restore-previous" ? "保存并恢复连接" : saveStrategy === "connect-current" ? "保存并连接" : editor.isCreating
-                          ? "添加但不连接"
-                          : "保存但不连接"}
-                    </span>
-                  </Button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        aria-label="选择其他保存方式"
-                        className="shrink-0 px-2"
-                        data-testid="plugin-save-options"
-                        disabled={saveBlocked}
-                        size="sm"
-                        type="button"
-                      >
-                        <CaretDown aria-hidden="true" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-64">
-                      <DropdownMenuLabel>保存后连接状态</DropdownMenuLabel>
-                      <DropdownMenuItem
-                        data-testid="plugin-save-and-connect"
-                        onSelect={() => void editor.save("connect-current")}
-                      >
-                        <PlugsConnected aria-hidden="true" />
-                        <span className="min-w-0">
-                          <span className="block font-medium">
-                            {editor.isCreating ? "添加并连接" : "保存并连接"}
-                          </span>
-                          <span className="mt-0.5 block text-xs text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground">
-                            保存成功后，明确发起当前插件连接。
-                          </span>
-                        </span>
-                      </DropdownMenuItem>
-                      {!editor.isCreating ? (
-                        <>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            data-testid="plugin-save-and-restore"
-                            onSelect={() => void editor.save("restore-previous")}
-                          >
-                            <ArrowCounterClockwise aria-hidden="true" />
-                            <span className="min-w-0">
-                              <span className="block font-medium">保存并恢复连接</span>
-                              <span className="mt-0.5 block text-xs text-muted-foreground group-focus/dropdown-menu-item:text-accent-foreground">
-                                恢复进入编辑前已连接的插件集合。
-                              </span>
-                            </span>
-                          </DropdownMenuItem>
-                        </>
-                      ) : null}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </ButtonGroup>
-              </div>
+            <div className="mx-auto flex w-full max-w-4xl justify-end gap-2">
+              <Button data-testid="plugin-editor-cancel" disabled={closeBlocked} onClick={requestClose} size="sm" type="button" variant="outline">
+                {discardInFlight ? "正在结束…" : "取消"}
+              </Button>
+              <Button data-testid="plugin-save" disabled={saveBlocked} form="plugin-editor-form" size="sm" type="submit">
+                {state.phase === "validating" ? "检查中…" : state.phase === "saving" ? "保存中…" : editor.isCreating ? "创建" : "保存"}
+              </Button>
             </div>
-            </>}
           </footer>
       </main>
 
@@ -975,7 +860,6 @@ export function PluginEditorWorkspace({
 interface ServerUplinkFieldsProps {
   readonly api: AiOpsV2Api
   readonly plugin: PluginConfigurationRecord | null
-  readonly revealDisabled: boolean
   readonly draft: PluginFormDraft
   readonly errors: Readonly<Record<string, string>>
   readonly proxyCredential: string
@@ -987,7 +871,6 @@ interface ServerUplinkFieldsProps {
 function ServerUplinkFields({
   api,
   plugin,
-  revealDisabled,
   draft,
   errors,
   proxyCredential,
@@ -1055,27 +938,23 @@ function ServerUplinkFields({
           </Field>
           <Field>
             <FieldLabel htmlFor="plugin-proxy-credential">代理密码（可选）</FieldLabel>
-            <Input
+            <StoredCredentialInput
+              key={uplink.type}
+              api={api}
+              scope={plugin}
+              field="proxyPassword"
+              credentialLabel="代理密码"
+              stored={proxyStored}
               aria-describedby="plugin-proxy-credential-description"
               autoComplete="new-password"
               id="plugin-proxy-credential"
               onChange={(event) => onCredentialChange(event.target.value)}
-              placeholder={proxyStored ? "已保存；输入新值才会替换" : "输入代理密码"}
+              placeholder="输入代理密码"
               type="password"
               value={proxyCredential}
             />
-            {plugin && proxyStored && uplink.type === plugin.uplink?.type ? (
-              <StoredCredentialViewer
-                key={`${plugin.projectId}/${plugin.environmentId}/${plugin.pluginInstanceId}/${plugin.revision}/${uplink.type}`}
-                api={api}
-                disabled={revealDisabled}
-                field="proxyPassword"
-                label="代理密码"
-                scope={plugin}
-              />
-            ) : null}
-            <FieldDescription id="plugin-proxy-credential-description">
-              已保存值不会自动填入，可主动查看。
+            <FieldDescription className="empty:hidden" id="plugin-proxy-credential-description">
+              {proxyStored ? "已保存，留空不修改" : ""}
             </FieldDescription>
           </Field>
         </>

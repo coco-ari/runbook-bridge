@@ -17,6 +17,7 @@ const PLUGIN_SOURCES = [
   'renderer/v2/src/features/plugins/PluginDeleteDialog.tsx',
   'renderer/v2/src/features/plugins/CredentialMigrationNotice.tsx',
   'renderer/v2/src/features/plugins/StoredCredentialViewer.tsx',
+  'renderer/v2/src/features/plugins/StoredCredentialInput.tsx',
 ];
 
 test('terminal plugin validation cannot be replaced by late progress',async () => {
@@ -223,6 +224,14 @@ test('React plugin features preserve scope, credential, and edit-session boundar
   assert.doesNotMatch(strategies,/afterCommit[^\n]*"connect"/u);
 
   assert.match(editor,/PluginEditorWorkspace/u);
+  assert.doesNotMatch(editor,/plugin-save-options|plugin-save-strategy|plugin-begin-edit|StoredCredentialViewer|检查连接/u);
+  assert.match(editor,/editor\.save\(\)/u);
+  assert.match(editor,/已保存，留空不修改/u);
+  assert.match(editor,/data-testid="plugin-save"/u);
+  const footer = editor.slice(editor.indexOf('<footer'),editor.indexOf('</footer>'));
+  assert.equal((footer.match(/<Button\s/gu) ?? []).length,2);
+  assert.doesNotMatch(footer,/Select|DropdownMenu|TLS 探测/u);
+  assert.match(controller,/const strategy: PluginSaveStrategy = plugin \? "restore-previous" : "disconnect"/u);
   assert.doesNotMatch(editor,/SheetContent|SheetHeader|SheetFooter|SheetTitle|components\/ui\/sheet/u);
   assert.match(editor,/data-testid="plugin-editor-workspace"/u);
   assert.match(editor,/data-testid="plugin-editor-scope"/u);
@@ -233,29 +242,13 @@ test('React plugin features preserve scope, credential, and edit-session boundar
   assert.match(editor,/pendingLeaveRef/u);
   assert.match(editor,/const allowed = await editor\.cancel\(\)/u);
   assert.match(editor,/return allowed/u);
-  assert.match(editor,/ButtonGroup/u);
-  assert.match(editor,/DropdownMenuContent/u);
-  assert.match(editor,/aria-label="插件保存方式"/u);
-  assert.match(editor,/aria-label="选择其他保存方式"/u);
-  assert.match(editor,/editor\.save\(saveStrategy\)/u);
-  assert.match(editor,/editor\.save\("connect-current"\)/u);
-  assert.match(editor,/editor\.save\("restore-previous"\)/u);
   assert.match(editor,/FieldGroup/u);
   assert.match(editor,/SelectContent/u);
   assert.match(editor,/Collapsible/u);
   assert.match(editor,/PluginEditorConfirmations/u);
   assert.match(editor,/type="password"/u);
   assert.match(editor,/autoComplete="new-password"/u);
-  assert.match(editor,/已保存值不会自动填入，可主动查看/u);
-  assert.match(editor,/留空沿用此插件已保存的凭据/u);
-  assert.match(editor,/保存但不连接/u);
-  assert.match(editor,/添加但不连接/u);
-  assert.match(editor,/添加并连接/u);
-  assert.match(editor,/保存并连接/u);
-  assert.match(editor,/保存并恢复连接/u);
   assert.match(editor,/!editor\.isCreating/u);
-  assert.match(editor,/@min-\[560px\]\/editor:flex-row/u);
-  assert.match(editor,/@min-\[560px\]\/editor:w-auto/u);
   assert.match(editor,/data-testid="plugin-editor-footer"/u);
   assert.match(editor,/<footer[^>]*data-testid="plugin-editor-footer">[\s\S]*?data-testid="plugin-editor-error"[\s\S]*?state\.error\.message/u);
   assert.doesNotMatch(editor.slice(editor.indexOf('<form'),editor.indexOf('</form>')),/data-testid="plugin-editor-error"/u);
@@ -267,7 +260,7 @@ test('React plugin features preserve scope, credential, and edit-session boundar
   assert.match(editor,/onClick=\{requestClose\}/u);
   assert.match(editor,/void requestLeave\(\)\.then\(\(allowed\) => \{ if \(allowed\) onClosed\(\) \}\)/u);
   assert.match(editor,/清除本次输入的临时凭据/u);
-  assert.match(editor,/受影响的连接/u);
+  assert.match(editor,/编辑前的连接状态/u);
   assert.match(editor,/\{projectName\}[\s\S]*?\{environmentName\}/u);
   assert.match(editor,/advancedConnectionSummary/u);
   assert.doesNotMatch(editor,/\{scope\.projectId\} \/ \{scope\.environmentId\}/u);
@@ -314,9 +307,7 @@ test('React plugin features preserve scope, credential, and edit-session boundar
     assert.ok((editor.match(new RegExp(id,'gu')) ?? []).length >= 2, `${id} must connect its control and message`);
   }
   assert.match(metadata,/updatePluginMetadata/u);
-  assert.match(editor,/readOnly=\{!editor.isCreating\}/u);
   assert.doesNotMatch(editor,/disabled=\{!editor.isCreating\}/u);
-  assert.match(editor,/在插件详情的更多操作中修改名称/u);
   assert.match(editor,/<EnvironmentTypeBadge type=\{environmentType \?\? "unspecified"\}/u);
   assert.doesNotMatch(editor,/独立编辑工作区/u);
   assert.match(metadata,/if \(!busy\) onOpenChange/u);

@@ -138,6 +138,7 @@ const state = {
   cancelFailuresRemaining:0,
   deferNextEditCancel:false,
   pendingEditCancel:null,
+  nextSaveRecoveryWarning:false,
   deferNextEditSave:false,
   pendingEditSave:null,
   nextEditNeedsImpact:false,
@@ -444,7 +445,9 @@ async function registerMockApi() {
       Object.assign(plugin,clone(payload.patch),{revision:plugin.revision+1});
       state.sessions.delete(payload.editSessionId);
       state.environmentRevision += 1;
-      return ok({plugin});
+      const runtimeWarning = state.nextSaveRecoveryWarning;
+      state.nextSaveRecoveryWarning = false;
+      return ok({plugin,...(runtimeWarning ? {runtimeWarning:{code:'RESTORE_FAILED'}} : {})});
     };
     if (state.deferNextEditSave) {
       state.deferNextEditSave = false;
@@ -1034,7 +1037,7 @@ async function assertWorkspaceGeometry(win,width = 960,height = 640,settle = tru
       && candidate.top >= container.top-1 && candidate.right <= container.right+1
       && candidate.bottom <= container.bottom+1;
     const visible = (element) => element instanceof HTMLElement && element.getClientRects().length > 0;
-    const controls = ['plugin-save-disconnected','plugin-save-options','plugin-editor-cancel'].map((testId) => {
+    const controls = ['plugin-save','plugin-editor-cancel'].map((testId) => {
       const button = surface.querySelector('[data-testid="'+testId+'"]');
       if (!(button instanceof HTMLButtonElement) || !visible(button)) return null;
       const buttonRect = button.getBoundingClientRect();
@@ -1274,7 +1277,6 @@ async function assertResourceAccordionBounds(win,label) {
 
 async function openPluginEditor(win,pluginName,evidenceName = null,{expectImpact = false,returnTab = null} = {}) {
   currentStep = `open-editor:${evidenceName ?? (expectImpact ? 'impact' : 'navigation')}`;
-  const previewBeginCount = calls('v2:plugin-connection-edit-begin').length;
   const projectSelected = await win.webContents.executeJavaScript(`document.querySelector('[data-project-id="${PROJECT_ID}"]')?.getAttribute('aria-current') === 'page'`,true);
   if (!projectSelected) {
     await click(win,`[data-project-id="${PROJECT_ID}"]`,'original plugin project');
@@ -1292,19 +1294,14 @@ async function openPluginEditor(win,pluginName,evidenceName = null,{expectImpact
   await waitFor(win,`document.querySelector('[data-testid="plugin-action-edit"]')?.disabled === false`,'plugin details edit action');
   await openPopup(win,'[data-testid="plugin-action-edit"]','edit configuration directly from plugin details');
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) !== null`,'plugin editor workspace');
-  await waitFor(win,`document.querySelector('[data-testid="plugin-begin-edit"]') !== null`,'read-only connection preview');
-  assert.equal(calls('v2:plugin-connection-edit-begin').length, previewBeginCount, 'viewing connection settings does not disconnect');
-  await click(win,'[data-testid="plugin-begin-edit"]','begin editing after inspecting configuration');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-testid="plugin-begin-edit"]') === null`,true),true,'修改配置直接进入编辑');
   if (expectImpact) {
     await waitFor(win,`document.querySelector('[data-testid="plugin-editor-confirmation"]') !== null`,'plugin edit-impact confirmation');
     return;
   }
   await waitFor(win,`document.querySelector('[data-testid="plugin-editor-loading"]') === null`,'plugin edit session');
-  const displayNameState = await win.webContents.executeJavaScript(`(() => {
-    const input = document.querySelector('#plugin-display-name');
-    return {readOnly:input?.readOnly,disabled:input?.disabled,renameHelp:document.querySelector('#plugin-display-name-description')?.textContent?.includes('更多操作中修改名称')};
-  })()`,true);
-  assert.deepEqual(displayNameState,{readOnly:true,disabled:false,renameHelp:true},'现有名称只读可聚焦复制，并指向正确重命名入口');
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('#plugin-display-name') === null && document.querySelector('#plugin-editor-title')?.textContent.includes(${JSON.stringify(pluginName)})`,true),true,'名称只在编辑标题显示');
+  assert.deepEqual(await win.webContents.executeJavaScript(`[...document.querySelectorAll('[data-testid="plugin-editor-footer"] button')].map(button => button.textContent.trim())`,true),['取消','保存'],'编辑底部只有两个动作');
   await assertWorkspaceGeometry(win);
   await assertWorkspaceKeyboardNavigation(win);
   if (evidenceName) await capturePluginWorkspaceEvidence(win,evidenceName);
@@ -1321,22 +1318,8 @@ async function createRedisPlugin(win,{name,host,strategy}) {
   await assertWorkspaceGeometry(win);
   await assertWorkspaceKeyboardNavigation(win);
   await capturePluginWorkspaceEvidence(win,`new-plugin-${strategy}`);
-  if (strategy === 'connect-current') {
-    if (screenshotRoot) {
-      await waitFor(win,`document.querySelector('[data-sonner-toast]') === null`,'save-menu toast clearance');
-    }
-    if (screenshotRoot) await setExactViewport(win,1280,820);
-    await openPopup(win,'[data-testid="plugin-save-options"]','plugin save options');
-    await waitFor(win,`document.querySelector('[data-testid="plugin-save-and-connect"]') !== null`,'save and connect option');
-    await captureSurfaceEvidence(win,{
-      name:'new-plugin-save-menu',
-      selector:'[role="menu"][data-state="open"]',
-      restoreFocusSelector:'[data-testid="plugin-save-and-connect"]',
-    });
-    await click(win,'[data-testid="plugin-save-and-connect"]','save and connect');
-  } else {
-    await click(win,'[data-testid="plugin-save-disconnected"]','save disconnected');
-  }
+  assert.deepEqual(await win.webContents.executeJavaScript(`[...document.querySelectorAll('[data-testid="plugin-editor-footer"] button')].map(button => button.textContent.trim())`,true),['取消','创建'],'新建底部只有两个动作');
+  await click(win,'[data-testid="plugin-save"]','create with automatic validation');
   const createCall = await waitForCall('v2:plugin-create',callIndex);
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'new plugin workspace close');
   await waitFor(win,`document.querySelector('[data-testid="plugin-trigger-${createCall.payload.input.pluginInstanceId}"]')?.getAttribute('aria-current') === 'page'`,'new plugin save selects the exact created plugin');
@@ -1347,29 +1330,21 @@ async function createRedisPlugin(win,{name,host,strategy}) {
 
 async function saveExistingPlugin(win,strategy,index) {
   currentStep = `save-existing-plugin:${strategy}`;
-  await openPluginEditor(win,'阶段五连接服务器',`existing-plugin-editor-${index+1}`);
-  if (strategy === 'stay-disconnected') {
-    await click(win,'[data-testid="plugin-save-disconnected"]','save disconnected');
-  } else {
-    if (screenshotRoot) {
-      await waitFor(win,`document.querySelector('[data-sonner-toast]') === null`,'edit-save-menu toast clearance');
-    }
-    if (screenshotRoot) await setExactViewport(win,1280,820);
-    await openPopup(win,'[data-testid="plugin-save-options"]','plugin save options');
-    const selector = strategy === 'connect-current'
-      ? '[data-testid="plugin-save-and-connect"]'
-      : '[data-testid="plugin-save-and-restore"]';
-    await waitFor(win,`document.querySelector(${JSON.stringify(selector)}) !== null`,`${strategy} option`);
-    await captureSurfaceEvidence(win,{
-      name:`existing-plugin-save-menu-${strategy}`,
-      selector:'[role="menu"][data-state="open"]',
-      restoreFocusSelector:selector,
-    });
-    await click(win,selector,strategy);
+  state.nextEditNeedsImpact = index > 0;
+  state.nextSaveRecoveryWarning = index === 2;
+  const begun = calls('v2:plugin-connection-edit-begin').length;
+  await openPluginEditor(win,'阶段五连接服务器',`existing-plugin-editor-${index+1}`,{expectImpact:index > 0});
+  if (index > 0) {
+    assert.equal(calls('v2:plugin-connection-edit-begin').length,begun,'有连接时仍需确认才能开始编辑');
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-testid="plugin-editor-confirmation"]').textContent.includes('保存或取消后将尝试恢复')`,true),true,'开始编辑时告知连接恢复规则');
+    await clickText(win,'继续编辑','[data-testid="plugin-editor-confirmation"]');
+    await waitFor(win,`document.querySelector('[data-testid="plugin-editor-confirmation"]') === null && document.querySelector('[data-testid="plugin-editor-loading"]') === null`,'confirmed edit session');
   }
+  await click(win,'[data-testid="plugin-save"]','save and preserve previous connection state');
   const saveCall = await waitForCall('v2:plugin-connection-edit-save',index);
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'plugin editor close');
   await waitFor(win,`document.querySelector('[data-testid="plugin-trigger-${SERVER_ID}"]')?.getAttribute('aria-current') === 'page'`,'plugin save returns to the exact edited plugin');
+  if (index === 2) await waitFor(win,`document.querySelector('[data-testid="plugin-save-recovery-notice"]')?.textContent.includes('已保存')`,'连接恢复失败仍显示配置已保存');
   if (screenshotRoot && strategy !== 'stay-disconnected') await setExactViewport(win,960,640);
   return saveCall;
 }
@@ -1538,11 +1513,7 @@ async function assertPluginWorkspaceNavigation(win,otherPluginId) {
   await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)})?.hidden === false`,'editor visible after expanding');
   await assertEditorRetainsScope(win,{host:dirtyHost,editSessionId:dirtySession});
   await assertWorkspaceGeometry(win);
-  await openPopup(win,'[data-testid="plugin-save-options"]','dirty editor save menu');
-  await waitFor(win,`document.querySelector('[data-testid="plugin-save-and-connect"]') !== null`,'dirty editor save menu opened');
-  await pressEscape(win);
-  await waitFor(win,`document.querySelector('[data-testid="plugin-save-and-connect"]') === null`,'Escape closes only the save menu');
-  await waitFor(win,`document.activeElement?.getAttribute('data-testid') === 'plugin-save-options'`,'save menu Escape restores its trigger');
+  await win.webContents.executeJavaScript(`document.querySelector('[data-testid="plugin-save"]').focus()`,true);
   await assertEditorRetainsScope(win,{host:dirtyHost,editSessionId:dirtySession});
   await clickNavigation(win,`[data-testid="plugin-trigger-${otherPluginId}"]`,'navigate to another plugin with an unsaved draft');
   await waitFor(win,`document.querySelector(${JSON.stringify(DISCARD_SELECTOR)}) !== null`,'dirty plugin navigation confirmation');
@@ -1553,13 +1524,13 @@ async function assertPluginWorkspaceNavigation(win,otherPluginId) {
   await waitFor(win,`document.querySelector(${JSON.stringify(DISCARD_SELECTOR)}) === null`,'Escape dismisses only the dirty confirmation');
   await assertEditorRetainsScope(win,{host:dirtyHost,editSessionId:dirtySession});
   assert.equal(calls('v2:plugin-connection-edit-cancel').length,dirtyCancelIndex,'Escape must not cancel or leave the edit session');
-  await waitFor(win,`document.activeElement?.getAttribute('data-testid') === 'plugin-save-options'`,'Escape from dirty confirmation restores editor focus');
+  await waitFor(win,`document.activeElement?.getAttribute('data-testid') === 'plugin-save'`,'Escape from dirty confirmation restores editor focus');
   await clickNavigation(win,`[data-testid="plugin-trigger-${otherPluginId}"]`,'repeat unsaved plugin navigation after Escape');
   await waitFor(win,`document.querySelector(${JSON.stringify(DISCARD_SELECTOR)}) !== null`,'dirty confirmation reopened after Escape');
   await clickText(win,'继续编辑',DISCARD_SELECTOR);
   await waitFor(win,`document.querySelector(${JSON.stringify(DISCARD_SELECTOR)}) === null`,'continue editing dirty plugin');
   await assertEditorRetainsScope(win,{host:dirtyHost,editSessionId:dirtySession});
-  await waitFor(win,`document.activeElement?.getAttribute('data-testid') === 'plugin-save-options'`,'continue editing restores editor focus');
+  await waitFor(win,`document.activeElement?.getAttribute('data-testid') === 'plugin-save'`,'continue editing restores editor focus');
 
   state.deferNextEditCancel = true;
   await viewEnvironmentDetails(win,'navigate to the environment from the dirty editor');
@@ -1612,7 +1583,7 @@ async function assertPluginWorkspaceNavigation(win,otherPluginId) {
   const savingCancelIndex = calls('v2:plugin-connection-edit-cancel').length;
   const savingRevision = findPlugin(SERVER_ID).revision;
   state.deferNextEditSave = true;
-  await click(win,'[data-testid="plugin-save-disconnected"]','save with a pending commit');
+  await click(win,'[data-testid="plugin-save"]','save with a pending commit');
   await waitUntil(() => state.pendingEditSave !== null,'pending plugin save');
   await clickNavigation(win,`[data-project-id="${NAVIGATION_PROJECT_ID}"]`,'attempt project navigation while saving');
   await assertEditorRetainsScope(win,{host:originalHost,editSessionId:savingSession});
@@ -1623,7 +1594,7 @@ async function assertPluginWorkspaceNavigation(win,otherPluginId) {
   }))()`,true);
   assert.deepEqual(busyState,{busy:'true',discard:false,cancelDisabled:true},'saving must block leave instead of queuing a dirty prompt');
   assert.equal(calls('v2:plugin-connection-edit-cancel').length,savingCancelIndex,'saving must not cancel the in-flight edit session');
-  assertEditSavePayload(calls('v2:plugin-connection-edit-save')[initialSaveCount],'stay-disconnected',savingRevision,Number(savingSession.split('-').at(-1)));
+  assertEditSavePayload(calls('v2:plugin-connection-edit-save')[initialSaveCount],'restore-pre-edit-set',savingRevision,Number(savingSession.split('-').at(-1)));
   state.pendingEditSave.resolve();
   state.pendingEditSave = null;
   await waitForEditorClosed(win,'completed pending plugin save');
@@ -2184,12 +2155,8 @@ async function assertFirstPluginAfterDeletion(win) {
 
       const probeIndex = calls('v2:plugin-probe').length;
       const createIndex = calls('v2:plugin-create').length;
-      await clickText(win,'检查连接',EDITOR_SELECTOR);
+      await click(win,'[data-testid="plugin-save"]','check and create first plugin');
       await waitForCall('v2:plugin-probe',probeIndex);
-      await waitFor(win,`document.querySelector('[data-testid="plugin-validation-progress"]')?.textContent?.includes('检查通过') === true`,'first plugin connection check succeeds');
-      assert.equal(calls('v2:plugin-create').length,createIndex,'checking the first plugin must not persist it');
-      assert.equal(state.plugins.length,0,'temporary probe must leave the empty environment unchanged');
-      await click(win,'[data-testid="plugin-save-disconnected"]','save first plugin without connecting');
       const created = await waitForCall('v2:plugin-create',createIndex);
       await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null
         && document.querySelector('[data-testid="plugin-trigger-${created.payload.input.pluginInstanceId}"]')?.getAttribute('aria-current') === 'page'`,'saving selects the newly created first plugin');
@@ -2199,7 +2166,7 @@ async function assertFirstPluginAfterDeletion(win) {
       assert.equal(created.payload.projectId,PROJECT_ID);
       assert.equal(created.payload.environmentId,ENVIRONMENT_ID);
       const probes = calls('v2:plugin-probe').slice(probeIndex);
-      assert.equal(probes.length,1,'只有显式检查进行临时探测，保存但不连接不得发起额外探测');
+      assert.equal(probes.length,1,'创建自动检查一次，不重复探测');
       for (const {payload} of probes) {
         assert.equal(payload.projectId,PROJECT_ID);
         assert.equal(payload.environmentId,ENVIRONMENT_ID);
@@ -2333,28 +2300,18 @@ async function run() {
     assertNoSensitivePayload(disconnectedCreate.payload,'new plugin disconnected save');
 
     const connectedCreate = await createRedisPlugin(win,{
-      name:'保存并连接 Redis',host:'redis-two.smoke.invalid',strategy:'connect-current',
+      name:'新建 Redis',host:'redis-two.smoke.invalid',strategy:'connect-current',
     });
     exactKeys(connectedCreate.payload,['projectId','environmentId','input'],'new plugin connect save');
     assert.equal(connectedCreate.payload.projectId,PROJECT_ID);
     assert.equal(connectedCreate.payload.environmentId,ENVIRONMENT_ID);
     assert.equal(connectedCreate.payload.input.pluginType,'redis');
-    assert.equal(connectedCreate.payload.input.displayName,'保存并连接 Redis');
+    assert.equal(connectedCreate.payload.input.displayName,'新建 Redis');
     assertNoSensitivePayload(connectedCreate.payload,'new plugin connect save');
-    const editorConnect = calls('v2:connection-intent').find((entry) => entry.payload.source === 'renderer-plugin-editor');
-    assert.ok(editorConnect,'new plugin connect-current must issue an explicit connection intent');
-    exactKeys(editorConnect.payload,[
-      'projectId','environmentId','pluginInstanceId','intent','requestId','planId','source',
-    ],'new plugin editor connection');
-    assert.equal(editorConnect.payload.projectId,PROJECT_ID);
-    assert.equal(editorConnect.payload.environmentId,ENVIRONMENT_ID);
-    assert.equal(editorConnect.payload.pluginInstanceId,connectedCreate.payload.input.pluginInstanceId);
-    assert.equal(editorConnect.payload.intent,'connect');
-    assert.equal(editorConnect.payload.source,'renderer-plugin-editor');
-    assertNoSensitivePayload(editorConnect.payload,'new plugin editor connection');
+    assert.equal(calls('v2:connection-intent').some(entry => entry.payload.source === 'renderer-plugin-editor'),false,'新建始终不自动建立持久连接');
 
-    assertEditSavePayload(await saveExistingPlugin(win,'stay-disconnected',0),'stay-disconnected',7,1);
-    assertEditSavePayload(await saveExistingPlugin(win,'connect-current',1),'connect-current',8,2);
+    assertEditSavePayload(await saveExistingPlugin(win,'restore-pre-edit-set',0),'restore-pre-edit-set',7,1);
+    assertEditSavePayload(await saveExistingPlugin(win,'restore-pre-edit-set',1),'restore-pre-edit-set',8,2);
     assertEditSavePayload(await saveExistingPlugin(win,'restore-pre-edit-set',2),'restore-pre-edit-set',9,3);
 
     await click(win,`[data-testid="plugin-trigger-${SERVER_ID}"]`,'select server plugin');
@@ -2494,18 +2451,18 @@ async function run() {
 
     await assertPluginWorkspaceNavigation(win,disconnectedCreate.payload.input.pluginInstanceId);
 
-    assert.equal(mutationCalls.length,41,'original plugin save strategies and workspace lifecycle retain the exact forty-one-call baseline');
-    process.stdout.write('Plugin save strategies and workspace lifecycle passed (41 exact scoped calls)\n');
+    assert.equal(mutationCalls.length,40,'single plugin save and workspace lifecycle retain the exact forty-call baseline');
+    process.stdout.write('Single plugin save and workspace lifecycle passed (40 exact scoped calls)\n');
     await assertRuntimeHostKeyGovernance(win);
-    assert.equal(mutationCalls.length,67,'环境详情插件入口加入后只增加二十六次显式连接与确认调用');
-    process.stdout.write('Runtime host-key entry coverage passed (67 exact scoped calls)\n');
+    assert.equal(mutationCalls.length,66,'环境详情插件入口加入后只增加二十六次显式连接与确认调用');
+    process.stdout.write('Runtime host-key entry coverage passed (66 exact scoped calls)\n');
     await assertDeferredHostKeyDialogs(win);
-    assert.equal(mutationCalls.length,70,'late challenge queue coverage adds only three explicit connection requests to the sixty-seven-call baseline');
-    process.stdout.write('Deferred host-key queue passed (70 exact scoped calls)\n');
+    assert.equal(mutationCalls.length,69,'late challenge queue coverage adds only three explicit connection requests to the sixty-six-call baseline');
+    process.stdout.write('Deferred host-key queue passed (69 exact scoped calls)\n');
 
     await assertConnectionTooltipHandoff(win);
-    assert.equal(mutationCalls.length,102,'keyboard tooltip handoff adds thirty-two scoped requests after the complete seventy-call plugin baseline');
-    process.stdout.write('Connection tooltip handoff passed (102 exact scoped calls)\n');
+    assert.equal(mutationCalls.length,101,'keyboard tooltip handoff adds thirty-two scoped requests after the complete sixty-nine-call plugin baseline');
+    process.stdout.write('Connection tooltip handoff passed (101 exact scoped calls)\n');
     await assertEnvironmentDetailsLifecycle(win);
     process.stdout.write('Environment detail lifecycle passed\n');
     await assertFirstPluginAfterDeletion(win);
