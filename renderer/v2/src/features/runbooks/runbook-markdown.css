@@ -1,0 +1,76 @@
+.runbook-markdown {
+  min-width: 0;
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.runbook-markdown > :first-child { margin-top: 0; }
+.runbook-markdown > :last-child { margin-bottom: 0; }
+
+.runbook-markdown :is(h1, h2, h3, h4, h5, h6) {
+  margin: 1.4em 0 0.6em;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.runbook-markdown h1 { font-size: 1.6em; }
+.runbook-markdown h2 { font-size: 1.4em; }
+.runbook-markdown h3 { font-size: 1.2em; }
+.runbook-markdown :is(h4, h5, h6) { font-size: 1.05em; }
+.runbook-markdown :is(p, ul, ol, blockquote, pre, .runbook-markdown-table) { margin: 0.8em 0; }
+.runbook-markdown p { white-space: pre-wrap; }
+.runbook-markdown strong { font-weight: 600; }
+.runbook-markdown em { font-style: italic; }
+.runbook-markdown del { text-decoration: line-through; }
+.runbook-markdown ul { list-style: disc; padding-left: 1.7em; }
+.runbook-markdown ol { list-style: decimal; padding-left: 1.7em; }
+.runbook-markdown ul ul { list-style: circle; }
+.runbook-markdown li { margin: 0.3em 0; }
+.runbook-markdown li :is(ul, ol, p) { margin: 0.3em 0; }
+.runbook-markdown .task-list-item { list-style: none; }
+.runbook-markdown input[type="checkbox"] {
+  margin-right: 0.5em;
+  accent-color: var(--primary);
+}
+.runbook-markdown blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 1em;
+  color: var(--muted-foreground);
+}
+.runbook-markdown hr { margin: 1.4em 0; border-top: 1px solid var(--border); }
+.runbook-markdown code {
+  border-radius: 0.25rem;
+  background: var(--muted);
+  padding: 0.15em 0.35em;
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+.runbook-markdown pre {
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--surface-inset);
+  padding: 0.8em 1em;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+.runbook-markdown pre code { padding: 0; background: transparent; }
+.runbook-markdown .runbook-markdown-plain { white-space: pre-wrap; overflow-wrap: anywhere; }
+.runbook-markdown-table { max-width: 100%; overflow-x: auto; }
+.runbook-markdown table { width: 100%; border-collapse: collapse; }
+.runbook-markdown :is(th, td) {
+  min-width: 6em;
+  border: 1px solid var(--border);
+  padding: 0.5em 0.75em;
+  text-align: left;
+}
+.runbook-markdown th { background: var(--muted); font-weight: 600; }
+.runbook-markdown-link { color: var(--primary); }
+.runbook-markdown-url, .runbook-markdown-image { color: var(--muted-foreground); }
+.runbook-markdown :is(pre, .runbook-markdown-table):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}

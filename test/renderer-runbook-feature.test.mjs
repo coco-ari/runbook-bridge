@@ -114,6 +114,7 @@ test('React Runbook feature preserves scoped, revision-bound and size-bounded ed
   assert.match(model,/RUNBOOK_MAX_BYTES = 65_536/u);
   assert.match(source,/onDirtyChange\?\.\(dirty\)/u);
   assert.match(source,/<Textarea/u);
-  assert.match(source,/<pre/u);
+  assert.match(source,/<RunbookMarkdown content=\{draft\}/u);
+  assert.match(source,/<RunbookMarkdown content=\{content\}/u);
   assert.doesNotMatch(all,/dangerouslySetInnerHTML|console\.(?:log|debug|info|warn|error)/u);
 });

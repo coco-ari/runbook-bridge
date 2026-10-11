@@ -28,6 +28,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
+import { RunbookMarkdown } from "@/features/runbooks/RunbookMarkdown"
 import {
   RUNBOOK_MAX_BYTES,
   beginRunbookRead,
@@ -86,7 +87,7 @@ export function RunbookFeature({
   const [revision, setRevision] = useState(environmentRevision)
   const [editing, setEditing] = useState(false)
   const [discarding, setDiscarding] = useState(false)
-  const discardDraft = () => { draftGenerationRef.current += 1; setDraft(content); setEditing(false); setConflict(null); setDiscarding(false) }
+  const discardDraft = () => { draftGenerationRef.current += 1; setDraft(content); setEditing(false); setPreview(false); setConflict(null); setDiscarding(false) }
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -176,6 +177,7 @@ export function RunbookFeature({
     setDraft("")
     setRevision(revisionHintRef.current)
     setEditing(false)
+    setPreview(false)
     setConflict(null)
     void readLatest(epoch, false)
     return () => {
@@ -203,6 +205,7 @@ export function RunbookFeature({
       setRevision(nextRevision)
       revisionHintRef.current = nextRevision
       setEditing(false)
+      setPreview(false)
       setConflict(null)
       setConflictReviewed(false)
       revisionChangeRef.current?.(nextRevision)
@@ -271,7 +274,7 @@ export function RunbookFeature({
           )}
           </ButtonGroup>
         )}
-        description="记录当前环境的部署方式、排查步骤和注意事项。"
+        description="记录当前环境的部署方式、排查步骤和注意事项，支持 Markdown 排版。"
         meta={editing ? (
           <Badge variant={tooLarge ? "danger" : "outline"}>
             {draftBytes.toLocaleString("zh-CN")} / 65,536 字节
@@ -316,7 +319,7 @@ export function RunbookFeature({
             {!draft.trim() ? <Button size="xs" variant="outline" disabled={saving} onClick={() => { draftGenerationRef.current += 1; setDraft("# 环境边界\n\n适用服务与操作限制：\n\n# 排障入口\n\n日志位置、监控入口与只读检查：\n\n# 部署与恢复\n\n部署步骤、验证方法与回滚条件：\n\n# 操作约定\n\n负责人、审批要求与注意事项：\n") }}>使用运维说明模板</Button> : null}
             <Button size="xs" variant="outline" onClick={() => setPreview(value => !value)}>{preview ? "继续编辑" : "预览"}</Button>
           </div>
-          {preview ? <pre className="h-[min(58dvh,32rem)] overflow-auto whitespace-pre-wrap break-words rounded-lg border p-4 text-sm leading-6">{draft}</pre> :
+          {preview ? <ScrollArea className="h-[min(58dvh,32rem)] rounded-lg border border-border bg-surface-inset/55"><div className="p-4"><RunbookMarkdown content={draft} /></div></ScrollArea> :
           <Textarea
             aria-describedby={tooLarge ? "runbook-size-error" : undefined}
             aria-invalid={tooLarge}
@@ -345,15 +348,11 @@ export function RunbookFeature({
           </Empty>
         ) : contentNeedsScroll ? (
           <ScrollArea className="h-[min(58dvh,32rem)] rounded-lg border border-border bg-surface-inset/55">
-            <pre className="whitespace-pre-wrap break-words p-4 font-sans text-sm leading-6 text-foreground">
-              {content}
-            </pre>
+            <div className="p-4"><RunbookMarkdown content={content} /></div>
           </ScrollArea>
         ) : (
           <article className="rounded-lg border border-border bg-surface-inset/55 p-4">
-            <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-6 text-foreground">
-              {content}
-            </pre>
+            <RunbookMarkdown content={content} />
           </article>
         )}
         {tooLarge && <span className="sr-only" id="runbook-size-error">内容超过 64 KiB。</span>}

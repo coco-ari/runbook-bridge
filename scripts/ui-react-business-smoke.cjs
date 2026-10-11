@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { exerciseAuditHistory } = require('./audit-history-ui.cjs');
+const { exerciseRunbookMarkdown } = require('./runbook-markdown-ui.cjs');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -19,6 +20,8 @@ const quickQuestionsOnly = process.argv.includes('--quick-questions-only')
   || app.commandLine.hasSwitch('quick-questions-only');
 const recoveryOnly = process.argv.includes('--recovery-only')
   || app.commandLine.hasSwitch('recovery-only');
+const runbookMarkdownOnly = process.argv.includes('--runbook-markdown-only')
+  || app.commandLine.hasSwitch('runbook-markdown-only');
 const dialogOverflowOnly = process.argv.includes('--dialog-overflow-only')
   || app.commandLine.hasSwitch('dialog-overflow-only');
 const screenshotDirectoryArgument = process.argv.find((value) => value.startsWith('--screenshot-dir='))
@@ -1613,7 +1616,7 @@ async function assertBusinessRecoveryAndLifecycle(win,{projectId,environmentId})
   await click(win,'[data-testid="runbook-conflict-reviewed"]','acknowledge merged conflict');
   await waitFor(win,`[...document.querySelectorAll('[data-feature="runbook"] button')].some(button => button.textContent.trim() === '保存' && !button.disabled)`,'runbook conflict refresh completes');
   await clickText(win,'保存','[data-feature="runbook"]');
-  await waitFor(win,`document.querySelector('[data-feature="runbook"] pre')?.textContent.includes('冲突恢复草稿') === true`,'runbook retry saves preserved draft');
+  await waitFor(win,`document.querySelector('[data-feature="runbook"] h1')?.textContent === '冲突恢复草稿'`,'runbook retry saves preserved draft');
   const runbookWrites = mutationCalls.slice(start).filter(entry => entry.channel === 'v2:runbook-save');
   assert.equal(runbookWrites.length,2);
   assert.equal(runbookWrites[1].payload.expectedRevision,runbookWrites[0].payload.expectedRevision+1);
@@ -1865,6 +1868,24 @@ async function run() {
       'initial project',
     );
     await assertRendererKeyboardFocus(win);
+
+    if (runbookMarkdownOnly) {
+      await click(win,'[data-project-id="project-alpha"]','select Markdown project');
+      await click(win,'[data-testid="environment-trigger-env-production"]','select Markdown environment');
+      await activateTab(win,'runbook');
+      await waitFor(win,`document.querySelector('[data-feature="runbook"] h1')?.textContent === '生产环境运维说明'`,'render initial saved Markdown');
+      const expectedRevision = findEnvironment('project-alpha','env-production').revision;
+      const content = await exerciseRunbookMarkdown(win,{clickText,click,fill,waitFor,setExactViewport,screenshotRoot});
+      assert.deepEqual(mutationCalls.map(({channel,payload}) => ({channel,payload})),[{
+        channel:'v2:runbook-save',payload:{projectId:'project-alpha',environmentId:'env-production',content,expectedRevision},
+      }]);
+      assert.equal(state.runbooks.get(scopeKey('project-alpha','env-production')),content);
+      assert.deepEqual(forbiddenCalls,[]);
+      assert.deepEqual(externalRequests,[]);
+      assert.deepEqual(rendererErrors,[]);
+      process.stdout.write('Runbook Markdown smoke passed (preview/source/save/discard, light/dark, 960/1280, no external requests)\n');
+      return;
+    }
 
     if (dialogOverflowOnly) {
       await assertScopedDialogOverflow(win);
@@ -2135,7 +2156,7 @@ async function run() {
     });
     await waitFor(
       win,
-      `document.querySelector('[data-feature="runbook"] pre')?.textContent?.includes('仅用于内存业务 smoke') === true`,
+      `document.querySelector('[data-feature="runbook"] li')?.textContent === '仅用于内存业务 smoke'`,
       'saved runbook content',
     );
 
