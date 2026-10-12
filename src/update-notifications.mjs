@@ -15,9 +15,12 @@ export function cloudUpdateNotices(state,status) {
       const current = status.cloudProjects.find(item => item.repositoryId === repo.repositoryId && item.projectId === project.projectId);
       if (!current || (!current.visible && !current.downloaded) || ['synced','error','locked','unknown'].includes(current.syncStatus)) continue;
       const mapping = state.mappings.find(item => item.repositoryId === repo.repositoryId && item.remoteId === project.projectId);
+      const initialDigest = repo.notificationBaseline && Object.hasOwn(repo.notificationBaseline,project.projectId) ? repo.notificationBaseline[project.projectId] : undefined;
+      // 首次目录只是本机看到的已有内容；不能把通知去重当成初始化，否则消息和角标仍会出现。
+      if (!current.downloaded && (repo.notificationBaseline === null || initialDigest === project.digest)) continue;
       // 本地单独修改不属于云端更新；本机上传成功后也不会重复提醒。
       if (current.downloaded && mapping?.remoteDigest === project.digest) continue;
-      const kind = current.downloaded ? current.syncStatus === 'modified' ? 'conflict' : 'changed' : 'added';
+      const kind = current.downloaded ? current.syncStatus === 'modified' ? 'conflict' : 'changed' : initialDigest ? 'changed' : 'added';
       notices.push({...prefix,id:identity(['cloud',repo.repositoryId,project.projectId,project.digest]),projectId:project.projectId,localProjectId:mapping?.localId,
         title:label(project.name),kind,description:kind === 'conflict' ? '本地与云端都有修改，请查看差异后处理。' : kind === 'added' ? '云端新增项目，可查看并下载配置。' : '云端配置有更新，可查看差异后更新。'});
     }

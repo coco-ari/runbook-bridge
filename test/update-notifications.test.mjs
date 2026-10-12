@@ -44,6 +44,35 @@ test('删除提醒只针对现存本地副本，软件提醒绑定来源平台�
   software.phase = 'downloaded'; assert.notEqual(softwareUpdateNotices(software,'win32','x64')[0].id,id);
   software.phase = 'available'; software.source.repositoryId = 'repo-b'; assert.notEqual(softwareUpdateNotices(software,'win32','x64')[0].id,id);
 });
+test('首次目录基线只抑制未下载的相同内容，后续变化与真实同步冲突仍提醒',() => {
+  const {state,status} = fixture();
+  state.repositories[0].notificationBaseline = {'project-a':'new-digest'};
+  status.cloudProjects[0] = {...status.cloudProjects[0],downloaded:false,syncStatus:'remote'};
+  assert.deepEqual(cloudUpdateNotices(state,status),[]);
+  state.repositories[0].catalog[0].digest = 'later-digest';
+  assert.equal(cloudUpdateNotices(state,status)[0].kind,'changed');
+  state.repositories[0].notificationBaseline = {};
+  assert.equal(cloudUpdateNotices(state,status)[0].kind,'added');
+  state.repositories[0].notificationBaseline = null;
+  assert.deepEqual(cloudUpdateNotices(state,status),[]);
+  state.repositories[0].notificationBaseline = {'project-a':'later-digest'};
+  status.cloudProjects[0] = {...status.cloudProjects[0],downloaded:true,syncStatus:'behind'};
+  assert.equal(cloudUpdateNotices(state,status)[0].kind,'changed');
+  status.cloudProjects[0].syncStatus = 'modified';
+  assert.equal(cloudUpdateNotices(state,status)[0].kind,'conflict');
+});
+test('首次基线按仓库隔离，同 ID 项目不串用其他仓库的初始化记录',() => {
+  const {state,status} = fixture();
+  state.repositories[0].notificationBaseline = {'project-a':'new-digest'};
+  state.repositories.push({...state.repositories[0],repositoryId:'repo-b',notificationBaseline:{}});
+  status.repositories.push({repositoryId:'repo-b',unlocked:true});
+  status.cloudProjects[0] = {...status.cloudProjects[0],downloaded:false,syncStatus:'remote'};
+  status.cloudProjects.push({...status.cloudProjects[0],repositoryId:'repo-b'});
+  const notices = cloudUpdateNotices(state,status);
+  assert.equal(notices.length,1);
+  assert.equal(notices[0].repositoryId,'repo-b');
+  assert.equal(notices[0].kind,'added');
+});
 test('消息持续保留到更新完成，重启及重复检查不重复弹通知',async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(),'update-notices-'));
   t.after(() => fs.rm(directory,{recursive:true,force:true}));

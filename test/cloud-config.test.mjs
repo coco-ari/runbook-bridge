@@ -18,7 +18,7 @@ import { EnvironmentConnectionManager } from '../src/environment-connection-mana
 import { RedisWorkspaceManager } from '../src/redis-workspace-manager.mjs';
 import { ServerDockerManager } from '../src/server-docker-manager.mjs';
 import { registerCloudConfigIpc } from '../src/cloud-config-ipc.mjs';
-import { UpdateNotifications } from '../src/update-notifications.mjs';
+import { UpdateNotifications, cloudUpdateNotices } from '../src/update-notifications.mjs';
 import { UpdateCoordinator } from '../src/update-coordinator.mjs';
 
 const PASSWORD = 'synthetic-cloud-password-for-tests';
@@ -81,6 +81,22 @@ async function download(device,id,snapshotId = null) {
 async function projectOperation(device,repositoryId,projectId,operation,versionId) {
   const {snapshotId} = await device.service.remote('test-owner',null,repositoryId);
   return (await device.call('prepareProjectOperation',{repositoryId,projectId,operation,snapshotId,...(versionId ? {versionId} : {})})).projectOperation;
+}
+
+async function updateCenter(t,device) {
+  const deliveries = [];
+  const notifications = new UpdateNotifications({workspace:device.workspace,onNotify:items => deliveries.push(items)});
+  await notifications.init();
+  const software = {state:{source:null},generation:0,invoke:async () => ({supported:false})};
+  const coordinator = new UpdateCoordinator({cloud:device.service,software,notifications,checkSoftware:async () => {},subscribe:() => ({dispose(){}})});
+  coordinator.owner = 'test-owner';
+  t.after(() => {coordinator.dispose();notifications.dispose();});
+  return {notifications,deliveries,async check() {
+    await device.call('check');
+    for (const repo of device.service.state.repositories) coordinator.lastChecks.set(repo.repositoryId,Date.now());
+    await coordinator.refresh();
+    return notifications.snapshot().items;
+  }};
 }
 
 test('环境类型随 schema 4 往返，旧哈希不漂移，旧版本更新仍直接覆盖，本地修改显示字段差异',async t => {
@@ -1025,6 +1041,100 @@ test('软件更新来源通知的同步和异步异常不影响云绑定、解�
   await a.call('unbind',{repositoryId:created.repositoryId});
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(a.service.softwareUpdateSources(),[]);
+});
+
+test('首次关联静默列出已有项目，新增与内容变化提醒，第二仓库不重置第一仓库基线',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), b = await device(t,remote.client), other = await device(t,remote.client);
+  const p = await project(a), unchanged = await project(a,'project-existing');
+  const one = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  for (const item of [p,unchanged]) await upload(a,item.projectId);
+  const unbound = await other.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  await upload(other,(await project(other,'project-unbound')).projectId);
+  const bound = await b.call('bind',{url:one.url,password:PASSWORD,remember:true});
+  const center = await updateCenter(t,b);
+  assert.deepEqual(await center.check(),[]);
+  const baseline = structuredClone(b.service.repository(bound.repositoryId).notificationBaseline);
+  assert.equal(Object.keys(baseline).length,2);
+  assert.equal((await b.call('status')).cloudProjects.length,2);
+  assert.equal((await b.store.listProjects()).length,0);
+  assert.equal(center.deliveries.length,0);
+  b.service.closeOwner('test-owner'); await b.service.init();
+  assert.deepEqual(await center.check(),[]);
+  assert.deepEqual(b.service.repository(bound.repositoryId).notificationBaseline,baseline);
+  await a.store.saveRunbook(p.projectId,'env-test','# 首次关联之后的变化');
+  await upload(a,p.projectId);
+  await upload(a,(await project(a,'project-later')).projectId);
+  const changes = await center.check();
+  assert.deepEqual(changes.map(item => item.kind).sort(),['added','changed']);
+  assert.ok(changes.every(item => item.repositoryId === bound.repositoryId));
+  assert.equal(center.deliveries.length,1);
+  assert.equal(center.deliveries[0].length,2);
+  await b.call('bind',{url:unbound.url,password:PASSWORD});
+  assert.equal((await center.check()).length,2);
+  assert.equal(center.deliveries.length,1);
+  // 对已关联仓库重新解锁不能把后续新增项目静默吞掉。
+  await b.call('bind',{url:one.url,password:PASSWORD});
+  assert.equal((await center.check()).length,2);
+  assert.deepEqual(b.service.repository(bound.repositoryId).notificationBaseline,baseline);
+});
+
+test('首次读取或基线落盘失败不完成初始化，成功读取空仓库后能提醒第一个新增项目',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), b = await device(t,remote.client);
+  const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  const bound = await b.call('bind',{url:created.url,password:PASSWORD});
+  const center = await updateCenter(t,b);
+  const call = remote.client.call.bind(remote.client);
+  remote.client.call = async (...args) => {if (args[1] === 'head') throw new Error('synthetic offline'); return call(...args);};
+  assert.deepEqual(await center.check(),[]);
+  assert.equal(b.service.repository(bound.repositoryId).notificationBaseline,null);
+  remote.client.call = call;
+  const save = b.service.saveState.bind(b.service);
+  b.service.saveState = async state => {
+    if (state.repositories[0]?.notificationBaseline !== null) throw new Error('synthetic disk failure');
+    return save(state);
+  };
+  await assert.rejects(center.check(),/synthetic disk failure/);
+  assert.equal(b.service.repository(bound.repositoryId).notificationBaseline,null);
+  assert.equal(b.service.repository(bound.repositoryId).checkedAt,undefined);
+  b.service.saveState = save;
+  assert.deepEqual(await center.check(),[]);
+  assert.deepEqual(b.service.repository(bound.repositoryId).notificationBaseline,{});
+  await upload(a,(await project(a)).projectId);
+  const notices = await center.check();
+  assert.equal(notices.length,1); assert.equal(notices[0].kind,'added');
+  assert.equal(center.deliveries.length,1);
+});
+
+test('旧版用本机缓存迁移基线，保留离线期间变化，解绑重绑不掩盖已下载项目更新',async t => {
+  const remote = await cloud(t), a = await device(t,remote.client), b = await device(t,remote.client), p = await project(a);
+  const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
+  await upload(a,p.projectId);
+  const bound = await b.call('bind',{url:created.url,password:PASSWORD,remember:true});
+  await b.call('check');
+  const cached = structuredClone(b.service.repository(bound.repositoryId).notificationBaseline);
+  const legacy = {...b.service.state,repositories:b.service.state.repositories.map(({notificationBaseline:_baseline,...repo}) => repo)};
+  await b.workspace.writeSealed(b.service.stateFile,legacy);
+  // 模拟旧版已经生成并持久化的首次关联误提醒。
+  const center = await updateCenter(t,b);
+  await center.notifications.reconcile(cloudUpdateNotices(legacy,await b.call('status')));
+  assert.equal(center.notifications.snapshot().items.length,1);
+  b.service.closeOwner('test-owner'); await b.service.init();
+  assert.deepEqual(b.service.repository(bound.repositoryId).notificationBaseline,cached);
+  await center.notifications.reconcile(cloudUpdateNotices(b.service.state,await b.call('status')));
+  assert.deepEqual(center.notifications.snapshot().items,[]);
+  await a.store.saveRunbook(p.projectId,'env-test','# 离线期间的变化'); await upload(a,p.projectId);
+  const changed = await center.check();
+  assert.equal(changed.length,1); assert.equal(changed[0].kind,'changed');
+  await download(b,p.projectId);
+  assert.deepEqual(await center.check(),[]);
+  await a.store.saveRunbook(p.projectId,'env-test','# 解绑后需保留的真实更新'); await upload(a,p.projectId);
+  await b.call('unbind',{repositoryId:bound.repositoryId});
+  const rebound = await b.call('bind',{url:created.url,password:PASSWORD});
+  assert.notEqual(rebound.repositoryId,bound.repositoryId);
+  const stillChanged = await center.check();
+  assert.equal(stillChanged.length,1); assert.equal(stillChanged[0].kind,'changed');
+  await b.store.saveRunbook(p.projectId,'env-test','# 本地也修改');
+  assert.equal((await center.check())[0].kind,'conflict');
 });
 
 test('两台客户端通过推送发现项目更新，本机上传不重复提醒，确认同步后清除且解绑停止订阅',async t => {

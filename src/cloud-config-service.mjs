@@ -8,6 +8,7 @@ import { appendCloudVersion, pruneCloudHistory, projectSummary, cloudVersionSumm
 
 const emptyState = () => ({schemaVersion:2,repositories:[],activeRepositoryId:null,mappings:[],detachedMappings:[],checkIntervalMinutes:15,softwareUpdateRepositoryId:null});
 const projectIdPattern = /^[a-z0-9][a-z0-9-]{1,62}$/;
+const notificationBaseline = (catalog = []) => Object.fromEntries(catalog.map(project => [project.projectId,project.digest]));
 const newProjectId = () => `project-${crypto.randomUUID()}`;
 const publicFailure = error => error?.code === 'MYSQL_SQL_TRANSACTION_ACTIVE'
   ? {code:error.code,message:'项目仍有 SQL 正在执行、未提交事务或待核实结果。请回到 SQL 标签处理并关闭后，再更新云配置。'}
@@ -50,6 +51,16 @@ export class CloudConfigService {
       if (this.state.schemaVersion !== 2 || !Array.isArray(this.state.repositories) || !Array.isArray(this.state.mappings)) throw new Error();
       this.state.detachedMappings ??= [];
       if (!Array.isArray(this.state.detachedMappings)) throw new Error();
+      const repositories = this.state.repositories.map(repo => {
+        // 旧版以已缓存目录迁移，避免下一次联网时吞掉离线期间真正新增或变化的项目。
+        const baseline = repo.notificationBaseline === undefined
+          ? repo.checkedAt != null || repo.catalog?.length ? notificationBaseline(repo.catalog) : null
+          : repo.notificationBaseline;
+        if (baseline !== null && (typeof baseline !== 'object' || Array.isArray(baseline)
+          || Object.keys(baseline).length > 200 || Object.entries(baseline).some(([id,digest]) => !projectIdPattern.test(id) || typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest)))) throw new Error();
+        return repo.notificationBaseline === undefined ? {...repo,notificationBaseline:baseline} : repo;
+      });
+      if (repositories.some((repo,index) => repo !== this.state.repositories[index])) await this.saveState({...this.state,repositories});
     } catch (error) { if (error.code !== 'ENOENT') this.stateError = true; }
   }
   async saveState(state) { await this.workspace.writeSealed(this.stateFile,state); this.state = state; }
@@ -175,6 +186,7 @@ export class CloudConfigService {
       const repositoryId = previous?.repositoryId ?? crypto.randomUUID();
       const repo = {...previous,repositoryId,url:remote.url,metadata:remote.metadata,name:name?.trim() ?? previous?.name ?? `云仓库 ${this.state.repositories.length+1}`,
         hiddenProjectIds:previous?.hiddenProjectIds ?? [],catalog:previous?.catalog ?? [],
+        notificationBaseline:previous?.notificationBaseline ?? null,
         remembered:remember ? {auth:keys.auth,encryption:keys.encryption.toString('base64')} : undefined};
       const repositoryKey = snapshotDigest(remote.metadata);
       const detached = this.state.detachedMappings.filter(m => m.repositoryKey === repositoryKey);
@@ -257,7 +269,9 @@ export class CloudConfigService {
       hashes[record.projectId] = [...new Set([...(hashes[record.projectId] ?? []),...record.versions.map(v => snapshotDigest(v.project))])].slice(-256);
     }
     const deletedProjects = (remote.payload.history ?? []).filter(record => cloudTrashAvailable(record)).map(record => ({...projectSummary(record.versions.at(-1).project),deletedAt:record.deletedAt}));
-    await this.saveRepository({...repo,catalog,hashes,deletedProjects,snapshotId:remote.snapshotId,checkedAt:new Date().toISOString(),error:null});
+    // 与首次成功读取的目录一起落盘；失败不建立基线，空仓库也要记录已完成初始化。
+    await this.saveRepository({...repo,catalog,hashes,deletedProjects,notificationBaseline:repo.notificationBaseline ?? notificationBaseline(catalog),
+      snapshotId:remote.snapshotId,checkedAt:new Date().toISOString(),error:null});
   }
   async renameRepository(owner,{repositoryId,name}) {
     if (typeof repositoryId !== 'string' || typeof name !== 'string' || !name.normalize('NFKC').trim() || name.normalize('NFKC').trim().length > 80 || /[\u0000-\u001f\u007f]/.test(name)) throw cloudError('INVALID_ARGUMENT','仓库名称应为 1 到 80 个字符，且不能包含控制字符。');
