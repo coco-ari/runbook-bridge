@@ -900,6 +900,25 @@ async function run() {
   assert.equal(await evaluate('Boolean(document.querySelector(".server-workspace-header [data-environment-type=test]"))'),true,'终端显示明确的测试环境标识');
   assert.ok(await evaluate("document.querySelector('[data-terminal-command-audit=available]')?.textContent.includes('命令完成后记录')"));
   assert.equal(opened.length, 1, '首次点击只创建一个会话');
+  if (process.env.RUNBOOK_BRIDGE_WORKSPACE_COUNTS_SMOKE === '1') {
+    releaseRootMetadata();
+    await click('[data-testid=server-workspace-back]');
+    for (const type of ['mysql','redis']) {
+      await click('[data-testid=plugin-trigger-'+type+'-workspace-coexistence]');
+      await until("document.querySelector('[data-testid=plugin-workspace-open]')?.disabled === false",'工作区入口就绪');
+      await click('[data-testid=plugin-workspace-open]');
+      await until(`document.querySelector('[data-testid=${type}-workspace-back]')?.checkVisibility()`,'工作区已打开');
+      await click('[data-testid='+type+'-workspace-back]');
+    }
+    await click('[data-testid=plugin-trigger-server-workspace-smoke]');
+    await until("document.querySelector('[data-testid=plugin-open-workspace]')?.disabled === false",'继续服务器工作区');
+    await click('[data-testid=plugin-open-workspace]');
+    await require('./workspace-manager-ui.cjs')({evaluate,click,until,connectionRequests,opened,redisCalls,snapshot,win,scope,countsOnly:true});
+    assert.deepEqual(errors,[],'数量角标专项无界面错误');
+    assert.equal(externalRequests.length,0,'数量角标专项无外部页面请求');
+    process.stdout.write(JSON.stringify({ok:true,workspaceCounts:true,workspaceTypes:3,viewportWidths:7})+'\n');
+    completed = true; return;
+  }
   if (process.env.RUNBOOK_BRIDGE_DOWNLOAD_RECOVERY_SMOKE === '1') {
     await require('./workspace-download-recovery-ui.cjs')({evaluate,click,until,snapshot,downloadReveals,downloadRetries,setJobs:jobs=>{uploads=jobs;}});
     assert.deepEqual(errors,[],'下载重试专项无界面错误');

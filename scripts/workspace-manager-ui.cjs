@@ -1,27 +1,42 @@
 const assert = require('node:assert/strict');
-module.exports = async ({evaluate,click,until,connectionRequests,opened,redisCalls,snapshot,win,scope}) => {
+module.exports = async ({evaluate,click,until,connectionRequests,opened,redisCalls,snapshot,win,scope,countsOnly=false}) => {
   const server='[data-testid=server-workspace]';
   const connections=connectionRequests.length, terminals=opened.length, reads=redisCalls.length;
   win.webContents.send('v2:confirmations-changed',[{requestId:'workspace-global-navigation',...scope,expiresAt:Date.now()+60000,capability:'fs.write',summary:'合成导航验证'}]);
   await until(`document.querySelector('${server} [data-testid=workspace-confirmation-notice]')?.getAttribute('aria-label') === '1 项操作待确认，打开消息中心'`,'工作区页头收到全局提醒');
   const originalSize=win.getContentSize();
-  for (const width of [1440,1280,1000,800]) {
-    win.setContentSize(width,920);
-    await until(`innerWidth === ${width}`,'全局入口窄窗验收');
-    await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
-    const geometry=await evaluate(`(() => {
-      const header=document.querySelector('${server} header'), button=header.querySelector('[data-testid=workspace-confirmation-notice]');
-      const rect=button.getBoundingClientRect();
-      const badge = selector => {
-        const element=header.querySelector(selector), bounds=element?.getBoundingClientRect();
-        return {count:element?.textContent,visible:Boolean(bounds?.width && bounds.height && bounds.left>=0 && bounds.right<=innerWidth && bounds.top>=0 && bounds.bottom<=innerHeight)};
-      };
-      return {overflow:header.scrollWidth>header.clientWidth,visible:rect.width>=28&&rect.left>=0&&rect.right<=innerWidth,label:button.getAttribute('aria-label'),workspace:badge('[data-testid=workspace-switcher] [data-utility-count]'),messages:badge('[data-testid=updates-count]')};
-    })()`);
-    assert.deepEqual(geometry,{overflow:false,visible:true,label:'1 项操作待确认，打开消息中心',workspace:{count:'3',visible:true},messages:{count:'1',visible:true}},'宽窄窗口均保留工作区和消息数量且不撑破页头：'+width);
+  const assertHeaderCounts = async (workspace) => {
+    for (const width of [1440,1400,1301,1300,1280,1000,800]) {
+      win.setContentSize(width,920);
+      await until(`innerWidth === ${width}`,'全局入口窄窗验收');
+      await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
+      const geometry=await evaluate(`(() => {
+        const header=document.querySelector('${workspace} header'), button=header.querySelector('[data-testid=workspace-confirmation-notice]');
+        const rect=button.getBoundingClientRect();
+        const badge = selector => {
+          const element=header.querySelector(selector), bounds=element?.getBoundingClientRect();
+          return {count:element?.textContent,visible:Boolean(bounds?.width && bounds.height && bounds.left>=0 && bounds.right<=innerWidth && bounds.top>=0 && bounds.bottom<=innerHeight)};
+        };
+        return {overflow:header.scrollWidth>header.clientWidth,visible:rect.width>=28&&rect.left>=0&&rect.right<=innerWidth,label:button.getAttribute('aria-label'),workspace:badge('[data-testid=workspace-switcher] [data-utility-count]'),messages:badge('[data-testid=updates-count]')};
+      })()`);
+      assert.deepEqual(geometry,{overflow:false,visible:true,label:'1 项操作待确认，打开消息中心',workspace:{count:'3',visible:true},messages:{count:'1',visible:true}},workspace+' 宽窄窗口均保留工作区和消息数量且不撑破页头：'+width);
+    }
+    win.setContentSize(...originalSize);
+    await until(`innerWidth === ${originalSize[0]}`,'恢复工作区宽度');
+  };
+  await assertHeaderCounts(server);
+  let currentWorkspace=server;
+  for (const [workspace,pluginId] of [['[data-testid=redis-workspace]','redis-workspace-coexistence'],['[data-testid=mysql-database-workspace]','mysql-workspace-coexistence']]) {
+    await click(currentWorkspace+' [data-testid=workspace-switcher]');
+    await click('[data-workspace-resume='+pluginId+']');
+    await until(`document.querySelector('${workspace}')?.checkVisibility()`,'切换工作区检查全局角标');
+    await assertHeaderCounts(workspace);
+    currentWorkspace=workspace;
   }
-  win.setContentSize(...originalSize);
-  await until(`innerWidth === ${originalSize[0]}`,'恢复工作区宽度');
+  await click(currentWorkspace+' [data-testid=workspace-switcher]');
+  await click('[data-workspace-resume=server-workspace-smoke]');
+  await until(`document.querySelector('${server}')?.checkVisibility()`,'回到服务器工作区');
+  if (countsOnly) return;
   await click(server+' [data-testid=workspace-confirmation-notice]');
   await until("document.querySelector('[data-testid=confirmation-message-review]')",'工作区打开环境列表');
   await click('[data-testid=confirmation-message-review]');

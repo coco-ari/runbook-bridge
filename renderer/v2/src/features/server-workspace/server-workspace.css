@@ -237,11 +237,7 @@
 .server-metrics-disk-path strong { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .server-metrics-disk-list button > span + span { display: block; font-size: var(--text-xs); color: var(--muted-foreground); margin-top: 4px; }
 @media (max-width: 1300px) {
-  .server-workspace-header > [data-testid="server-workspace-back"],
-  .server-workspace-header > [data-testid="workspace-switcher"],
-  .server-workspace-header > [data-testid="settings-open"] { width: var(--control-height); height: var(--control-height); gap: 0; padding: 0; font-size: 0; }
-  .server-workspace-header > [data-testid="workspace-switcher"] > span,
-  .server-workspace-header > [data-testid="settings-open"] > span { display: none; }
+  .server-workspace-header > [data-testid="server-workspace-back"] { width: var(--control-height); height: var(--control-height); gap: 0; padding: 0; font-size: 0; }
 }
 @media (max-width: 1150px) {
   .server-metrics { margin-inline: 0 4px; }
@@ -255,7 +251,7 @@
   .server-metric-label { font-size: var(--text-xs); }
   .server-metric strong { font-size: var(--text-sm); }
   .server-metric-disk-label > span { max-width: 1ch; }
-  .server-workspace-heading { min-width: 180px; }
+  .server-workspace-heading { min-width: 0; }
   .server-workspace-heading > div > [data-status] > span { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; }
 }
 
