@@ -35,6 +35,14 @@ async function createMacTestKeychain({ root, bundles, run, env = process.env, pl
       throw new Error(`临时测试钥匙串操作失败：${args[0]}`);
     }
   };
+  async function signature(bundle) {
+    const result = await run('/usr/bin/codesign', ['-dv', '--verbose=4', bundle], { timeoutMs: 20_000 });
+    const hash = result.stderr.match(/^CDHash=([a-f0-9]{40})$/m)?.[1];
+    assert.ok(hash, '测试应用缺少有效代码签名摘要');
+    return hash;
+  }
+  const expectedUpgradeSignature = await signature(bundles[1]);
+  const originalSignature = await signature(bundles[0]);
   const originalDefault = keychainPaths((await security(['default-keychain', '-d', 'user'])).stdout);
   const originalSearch = keychainPaths((await security(['list-keychains', '-d', 'user'])).stdout);
   assert.equal(originalDefault.length, 1, '缺少原始默认钥匙串');
@@ -56,6 +64,7 @@ async function createMacTestKeychain({ root, bundles, run, env = process.env, pl
   }
   try {
     const password = crypto.randomBytes(32).toString('base64');
+    const encryptionKey = crypto.randomBytes(24).toString('base64');
     await security(['create-keychain', '-p', password, keychain]);
     created = true;
     await security(['set-keychain-settings', '-t', '1800', keychain]);
@@ -64,8 +73,18 @@ async function createMacTestKeychain({ root, bundles, run, env = process.env, pl
     await security(['list-keychains', '-d', 'user', '-s', keychain]);
     // 仅预授权两个测试构建，仍使用 Electron safeStorage 和真实系统钥匙串。
     await security(['add-generic-password', '-a', 'AI 运维工具', '-s', 'AI 运维工具 Safe Storage',
-      '-w', crypto.randomBytes(24).toString('base64'), '-T', bundles[0], '-T', bundles[1], keychain]);
-    return { restore };
+      '-w', encryptionKey, '-T', bundles[0], '-T', bundles[1], keychain]);
+    // 临时签名还受代码摘要分区限制，只允许两个精确摘要，不授权任意应用。
+    await security(['set-generic-password-partition-list', '-a', 'AI 运维工具', '-s', 'AI 运维工具 Safe Storage',
+      '-S', [...new Set([originalSignature, expectedUpgradeSignature])].map(hash => `cdhash:${hash}`).join(','),
+      '-k', password, keychain]);
+    return {
+      restore,
+      async authorizeUpgrade(bundle) {
+        assert.equal(bundle, bundles[0], '新版必须覆盖到同一测试安装位置');
+        assert.equal(await signature(bundle), expectedUpgradeSignature, '覆盖后的签名必须与候选新版相同');
+      },
+    };
   } catch (error) {
     await restore();
     throw error;

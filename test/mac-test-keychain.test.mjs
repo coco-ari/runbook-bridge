@@ -11,12 +11,14 @@ async function fixture(t, failOperation) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-install-regression-keychain-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const bundles = ['old.app', 'new.app'].map(name => path.join(root, name));
+  const signatures = new Map([[bundles[0], 'a'.repeat(40)], [bundles[1], 'b'.repeat(40)]]);
   await Promise.all(bundles.map(bundle => fs.mkdir(bundle)));
   const calls = [];
   const options = {
     root, bundles, platform: 'darwin',
     env: { AI_OPS_MAC_TEST_KEYCHAIN: '1', GITHUB_ACTIONS: 'true', RUNNER_TEMP: os.tmpdir() },
     async run(command, args) {
+      if (command === '/usr/bin/codesign') return { stdout: '', stderr: `CDHash=${signatures.get(args.at(-1))}\n` };
       assert.equal(command, '/usr/bin/security');
       calls.push(args);
       if (failOperation?.(args)) throw new Error('仅用于测试的敏感错误内容');
@@ -25,7 +27,7 @@ async function fixture(t, failOperation) {
       return { stdout: '' };
     },
   };
-  return { calls, options };
+  return { calls, options, signatures };
 }
 
 test('测试钥匙串必须显式启用且只能在隔离 Mac Runner 内运行', async t => {
@@ -38,12 +40,20 @@ test('测试钥匙串必须显式启用且只能在隔离 Mac Runner 内运行',
 });
 
 test('测试钥匙串仅授权两个构建，结束时恢复原始默认项和搜索列表', async t => {
-  const { options, calls } = await fixture(t);
+  const { options, calls, signatures } = await fixture(t);
   const keychain = await createMacTestKeychain(options);
   const add = calls.find(args => args[0] === 'add-generic-password');
   assert.deepEqual(add.filter((value, index) => add[index - 1] === '-T'), options.bundles);
   assert.ok(!calls.flat().includes('-A'));
   assert.deepEqual(add.slice(1, 5), ['-a', 'AI 运维工具', '-s', 'AI 运维工具 Safe Storage']);
+  await assert.rejects(keychain.authorizeUpgrade(options.bundles[1]), /同一测试安装位置/u);
+  await assert.rejects(keychain.authorizeUpgrade(options.bundles[0]), /签名必须/u);
+  signatures.set(options.bundles[0], signatures.get(options.bundles[1]));
+  await keychain.authorizeUpgrade(options.bundles[0]);
+  const partition = calls.find(args => args[0] === 'set-generic-password-partition-list');
+  assert.equal(partition[partition.indexOf('-S') + 1], `cdhash:${'a'.repeat(40)},cdhash:${'b'.repeat(40)}`);
+  assert.equal(calls.filter(args => args[0] === 'add-generic-password').length, 1);
+  assert.ok(!calls.flat().includes('-U'));
   await keychain.restore();
   assert.deepEqual(calls.at(-3), ['default-keychain', '-d', 'user', '-s', '/mock/login.keychain-db']);
   assert.deepEqual(calls.at(-2), ['list-keychains', '-d', 'user', '-s', '/mock/login.keychain-db', '/mock/other.keychain-db']);

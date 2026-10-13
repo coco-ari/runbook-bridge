@@ -557,6 +557,7 @@ async function orchestrate() {
       assert.ok(differingIndex >= 0 && currentParts[differingIndex] > previousParts[differingIndex],'跨版本回归必须从旧版升级到更高版本');
       assert.notEqual(previousBuild.archiveHash,currentBuild.archiveHash,'跨版本回归必须使用不同构建');
     }
+    if (testKeychain) await testKeychain.authorizeUpgrade(packagedPaths(upgradedExecutable).bundle);
     installedApp = await startInstalledApp(upgradedExecutable, isolation);
     process.stdout.write('安装回归：新版已启动，验证保留的项目与凭据。\n');
     await inspectInstalledRenderer(installedApp.cdp, 3);
