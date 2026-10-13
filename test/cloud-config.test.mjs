@@ -1173,3 +1173,18 @@ test('两台客户端通过推送发现项目更新，本机上传不重复提�
   assert.equal(coordinator.streams.size,0);
   await coordinator.refresh(); assert.deepEqual(notifications.snapshot().items,[]);
 });
+
+test('源码与 Codex 云配置只保存连接配置和允许的密钥，不包含缓存、会话与 OAuth',async t=>{
+ const a=await device(t),p=await project(a);
+ const source=await a.store.createPlugin(p.projectId,'env-test',{pluginType:'source',displayName:'源码',pluginInstanceId:'source-test',target:{serviceUrl:'https://source.example.invalid',remoteProjectId:'11111111-1111-4111-8111-111111111111'}});
+ const codex=await a.store.createPlugin(p.projectId,'env-test',{pluginType:'codex',displayName:'Agent',pluginInstanceId:'codex-test',target:{authMode:'custom',baseUrl:'https://model.example.invalid',model:'test-model'}});
+ await a.vault.save(source,{password:'p'.repeat(43)});await a.vault.save(codex,{apiKey:'fixture-model-key'});
+ await fs.mkdir(path.join(a.root,'codex-agent'),{recursive:true});await fs.writeFile(path.join(a.root,'codex-agent','local-only'),'LOCAL_OAUTH_AND_TRANSCRIPT_FIXTURE');
+ const exported=await exportCloudProject(a.store,a.vault,p.projectId);
+ const value=normalizeCloudSnapshot({schemaVersion:1,projects:[exported]},a.vault);
+ const rows=value.projects[0].environments[0].plugins;
+ assert.equal(rows.find(r=>r.config.pluginType==='codex').secrets.apiKey,'fixture-model-key');
+ assert.equal(rows.find(r=>r.config.pluginType==='source').secrets.password,'p'.repeat(43));
+ assert.doesNotMatch(JSON.stringify(value),/LOCAL_OAUTH_AND_TRANSCRIPT_FIXTURE|codex-agent|source-cache|auth\.json/);
+ const {cloudProjectWarnings}=await import('../src/cloud-config-snapshot.mjs');assert.ok(Array.isArray(cloudProjectWarnings(exported)));
+});

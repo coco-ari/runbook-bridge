@@ -218,6 +218,7 @@ export class V2Service {
       plugins:this.publicPluginsWithAssessments(opened.plugins,connection),
       resourceHints:resourceHintSnapshot.hints,
       resourceHintsTruncated:resourceHintSnapshot.truncated,
+      sourceCode:await this.pluginManager?.runtimes?.source?.sourceHints(opened.plugins) ?? [],
       contextToken: opened.contextToken,
       expiresAt: opened.expiresAt,
       connection,

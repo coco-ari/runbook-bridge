@@ -156,6 +156,9 @@ async function startPackagedApp(isolation) {
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${isolation.profileRoot}`,
       '--disable-background-networking',
+      // 仅测试进程使用 Chromium 测试钥匙串；此脚本创建并销毁独立数据目录，
+      // 不读取用户凭据，也不让临时签名包请求用户已安装应用的钥匙串权限。
+      ...(process.platform === 'darwin' ? ['--use-mock-keychain'] : []),
     ],
     {
       env: isolation.env,
@@ -762,7 +765,7 @@ async function main() {
     assert.equal(inspection.noPageOverflow, true);
     assert.equal(inspection.overviewOk, true);
     assert.equal(inspection.projectCount, 0);
-    assert.equal(inspection.apiCount, 120);
+    assert.equal(inspection.apiCount, 124);
     const sqlExportContract = await running.cdp.evaluate("(async () => window.aiOps.v2.mysqlExportSave({fileName:'../blocked.sql',sql:'SELECT 1;'}))()");
     assert.equal(sqlExportContract.ok, false);
     assert.equal(sqlExportContract.error.code, 'INVALID_ARGUMENT');
@@ -937,7 +940,7 @@ async function main() {
     assert.deepEqual(inspection.externalResources, []);
     assert.deepEqual(running.httpRequests, []);
     if (process.argv.includes('--desktop-contracts-only')) {
-      process.stdout.write('Packaged desktop contracts passed (120 preload APIs, file editing owner/parameter guards, isolated empty workspace, no external requests)\n');
+      process.stdout.write('Packaged desktop contracts passed (124 preload APIs, file editing owner/parameter guards, isolated empty workspace, no external requests)\n');
       return;
     }
     await exerciseThemePreferences(running.cdp);
@@ -987,7 +990,7 @@ async function main() {
       return {ok: overview?.ok === true, projectCount: Array.isArray(overview?.data) ? overview.data.length : -1,
         apiCount: Object.keys(window.aiOps.v2).length};
     })()`);
-    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 120});
+    assert.deepEqual(restartedWorkspace, {ok: true, projectCount: 0, apiCount: 124});
     assert.deepEqual(running.httpRequests, []);
     await selectThemePreference(running.cdp, 'system');
     await emulateSystemTheme(running.cdp, 'dark');
@@ -1007,7 +1010,7 @@ async function main() {
         availableWidth: compactSearch.availableWidth, nativeTextBox: compactSearch.nativeBox?.source ?? 'conservative-cancel-budget'},
     })}\n`);
     process.stdout.write(
-      `Packaged React UI smoke passed (120 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
+      `Packaged React UI smoke passed (124 preload APIs, empty isolated workspace, 128px rail, restart persistence, no external requests): ${executable}\n`,
     );
   } catch (error) {
     if (running) {

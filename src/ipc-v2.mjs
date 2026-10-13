@@ -9,6 +9,8 @@ import { registerCodexIntegrationIpc } from './codex-integration.mjs';
 import { registerServerWorkspaceIpc } from './server-workspace-ipc.mjs';
 import { registerMysqlEditIpc } from './mysql-edit-ipc.mjs';
 import { registerRedisWorkspaceIpc } from './redis-workspace-ipc.mjs';
+import { registerCodexWorkspaceIpc } from './codex-workspace-ipc.mjs';
+import { registerSourceWorkspaceIpc } from './source-workspace-ipc.mjs';
 import { AppError, toPublicError } from './errors.mjs';
 import { legacyCredentialConfigForPlugin } from './credential-store.mjs';
 import { CredentialUseResolver } from './credential-use-resolver.mjs';
@@ -131,6 +133,8 @@ export function registerV2Ipc(ipcMain, services) {
   registerSoftwareUpdateIpc(ipcMain, services);
   registerUpdateNotificationsIpc(ipcMain, services);
   registerRedisWorkspaceIpc(ipcMain, services);
+  registerSourceWorkspaceIpc(ipcMain, services);
+  registerCodexWorkspaceIpc(ipcMain, services);
   registerRedisEditIpc(ipcMain, services);
   registerMysqlEditIpc(ipcMain, services);
   const { workspaceStore: store, connectionManager, credentialVault, legacyCredentialStore, configTransactionJournal, contextManager, confirmationManager, pluginManager, mysqlRuntime, pluginEditSessionManager, pluginProbeManager } = services;
@@ -703,7 +707,7 @@ export function registerV2Ipc(ipcMain, services) {
   handle('plugin-credential-status', async ({ projectId, environmentId, pluginInstanceId }) => {
     const plugin = await store.getPlugin(projectId, environmentId, pluginInstanceId);
     const secrets = await credentialVault.load(plugin) ?? {};
-    const primaryKey = plugin.pluginType === 'server' && plugin.auth?.type === 'privateKey' ? 'privateKeyPassphrase' : 'password';
+    const primaryKey = plugin.pluginType === 'codex' ? 'apiKey' : plugin.pluginType === 'server' && plugin.auth?.type === 'privateKey' ? 'privateKeyPassphrase' : 'password';
     const fields = { primary: Boolean(secrets[primaryKey]), proxy: plugin.pluginType === 'server' && Boolean(secrets.proxyPassword) };
     const saved = fields.primary || fields.proxy || Boolean(plugin.auth?.privateKeySource === 'vault' && secrets.privateKeyPem);
     let migration = legacyCredentialStore?.migrationStatus(plugin) ?? null;
@@ -777,7 +781,7 @@ export function registerV2Ipc(ipcMain, services) {
     assertProjectAvailable(projectId);
     configTransactionJournal?.assertPluginAvailable(projectId,environmentId,pluginInstanceId);
     const plugin = await store.getPlugin(projectId, environmentId, pluginInstanceId);
-    const primaryKey = plugin.pluginType === 'server' && plugin.auth?.type === 'privateKey' ? 'privateKeyPassphrase' : 'password';
+    const primaryKey = plugin.pluginType === 'codex' ? 'apiKey' : plugin.pluginType === 'server' && plugin.auth?.type === 'privateKey' ? 'privateKeyPassphrase' : 'password';
     const allowed = new Set(plugin.pluginType === 'server'
       ? [...(plugin.auth?.type === 'agent' ? [] : [primaryKey]),'proxyPassword']
       : ['mysql','redis'].includes(plugin.pluginType) ? [primaryKey] : []);

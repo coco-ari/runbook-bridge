@@ -78,6 +78,7 @@ try {
     assert.equal(createHash('sha256').update(contents).digest('hex'), expected,
       `packaged renderer differs from verified build: ${relative}`);
   }
+  for (const module of ['source-protocol.mjs','source-store.mjs','source-plugin-runtime.mjs','source-workspace-ipc.mjs','codex-process.mjs','codex-plugin-runtime.mjs','codex-session-store.mjs','codex-workspace-ipc.mjs','plugins/source/definition.mjs','plugins/codex/definition.mjs']) assert.ok(Object.hasOwn(renderer.sourceHashes,module),'安装包缺少源码或 Agent 工作区模块：'+module);
   assert.ok(Object.hasOwn(renderer.sourceHashes, 'plugin-creation-identity.mjs'));
   assert.ok(Object.hasOwn(renderer.sourceHashes, 'codex-integration.mjs'), '安装包缺少 Codex 接入模块');
   for (const module of ['cloud-config-crypto.mjs','cloud-config-service.mjs','cloud-config-workspace.mjs','cloud-config-ipc.mjs']) assert.ok(Object.hasOwn(renderer.sourceHashes,module),'安装包缺少云配置模块');

@@ -5,7 +5,7 @@ import { UtilityButton, UtilityCount } from "@/components/ui/utility-button"
 import { UtilityPopover, useUtilityPopover } from "@/components/ui/utility-popover"
 import type { PluginWorkspaceEntry } from "./workspace-registry"
 
-const typeLabels: Readonly<Record<string, string>> = {server: "服务器", mysql: "MySQL", redis: "Redis"}
+const typeLabels: Readonly<Record<string, string>> = {server: "服务器", mysql: "MySQL", redis: "Redis", source: "源码", codex: "Codex Agent"}
 
 type Actions = {navigate: (action: () => void, reason: "switch" | "configure") => void; close: () => void}
 const NavigationContext = createContext<{entries: readonly PluginWorkspaceEntry[]; manage: (anchor: HTMLElement) => void; configure: (entry: PluginWorkspaceEntry) => void; register: (key: string, actions: Actions | null) => void} | null>(null)

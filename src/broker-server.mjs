@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import net from 'node:net';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { brokerEndpoint } from './paths.mjs';
 import { toPublicError, AppError } from './errors.mjs';
@@ -17,6 +18,31 @@ export class BrokerServer {
     this.server = null;
     this.sockets = new Set();
     this.queues = new WeakMap();
+    this.agentGrants = new Map();
+  }
+
+  issueAgentGrant({projectId,environmentId,pluginInstanceId,assertCurrent}) {
+    const token = crypto.randomBytes(32).toString('hex');
+    this.agentGrants.set(token,{projectId,environmentId,pluginInstanceId,assertCurrent,clientInstanceId:crypto.randomUUID()});
+    return {token,revoke:() => this.agentGrants.delete(token)};
+  }
+
+  async dispatchAgent(grant, method, params) {
+    await grant.assertCurrent();
+    if (method === 'info') return this.dispatch(method,{});
+    const bound = {...params,clientInstanceId:grant.clientInstanceId};
+    if (method === 'v2.listProjects') {
+      const result = await this.dispatch(method,bound);
+      return {...result,projects:result.projects.filter(p => p.projectId === grant.projectId)};
+    }
+    if (params.projectId !== grant.projectId || (method !== 'v2.listEnvironments' && params.environmentId !== grant.environmentId)) throw new AppError('SCOPE_MISMATCH','此 Agent 只能访问所属环境。');
+    if (method === 'v2.listEnvironments') {
+      const result = await this.dispatch(method,bound);
+      return {...result,environments:result.environments.filter(e => e.environmentId === grant.environmentId)};
+    }
+    // Desktop plugin configuration and native Agent workspaces are never MCP capabilities.
+    if (method === 'v2.addPlugin') throw new AppError('WORKSPACE_ACCESS_DENIED','内置 Agent 不能修改插件配置。');
+    return this.dispatch(method,bound);
   }
 
   async start() {
@@ -64,6 +90,7 @@ export class BrokerServer {
   }
 
   async stop() {
+    this.agentGrants.clear();
     if (!this.server) return;
     const server = this.server;
     this.server = null;
@@ -107,8 +134,9 @@ export class BrokerServer {
     let request;
     try {
       request = JSON.parse(line);
-      if (request.auth !== this.token) throw new AppError('BROKER_UNAUTHORIZED', '本地 Broker 认证失败。');
-      const result = await this.dispatch(request.method, request.params ?? {});
+      const grant = this.agentGrants.get(request.auth);
+      if (request.auth !== this.token && !grant) throw new AppError('BROKER_UNAUTHORIZED', '本地 Broker 认证失败。');
+      const result = grant ? await this.dispatchAgent(grant,request.method,request.params ?? {}) : await this.dispatch(request.method, request.params ?? {});
       this.safeWrite(socket, { id: request.id, ok: true, result });
     } catch (error) {
       this.safeWrite(socket, { id: request?.id ?? null, ok: false, error: toPublicError(error) });

@@ -2,6 +2,8 @@
 
 [返回文档导航](README.md) · [首次使用](getting-started.md) · [升级与已知限制](beta-guide.md)
 
+3.0 的源码阅读、增量更新和内置 Codex 对话，见 [源码与 Codex Agent 工作区](source-agent-workspaces.md)。
+
 ## 核心能力
 
 | 资源 | Agent 可以做什么 |

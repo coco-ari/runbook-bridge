@@ -33,7 +33,7 @@ function redis(overrides = {}) {
 }
 
 test('all plugin adapters assess complete committed configurations without side effects', () => {
-  assert.deepEqual(Object.keys(pluginConnectionAdapters).sort(), ['mysql','redis','server']);
+  assert.deepEqual(Object.keys(pluginConnectionAdapters).sort(), ['codex','mysql','redis','server','source']);
   for (const plugin of [server(),mysql(),redis()]) {
     const frozen = structuredClone(plugin);
     const assessment = getPluginConnectionAdapter(plugin.pluginType).assessConfiguration(plugin,'connection');

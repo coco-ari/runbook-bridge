@@ -3,6 +3,8 @@ export const PLUGIN_CATALOG = {
   server: { label: "Server", defaultPort: 22 },
   mysql: { label: "MySQL", defaultPort: 3306 },
   redis: { label: "Redis", defaultPort: 6379 },
+  codex: { label: "Codex Agent", defaultPort: 443 },
+  source: { label: "源码", defaultPort: 443 },
 } as const
 
 export type RegisteredPluginType = keyof typeof PLUGIN_CATALOG

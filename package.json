@@ -39,7 +39,7 @@
     "test:ui:redis": "corepack pnpm run build:renderer && electron scripts/ui-react-redis-smoke.cjs",
     "test:ui:mysql-edit": "corepack pnpm run build:renderer && electron scripts/ui-react-database-smoke.cjs --mysql-edit",
     "test:ui:database": "corepack pnpm run build:renderer && electron scripts/ui-react-database-smoke.cjs",
-    "test:ui:all": "corepack pnpm run test:ui && corepack pnpm run test:ui:business && corepack pnpm run test:ui:runbook && corepack pnpm run test:ui:plugins && corepack pnpm run test:ui:plugin-matrix && corepack pnpm run test:ui:server-workspace && corepack pnpm run test:ui:database && corepack pnpm run test:ui:mysql-edit && corepack pnpm run test:ui:docker && corepack pnpm run test:ui:redis && corepack pnpm run test:ui:cloud",
+    "test:ui:all": "corepack pnpm run test:ui && corepack pnpm run test:ui:business && corepack pnpm run test:ui:runbook && corepack pnpm run test:ui:plugins && corepack pnpm run test:ui:plugin-matrix && corepack pnpm run test:ui:server-workspace && corepack pnpm run test:ui:database && corepack pnpm run test:ui:mysql-edit && corepack pnpm run test:ui:docker && corepack pnpm run test:ui:redis && corepack pnpm run test:ui:cloud && corepack pnpm run test:ui:source && corepack pnpm run test:ui:codex",
     "check:renderer": "tsc --project renderer/v2/tsconfig.json --noEmit",
     "build:renderer": "vite build --config renderer/v2/vite.config.ts",
     "test:ui:packaged": "node scripts/packaged-ui-smoke.cjs",
@@ -52,7 +52,10 @@
     "dist:mac:x64": "corepack pnpm run build:renderer && corepack pnpm run build:metadata && node scripts/build-mac.mjs x64",
     "build:metadata": "node scripts/build-metadata.mjs",
     "test:ui:docker": "corepack pnpm run build:renderer && electron scripts/ui-react-docker-smoke.cjs",
-    "updates:prepare": "node scripts/prepare-cloud-update.mjs"
+    "updates:prepare": "node scripts/prepare-cloud-update.mjs",
+    "test:ui:source": "corepack pnpm run build:renderer && electron scripts/ui-react-source-smoke.cjs",
+    "test:ui:codex": "corepack pnpm run build:renderer && electron scripts/ui-react-codex-smoke.cjs",
+    "test:codex:protocol": "node scripts/test-codex-process.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",

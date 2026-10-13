@@ -4,6 +4,8 @@ import path from 'node:path';
 import { AppError } from './errors.mjs';
 
 const SECRET_KEYS = Object.freeze({
+  source: new Set(['password']),
+  codex: new Set(['apiKey']),
   server: new Set(['password', 'privateKeyPassphrase', 'proxyPassword', 'privateKeyPem']),
   mysql: new Set(['password', 'tlsPassphrase', 'caPem', 'clientCertPem', 'clientKeyPem']),
   redis: new Set(['password', 'tlsPassphrase', 'caPem', 'clientCertPem', 'clientKeyPem']),
@@ -14,6 +16,8 @@ function resourceKey(scope) {
 }
 
 function bindingProjection(plugin) {
+  if (plugin.pluginType === 'codex') return {projectId:plugin.projectId,environmentId:plugin.environmentId,pluginInstanceId:plugin.pluginInstanceId,pluginType:'codex',target:plugin.target};
+  if (plugin.pluginType === 'source') return {projectId:plugin.projectId,environmentId:plugin.environmentId,pluginInstanceId:plugin.pluginInstanceId,pluginType:'source',target:{serviceUrl:plugin.target?.serviceUrl,remoteProjectId:plugin.target?.remoteProjectId}};
   const target = plugin.target ? {
     host: plugin.target.host,
     port: plugin.target.port,

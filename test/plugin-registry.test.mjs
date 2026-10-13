@@ -72,7 +72,7 @@ test('内置插件仍通过白名单清理配置和恢复快照', () => {
   for (const type of builtinPluginRegistry.types) {
     const input = {
       pluginType:type, pluginInstanceId:'main-plugin', displayName:'测试插件',
-      target:{host:'example.invalid', database:'example', db:0, password:'discard-this'},
+      target:{host:'example.invalid', database:'example', db:0, password:'discard-this',serviceUrl:'https://source.example.invalid',remoteProjectId:'11111111-1111-4111-8111-111111111111'},
       auth:{username:'example', password:'discard-this'}, secrets:{password:'discard-this'},
     };
     const plugin = normalizePlugin(input, scope);

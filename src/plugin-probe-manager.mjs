@@ -9,14 +9,17 @@ const PROBE_PURPOSES = new Set([
   'server-auth',
   'tls-probe',
 ]);
-const PLUGIN_TYPES = new Set(['server','mysql','redis']);
+const PLUGIN_TYPES = new Set(['server','mysql','redis','source','codex']);
 const PURPOSES_BY_PLUGIN_TYPE = Object.freeze({
+  source:new Set(['resource-access']),
+  codex:new Set(['resource-access']),
   server:new Set(['server-auth']),
   mysql:new Set(['resource-discovery','resource-access','tls-probe']),
   redis:new Set(['resource-access','tls-probe']),
 });
 const SECRET_DRAFT_FIELDS = new Set([
   'password',
+  'apikey',
   'proxypassword',
   'privatekeypassphrase',
   'tlspassphrase',

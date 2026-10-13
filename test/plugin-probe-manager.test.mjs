@@ -242,3 +242,15 @@ test('probe enforces an explicit plugin capability matrix', () => {
     );
   }
 });
+
+test('源码与 Agent 使用独立探针，密钥不能混入配置草稿',async()=>{
+ for(const [pluginType,target,temporarySecrets] of [
+  ['source',{serviceUrl:'https://source.example.invalid',remoteProjectId:'11111111-1111-4111-8111-111111111111'},{password:'p'.repeat(43)}],
+  ['codex',{authMode:'custom',baseUrl:'https://model.example.invalid',model:'test-model'},{apiKey:'fixture-api-key'}],
+ ]) {
+  const f=fakeResolver(async input=>{assert.equal(input.pluginType,pluginType);return {connected:true}}),probe=manager({resolver:f.value,runtime:f.runtime});
+  const request=payload({purpose:'resource-access',draft:{pluginType,target},temporarySecrets});
+  assert.equal((await probe.probePluginDraft(request,{ownerId:'renderer:7'})).state,'valid');
+  assert.throws(()=>probe.probePluginDraft({...request,requestId:'secret-in-draft',draft:{pluginType,target,apiKey:'must-not-save'}},{ownerId:'renderer:7'}),{code:'INVALID_ARGUMENT'});
+ }
+});

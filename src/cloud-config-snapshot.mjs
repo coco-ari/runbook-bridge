@@ -55,12 +55,12 @@ function normalizeProject(input, vault, schemaVersion = 4) {
     const plugins = list(raw.plugins,500).map(item => {
       object(item,['config','secrets']);
       object(item.config,[...CONFIG_KEYS]);
-      if (!['server','mysql','redis'].includes(item.config.pluginType)) throw cloudError('FORMAT_UNSUPPORTED','云配置包含不支持的插件。');
+      if (!['server','mysql','redis','source','codex'].includes(item.config.pluginType)) throw cloudError('FORMAT_UNSUPPORTED','云配置包含不支持的插件。');
       id(item.config.pluginInstanceId);
       if (item.config.auth?.privateKeyPath || item.config.auth?.agentSocket) throw cloudError('FORMAT_INVALID','云配置不能指定本机私钥路径或 Agent 套接字。');
       const config = normalizePlugin(item.config,{projectId,environmentId});
       if (snapshotDigest(item.config) !== snapshotDigest(configProjection(config))) throw cloudError('FORMAT_INVALID','云插件配置不是受支持的规范格式，已停止导入。');
-      if (config.auth.type === 'privateKey' && config.auth.privateKeySource !== 'vault') throw cloudError('FORMAT_INVALID','云端私钥必须使用凭据库。');
+      if (config.auth?.type === 'privateKey' && config.auth.privateKeySource !== 'vault') throw cloudError('FORMAT_INVALID','云端私钥必须使用凭据库。');
       if (!item.secrets || typeof item.secrets !== 'object' || Array.isArray(item.secrets) || Object.values(item.secrets).some(v => typeof v !== 'string')) throw cloudError('FORMAT_INVALID','云配置凭据结构无效。');
       const secrets = vault.normalizeSecrets(config,item.secrets);
       if (secrets.privateKeyPem) {
@@ -144,7 +144,7 @@ export async function exportCloudProject(store,vault,projectId) {
       const config = configProjection(plugin);
       const secrets = {...await vault.load(plugin)};
       if (config.pluginType === 'server') {
-        if (config.auth.type === 'privateKey') {
+        if (config.auth?.type === 'privateKey') {
           if (config.auth.privateKeySource !== 'vault') {
             try { secrets.privateKeyPem = await privateKeyFile(config.auth.privateKeyPath); }
             catch (error) {
@@ -168,10 +168,11 @@ export function cloudProjectWarnings(project) {
   const warnings = [];
   for (const env of project.environments) for (const {config,secrets} of env.plugins) {
     const prefix = `${env.name} / ${config.displayName}`;
-    if (config.auth.type === 'agent') warnings.push(`${prefix}：需要本机 SSH Agent。`);
+    if (config.pluginType === 'codex') warnings.push(`${prefix}：需要本机 Codex CLI；ChatGPT 登录状态和对话不会同步。`);
+    if (config.auth?.type === 'agent') warnings.push(`${prefix}：需要本机 SSH Agent。`);
     if (config.uplink?.type === 'windowsVpn' || config.transport?.kind === 'windowsVpn') warnings.push(`${prefix}：需要本机 VPN 网卡与网络。`);
-    if (config.auth.type === 'password' && !secrets.password) warnings.push(`${prefix}：未保存登录密码。`);
-    if (config.auth.type === 'privateKey' && !secrets.privateKeyPem) warnings.push(`${prefix}：缺少 SSH 私钥。`);
+    if (config.auth?.type === 'password' && !secrets.password) warnings.push(`${prefix}：未保存登录密码。`);
+    if (config.auth?.type === 'privateKey' && !secrets.privateKeyPem) warnings.push(`${prefix}：缺少 SSH 私钥。`);
     if (config.pluginType === 'mysql' && !secrets.password) warnings.push(`${prefix}：未保存数据库密码，请确认是否允许空密码。`);
     if (getPluginConnectionAdapter(config.pluginType).assessConfiguration(config).state !== 'complete') warnings.push(`${prefix}：连接配置尚未完整。`);
   }

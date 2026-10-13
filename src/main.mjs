@@ -26,6 +26,8 @@ import { AddressResolver, SystemVpnGuard, RouteManager } from './route-manager.m
 import { ServerPluginRuntime } from './server-plugin-runtime.mjs';
 import { MysqlPluginRuntime } from './mysql-plugin-runtime.mjs';
 import { RedisPluginRuntime } from './redis-plugin-runtime.mjs';
+import { CodexPluginRuntime } from './codex-plugin-runtime.mjs';
+import { SourcePluginRuntime } from './source-plugin-runtime.mjs';
 import { PluginManager } from './plugin-manager.mjs';
 import { EnvironmentConnectionManager } from './environment-connection-manager.mjs';
 import { ServerOperations } from './server-operations.mjs';
@@ -231,7 +233,9 @@ if (process.argv.includes('--mcp')) {
         const routeManager = new RouteManager({ resolver, vpnGuard, serverRuntime });
         const mysqlRuntime = new MysqlPluginRuntime(routeManager, pluginCredentialVault);
         const redisRuntime = new RedisPluginRuntime(routeManager, pluginCredentialVault);
-        const pluginManager = new PluginManager({ runtimes:{server:serverRuntime, mysql:mysqlRuntime, redis:redisRuntime} });
+        const sourceRuntime = new SourcePluginRuntime(dataRoot, pluginCredentialVault);
+        const codexRuntime = new CodexPluginRuntime(dataRoot,pluginCredentialVault,{workspaceStore,sourceStore:sourceRuntime.store,mcpEntry:path.join(__dirname,'mcp-v2.mjs'),openExternal:url => shell.openExternal(url)});
+        const pluginManager = new PluginManager({ runtimes:{server:serverRuntime, mysql:mysqlRuntime, redis:redisRuntime, source:sourceRuntime,codex:codexRuntime} });
         const mutationCoordinator = new WorkspaceMutationCoordinator();
         const environmentConnectionManager = new EnvironmentConnectionManager(workspaceStore, pluginManager, {
           configurationJournal:configTransactionJournal,
@@ -249,6 +253,12 @@ if (process.argv.includes('--mcp')) {
           if (event.type === 'lost') environmentConnectionManager.pluginLost(event.projectId, event.environmentId, event.pluginInstanceId, event.error).catch(() => undefined);
         });
         const serverOperations = new ServerOperations(serverRuntime, workspaceStore);
+        codexRuntime.on('lifecycle', event => {
+          if (event.type === 'lost') environmentConnectionManager.pluginLost(event.projectId,event.environmentId,event.pluginInstanceId,event.error).catch(() => undefined);
+        });
+        sourceRuntime.on('lifecycle', event => {
+          if (event.type === 'lost') environmentConnectionManager.pluginLost(event.projectId,event.environmentId,event.pluginInstanceId,event.error).catch(() => undefined);
+        });
         const serverDocker = serverOperations.docker;
         const serverWorkspaceManager = new ServerWorkspaceManager({ workspaceStore, serverRuntime, serverOperations });
         const serverWorkspaceFiles = new ServerWorkspaceFiles({ workspaceStore, serverRuntime, serverOperations });
@@ -278,6 +288,8 @@ if (process.argv.includes('--mcp')) {
           }
         };
         const v2Service = new V2Service({ workspaceStore, connectionManager: environmentConnectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault: pluginCredentialVault, mutationCoordinator, workspaceChanged:(payload) => broadcast('v2:workspace-changed', payload) });
+        sourceRuntime.on('changed', payload => broadcast('v2:source-changed',payload));
+        codexRuntime.on('changed', payload => broadcast('v2:codex-changed',payload));
         v2 = { serverDocker, serverWorkspaceManager, serverWorkspaceFiles, workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, mutationCoordinator, credentialUseResolver, validationRuntime, pluginProbeManager, pluginEditSessionManager, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
         const cloudConfigService = new CloudConfigService({...v2,workspace:cloudWorkspace,broadcast});
         await cloudConfigService.init();
@@ -355,6 +367,7 @@ if (process.argv.includes('--mcp')) {
           ? (...args) => updateShutdown.run(() => target[key](...args)) : target[key]});
         brokerServer = new BrokerServer({ dataRoot, token, v2Service:brokerService, appVersion: app.getVersion() });
         await brokerServer.start();
+        codexRuntime.broker = brokerServer;
         const downloadPicker = new DesktopDownloadPicker({
           dataRoot, defaultDirectory:app.getPath('downloads'),
           showSaveDialog:(window, options) => dialog.showSaveDialog(window, options),
@@ -374,6 +387,7 @@ if (process.argv.includes('--mcp')) {
           codexIntegration: new CodexIntegration({ executablePath: process.execPath, entryPath: path.join(__dirname, 'mcp-v2.mjs'), dataRoot, clipboard }),
           broadcast,
           openRepository: () => shell.openExternal('https://github.com/coco-ari/runbook-bridge'),
+          openSourceDirectory: directory => shell.openPath(directory).then(error => { if (error) throw new Error('打开源码目录失败'); }),
           quickQuestionClipboard:clipboard,
           terminalClipboard:clipboard,
           readServerClipboardFiles:readWindowsClipboardFiles,

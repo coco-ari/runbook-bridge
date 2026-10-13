@@ -881,7 +881,46 @@ export interface CodexIntegrationStatus {
   readonly backupPath?: string | null
 }
 
+export interface SourceVersion {
+  readonly snapshotId: string; readonly revision: string; readonly createdAt: string
+  readonly fileCount: number; readonly totalBytes: number; readonly directory?: string
+}
+export interface SourceHead { readonly snapshot: SourceVersion | null; readonly syncStatus: string; readonly lastAttempt: string | null; readonly error: string | null }
+export interface SourceStatus {
+  readonly connected: boolean; readonly local: SourceVersion | null; readonly remote: SourceHead | null
+  readonly update: { readonly phase: string; readonly downloadedBytes?: number; readonly totalBytes?: number; readonly completedFiles?: number; readonly totalFiles?: number } | null
+}
+export interface SourceManifest extends SourceVersion { readonly files: readonly { readonly path: string; readonly size: number; readonly sha256: string; readonly mode: number }[] }
+export interface SourceFile { readonly path: string; readonly text: string | null; readonly binary: boolean; readonly size: number }
+export interface SourceSearch { readonly results: readonly { readonly path: string; readonly line?: number; readonly column?: number; readonly preview?: string }[]; readonly truncated: boolean }
+export interface SourceResults {
+  readonly status: SourceStatus; readonly check: SourceHead; readonly manifest: SourceManifest; readonly read: SourceFile; readonly search: SourceSearch
+  readonly update: SourceVersion & { readonly downloadedFiles: number; readonly reusedFiles: number; readonly downloadedBytes: number }
+  readonly cancel: { readonly cancelled: boolean }; readonly cleanup: { readonly removed: number }; readonly "open-directory": { readonly opened: boolean }; readonly release: { readonly released: boolean }
+}
+export type SourceRequest<K extends keyof SourceResults> = PluginScope & { readonly operation: K; readonly expectedRevision: number; readonly snapshotId?: string; readonly path?: string; readonly query?: string; readonly content?: boolean }
+
+export interface CodexSource { readonly pluginInstanceId: string; readonly pluginName: string; readonly snapshotId: string; readonly revision: string; readonly directory: string }
+export interface CodexSession { readonly id: string; readonly title: string; readonly model: string; readonly updatedAt: string; readonly status: string; readonly sources: readonly CodexSource[] }
+export interface CodexMessage { readonly id: string; readonly role: "user" | "assistant" | "tool" | "system"; readonly text: string; readonly createdAt: string }
+export interface CodexQuestion { readonly id: string; readonly header: string; readonly question: string; readonly options: readonly { readonly label: string; readonly description: string }[] }
+export interface CodexApproval { readonly id: string; readonly questions: readonly CodexQuestion[] }
+export interface CodexConversation extends CodexSession { readonly messages: readonly CodexMessage[]; readonly approvals: readonly CodexApproval[] }
+export interface CodexModel { readonly id: string; readonly model: string; readonly name: string }
+export interface CodexAccount { readonly type: string; readonly authenticated: boolean; readonly email?: string }
+export interface CodexStatus { readonly loginError: string | null; readonly connected: boolean; readonly version: string | null; readonly account: CodexAccount | null; readonly login: { readonly pending: boolean } | null; readonly models: readonly CodexModel[]; readonly sessions: readonly CodexSession[] }
+export interface CodexResults {
+  readonly status: CodexStatus; readonly models: readonly CodexModel[]; readonly new: CodexSession; readonly read: CodexConversation; readonly send: CodexSession
+  readonly login: { readonly account: CodexAccount | null; readonly pending: boolean }; readonly logout: CodexResults["login"]; readonly "cancel-login": CodexResults["login"]
+  readonly stop: { readonly stopped: boolean }; readonly answer: { readonly answered: boolean }; readonly delete: { readonly removed: boolean }
+}
+export type CodexRequest<K extends keyof CodexResults> = PluginScope & { readonly operation: K; readonly expectedRevision: number; readonly sessionId?: string; readonly text?: string; readonly sourcePluginIds?: readonly string[]; readonly model?: string; readonly approvalId?: string; readonly answers?: Readonly<Record<string,string>> }
+
 export interface AiOpsV2Api {
+  codexWorkspace<K extends keyof CodexResults>(payload: CodexRequest<K>): Promise<IpcResult<CodexResults[K]>>
+  onCodexChanged(callback: (scope: PluginScope) => void): Unsubscribe
+  sourceWorkspace<K extends keyof SourceResults>(payload: SourceRequest<K>): Promise<IpcResult<SourceResults[K]>>
+  onSourceChanged(callback: (scope: PluginScope) => void): Unsubscribe
   /** 桌面生命周期通知，仅包含待保存/待完成工作数量。 */
   reportUnsavedWork(count: number): void
   openRepository(): Promise<IpcResult<{ opened: boolean }>>
@@ -1009,6 +1048,10 @@ export interface AiOpsV2Api {
 }
 
 export const AI_OPS_V2_API_NAMES = [
+  "sourceWorkspace",
+  "codexWorkspace",
+  "onCodexChanged",
+  "onSourceChanged",
   "reportUnsavedWork",
   "openRepository",
   "codexIntegration",

@@ -67,6 +67,18 @@ contextBridge.exposeInMainWorld('aiOps', {
     serverWorkspaceCancelUpload: (payload) => ipcRenderer.invoke('v2:server-workspace-cancel-upload', payload),
     serverWorkspaceUploads: (payload) => ipcRenderer.invoke('v2:server-workspace-uploads', payload),
     listProjects: () => ipcRenderer.invoke('v2:project-list'),
+    codexWorkspace: payload => ipcRenderer.invoke('v2:codex-workspace',payload),
+    onCodexChanged: callback => {
+      const listener = (_event,payload) => callback(payload);
+      ipcRenderer.on('v2:codex-changed',listener);
+      return () => ipcRenderer.removeListener('v2:codex-changed',listener);
+    },
+    sourceWorkspace: payload => ipcRenderer.invoke('v2:source-workspace',payload),
+    onSourceChanged: callback => {
+      const listener = (_event,payload) => callback(payload);
+      ipcRenderer.on('v2:source-changed',listener);
+      return () => ipcRenderer.removeListener('v2:source-changed',listener);
+    },
     workspaceOverview: () => ipcRenderer.invoke('v2:workspace-overview'),
     createProject: (input) => ipcRenderer.invoke('v2:project-create', input),
     updateProject: (payload) => ipcRenderer.invoke('v2:project-update', payload),

@@ -33,6 +33,8 @@ try {
   }
   assert.equal(result.tools.find((tool) => tool.name === 'open_environment').annotations.readOnlyHint, true);
   assert.match(client.getInstructions(), /connect_plugin/u);
+  assert.match(client.getInstructions(), /sourceCode/u);
+  assert.ok(!result.tools.some(tool => /^(source_|codex_|agent_chat)/u.test(tool.name)),'源码正文和 Agent 对话不能成为 MCP 工具');
   assert.match(client.getInstructions(), /不得自动信任/u);
   assert.ok(result.tools.some((tool) => tool.name === 'mysql_search_schema'));
   assert.ok(!result.tools.some((tool) => tool.name === 'execute'));

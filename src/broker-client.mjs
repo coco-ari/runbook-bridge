@@ -9,7 +9,7 @@ const MAX_RESPONSE_BYTES = 12 * 1024 * 1024;
 export async function callBroker(dataRoot, method, params = {}, timeoutMs = 300_000) {
   let token;
   try {
-    token = await readBrokerToken(dataRoot);
+    token = process.env.AI_OPS_AGENT_BROKER_TOKEN !== undefined ? process.env.AI_OPS_AGENT_BROKER_TOKEN : await readBrokerToken(dataRoot);
   } catch {
     throw new AppError('DESKTOP_UNAVAILABLE', '桌面工具未运行，请先启动 AI 运维工具。');
   }
