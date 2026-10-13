@@ -84,6 +84,8 @@ macOS 输入文件为 `dist/RunbookBridge-<版本>-mac-<架构>.zip` 和同名 `
 
 跨版本自动回归设置 `AI_OPS_MAC_TEST_KEYCHAIN=1`，仅在 GitHub Runner 内创建临时钥匙串，预授权本次旧版和新版两个应用包，运行结束后恢复原始默认钥匙串及搜索列表并删除测试钥匙串。合成凭据仍经过真实 Electron `safeStorage` 加解密，原密文在覆盖前后必须保持不变。此预授权只隔离 CI 的系统交互，不改变客户端钥匙串权限，也不代表已验收用户手动允许或拒绝授权的交互。[Electron 官方说明](https://www.electronjs.org/docs/latest/api/safe-storage)解释了签名变化触发重复授权的原因。
 
+系统仍可能要求人工授权，预授权不保证跨版本回归自动完成。2.0.6 的两个 Mac 架构均停在新版首次读取凭据的系统授权窗口，未输出可直接启用的云更新归档；只有通过包验证的 `mac-package-candidate-<架构>` 和用于复验的 `mac-upgrade-baseline-<架构>`。实际状态及待验收事项见 [2.0.6 交付记录](releases/v2.0.6.md#2026-10-13-交付状态)。
+
 需要签名、公证的正式构建时，按 [测试与交付验证指南](./full-function-verification.md) 配置证书，使用 `AI_OPS_MAC_RELEASE=1`；缺少凭据仍明确失败，现有 Release 工作流不降级为未公证发布。
 
 清单包含产品 `runbook-bridge`、平台、架构、正式版本、发布时间，以及标准 `files[].url/sha512/size` 字段。SHA-512 使用 Base64，文件大小和摘要从实际输出文件计算。准备脚本先完整写入安装包及可选 blockmap，最后原子替换清单；已有同版本同名文件若内容不同会拒绝覆盖。已经正式发布的版本应保持不可变，修改软件后发布更高版本。
