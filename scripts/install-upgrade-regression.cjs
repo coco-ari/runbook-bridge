@@ -49,6 +49,13 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function captureInstallFailure() {
+  if (process.platform !== 'darwin') return;
+  const screenshot = path.resolve(__dirname,'..','artifacts','install-regression-failure.png');
+  await fsp.mkdir(path.dirname(screenshot),{recursive:true});
+  await runProcess('/usr/sbin/screencapture',['-x',screenshot],{timeoutMs:10_000}).catch(() => undefined);
+}
+
 async function runProcess(command, args, { env = process.env, timeoutMs = 120_000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -137,8 +144,9 @@ async function reserveDebugPort() {
 }
 
 class CdpClient {
-  constructor(socket) {
+  constructor(socket, { timeoutMs = 30_000 } = {}) {
     this.socket = socket;
+    this.timeoutMs = timeoutMs;
     this.nextId = 1;
     this.pending = new Map();
     socket.addEventListener('message', (event) => {
@@ -147,11 +155,15 @@ class CdpClient {
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
+      clearTimeout(pending.timer);
       if (message.error) pending.reject(new Error(message.error.message));
       else pending.resolve(message.result);
     });
     socket.addEventListener('close', () => {
-      for (const pending of this.pending.values()) pending.reject(new Error('CDP connection closed'));
+      for (const pending of this.pending.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error('CDP connection closed'));
+      }
       this.pending.clear();
     });
   }
@@ -169,7 +181,11 @@ class CdpClient {
   call(method, params = {}) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`安装回归的浏览器请求超时：${method}`));
+      },this.timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
       this.socket.send(JSON.stringify({ id, method, params }));
     });
   }
@@ -231,6 +247,7 @@ async function startInstalledApp(executable, isolation) {
     }
     await delay(100);
   }
+  await captureInstallFailure();
   child.kill();
   throw new Error('Installed application did not expose a ready renderer.');
 }
@@ -480,15 +497,19 @@ async function orchestrate() {
     fsp.mkdir(path.dirname(installDir), { recursive: true }),
   ]);
   let installedApp = null;
+  let regressionFailed = false;
   try {
+    process.stdout.write('安装回归：安装旧版或基准包。\n');
     const executable = await install(previousInstaller, installDir, isolation.env);
     const previousBuild = await inspectInstalledBuild(executable,isolation.env);
     const {appAsar} = packagedPaths(executable);
     process.stdout.write(`Installed renderer expected URL: ${pathToFileURL(path.join(appAsar,'renderer-build','v2','index.html')).href}\n`);
     process.stdout.write(`Installed executable real path: ${await fsp.realpath(executable)}\n`);
     installedApp = await startInstalledApp(executable, isolation);
+    process.stdout.write('安装回归：旧版已启动，创建隔离项目与合成凭据。\n');
     await seedInstalledRenderer(installedApp.cdp);
     await inspectInstalledRenderer(installedApp.cdp, 3);
+    process.stdout.write('安装回归：旧版凭据可读，退出后覆盖安装。\n');
     await stopInstalledApp(installedApp);
     installedApp = null;
 
@@ -524,9 +545,11 @@ async function orchestrate() {
       assert.notEqual(previousBuild.archiveHash,currentBuild.archiveHash,'跨版本回归必须使用不同构建');
     }
     installedApp = await startInstalledApp(upgradedExecutable, isolation);
+    process.stdout.write('安装回归：新版已启动，验证保留的项目与凭据。\n');
     await inspectInstalledRenderer(installedApp.cdp, 3);
     const connection = await exerciseFormalConnection(installedApp.cdp);
     const agent = await exerciseInstalledMcp(upgradedExecutable, isolation);
+    process.stdout.write('安装回归：新版凭据与 MCP 验证通过。\n');
     await inspectInstalledRenderer(installedApp.cdp, 4);
     await stopInstalledApp(installedApp);
     installedApp = null;
@@ -550,6 +573,11 @@ async function orchestrate() {
       appDataPreservedAfterUninstall: true,
     };
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } catch (error) {
+    regressionFailed = true;
+    const screenshot = path.join(root,'artifacts','install-regression-failure.png');
+    if (!fs.existsSync(screenshot)) await captureInstallFailure();
+    throw error;
   } finally {
     if (installedApp) await stopInstalledApp(installedApp).catch(() => undefined);
     const keep = process.env.AI_OPS_KEEP_INSTALL_REGRESSION === '1';
@@ -562,6 +590,9 @@ async function orchestrate() {
         force: true,
         maxRetries: 8,
         retryDelay: 250,
+      }).catch(error => {
+        if (!regressionFailed) throw error;
+        process.stderr.write('安装回归临时目录仍被占用，保留原始失败原因。\n');
       });
     } else if (keep) {
       process.stderr.write(`Preserved regression directory: ${resolvedTemporaryRoot}\n`);
@@ -575,4 +606,4 @@ if (require.main === module) orchestrate().catch((error) => {
   process.exitCode = 1;
 });
 
-module.exports = { inspectInstalledBuild };
+module.exports = { CdpClient, inspectInstalledBuild };

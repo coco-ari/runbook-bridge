@@ -54,6 +54,16 @@ jobs:
           node scripts/packaged-mcp-smoke.mjs "${{ matrix.app }}"
           node scripts/packaged-ui-smoke.cjs "${{ matrix.app }}"
           /usr/bin/codesign --verify --deep --strict "${{ matrix.app }}"
+      - name: 保存已通过包验证的候选文件
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-package-candidate-${{ matrix.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            build/runtime.json
+          if-no-files-found: error
+          retention-days: 7
       - name: 构建旧版以验证跨版本覆盖
         id: previous
         env:
@@ -70,11 +80,20 @@ jobs:
           PREVIOUS_VERSION=$(node -p "require('./package.json').version")
           echo "dmg=$PREVIOUS_ROOT/dist/RunbookBridge-${PREVIOUS_VERSION}-mac-${TARGET_ARCH}.dmg" >> "$GITHUB_OUTPUT"
       - name: 隔离安装与跨版本覆盖回归
+        timeout-minutes: 8
         env:
           PREVIOUS_DMG: ${{ steps.previous.outputs.dmg }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
           node scripts/install-upgrade-regression.cjs "dist/RunbookBridge-${VERSION}-mac-${{ matrix.arch }}.dmg" "$PREVIOUS_DMG"
+      - name: 保存安装回归失败诊断
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-install-diagnostics-${{ matrix.arch }}
+          path: artifacts/install-regression-failure.png
+          if-no-files-found: ignore
+          retention-days: 7
       - name: 准备云仓库文件和构建信息
         run: |
           node scripts/prepare-cloud-update.mjs --platform darwin --arch ${{ matrix.arch }}
