@@ -92,7 +92,7 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   fixture.network.failPreview=true;fixture.network.delays.preview=900;
   await save();
   await waitFor(win,'document.querySelector("[data-testid=mysql-edit-message]")?.textContent.includes("刷新失败")','保存成功与刷新失败分开反馈');
-  assert.match(await current(testId('mysql-edit-message')),/已保存：新增 1/u);
+  assert.match(await current(testId('mysql-edit-message')),/已保存.*刷新失败/u);
   assert.equal((await fixture.read()).length,initialRows.length+1,'刷新失败不代表新增失败');
   assert.equal(await evaluate('document.querySelector("[data-testid=mysql-add-row]").disabled'),true,'过期显示不能直接继续写入');
   fixture.network.delays.preview=0;
@@ -167,7 +167,7 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   assert.match(await current(testId('mysql-edit-dirty-count')),/修改 2.*2 处/u);
   await screenshot(win,'edit-staged');
   const beforeWaiting=await geometry(), commitsBefore=fixture.network.commits;
-  fixture.network.delays.commit=6200;fixture.network.loseCommitReply=true;
+  fixture.network.delays.commit=6200;fixture.network.loseCommitReply=true;fixture.network.failStatus=true;
   await click(win,testId('mysql-edit-save'));
   await waitFor(win,'document.querySelector("[data-testid=mysql-edit-save] [data-operation-spinner]")','保存中显示原位转圈');
   const selectedBeforeLocked=await evaluate('document.querySelectorAll("[data-testid=mysql-data-editor] tr[data-selected]").length');
@@ -183,13 +183,39 @@ module.exports=async function({win,fixture,click,fill,waitFor,testId,screenshot,
   assert.equal(await evaluate('document.querySelector("[data-testid=mysql-edit-undo]").disabled'),true,'结果未确认时不能假装取消写入');
   fixture.network.delays.commit=0;fixture.network.delays.status=600;
   await button('检查保存状态');
-  assert.match(await current(testId('mysql-edit-message')),/正在检查保存状态/u);
+  assert.match(await current(testId('mysql-edit-message')),/正在确认保存结果/u);
   await waitFor(win,'document.querySelector("[data-testid=mysql-edit-message]")?.textContent.includes("已保存")','检查确认成功');
   fixture.network.delays.status=0;
   assert.equal(fixture.network.commits,commitsBefore+1,'弱网和检查状态都不能重复写入');
   assert.deepEqual((await fixture.read()).slice(0,3).map(row=>row.label),['统一赋值','统一赋值','测试记录 03']);
   assert.match(await current(testId('mysql-edit-message')),/已保存/u);
   sameGeometry(await geometry(),beforeEdit,'保存后表格位置不变');
+  const recoveredBefore=fixture.network.commits;
+  await stage(1,'label','自动核对保存');
+  fixture.network.loseCommitReply=true;fixture.network.runningStatusReplies=1;
+  await save();
+  assert.equal(fixture.network.commits,recoveredBefore+1,'回复丢失时自动核对，只提交一次');
+  assert.equal(fixture.network.runningStatusReplies,0,'保存尚在运行时继续查询结果');
+  assert.equal(await current(testId('mysql-edit-message')),'已保存');
+  await stage(1,'label','x'.repeat(101));
+  await click(win,testId('mysql-edit-save'));
+  await waitFor(win,'document.querySelector("[data-testid=mysql-edit-message]")?.textContent.includes("字段 label")','超长输入定位字段');
+  assert.match(await current(cell(1,'label')),/x{101}/u,'校验失败保留输入');
+  await waitFor(win,'document.activeElement?.dataset.editColumn === "label"','校验失败聚焦问题字段');
+  await stage(1,'label','统一赋值');
+  if(!process.env.RUNBOOK_MYSQL_TEST_HOST){
+    const deniedBefore=fixture.network.commits;
+    fixture.network.modeSetDenied=true;
+    await click(win,testId('mysql-edit-save'));
+    await waitFor(win,'document.querySelector("[data-testid=mysql-edit-message]")?.textContent.includes("暂时无法准备保存连接")','初始化失败使用简明提示');
+    assert.match(await current(cell(1,'label')),/统一赋值/u,'初始化失败保留草稿');
+    assert.equal((await fixture.read())[0].label,'自动核对保存','初始化失败不能写入');
+    assert.equal(fixture.network.commits,deniedBefore+1);
+    fixture.network.modeSetDenied=false;
+    assert.ok(fixture.network.modeInitializations>0,'非严格模式连接自动初始化');
+  }
+  await save();
+  assert.equal((await fixture.read())[0].label,'统一赋值');
   await button('取消选择');
   await drag(1,4);
   assert.equal(await evaluate('document.querySelectorAll("[data-testid=mysql-data-editor] tbody tr[data-selected]").length'),4,'行号拖选连续四行');

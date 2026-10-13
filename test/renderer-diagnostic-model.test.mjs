@@ -48,7 +48,8 @@ test('SQL 诊断明确区分权限无法核实、访问拒绝和当前版本不�
   const strict = diagnosticFor({code:'MYSQL_SQL_WRITE_UNSAFE',details:{reason:'strict_mode'}},'operation');
   assert.equal(strict.outcome,'执行条件未满足');
   assert.match(strict.guidance,/STRICT_TRANS_TABLES/u);
-  assert.match(strict.guidance,/不会自动修改/u);
+  assert.match(strict.guidance,/自动为桌面写入会话/u);
+  assert.match(strict.guidance,/无需修改数据库全局配置/u);
 });
 
 test('SQL 诊断仅使用 code 与白名单 reason，复制结果不包含其他详情', () => {

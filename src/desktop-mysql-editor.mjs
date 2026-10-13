@@ -1,4 +1,5 @@
 import { assertMysqlRowWriteSafe } from './mysql-row-write-policy.mjs';
+import { ensureMysqlWriteSession } from './mysql-write-session.mjs';
 import crypto from 'node:crypto';
 import { AppError } from './errors.mjs';
 import { applyMysqlRowLimit } from './mysql-policy.mjs';
@@ -11,6 +12,18 @@ const identity = plugin => JSON.stringify([...SCOPE.map(field=>plugin[field]),pl
 const fail = (code,message,details) => new AppError(code,message,details);
 const stale = () => fail('MYSQL_EDIT_STALE','编辑数据已过期或连接已变化，请重新加载。');
 const visible = value => value === null ? null : typeof value === 'string' ? value : Buffer.isBuffer(value) ? '[二进制数据]' : '[不支持编辑的值]';
+const SAVE_ERRORS = {
+  ER_DUP_ENTRY:'保存失败，存在重复的主键或唯一字段值。',
+  ER_NO_REFERENCED_ROW_2:'保存失败，关联的数据不存在。',
+  ER_ROW_IS_REFERENCED_2:'保存失败，这条数据仍被其他数据引用。',
+  ER_CHECK_CONSTRAINT_VIOLATED:'保存失败，输入不符合字段要求。',
+  ER_DATA_TOO_LONG:'保存失败，输入内容超过字段允许的长度。',
+  ER_WARN_DATA_OUT_OF_RANGE:'保存失败，数值超过字段允许的范围。',
+  ER_TRUNCATED_WRONG_VALUE:'保存失败，请检查数字或日期格式。',
+  ER_TRUNCATED_WRONG_VALUE_FOR_FIELD:'保存失败，输入不符合字段要求。',
+  ER_TABLEACCESS_DENIED_ERROR:'当前账号没有执行此操作的权限，请联系管理员。',
+  ER_COLUMNACCESS_DENIED_ERROR:'当前账号没有操作此字段的权限，请联系管理员。',
+};
 // 编辑读取保留数字、JSON 和日期的原始文本，避免经过 JS 数值及日期对象丢失精度。
 const cloneValues = values => values.map(value=>Buffer.isBuffer(value)?Buffer.from(value):value);
 const rawOptions = (projection, aliases = true) => {
@@ -194,8 +207,8 @@ export class DesktopMysqlEditor {
           return found;
         };
         assertActive();
-        const [[mode]]=await query('SELECT @@SESSION.sql_mode AS sqlMode');
-        if(!/(?:^|,)STRICT_(?:TRANS|ALL)_TABLES(?:,|$)/u.test(mode.sqlMode??'')) throw mysqlEditError('当前连接未启用严格 SQL 模式，请启用后再编辑，避免数据库静默截断字段值。');
+        await ensureMysqlWriteSession(query);
+        assertActive();
         try {
           await query('START TRANSACTION');started=true;
           const locked=new Map();
@@ -246,7 +259,7 @@ export class DesktopMysqlEditor {
           }
           throw error;
         }
-      });
+      }, {write:true});
       for(const item of fresh.updated) edit.rows.get(item.rowId).values=cloneValues(item.values);
       for(const id of fresh.deleted) edit.rows.delete(id);
       edit.expiresAt=this.now()+LIMIT.lifetimeMs;
@@ -254,9 +267,9 @@ export class DesktopMysqlEditor {
       plan.result={rowCount:plan.changes.length,counts:plan.counts,deletedRowIds:fresh.deleted,rows:fresh.updated.map(item=>({rowId:item.rowId,values:Object.fromEntries(edit.projection.map((column,index)=>[column.name,visible(item.values[index])]))}))};
     } catch(error) {
       plan.status=attemptedCommit?'unknown':'failed';
-      plan.error=error instanceof AppError?{code:error.code,message:error.message,...(error.details?{details:error.details}:{})}:{code:'MYSQL_EDIT_FAILED',message:['ER_DUP_ENTRY','ER_NO_REFERENCED_ROW_2','ER_ROW_IS_REFERENCED_2','ER_CHECK_CONSTRAINT_VIOLATED'].includes(error?.code)?'主键、唯一键或关联约束冲突，本批修改已回滚。请检查相关字段后重试。':'保存失败，本批修改未提交。请检查账号写入权限、字段约束及连接状态。'};
+      plan.error=error instanceof AppError?{code:error.code,message:error.message,...(error.details?{details:error.details}:{})}:{code:'MYSQL_EDIT_FAILED',message:Object.hasOwn(SAVE_ERRORS,error?.code)?SAVE_ERRORS[error.code]:'保存失败，请重试。'};
       if(attemptedCommit){
-        plan.error={code:'MYSQL_EDIT_OUTCOME_UNKNOWN',message:'提交期间连接中断，保存结果不确定。请重新查询核实，勿重复提交。'};
+        plan.error={code:'MYSQL_EDIT_OUTCOME_UNKNOWN',message:'连接已中断，暂时无法确认是否保存成功，请重新查询核实。'};
         await this.runtime.invalidateSession(plugin,edit.session,fail('ROUTE_UNAVAILABLE','提交结果不确定。'));
       }
     }

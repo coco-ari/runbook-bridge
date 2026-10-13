@@ -105,7 +105,7 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   const pendingCount = pendingRows.length + inserts.length + deleted.size
   const cellCount = Object.entries(drafts).filter(([id]) => !deleted.has(id)).reduce((count, [, values]) => count + Object.keys(values).length, 0) + inserts.reduce((count, row) => count + Object.keys(row.values).length, 0)
   const locked = Boolean(busy || uncertain || stale || resultStale || !guard.connected || feedback?.busy || feedback?.error)
-  const waiting = useOperationLabel(Boolean(busy || feedback?.busy), busy === "check" ? "正在检查保存状态…" : busy === "prepare" ? "正在校验更改…" : busy === "commit" ? "正在保存更改…" : busy === "open" ? reading : "正在刷新数据…")
+  const waiting = useOperationLabel(Boolean(busy || feedback?.busy), busy === "check" ? "正在确认保存结果…" : busy === "prepare" || busy === "commit" ? "保存中…" : busy === "open" ? reading : "正在刷新数据…")
   useEffect(() => {
     alive.current = true
     const unregister = guard.register(documentKey, () => ({
@@ -256,17 +256,15 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
       })
       setEdit(current => current ? { ...current, rows: current.rows.map(row => updated.get(row.rowId) ?? row) } : current)
       const refreshRows = insertsRef.current.length > 0 || deletedRef.current.size > 0
-      const copies = insertsRef.current.filter(row => row.copied).length
-      const summary = `已保存：新增 ${insertsRef.current.length - copies} · 复制 ${copies} · 修改 ${Object.keys(draftsRef.current).filter(id => !deletedRef.current.has(id)).length} · 删除 ${deletedRef.current.size}` + (status.result.auditWarning ? "；操作记录写入失败。" : "。") + (insertsRef.current.length ? " 新增和复制行按当前筛选及返回行数限制显示。" : "")
+      const summary = status.result.auditWarning ? "已保存；操作记录未能保存。" : "已保存"
       updateDrafts({}); updateInserts([]); updateDeleted(new Set()); setConflicts(new Set()); setPlan(null); setUncertain(false); setError("")
       setNotice(summary)
       if (refreshRows) {
         if (editRef.current) void api.mysqlEditRelease({ ...scope, editId: editRef.current.editId }).catch(() => {})
         setSelection(new Set()); setEdit(null); editRef.current = null; guard.setEditing(documentKey, false)
-        toast.success(summary)
         onReload(summary)
       }
-    } else if (status.status === "running") { setUncertain(true); setError("保存仍在进行，请检查保存状态，不要重复提交。") }
+    } else if (status.status === "running") { setUncertain(true); setError("保存尚未完成，请稍后检查结果。") }
     else {
       setUncertain(status.status === "unknown"); setError(status.error?.message ?? "保存未完成")
       setConflicts(new Set(status.error?.details?.rowIds ?? []))
@@ -276,14 +274,30 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
   }
   async function commit(prepared: MysqlEditPlan, checkOnly = false) {
     if ((!checkOnly && (stale || resultStale || !connected.current)) || !editRef.current || busyRef.current === "commit" || busyRef.current === "check") return
+    const payload = { ...scope, editId: editRef.current.editId, planId: prepared.planId }
+    const isCurrentEdit = () => alive.current && editRef.current?.editId === payload.editId
     setError(""); setWorking(checkOnly ? "check" : "commit")
     try {
-      const payload = { ...scope, editId: editRef.current.editId, planId: prepared.planId }
-      const response = checkOnly ? await api.mysqlEditStatus(payload) : await api.mysqlEditCommit(payload)
+      let response
+      try {
+        response = checkOnly ? await api.mysqlEditStatus(payload) : await api.mysqlEditCommit(payload)
+        if (!response.ok) throw new Error()
+      } catch {
+        if (checkOnly || !isCurrentEdit()) throw new Error()
+        // 回复丢失时只查询同一保存计划的结果，绝不重新执行写入。
+        setWorking("check")
+        response = await api.mysqlEditStatus(payload)
+      }
+      for (let attempt = 0; response.ok && response.data.status === "running" && attempt < 3; attempt++) {
+        setWorking("check")
+        await new Promise(resolve => window.setTimeout(resolve, 500))
+        if (!isCurrentEdit()) return
+        response = await api.mysqlEditStatus(payload)
+      }
       if (!response.ok) throw new Error(response.error.message)
-      if (alive.current) acceptResult(response.data)
-    } catch (failure) {
-      if (alive.current) { setUncertain(true); setError((failure instanceof Error ? failure.message : "未能取得保存结果") + "。请检查保存状态或重新查询核实，不要重复提交。") }
+      if (isCurrentEdit()) acceptResult(response.data)
+    } catch {
+      if (isCurrentEdit()) { setUncertain(true); setError("暂时无法确认是否保存成功，请检查保存结果。") }
     } finally { if (alive.current) setWorking(null) }
   }
   async function save() {
@@ -303,11 +317,12 @@ export function MysqlEditableResults({ api, scope, documentKey, sql, result, vis
       if (!response.ok) {
         if (response.error.code === "MYSQL_EDIT_STALE") setStale(true)
         const details = response.error.details as { column?: string; rowIds?: string[] } | undefined
-        const draft = insertsRef.current.find(row => row.rowId === details?.rowIds?.[0])
-        if (draft && details?.column) {
+        const rowId = details?.rowIds?.[0]
+        const draft = insertsRef.current.find(row => row.rowId === rowId)
+        if (rowId && details?.column) {
           const column = edit.columns.find(item => item.source === details.column)
-          if (column) focusCell(draft.rowId, column.name)
-          else updateRowDraft(draft)
+          if (column) focusCell(rowId, column.name)
+          else if (draft) updateRowDraft(draft)
         }
         throw new Error(response.error.message)
       }

@@ -32,6 +32,8 @@ AI 的分析需要人工核对。本工具提供连接、上下文和操作控�
 
 MySQL 草稿使用不同颜色和文字标记，新增、复制、修改、删除统一保存或取消；支持拖动列宽和紧凑布局。
 
+普通数据修改后点击「保存更改」即可保存。应用自动准备桌面写入连接，无需手动开启严格 SQL 模式或修改数据库全局配置；失败时保留当前输入，保存回复丢失时自动核对结果。包含删除的更改仍确认一次。[编辑行为说明](docs/mysql-data-editing.md)
+
 ![MySQL 工作区：修改和删除草稿、列宽与统一保存](https://github.com/coco-ari/runbook-bridge/releases/download/v2.0.0-beta.2/mysql-workspace.png)
 
 <details>

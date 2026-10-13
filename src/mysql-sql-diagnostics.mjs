@@ -17,7 +17,7 @@ const REASONS = Object.freeze({
   non_transactional:'当前目标表不是 InnoDB 表，本版暂不支持对其写入，无法保证事务回滚。',
   trigger_side_effect:'已发现与本次写入相关的触发器，本版暂不执行带此类副作用的 SQL。',
   cascade_side_effect:'已发现与本次修改或删除相关的入向级联外键，本版暂不执行此类 SQL。',
-  strict_mode:'当前会话未启用 STRICT_TRANS_TABLES 或 STRICT_ALL_TABLES，已停止写入检查。',
+  strict_mode:'暂时无法准备保存连接，请重试。',
 });
 
 export function mysqlSqlUnsafeError(reason) {

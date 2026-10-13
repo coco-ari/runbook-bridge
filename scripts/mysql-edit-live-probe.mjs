@@ -17,6 +17,15 @@ try {
     runtime.sessions.set(resource,session);return session;
   };
   let session=await connect();
+  let configureWrite=async()=>{};
+  runtime.openSqlConnection=async(_plugin,parent)=>{
+    assert.equal(parent,session);
+    const connection=await fixture.connect();
+    const [[mode]]=await parent.connection.query('SELECT @@SESSION.sql_mode AS sqlMode');
+    await connection.query('SET SESSION sql_mode = ?', [mode.sqlMode]);
+    await configureWrite(connection);
+    return {connection,assertActive(){assert.equal(runtime.require(plugin),parent);},close(){connection.destroy();}};
+  };
   const audits=[];
   const editor=new DesktopMysqlEditor(runtime,{appendAudit:async(_project,event)=>{audits.push(event);}});
   const open=sql=>editor.open('live-window',plugin,{sql:sql??'SELECT * FROM items ORDER BY tenant,id'});
@@ -79,23 +88,27 @@ try {
   assert.equal((await read()).length,2);checks++;
   snapshot=await open();
   plan=prepare(snapshot,[{rowId:snapshot.rows[0].rowId,values:{label:'before-commit-disconnect'}}]);
-  const [[connectionId]]=await session.connection.query('SELECT CONNECTION_ID() AS id');
-  const original=session.connection.execute.bind(session.connection);
-  session.connection.execute=async request=>{
-    const result=await original(request);
-    if(request.sql?.startsWith('UPDATE '))await admin.query('KILL CONNECTION '+Number(connectionId.id));
-    return result;
+  configureWrite=async connection=>{
+    const [[connectionId]]=await connection.query('SELECT CONNECTION_ID() AS id');
+    const original=connection.execute.bind(connection);
+    connection.execute=async request=>{
+      const result=await original(request);
+      if(request.sql?.startsWith('UPDATE '))await admin.query('KILL CONNECTION '+Number(connectionId.id));
+      return result;
+    };
   };
   assert.equal((await commit(snapshot,plan)).status,'failed');
   assert.equal((await read())[0].label,'external-change');checks++;
   session=await connect();
   snapshot=await open();
   plan=prepare(snapshot,[{rowId:snapshot.rows[0].rowId,values:{label:'commit-ack-lost'}}]);
-  const originalCommit=session.connection.query.bind(session.connection);
-  session.connection.query=async request=>{
-    const result=await originalCommit(request);
-    if(request.sql==='COMMIT')throw Object.assign(new Error('模拟提交响应丢失'),{code:'ECONNRESET'});
-    return result;
+  configureWrite=async connection=>{
+    const originalCommit=connection.query.bind(connection);
+    connection.query=async request=>{
+      const result=await originalCommit(request);
+      if(request.sql==='COMMIT')throw Object.assign(new Error('模拟提交响应丢失'),{code:'ECONNRESET'});
+      return result;
+    };
   };
   assert.equal((await commit(snapshot,plan)).status,'unknown');
   assert.equal((await read())[0].label,'commit-ack-lost');

@@ -42,7 +42,7 @@ const SQL_REASONS: Readonly<Record<string, readonly [string, string, string]>> =
   non_transactional: ["事务能力检查", "当前版本不支持", "当前版本仅允许写入 InnoDB 基础表，以保证事务回滚。请核对目标表的存储引擎，应用不会自动更改表结构。"],
   trigger_side_effect: ["写入副作用检查", "当前版本不支持", "目标表已存在与本次写入相关的触发器，当前版本暂不执行带此类副作用的 SQL；增加权限不会解除此限制。"],
   cascade_side_effect: ["写入副作用检查", "当前版本不支持", "目标表已存在与本次修改或删除相关的级联外键，当前版本暂不执行此类 SQL；增加权限不会解除此限制。"],
-  strict_mode: ["会话模式检查", "执行条件未满足", "当前会话需要 STRICT_TRANS_TABLES 或 STRICT_ALL_TABLES。请让管理员核对 SQL 模式；应用不会自动修改会话设置。"],
+  strict_mode: ["保存连接准备", "执行条件未满足", "应用自动为桌面写入会话补齐 STRICT_TRANS_TABLES，并保留已有模式。本次初始化未成功，请重试；持续失败时请管理员检查会话设置限制，无需修改数据库全局配置。"],
 }
 
 export function diagnosticFor(error: Pick<PublicError, "code" | "details">, domain: DiagnosticDomain = "connection"): Diagnostic {

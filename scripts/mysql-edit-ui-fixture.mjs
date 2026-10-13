@@ -14,7 +14,8 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
   const {registerMysqlEditIpc}=await readModule("mysql-edit-ipc.mjs");
   let live, connection, rows=Array.from({length:32},(_,index)=>({id:String(9007199254740993n+BigInt(index)),label:'测试记录 '+String(index+1).padStart(2,'0'),optional:index===0?null:'',amount:(index+1)+'.0000',state:'open',quantity:'1',doubled:'2'})),backup;
   const audits=[],writes=[];
-  const network={delays:{},failPreview:false,loseCommitReply:false,failStatus:false,commits:0};
+  const network={delays:{},failPreview:false,loseCommitReply:false,failStatus:false,commits:0,modeSetDenied:false,modeInitializations:0,runningStatusReplies:0};
+  let mockConnect;
   const exportRoot=await fs.mkdtemp(path.join(os.tmpdir(),"mysql-export-ui-"));
   const exportPath=path.join(exportRoot,"selected.sql");
   const names=['id','label','optional','amount','state','quantity','doubled'];
@@ -28,7 +29,7 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
     for(const row of rows)await live.admin.query('INSERT INTO orders(id,label,optional,amount) VALUES (?,?,?,?)',[row.id,row.label,row.optional,row.amount]);
     connection=await live.connect();
   } else {
-    connection={query:async request=>{
+    mockConnect=()=>{let sqlMode='NO_ENGINE_SUBSTITUTION';const result={query:async request=>{
       const sql=request.sql,params=request.values??[];
       if(sql.includes('SELECT TABLE_TYPE'))return [[{TABLE_TYPE:'BASE TABLE',ENGINE:'InnoDB'}]];
       if(sql.includes('information_schema.KEY_COLUMN_USAGE'))return [[{COLUMN_NAME:'id'}]];
@@ -36,7 +37,11 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
       if(sql.includes(' AS effective_grants '))return [[{PRIVILEGE_TYPE:'TRIGGER'}]];
       if(sql.includes('LIMIT 0 FOR UPDATE'))return [[],[]];
       if(sql.includes('information_schema.TRIGGERS')||sql.includes('information_schema.INNODB_FOREIGN'))return [[]];
-      if(sql.includes('@@SESSION.sql_mode'))return [[{sqlMode:'STRICT_TRANS_TABLES'}]];
+      if(sql.includes('@@SESSION.sql_mode'))return [[{sqlMode}]];
+      if(sql==='SET SESSION sql_mode = ?'){
+        if(network.modeSetDenied)throw Object.assign(new Error('fixture-private-mode-error'),{code:'ER_SPECIFIC_ACCESS_DENIED_ERROR'});
+        network.modeInitializations++;sqlMode=params[0];return [{}];
+      }
       if(sql==='START TRANSACTION'){backup=structuredClone(rows);return [{}];}
       if(sql==='ROLLBACK'){rows=backup;return [{}];}
       if(sql==='COMMIT'){backup=null;return [{}];}
@@ -67,11 +72,17 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
       }
       const values=selected.map(row=>projection.map(p=>row[p.source]));
       return [values,projection.map(p=>({name:p.name,orgName:p.source,orgTable:'orders',schema:plugin.target.database}))];
-    },destroy(){}};
+    },destroy(){}};result.execute=result.query;return result;};
+    connection=mockConnect();
   }
   if(!live)connection.execute=connection.query;
   const runtime=new MysqlPluginRuntime({closeRelay:async()=>{}},{});
   const session={connection};
+  runtime.openSqlConnection=async(_plugin,parent)=>{
+    assert.equal(parent,session);
+    const child=live?await live.connect():mockConnect();
+    return {connection:child,assertActive(){assert.equal(runtime.require(plugin),session);},close(){child.destroy();}};
+  };
   runtime.sessions.set([plugin.projectId,plugin.environmentId,plugin.pluginInstanceId].join('/'),session);
   const editor=new DesktopMysqlEditor(runtime,{appendAudit:async(_project,event)=>{audits.push(event);}});
   const scope=Object.fromEntries(['projectId','environmentId','pluginInstanceId'].map(name=>[name,plugin[name]]));
@@ -80,6 +91,7 @@ export async function installMysqlEditUiFixture({ipcMain,registeredChannels,plug
     if(operation==='release')return editor.release(owner,scope,payload.editId);
     if(network.delays[operation])await new Promise(resolve=>setTimeout(resolve,network.delays[operation]));
     if(operation==='status'&&network.failStatus){network.failStatus=false;throw new Error('模拟状态查询失败');}
+    if(operation==='status'&&network.runningStatusReplies>0){network.runningStatusReplies--;return {planId:payload.planId,status:'running'};}
     const result=await editor[operation](owner,plugin,payload,assertOwner);
     if(operation==='commit'){network.commits++;if(network.loseCommitReply){network.loseCommitReply=false;throw new Error('模拟提交回复丢失');}}
     return result;

@@ -141,6 +141,26 @@ test('SQL 子连接断线只通知一次，不失效主连接、兄弟标签或�
   second.close();
 });
 
+test('表格保存使用独立物理连接，成功和失败都释放且不改变主连接', async () => {
+  const f=fixture();
+  for(const failure of [false,true]){
+    const save=f.runtime.desktopEditSession(f.plugin,f.parent,async query=>{
+      await query('START TRANSACTION');
+      if(failure)throw new AppError('MYSQL_EDIT_FAILED','合成保存失败');
+      await query('COMMIT');
+      return 'saved';
+    },{write:true});
+    if(failure)await assert.rejects(save,{code:'MYSQL_EDIT_FAILED'});
+    else assert.equal(await save,'saved');
+    assert.equal(f.runtime.sqlConnections.size,0);
+    assert.equal(f.connections.at(-1).connection.stream.destroyed,true);
+    assert.equal(f.parent.connection.connection.stream.destroyed,false);
+    assert.equal(f.parent.connection.requests.length,0);
+  }
+  assert.equal(f.connections.length,2);
+  assert.equal(f.runtime.require(f.plugin),f.parent);
+});
+
 for (const action of ['disconnect','forceDisconnect','invalidateSession','closeAll']) {
   test(`${action} 同时关闭 SQL 子连接，回调抛错也不影响其他标签清理`, async () => {
     const f = fixture();

@@ -376,21 +376,28 @@ export class MysqlPluginRuntime extends EventEmitter {
     }
   }
 
-  async desktopEditSession(plugin, expectedSession, operation) {
+  async desktopEditSession(plugin, expectedSession, operation, {write = false} = {}) {
     const session = this.require(plugin);
     if (expectedSession && expectedSession !== session) throw new AppError('MYSQL_EDIT_STALE', '数据库连接已变化，请重新加载后编辑。');
-    // 整个编辑事务占用同一插件的串行名额，健康检查和普通查询不能插入事务。
+    // 整个编辑事务占用同一插件的串行名额；写入使用独立连接，避免改变 Agent 会话。
     return this.readScheduler.run(key(plugin), 1, async () => {
       if (this.require(plugin) !== session) throw new AppError('MYSQL_EDIT_STALE', '数据库连接已变化，请重新加载后编辑。');
+      let child;
       const query = (sql, values = [], options = {}) => {
+        child?.assertActive();
         // 事务控制使用固定无参数语句；业务值始终走服务端预处理，兼容 NO_BACKSLASH_ESCAPES。
         const method = ["START TRANSACTION","COMMIT","ROLLBACK"].includes(sql) ? "query" : "execute";
-        return session.connection[method]({sql,values,timeout:Math.min(plugin.limits.timeoutMs,15000),...options});
+        return (child?.connection ?? session.connection)[method]({sql,values,timeout:Math.min(plugin.limits.timeoutMs,15000),...options});
       };
-      try { return await operation(query, session); }
+      try {
+        if (write) child = await this.openSqlConnection(plugin, session);
+        return await operation(query, session);
+      }
       catch (error) {
         if (invalidatesSession(error)) await this.invalidateSession(plugin,session,mysqlError(error));
         throw error;
+      } finally {
+        child?.close();
       }
     });
   }

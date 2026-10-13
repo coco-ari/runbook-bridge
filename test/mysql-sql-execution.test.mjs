@@ -37,7 +37,7 @@ function fixture(t, options = {}) {
       const interrupted = deferred();
       void interrupted.promise.catch(() => undefined);
       const child = {
-        id:children.length + 1, active:true, transaction:null, closes:0, onLost:null,
+        id:children.length + 1, active:true, transaction:null, closes:0, onLost:null, sqlMode:options.sqlMode ?? 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION',
         assertActive() { if (!this.active) throw new AppError('MYSQL_SQL_SESSION_CLOSED','Synthetic child is closed.'); },
         close() { close(new AppError('MYSQL_SQL_SESSION_CLOSED','Synthetic child is closed.'),false); },
         lose(error = Object.assign(new Error('synthetic-private-driver-error'),{code:'ECONNRESET'})) { close(error,true); },
@@ -71,7 +71,8 @@ function fixture(t, options = {}) {
             return [{affectedRows:0},[]];
           }
           if (sql === 'ROLLBACK') { child.transaction = null; return [{affectedRows:0},[]]; }
-          if (sql.includes('@@SESSION.sql_mode')) return [[{sqlMode:options.sqlMode ?? 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION'}],[]];
+          if (sql.includes('@@SESSION.sql_mode')) return [[{sqlMode:child.sqlMode}],[]];
+          if (sql === 'SET SESSION sql_mode = ?') { if (!options.ignoreModeSet) child.sqlMode = request.values[0]; return [{affectedRows:0},[]]; }
           if (sql.includes('SELECT TABLE_TYPE, ENGINE')) return [options.tableRows ?? [{TABLE_TYPE:'BASE TABLE',ENGINE:options.engine ?? 'InnoDB'}],[]];
           if (sql.includes(' AS effective_grants ')) {
             if (options.grantsError) throw Object.assign(new Error('synthetic-private-metadata-error'),{code:'ER_TABLEACCESS_DENIED_ERROR'});
@@ -129,6 +130,34 @@ function fixture(t, options = {}) {
     },
   };
 }
+
+test('SQL 写入自动补齐当前标签的严格模式并在新连接上重新初始化', async t => {
+  const f=fixture(t,{sqlMode:'NO_ENGINE_SUBSTITUTION,NO_BACKSLASH_ESCAPES'});
+  assert.equal((await f.run(select)).status,'success');
+  assert.equal(f.requests.some(item=>item.sql.startsWith('SET')),false,'纯查询不设置写入模式');
+  assert.equal((await f.run(insert(1))).status,'success');
+  assert.equal((await f.run(insert(2))).status,'success');
+  assert.equal((await f.run(insert(3),'atomic','sql-b')).status,'success');
+  const settings=f.requests.filter(item=>item.sql.startsWith('SET'));
+  assert.equal(settings.length,2,'同一连接不重复追加，每个新连接独立初始化');
+  assert.notEqual(settings[0].childId,settings[1].childId);
+  for(const setting of settings){
+    assert.equal(setting.sql,'SET SESSION sql_mode = ?');
+    assert.deepEqual(setting.values,['NO_ENGINE_SUBSTITUTION,NO_BACKSLASH_ESCAPES,STRICT_TRANS_TABLES']);
+  }
+  assert.deepEqual(f.rows().map(row=>row.id),[1,2,3]);
+});
+
+test('SQL 会话初始化被拒绝时没有业务写入且错误不包含驱动原文', async t => {
+  const f=fixture(t,{sqlMode:'',beforeQuery:request=>{
+    if(request.sql.startsWith('SET'))throw Object.assign(new Error('synthetic-private-mode-denied'),{code:'ER_SPECIFIC_ACCESS_DENIED_ERROR'});
+  }});
+  const result=await f.run(insert(1));
+  assert.equal(result.status,'error');
+  assert.deepEqual(result.error.details,{reason:'strict_mode'});
+  assert.equal(f.requests.some(item=>/^(START TRANSACTION|INSERT)/u.test(item.sql)),false);
+  assert.doesNotMatch(JSON.stringify(result),/synthetic-private-mode-denied/u);
+});
 
 test('整批事务仅在所有语句成功后提交，并逐条返回提交状态', async t => {
   const f = fixture(t);
@@ -435,7 +464,7 @@ for (const [name,configuration,reason] of [
   ['缺少触发器可见权限',{grants:[]},'trigger_visibility'],
   ['触发器权限查询失败',{grantsError:true},'trigger_visibility'],
   ['相关触发器',{triggers:[{EVENT_MANIPULATION:'INSERT'}]},'trigger_side_effect'],
-  ['非严格 SQL 模式',{sqlMode:'NO_ENGINE_SUBSTITUTION'},'strict_mode'],
+  ['写入连接初始化未生效',{sqlMode:'NO_ENGINE_SUBSTITUTION',ignoreModeSet:true},'strict_mode'],
 ]) {
   test(`${name} 在业务写入前拒绝并回滚`, async t => {
     const f = fixture(t,configuration);

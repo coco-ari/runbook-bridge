@@ -3,7 +3,8 @@ import { AppError } from './errors.mjs';
 import { prepareMysqlSqlScript, mysqlSqlRequest } from './desktop-mysql-sql-policy.mjs';
 import { assertMysqlSqlTables } from './mysql-sql-write-policy.mjs';
 import { capRows } from './mysql-results.mjs';
-import { mysqlSqlPublicError, mysqlSqlUnsafeError } from './mysql-sql-diagnostics.mjs';
+import { mysqlSqlPublicError } from './mysql-sql-diagnostics.mjs';
+import { ensureMysqlWriteSession } from './mysql-write-session.mjs';
 
 const SCOPE = ['projectId', 'environmentId', 'pluginInstanceId'];
 const MODES = ['atomic', 'autocommit', 'manual'];
@@ -178,8 +179,7 @@ export class DesktopMysqlSql {
       await this.connection(s, assertOwner);
       const q = (sql, values) => this.query(s, sql, values);
       if (plan.items.some(item => item.write)) {
-        const [[mode]] = await q('SELECT @@SESSION.sql_mode AS sqlMode');
-        if (!/(?:^|,)STRICT_(?:TRANS|ALL)_TABLES(?:,|$)/u.test(mode.sqlMode ?? '')) throw mysqlSqlUnsafeError('strict_mode');
+        await ensureMysqlWriteSession(q);
       }
       if (s.mode === 'atomic') { await this.begin(s); await assertMysqlSqlTables(q, plugin.target.database, plan.items); }
       for (let index = 0; index < plan.items.length; index++) {

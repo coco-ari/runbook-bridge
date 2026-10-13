@@ -10,13 +10,13 @@ const plugin={...scope,revision:1,pluginType:'mysql',displayName:'测试数据�
 const column=(name,type='varchar',overrides={})=>({name,type:type==='varchar'?'varchar(100)':type,dataType:type,key:'',extra:'',nullable:true,maxLength:100,precision:20,scale:4,datetimePrecision:6,...overrides});
 const schema={table:'items',columns:[column('id','bigint',{key:'PRI'}),column('label'),column('amount','decimal')]};
 
-function harness({failure,auditFailure,metadata=schema,primaryNames,triggers=[],cascades=[]}={}){
+function harness({failure,auditFailure,metadata=schema,primaryNames,triggers=[],cascades=[],sqlMode='STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION',ignoreModeSet=false}={}){
   let values=[['9007199254740993','first','1.0000'],['9007199254740994','second','2.0000']],backup=null;
-  const statements=[],audits=[];
+  const statements=[],audits=[],children=[];
   let clock=1000,gate=null;
   const runtime=new MysqlPluginRuntime({closeRelay:async()=>{}},{});
-  const session={connection:{query:async request=>{
-    const sql=request.sql;statements.push({sql,values:request.values});
+  const makeConnection=(kind)=>{let mode=sqlMode;return {kind,closed:false,query:async request=>{
+    const sql=request.sql;statements.push({sql,values:request.values,connection:kind});
     if(gate)await gate(sql);
     if(failure)await failure(sql);
     if(sql.includes('SELECT TABLE_TYPE'))return [[{TABLE_TYPE:'BASE TABLE',ENGINE:'InnoDB'}]];
@@ -26,7 +26,8 @@ function harness({failure,auditFailure,metadata=schema,primaryNames,triggers=[],
       if(sql.includes('LIMIT 0 FOR UPDATE'))return [[],[]];
       if(sql.includes('information_schema.TRIGGERS'))return [triggers];
     if(sql.includes('information_schema.INNODB_FOREIGN'))return [cascades];
-    if(sql.includes('@@SESSION.sql_mode'))return [[{sqlMode:'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION'}]];
+    if(sql.includes('@@SESSION.sql_mode'))return [[{sqlMode:mode}]];
+    if(sql==='SET SESSION sql_mode = ?'){if(!ignoreModeSet)mode=request.values[0];return [{}];}
     if(sql==='START TRANSACTION'){backup=structuredClone(values);return [{affectedRows:0}];}
     if(sql==='ROLLBACK'){values=backup;return [{affectedRows:0}];}
     if(sql==='COMMIT'){backup=null;return [{affectedRows:0}];}
@@ -48,11 +49,18 @@ function harness({failure,auditFailure,metadata=schema,primaryNames,triggers=[],
     }
     const subset=sql.includes('FOR UPDATE')||sql.includes(' WHERE '+quoteMysqlName('id')+' <=>')?values.filter(row=>row[0]===request.values[0]):values;
     return [structuredClone(subset),metadata.columns.map(c=>({name:c.name,orgName:c.name,orgTable:'items',schema:'fixture'}))];
-  },destroy:()=>{}}};
+  },destroy(){this.closed=true;}};};
+  const session={connection:makeConnection('parent')};
   session.connection.execute=session.connection.query;
+  runtime.openSqlConnection=async(_plugin,parent)=>{
+    assert.equal(parent,session);
+    const connection=makeConnection('write-'+children.length);
+    connection.execute=connection.query;children.push(connection);
+    return {connection,assertActive:()=>assert.equal(connection.closed,false),close:()=>connection.destroy()};
+  };
   runtime.sessions.set('fixture-project/fixture-environment/fixture-mysql',session);
   const editor=new DesktopMysqlEditor(runtime,{appendAudit:async(_project,event)=>{audits.push(event);if(auditFailure)throw new Error('fixture audit failure');}},{now:()=>clock});
-  return {editor,runtime,statements,audits,session,rows:()=>values,advance:()=>{clock+=2000000;},mutate:fn=>{values=fn(values);},gate:fn=>{gate=fn;},
+  return {editor,runtime,statements,audits,session,children,rows:()=>values,advance:()=>{clock+=2000000;},mutate:fn=>{values=fn(values);},gate:fn=>{gate=fn;},
     open:()=>editor.open('window-a',plugin,{sql:'SELECT * FROM items'})};
 }
 
@@ -94,6 +102,68 @@ test('快照、确认计划和参数化保存绑定目标行，重复提交不�
   assert.equal(h.statements.filter(s=>s.sql.startsWith('UPDATE')).length,1);
   assert.doesNotMatch(JSON.stringify(h.audits),/new ' label|篡改前端草稿|19.0001/u);
   assert.ok(h.statements.filter(s=>s.sql.startsWith('UPDATE')).every(s=>!s.sql.includes("new ' label")));
+});
+
+test('普通保存自动补齐独立写入连接模式，保留原模式且不改变查询连接',async()=>{
+  for(const sqlMode of ['', 'NO_ENGINE_SUBSTITUTION,NO_BACKSLASH_ESCAPES', 'STRICT_ALL_TABLES,ANSI_QUOTES']){
+    const h=harness({sqlMode}),opened=await h.open();
+    for(const label of ['第一次保存','第二次保存']){
+      const plan=h.editor.prepare('window-a',plugin,{editId:opened.editId,changes:[{rowId:opened.rows[0].rowId,values:{label}}]});
+      assert.equal((await h.editor.commit('window-a',plugin,{editId:opened.editId,planId:plan.planId})).status,'success');
+      assert.equal(h.rows()[0][1],label);
+    }
+    const settings=h.statements.filter(item=>item.sql.startsWith('SET'));
+    assert.equal(settings.length,sqlMode.includes('STRICT_ALL_TABLES')?0:2);
+    for(const setting of settings){
+      assert.equal(setting.sql,'SET SESSION sql_mode = ?');
+      assert.deepEqual(setting.values,[[sqlMode,'STRICT_TRANS_TABLES'].filter(Boolean).join(',')]);
+      assert.notEqual(setting.connection,'parent');
+      const start=h.statements.findIndex(item=>item.connection===setting.connection&&item.sql==='START TRANSACTION');
+      assert.ok(start>h.statements.indexOf(setting));
+    }
+    assert.equal(h.statements.some(item=>item.connection==='parent'&&/^(SET|UPDATE|START|COMMIT)/u.test(item.sql)),false);
+    assert.equal(h.children.length,2);
+    assert.ok(h.children.every(child=>child.closed));
+    assert.equal(h.session.connection.closed,false);
+  }
+});
+
+test('会话准备失败或未生效时停止写入并释放连接，不暴露驱动内容',async()=>{
+  for(const options of [
+    {ignoreModeSet:true},
+    {failure:sql=>{if(sql.startsWith('SET'))throw new Error('fixture-private-mode-error');}},
+    {sqlMode:null},
+  ]){
+    const h=harness({sqlMode:'NO_ENGINE_SUBSTITUTION',...options}),opened=await h.open(),before=structuredClone(h.rows());
+    const plan=h.editor.prepare('window-a',plugin,{editId:opened.editId,changes:[{rowId:opened.rows[0].rowId,values:{label:'保留草稿'}}]});
+    const result=await h.editor.commit('window-a',plugin,{editId:opened.editId,planId:plan.planId});
+    assert.equal(result.status,'failed');
+    assert.equal(result.error.details.reason,'strict_mode');
+    assert.equal(result.error.message,'暂时无法准备保存连接，请重试。');
+    assert.equal(h.statements.some(item=>/^(START TRANSACTION|UPDATE)/u.test(item.sql)),false);
+    assert.deepEqual(h.rows(),before);
+    assert.ok(h.children.every(child=>child.closed));
+    assert.doesNotMatch(JSON.stringify(result),/fixture-private|NO_ENGINE_SUBSTITUTION/u);
+  }
+});
+
+test('数据库拒绝写入时提供固定简明原因，失败后可修正并重新保存',async()=>{
+  for(const [code,message] of [['ER_DUP_ENTRY','重复'],['ER_TABLEACCESS_DENIED_ERROR','权限'],['ER_DATA_TOO_LONG','长度']]){
+    let denied=true;
+    const h=harness({failure:sql=>{if(denied&&sql.startsWith('UPDATE'))throw Object.assign(new Error('fixture-private-driver-error'),{code});}}),opened=await h.open();
+    const payload={editId:opened.editId,changes:[{rowId:opened.rows[0].rowId,values:{label:'修正后保存'}}]};
+    const plan=h.editor.prepare('window-a',plugin,payload);
+    const result=await h.editor.commit('window-a',plugin,{editId:opened.editId,planId:plan.planId});
+    assert.equal(result.status,'failed');
+    assert.ok(result.error.message.includes(message));
+    assert.equal(h.rows()[0][1],'first');
+    assert.ok(h.statements.some(item=>item.sql==='ROLLBACK'));
+    assert.doesNotMatch(JSON.stringify(result),/fixture-private/u);
+    denied=false;
+    const retry=h.editor.prepare('window-a',plugin,payload);
+    assert.equal((await h.editor.commit('window-a',plugin,{editId:opened.editId,planId:retry.planId})).status,'success');
+    assert.equal(h.rows()[0][1],'修正后保存');
+  }
 });
 
 test('外部修改或删除目标行使整批失败，返回冲突行且不覆盖数据',async()=>{
