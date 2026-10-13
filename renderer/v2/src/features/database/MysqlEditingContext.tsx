@@ -5,20 +5,23 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 
 interface GuardState { readonly dirty: boolean; readonly busy: boolean; readonly uncertain?: boolean; readonly transaction?: boolean; readonly discard?: () => void | Promise<void> }
 interface EditingContext {
+  readonly closing: boolean
   readonly hasEditing: boolean
   setEditing(key: string, value: boolean): void
   readonly connectionEpoch: number
   readonly connected: boolean
   register(key: string, inspect: () => GuardState): () => void
-  protect(action: () => void, keys?: readonly string[], options?: { preserveTransactions?: boolean; preserveDrafts?: boolean }): void
+  protect(action: () => void, keys?: readonly string[], options?: { preserveTransactions?: boolean; preserveDrafts?: boolean; confirmDiscard?: boolean }): void
 }
 const Context = createContext<EditingContext>({
-  connectionEpoch: 0, hasEditing: false, setEditing: () => {}, connected: true,
+  connectionEpoch: 0, closing: false, hasEditing: false, setEditing: () => {}, connected: true,
   register: () => () => {},
   protect: action => action(),
 })
 
 export function MysqlEditingProvider({ connected, connectionEpoch, onEditingChange, children }: { readonly connected: boolean; readonly connectionEpoch: number; readonly onEditingChange: (value: boolean) => void; readonly children: ReactNode }) {
+  const releasing = useRef(false)
+  const [closing, setClosing] = useState(false)
   const guards = useRef(new Map<string, () => GuardState>())
   const [editing, setEditing] = useState(new Set<string>())
   const [pending, setPending] = useState<{ action: () => void; count: number; uncertain: boolean; transaction: boolean; discard: () => Promise<void> } | null>(null)
@@ -29,16 +32,25 @@ export function MysqlEditingProvider({ connected, connectionEpoch, onEditingChan
       guards.current.set(key, inspect)
       return () => { if (guards.current.get(key) === inspect) guards.current.delete(key) }
     },
-    protect(action: () => void, keys?: readonly string[], options?: { preserveTransactions?: boolean; preserveDrafts?: boolean }) {
+    protect(action: () => void, keys?: readonly string[], options?: { preserveTransactions?: boolean; preserveDrafts?: boolean; confirmDiscard?: boolean }) {
+      if (releasing.current) return
       const entries = [...guards.current].filter(([key]) => !keys || keys.includes(key)).map(([, inspect]) => inspect()).filter(entry => (!options?.preserveTransactions || !entry.transaction) && (!options?.preserveDrafts || entry.transaction))
       if (entries.some(entry => entry.busy)) { toast.info("正在读取或保存数据，请等待结果。"); return }
       const count = entries.filter(entry => entry.dirty).length
-      if (count) setPending({ action, count, uncertain: entries.some(entry => entry.uncertain), transaction: entries.some(entry => entry.transaction && entry.dirty), discard: async () => { for (const entry of entries) await entry.discard?.() } })
+      if (options?.confirmDiscard === false) {
+        releasing.current = true
+        setClosing(true)
+        void (async () => {
+          try { for (const entry of entries) await entry.discard?.(); action() }
+          catch (error) { toast.error(error instanceof Error ? error.message : "释放事务失败，请重试。") }
+          finally { releasing.current = false; setClosing(false) }
+        })()
+      } else if (count) setPending({ action, count, uncertain: entries.some(entry => entry.uncertain), transaction: entries.some(entry => entry.transaction && entry.dirty), discard: async () => { for (const entry of entries) await entry.discard?.() } })
       else action()
     },
   }), [])
   useEffect(() => { onEditingChange(editing.size > 0); return () => onEditingChange(false) }, [editing.size, onEditingChange])
-  const context = { ...methods, connected, connectionEpoch, hasEditing: editing.size > 0 }
+  const context = { ...methods, closing, connected, connectionEpoch, hasEditing: editing.size > 0 }
   return <Context.Provider value={context}>
     {children}
     <Dialog open={Boolean(pending)} onOpenChange={open => { if (!open && !discarding) setPending(null) }}>

@@ -183,7 +183,6 @@ module.exports = async function ({win,click,fill,waitFor,testId,active,openKey,m
   await waitFor(win,"!document.querySelector('.redis-tab-panel:not([hidden]) [data-testid=redis-value-editor]')",'提交应答丢失自动确认结果后恢复浏览');
   assert.equal(state.writeCommits,beforeDelete+1);
   await click(win,testId('redis-workspace-close'));
-  await click(win,testId('redis-workspace-confirm-close'));
   await waitFor(win,"!document.querySelector('[data-testid=redis-workspace]')",'明确关闭才清除工作区');
   process.stdout.write('Redis 断重连通过：标签、搜索、草稿保留，游标和迟到读取失效，旧确认取消，未知写入不重试。\n');
 };

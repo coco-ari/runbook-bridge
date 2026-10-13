@@ -357,8 +357,7 @@ async function selectPlugin(win,pluginInstanceId) {
   const current=await win.webContents.executeJavaScript("document.querySelector('[data-testid=mysql-database-workspace] h1')?.textContent",true);
   if(current && current!==target.displayName) {
     await click(win,testId('mysql-workspace-close'));
-    await click(win,testId('mysql-workspace-confirm-close'));
-    if (await isVisible(win,'mysql-edit-discard-confirm')) await click(win,testId('mysql-edit-discard-confirm'));
+    await waitFor(win,"!document.querySelector('[data-testid=mysql-full-window-workspace]:not([hidden])')",'工作区直接关闭');
     await waitFor(win,"!document.querySelector('[data-testid=mysql-full-window-workspace]')",'切换数据库前明确关闭旧工作区');
   }
   await selectPluginDetails(win,pluginInstanceId);

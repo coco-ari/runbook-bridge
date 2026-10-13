@@ -140,8 +140,7 @@ module.exports = async function ({win,fill,click,waitFor,textContains,testId,scr
   await require('./workspace-layout-ui.cjs')({evaluate,until:(expression,label)=>waitFor(win,expression,label),win,root:'[data-testid=mysql-database-workspace]'});
   state.extraTables = false;
   await click(win,testId('mysql-workspace-close'));
-  await click(win,testId('mysql-workspace-confirm-close'));
-  if (await evaluate("Boolean(document.querySelector('[data-testid=mysql-edit-discard-confirm]'))")) await click(win,testId('mysql-edit-discard-confirm'));
+  await waitFor(win,"!document.querySelector('[data-testid=mysql-full-window-workspace]:not([hidden])')",'工作区直接关闭');
   await click(win,testId('plugin-workspace-open'));
   assert.equal(await evaluate("document.querySelectorAll('[data-testid=mysql-table-document-tab]').length"),0,'关闭工作区清除全部表标签');
   state.allowDisconnect = true;

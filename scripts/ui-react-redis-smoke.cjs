@@ -921,7 +921,6 @@ async function run() {
     await click(win, active('redis-refresh-key'));
     await waitFor(win, 'document.querySelector(".redis-tab-panel:not([hidden])").textContent.includes("正在刷新内容")', '挂起读取');
     await click(win, testId('redis-workspace-close'));
-    await click(win, testId('redis-workspace-confirm-close'));
     const deadline = Date.now() + 5000;
     while (!hold.release && Date.now() < deadline) await wait(20);
     assert.ok(hold.release); hold.release(); await wait(100);
@@ -932,6 +931,15 @@ async function run() {
     await fill(win, testId('redis-search-input'), '');
     await pressSearch('ArrowDown');
     assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector("[data-testid=redis-search-history]"))', true), false, '关闭工作区后历史清除');
+    await click(win,testId('redis-create-key'));
+    await waitFor(win,'document.querySelector("[data-testid=redis-workspace]").textContent.includes("新增 Key")','创建未保存草稿');
+    const commitsBeforeClose=state.writeCommits;
+    await click(win,testId('redis-workspace-close'));
+    await waitFor(win,'!document.querySelector("[data-testid=redis-workspace]")','Redis 草稿直接丢弃并关闭');
+    assert.equal(await win.webContents.executeJavaScript('Boolean(document.querySelector("[role=dialog]"))',true),false,'Redis 草稿关闭不弹出确认');
+    assert.equal(state.writeCommits,commitsBeforeClose,'放弃新增草稿不写入 Redis');
+    await click(win,testId('plugin-workspace-open'));
+    await waitFor(win,'document.querySelector(\'[data-redis-key="cache:text"]\')?.getClientRects().length > 0','关闭后重新打开');
     plugin.patterns = [{ ...plugin.patterns[0], pattern: '*' }];
     plugin.revision++; win.webContents.send('v2:workspace-changed', { ...scope, type: 'plugin-updated' });
     await waitFor(win, '!document.querySelector("[data-testid=redis-workspace]")', '配置修订销毁旧会话');

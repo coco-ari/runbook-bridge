@@ -7,10 +7,11 @@ import { workspaceConnectionPresentation } from "@/components/workspace/workspac
 import { WorkspaceBackButton, WorkspaceHeaderActions } from "@/components/workspace/WorkspaceControls"
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { ArrowsDownUp, DownloadSimple, CaretDown, CaretUp, CheckCircle, MapPin, Pause, SpinnerGap, Trash, TerminalWindow, UploadSimple, X } from "@phosphor-icons/react"
+import { toast } from "sonner"
 import { usePanelRef } from "react-resizable-panels"
 import type { AiOpsV2Api, DockerContainer, EnvironmentRuntime, PluginScope, ServerDirectoryEntry, ServerUploadJob, ServerUploadReview } from "@/bridge/ai-ops-v2"
 import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog } from "@/components/ui/dialog"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { usePluginConnection } from "@/features/connections/use-plugin-connection"
 import { pluginDraftFromRecord, type PluginConfigurationRecord } from "@/features/plugins/plugin-types"
@@ -101,12 +102,16 @@ export function ServerWorkspace({ backLabel = "返回服务器详情", api, entr
   const [invalidatedPath, setInvalidatedPath] = useState<Readonly<{ path: string; id: number }> | null>(null)
   const [refreshEpoch, setRefreshEpoch] = useState(0)
   const [refreshPaths, setRefreshPaths] = useState<readonly string[]>([])
-  const [closeDialog, setCloseDialog] = useState(false)
+  const requestClose = () => {
+    if (jobs.some(job => ACTIVE_TRANSFER_STATUSES.has(job.status))) { toast.info("还有传输任务进行中，请等传输结束或取消任务后再关闭工作区。"); return }
+    if (fileEditing.busy) { toast.info("文件正在读取或保存，请完成后再关闭。"); return }
+    onClose()
+  }
   const configureWorkspace = useWorkspaceConfigure()
   useWorkspaceNavigationActions({navigate: (action, reason) => {
     if (reason === "configure" && (fileEditing.dirty || fileEditing.busy)) { setUploadError("请先保存或放弃文件更改，再修改连接配置。"); return }
     action()
-  }, close: () => setCloseDialog(true)})
+  }, close: requestClose})
   const mountedRef = useRef(true)
   const previewGenerationRef = useRef(0)
   const jobsRef = useRef(jobs)
@@ -402,7 +407,7 @@ export function ServerWorkspace({ backLabel = "返回服务器详情", api, entr
         onReconnect={() => {
           reconnectFocusRef.current = document.activeElement as HTMLElement | null
           void connection.retry()
-        }} onDisconnect={() => { void connection.disconnect() }} onClose={() => setCloseDialog(true)} prefix="server-workspace" closeLabel="关闭工作区" closeTitle="关闭工作区并结束终端" />
+        }} onDisconnect={() => { void connection.disconnect() }} onClose={requestClose} prefix="server-workspace" closeLabel="关闭工作区" closeTitle="关闭工作区并结束终端" />
     </header>
     <ServerConnectionNotice connection={terminalState} presentation={workspaceConnectionPresentation(connection.state, terminalState.phase)} error={connection.state.error?.message ?? ""} onSettings={configureWorkspace ?? onBack} />
     <RuntimeHostKeyDialog state={connection.state} onReject={connection.rejectHostKey} onTrust={connection.trustHostKey} returnFocusRef={reconnectFocusRef} testId="workspace-host-key-confirmation" />
@@ -442,6 +447,5 @@ export function ServerWorkspace({ backLabel = "返回服务器详情", api, entr
     <Dialog open={Boolean(preparation)} onOpenChange={(value) => { if (!value && !uploadActionRef.current) cancelPreparation() }}>
       {preparation ? <ServerUploadDialog preparation={preparation} serverName={entry.plugin.displayName} environmentName={entry.environmentName} identity={sshIdentity} busy={uploadConfirming || Boolean(uploadRevising)} confirming={uploadConfirming} removing={uploadRevising === "removing"} connected={connected} needsReview={uploadNeedsReview} overwrite={overwrite} error={uploadError} onOverwrite={setOverwrite} onRevise={reviseUpload} onConfirm={() => { void confirmUpload() }} onCancel={cancelPreparation} onReselect={() => { const target = preparation.sourcePath ?? preparation.path; cancelPreparation(); void pickUpload(target) }} /> : null}
     </Dialog>
-    <Dialog open={closeDialog} onOpenChange={setCloseDialog}><DialogContent><DialogHeader><DialogTitle>关闭服务器工作区</DialogTitle><DialogDescription>{activeJobs.length ? "还有传输任务进行中。返回详情可以保留所有任务；请等传输结束或取消任务后再关闭工作区。" : fileEditing.busy ? "文件正在读取或保存，请完成后再关闭。" : fileEditing.dirty ? "未保存的文件草稿和会话内恢复版本会丢失。已保存的远端内容不会撤销。" : "将结束这个工作区的终端会话并清除显示记录。服务器连接保持。"}</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => { setCloseDialog(false); onBack() }}>返回详情并保留</Button><Button disabled={activeJobs.length > 0 || fileEditing.busy} onClick={onClose}>{fileEditing.dirty ? "放弃草稿并关闭" : "关闭工作区"}</Button></DialogFooter></DialogContent></Dialog>
   </div>
 }

@@ -514,7 +514,6 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
         await waitUi('document.querySelector("[data-testid=redis-scan-status]")?.textContent === "搜索完成"', '自动搜索完成');
         await waitUi('document.querySelector(' + JSON.stringify('[data-redis-key="cache:fixture"]') + ')', '跨空批次找到 Key');
         await clickUi('[data-testid=redis-workspace-close]');
-        await clickUi('[data-testid=redis-workspace-confirm-close]');
         await waitUi('!document.querySelector("[data-testid=redis-workspace]")', '关闭清空');
         await success('disconnectPlugin', redisScope);
         const disconnected = await invoke('redisWorkspaceScan', {...redisScope,patternId});

@@ -10,7 +10,6 @@ import { workspaceConnectionNotice, workspaceConnectionPresentation } from "@/co
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { WorkspaceBackButton, WorkspaceHeaderActions, WorkspaceIconButton } from "@/components/workspace/WorkspaceControls"
 import { WorkspaceLayoutControls, WorkspacePanelToggle, WorkspaceTabBar } from "@/components/workspace/WorkspaceLayoutControls"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { ArrowClockwise, CaretDown, Code, Database, MagnifyingGlass, Plugs, ShieldCheck, Table as TableIcon, WarningCircle, X } from "@phosphor-icons/react"
 import { toast } from "sonner"
 import { MysqlEditableResults } from "./MysqlEditableResults"
@@ -76,8 +75,8 @@ function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, envi
   const connection = usePluginConnection({ api, plugin: scope, runtime })
   const reconnectFocus = useRef<HTMLElement | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
-  const [closing, setClosing] = useState(false)
-  useWorkspaceNavigationActions({navigate: (action, reason) => { if (reason === "configure") editing.protect(action); else action() }, close: () => setClosing(true)})
+  const requestClose = () => editing.protect(onClose, undefined, { confirmDiscard: false })
+  useWorkspaceNavigationActions({navigate: (action, reason) => { if (reason === "configure") editing.protect(action); else action() }, close: requestClose})
   async function disconnect() {
     if (disconnecting) return
     setDisconnecting(true)
@@ -100,14 +99,13 @@ function WorkspaceHeader({ plugin, connected, onBack, onClose, projectName, envi
         onReconnect={() => {
           reconnectFocus.current = document.activeElement as HTMLElement | null
           void connection.connect()
-        }} onDisconnect={() => editing.protect(() => void disconnect(), undefined, { preserveDrafts: true })} onClose={() => setClosing(true)} prefix="mysql-workspace" closeLabel="关闭数据库工作区" closeTitle="关闭工作区并清除查询" />
+        }} onDisconnect={() => editing.protect(() => void disconnect(), undefined, { preserveDrafts: true })} onClose={requestClose} prefix="mysql-workspace" closeLabel="关闭数据库工作区" closeTitle="关闭工作区并清除查询" />
     </header>
     {!connected ? <div className="mysql-edit-message" role="status" data-testid="mysql-workspace-disconnected">
       <span>{workspaceConnectionNotice(workspaceConnectionPresentation(connection.state), "SQL 和表标签已保留，可继续编辑 SQL。")}</span>
       {connection.state.error ? <DiagnosticDetails error={connection.state.error} domain="operation" /> : null}
     </div> : null}
     <RuntimeHostKeyDialog state={connection.state} onReject={connection.rejectHostKey} onTrust={connection.trustHostKey} returnFocusRef={reconnectFocus} testId="mysql-workspace-host-key-confirmation" />
-    <Dialog open={closing} onOpenChange={setClosing}><DialogContent><DialogHeader><DialogTitle>关闭数据库工作区</DialogTitle><DialogDescription>将清除当前工作区的 SQL、筛选条件和查询结果。数据库连接保持。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={() => { setClosing(false); onBack() }}>返回详情并保留</Button><Button data-testid="mysql-workspace-confirm-close" onClick={() => { setClosing(false); editing.protect(onClose) }}>关闭工作区</Button></DialogFooter></DialogContent></Dialog>
   </>
 }
 
@@ -293,12 +291,13 @@ function MysqlConnectedWorkspace({ api, scope, plugin, projectName, environmentN
 }
 
 function MysqlWorkspaceContent(props: MysqlDatabaseWorkspaceProps) {
+  const { closing } = useMysqlEditingGuard()
   const { api, scope, plugin, connected } = props
   const database = mysqlDatabaseName(plugin)
   const matchesScope = mysqlWorkspaceMatchesScope(scope, plugin)
   const ready = connected && plugin.pluginType === "mysql" && Boolean(database) && matchesScope
   return (
-    <section aria-label="数据库工作区" className="mysql-workspace h-full min-h-0" data-testid="mysql-database-workspace">
+    <section inert={closing} aria-busy={closing} aria-label="数据库工作区" className="mysql-workspace h-full min-h-0" data-testid="mysql-database-workspace">
       <WorkspaceHeader {...props} connected={ready} />
 
       {matchesScope && plugin.pluginType === "mysql" && Boolean(database) ? (

@@ -142,8 +142,7 @@ export function RedisWorkspace({ backLabel = "返回 Redis 详情", api, scope, 
   const [searchMode, setSearchMode] = useState<RedisSearchMode>("keyword")
   const [searchHistory, setSearchHistory] = useState<readonly RedisSearchEntry[]>([])
   const searchScope = JSON.stringify([scope.projectId, scope.environmentId, scope.pluginInstanceId, plugin.revision, plugin.target?.db, state.patternId])
-  const [closing, setClosing] = useState(false)
-  const requestClose = () => { if (editing.deletion?.uncertain || Object.values(editing.drafts).some(draft => draft.uncertain)) editing.protect(() => setClosing(true)); else if (!editing.busy) setClosing(true) }
+  const requestClose = () => editing.protect(onClose, undefined, false, false)
   useWorkspaceNavigationActions({navigate: (action, reason) => { if (reason === "configure") editing.protect(action); else action() }, close: requestClose})
   const [disconnecting, setDisconnecting] = useState(false)
   const [sidebar, setSidebar] = useState(true)
@@ -276,9 +275,6 @@ export function RedisWorkspace({ backLabel = "返回 Redis 详情", api, scope, 
       </ResizablePanelGroup>
     </div>
     <footer className="redis-workspace-footer"><span className="shrink-0"><ShieldCheck size={12} />固定 DB {String(plugin.target?.db ?? 0)}</span><div className="min-w-0 flex-1" data-testid="redis-operation-status"><div data-testid="redis-notice"><OperationMessage message={openingLabel || (editing.deletion?.uncertain ? "删除结果尚未确认：" + editing.deletion.session.key : state.notice || editing.notice) || "最近扫描 " + time(state.readAt)} /></div></div><Button size="xs" variant="ghost" className={editing.deletion?.uncertain ? "" : "invisible"} disabled={!editing.deletion?.uncertain} onClick={editing.resumeDeletion} data-testid="redis-resume-delete">核实删除结果</Button></footer>
-    <Dialog open={closing} onOpenChange={setClosing}><DialogContent><DialogHeader><DialogTitle>关闭 Redis 工作区</DialogTitle><DialogDescription>{Object.keys(editing.drafts).length ? "还有未保存的修改。关闭将放弃草稿并清除浏览数据。" : "将清除搜索条件、搜索历史、标签和浏览数据。Redis 插件连接保持。"}</DialogDescription></DialogHeader><DialogFooter>
-      <Button variant="outline" onClick={() => { setClosing(false); if (!Object.keys(editing.drafts).length) onBack() }}>{Object.keys(editing.drafts).length ? "继续编辑" : "返回详情并保留"}</Button><Button data-testid="redis-workspace-confirm-close" disabled={editing.busy} onClick={onClose}>{Object.keys(editing.drafts).length ? "放弃更改并关闭" : "关闭工作区"}</Button>
-    </DialogFooter></DialogContent></Dialog>
     <Dialog open={Boolean(editing.pending)} onOpenChange={open=>{if(!open)editing.cancelPending()}}><DialogContent><DialogHeader><DialogTitle>还有未保存的修改</DialogTitle><DialogDescription>继续操作将放弃相关草稿，服务器数据不会改变。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" onClick={editing.cancelPending}>继续编辑</Button><Button variant="destructive" data-testid="redis-discard-confirm" onClick={editing.confirmPending}>放弃更改</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={Boolean(editing.deletion && editing.deletionVisible && !editing.verification)} onOpenChange={open=>{if(!open)editing.cancelDelete()}}><DialogContent className="redis-delete-dialog"><DialogHeader><EnvironmentTypeBadge /><DialogTitle>{editing.deletion?.uncertain ? "核实删除结果" : "删除 Key？"}</DialogTitle><DialogDescription>DB {String(plugin.target?.db ?? 0)} · {editing.deletion?.session.type} · 删除后无法撤销{editing.deletion && editing.drafts[editing.deletion.id] ? "，该 Key 的未保存草稿也将丢弃" : ""}。</DialogDescription></DialogHeader>
       <p className="redis-delete-key" title={editing.deletion?.session.key}>{editing.deletion?.session.key}</p>

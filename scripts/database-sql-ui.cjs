@@ -27,6 +27,7 @@ function createSqlFixture({state = {},read,moduleRoot = path.resolve(__dirname,'
     const id = key(payload);
     let s = sessions.get(id);
     if(payload.operation==='release') {
+      if(state.failSqlReleaseOnce) { state.failSqlReleaseOnce=false; return failure('MYSQL_SQL_RELEASE_FAILED','模拟 SQL 会话释放失败'); }
       if(state.holdSqlRelease?.pluginInstanceId===payload.pluginInstanceId) {
         const hold=state.holdSqlRelease;state.holdSqlRelease=null;
         await new Promise(resolve=>{hold.release=resolve;});

@@ -140,12 +140,12 @@ export function useRedisEditing(api: AiOpsV2Api, scope: PluginScope, connected: 
   }
   function cancelDelete() { const item = deletionRef.current; if (item?.busy) return; setDeletionVisible(false); if (!item?.uncertain) { release(item?.session); setDeletion(null) } }
   const busy = Boolean(opening) || Object.values(drafts).some(draft => draft.busy) || Boolean(deletion?.busy)
-  function protect(action: () => void, ids = Object.keys(ref.current), preserveDrafts = false) {
+  function protect(action: () => void, ids = Object.keys(ref.current), preserveDrafts = false, confirmDiscard = true) {
     if (openingRef.current || Object.values(ref.current).some(draft => draft.busy) || deletionRef.current?.busy) { toast.info("正在处理数据，请等待结果。"); return }
     if (deletionRef.current?.uncertain) { setDeletionVisible(true); return }
     if (ids.some(id => ref.current[id]?.uncertain)) { toast.info("保存结果尚未确认，请点击“重新确认结果”；草稿已保留。"); return }
     const dirty = preserveDrafts ? [] : ids.filter(id => ref.current[id])
-    if (dirty.length) setPending({action,ids:dirty}); else action()
+    if (dirty.length && confirmDiscard) setPending({action,ids:dirty}); else { dirty.forEach(discard); action() }
   }
   async function verify(id: string, patternId: string, remove = false) {
     const draft = ref.current[id], item = deletionRef.current

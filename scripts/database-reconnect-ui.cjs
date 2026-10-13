@@ -22,8 +22,7 @@ module.exports = async function ({win,fill,click,waitFor,textContains,testId,sta
   const value = () => evaluate("document.querySelector('[data-testid=mysql-sql-editor]').value");
   const reset = async () => {
     await click(win,testId('mysql-workspace-close'));
-    await click(win,testId('mysql-workspace-confirm-close'));
-  if (await evaluate("Boolean(document.querySelector('[data-testid=mysql-edit-discard-confirm]'))")) await click(win,testId('mysql-edit-discard-confirm'));
+    await waitFor(win,"!document.querySelector('[data-testid=mysql-full-window-workspace]:not([hidden])')",'工作区直接关闭');
     await click(win,testId('plugin-workspace-open'));
     await textContains(win,'mysql-table-list','orders');
   };
@@ -161,8 +160,7 @@ module.exports = async function ({win,fill,click,waitFor,textContains,testId,sta
   await reconnect();
   assert.equal(await evaluate("document.querySelector('[data-testid=mysql-query-run]').disabled"),true);
   await click(win,testId('mysql-workspace-close'));
-  await click(win,testId('mysql-workspace-confirm-close'));
-  await click(win,testId('mysql-edit-discard-confirm'));
+  await waitFor(win,"!document.querySelector('[data-testid=mysql-full-window-workspace]:not([hidden])')",'工作区直接关闭');
   await click(win,testId('plugin-workspace-open'));
   await textContains(win,'mysql-table-list','orders');
 
@@ -182,8 +180,7 @@ module.exports = async function ({win,fill,click,waitFor,textContains,testId,sta
   assert.equal(await evaluate("document.querySelector('[data-testid=mysql-query-run]').disabled"),true);
   assert.equal(fixture.executions.length,transactionExecutions,'重连不执行或提交旧事务');
   await click(win,testId('mysql-workspace-close'));
-  await click(win,testId('mysql-workspace-confirm-close'));
-  await click(win,testId('mysql-edit-discard-confirm'));
+  await waitFor(win,"!document.querySelector('[data-testid=mysql-full-window-workspace]:not([hidden])')",'工作区直接关闭');
   await waitFor(win,"document.querySelector('[data-testid=mysql-full-window-workspace]') === null",'明确关闭才释放保留工作区');
   process.stdout.write('数据库断线保留通过：多 SQL、表标签、筛选、离线编辑、重连、旧结果、迟到响应、写入确认及事务隔离。\n');
 };

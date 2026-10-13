@@ -900,7 +900,7 @@ async function run() {
   assert.equal(await evaluate('Boolean(document.querySelector(".server-workspace-header [data-environment-type=test]"))'),true,'终端显示明确的测试环境标识');
   assert.ok(await evaluate("document.querySelector('[data-terminal-command-audit=available]')?.textContent.includes('命令完成后记录')"));
   assert.equal(opened.length, 1, '首次点击只创建一个会话');
-  if (process.env.RUNBOOK_BRIDGE_WORKSPACE_COUNTS_SMOKE === '1') {
+  if (process.env.RUNBOOK_BRIDGE_WORKSPACE_COUNTS_SMOKE === '1' || process.env.RUNBOOK_BRIDGE_WORKSPACE_MANAGER_SMOKE === '1') {
     releaseRootMetadata();
     await click('[data-testid=server-workspace-back]');
     for (const type of ['mysql','redis']) {
@@ -913,10 +913,10 @@ async function run() {
     await click('[data-testid=plugin-trigger-server-workspace-smoke]');
     await until("document.querySelector('[data-testid=plugin-open-workspace]')?.disabled === false",'继续服务器工作区');
     await click('[data-testid=plugin-open-workspace]');
-    await require('./workspace-manager-ui.cjs')({evaluate,click,until,connectionRequests,opened,redisCalls,snapshot,win,scope,countsOnly:true});
+    await require('./workspace-manager-ui.cjs')({evaluate,click,until,connectionRequests,opened,redisCalls,snapshot,win,scope,countsOnly:process.env.RUNBOOK_BRIDGE_WORKSPACE_MANAGER_SMOKE !== '1'});
     assert.deepEqual(errors,[],'数量角标专项无界面错误');
     assert.equal(externalRequests.length,0,'数量角标专项无外部页面请求');
-    process.stdout.write(JSON.stringify({ok:true,workspaceCounts:true,workspaceTypes:3,viewportWidths:7})+'\n');
+    process.stdout.write(JSON.stringify({ok:true,workspaceCounts:true,workspaceManager:process.env.RUNBOOK_BRIDGE_WORKSPACE_MANAGER_SMOKE === '1',workspaceTypes:3,viewportWidths:7})+'\n');
     completed = true; return;
   }
   if (process.env.RUNBOOK_BRIDGE_DOWNLOAD_RECOVERY_SMOKE === '1') {
@@ -1026,6 +1026,29 @@ async function run() {
     completed=true;
     process.stdout.write(JSON.stringify({ok:true,liveDirectory:true,uncached:samples,cached,localNavigation:true,scroll,...liveDirectoryProbe.summary()})+'\n');
     return;
+  }
+
+  if (process.env.RUNBOOK_BRIDGE_WORKSPACE_CLOSE_SMOKE === '1') {
+    releaseRootMetadata();
+    const connectionCount = connectionRequests.length;
+    const terminalCount = opened.length;
+    transferLayoutHeld=true;
+    uploads.push({ jobId:'close-busy', name:'busy.bin', path:'/srv/busy.bin', bytes:1024,
+      transferred:1, status:'running', canResume:false, canPause:true });
+    await until('document.querySelector(".server-upload-tray-header")?.textContent.includes("1 项进行中")', '传输任务已显示');
+    await click('[data-testid=server-workspace-close]');
+    assert.equal(await evaluate('Boolean(document.querySelector("[data-testid=server-workspace]"))'),true,'传输期间保留工作区');
+    assert.equal(await evaluate('Boolean(document.querySelector("[role=dialog]"))'),false,'活动传输只显示提示，不弹出确认');
+    uploads=[]; transferLayoutHeld=false;
+    await until('document.querySelector(".server-upload-tray-header")?.textContent.includes("暂无任务")', '传输结束');
+    await click('[data-testid=server-workspace-close]');
+    await until('!document.querySelector("[data-testid=server-workspace]")', '服务器工作区直接关闭');
+    for (let attempt=0;attempt<50 && closed.length<terminalCount;attempt++) await wait(20);
+    assert.ok(closed.length >= terminalCount,'关闭后释放人工终端');
+    assert.equal(connectionRequests.length,connectionCount,'关闭工作区保持服务器连接');
+    assert.equal(await evaluate('Boolean(document.querySelector("[role=dialog]"))'),false,'关闭不弹出确认');
+    assert.deepEqual(errors,[]); assert.deepEqual(externalRequests,[]);
+    completed=true;process.stdout.write(JSON.stringify({ok:true,workspaceClose:true})+'\n');return;
   }
 
   if (process.env.RUNBOOK_BRIDGE_TERMINAL_THEME_SMOKE === '1') {

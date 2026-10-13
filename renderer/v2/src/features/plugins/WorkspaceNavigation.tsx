@@ -41,7 +41,7 @@ export function WorkspaceNavigationProvider({entries, activeKey, onSelect, onCon
   }, [onConfigure])
   const value = useMemo(() => ({entries, register, configure, manage: popup.toggle}), [entries, register, configure, popup.toggle])
   return <NavigationContext.Provider value={value}>{children}
-    <UtilityPopover controller={popup} title="已打开的工作区" summary={`${entries.length} 项`} description="继续工作区或关闭已打开的工作区。关闭前会提示未保存内容和活动任务。" testId="workspace-manager"
+    <UtilityPopover controller={popup} title="已打开的工作区" summary={`${entries.length} 项`} description="继续工作区或直接关闭已打开的工作区。关闭会清除未保存内容；活动任务需先结束。" testId="workspace-manager"
       onCloseAutoFocus={event => { const action = pendingAction.current; pendingAction.current = null; if (action) { event.preventDefault(); requestAnimationFrame(action) } }}>
       <div className="divide-y divide-border/60">
         {!entries.length ? <p className="p-4 text-sm text-muted-foreground">尚未打开工作区，可从插件详情或环境详情打开。</p> : entries.map(entry => <div key={entry.key} className="flex min-w-0 flex-wrap items-center gap-2 py-3" data-workspace-session={entry.key}>
