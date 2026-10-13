@@ -11,6 +11,17 @@ function fixture() {
   const status = {repositories:[{repositoryId:'repo-a',unlocked:true}],cloudProjects:[{repositoryId:'repo-a',projectId:'project-a',downloaded:true,visible:true,syncStatus:'behind'}],deletedCloudProjects:[],projects:[{projectId:'local-a'}]};
   return {state,status};
 }
+
+test('Mac 下载后只提示手动安装，打开过程中和打开后保持同一提醒直到新版运行',() => {
+  const state = {phase:'downloaded',installationMode:'manual-dmg',downloadId:'synthetic-download',availableVersion:'9.0.0',source:{repositoryId:'repo-a',name:'合成仓库',origin:'https://updates.example.invalid'}};
+  const notice = softwareUpdateNotices(state,'darwin','arm64')[0];
+  assert.equal(notice.installationMode,'manual-dmg'); assert.equal(notice.downloadId,'synthetic-download');
+  assert.match(notice.description,/手动覆盖/); assert.doesNotMatch(notice.description,/重启/);
+  state.phase = 'opening'; assert.equal(softwareUpdateNotices(state,'darwin','arm64')[0].id,notice.id);
+  state.phase = 'downloaded'; state.installerOpened = true;
+  assert.equal(softwareUpdateNotices(state,'darwin','arm64')[0].id,notice.id);
+  state.phase = 'current'; assert.deepEqual(softwareUpdateNotices(state,'darwin','arm64'),[]);
+});
 test('云提醒以项目内容去重，本地单独修改、上传完成、隐藏未下载和锁定仓库不提醒',() => {
   const {state,status} = fixture();
   const notices = cloudUpdateNotices(state,status);

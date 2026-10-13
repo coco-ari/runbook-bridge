@@ -81,7 +81,7 @@ try {
   assert.ok(Object.hasOwn(renderer.sourceHashes, 'plugin-creation-identity.mjs'));
   assert.ok(Object.hasOwn(renderer.sourceHashes, 'codex-integration.mjs'), '安装包缺少 Codex 接入模块');
   for (const module of ['cloud-config-crypto.mjs','cloud-config-service.mjs','cloud-config-workspace.mjs','cloud-config-ipc.mjs']) assert.ok(Object.hasOwn(renderer.sourceHashes,module),'安装包缺少云配置模块');
-  for (const module of ['software-update-service.mjs','software-update-driver.mjs','software-update-ipc.mjs','software-update-lifecycle.mjs','software-update-shutdown.mjs']) assert.ok(Object.hasOwn(renderer.sourceHashes,module),'安装包缺少软件更新模块');
+  for (const module of ['software-update-service.mjs','software-update-driver.mjs','software-update-mac-driver.mjs','software-update-ipc.mjs','software-update-lifecycle.mjs','software-update-shutdown.mjs']) assert.ok(Object.hasOwn(renderer.sourceHashes,module),'安装包缺少软件更新模块');
   for (const module of ['server-workspace-manager.mjs', 'server-workspace-files.mjs', 'server-workspace-directory-cache.mjs', 'server-workspace-ipc.mjs']) {
     assert.ok(Object.hasOwn(renderer.sourceHashes, module), '安装包缺少服务器工作区模块：' + module);
   }

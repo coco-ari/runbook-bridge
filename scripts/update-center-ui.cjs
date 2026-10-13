@@ -19,6 +19,10 @@ module.exports = async function exerciseUpdateCenter({evaluate,waitFor,pressKey,
       software = {...software,phase:'downloaded',progress:{percent:100,transferred:1000,total:1000}};
     }
     if (request.action === 'install') software = {...software,phase:'error',error:{code:'UPDATE_WORKSPACE_BUSY',message:'请先结束 SQL 事务和文件传输，再更新。'}};
+    if (request.action === 'open-installer') {
+      assert.equal(request.downloadId,software.downloadId);
+      software = {...software,installerOpened:true};
+    }
     return software;
   });
   const jsClick = async selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
@@ -130,5 +134,19 @@ module.exports = async function exerciseUpdateCenter({evaluate,waitFor,pressKey,
     await waitFor(`Array.from(document.querySelectorAll('[data-sonner-toast] button')).some(button => button.textContent === '查看')`,'前台提醒');
     await evaluate(`Array.from(document.querySelectorAll('[data-sonner-toast] button')).find(button => button.textContent === '查看').click()`);
     await waitFor(`document.querySelector('[data-testid="update-center"]')?.textContent.includes('暂无消息')`,'轻提示可打开消息');
+    await click('[data-testid="updates-close"]');
+    software = {...software,phase:'downloaded',availableVersion:'99.0.0',installationMode:'manual-dmg',downloadId:'synthetic-mac-download',installerOpened:false,error:null};
+    const macNotice = {...notices[0],kind:'downloaded',installationMode:'manual-dmg',downloadId:software.downloadId,description:'DMG 已校验，请手动覆盖安装。'};
+    publish([macNotice]);
+    await waitFor(`document.querySelector('[data-testid="software-update-hint"]')?.textContent.includes('打开安装包')`,'侧栏提供 Mac 安装入口');
+    await click('[data-testid="updates-open"]');
+    await waitFor(`document.querySelector(${JSON.stringify(softwareAction)})?.textContent === '打开安装包'`,'消息中心提供 Mac 安装入口');
+    await jsClick(softwareAction);
+    await waitFor(`Boolean(document.querySelector('[data-testid="software-update-mac-instructions"]'))`,'打开后定位覆盖安装说明');
+    assert.equal(requests.filter(request => request.action === 'open-installer').length,1);
+    assert.equal(requests.filter(request => request.action === 'install').length,1,'Mac 不调用 Windows 安装');
+    assert.equal(await evaluate(`Boolean(document.querySelector('[data-testid="software-update-confirm"]'))`),false);
+    await jsClick('[data-testid="settings-back"]');
+    await waitFor(`document.querySelector('[data-testid="updates-count"]')?.textContent === '1'`,'打开 DMG 不清除更新消息');
   } finally { setSoftwareHandler(null); }
 };

@@ -36,12 +36,14 @@ export function cloudUpdateNotices(state,status) {
 }
 
 export function softwareUpdateNotices(state,platform,arch) {
-  if (!state?.source || !state.availableVersion || !['available','downloading','downloaded','installing','error'].includes(state.phase)) return [];
-  const ready = ['downloaded','installing'].includes(state.phase);
+  if (!state?.source || !state.availableVersion || !['available','downloading','downloaded','installing','opening','error'].includes(state.phase)) return [];
+  const ready = ['downloaded','installing','opening'].includes(state.phase);
+  const manual = state.installationMode === 'manual-dmg';
   return [{id:identity(['software',state.source.repositoryId,state.source.origin,platform,arch,state.availableVersion,ready]),
     type:'software',version:state.availableVersion,kind:ready ? 'downloaded' : 'available',repositoryId:state.source.repositoryId,repositoryName:label(state.source.name),
+    installationMode:manual ? 'manual-dmg' : 'restart',sourceOrigin:state.source.origin,downloadId:state.downloadId ?? null,
     title:ready ? `新版本 ${state.availableVersion} 已下载` : `发现新版本 ${state.availableVersion}`,
-    description:ready ? '新版本已就绪，立即更新将重启应用。' : '下载新版本，完成后即可更新。'}];
+    description:ready ? manual ? 'DMG 已通过完整性校验，打开安装包后手动覆盖安装。' : '新版本已就绪，立即更新将重启应用。' : '下载新版本，完成后即可更新。'}];
 }
 
 export function notificationChannel(mode,focused) {

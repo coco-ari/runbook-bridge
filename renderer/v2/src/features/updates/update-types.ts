@@ -9,6 +9,9 @@ export interface UpdateNotice {
   readonly title: string
   readonly description: string
   readonly version?: string
+  readonly installationMode?: "restart" | "manual-dmg"
+  readonly sourceOrigin?: string
+  readonly downloadId?: string | null
   readonly firstSeenAt?: number
 }
 export type NotificationMode = "app" | "background" | "always"

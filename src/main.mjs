@@ -283,11 +283,11 @@ if (process.argv.includes('--mcp')) {
         await cloudConfigService.init();
         v2.cloudConfigService = cloudConfigService;
         const softwareUpdateService = new SoftwareUpdateService({
-          currentVersion:app.getVersion(),supported:app.isPackaged && process.platform === 'win32',
+          currentVersion:app.getVersion(),supported:app.isPackaged && ['win32','darwin'].includes(process.platform),
           getSources:() => cloudConfigService.softwareUpdateSources(),
           loadSelection:() => cloudConfigService.softwareUpdateSelection(),
           saveSelection:id => cloudConfigService.saveSoftwareUpdateSelection(id),
-          createUpdater:createSoftwareUpdateDriver,
+          createUpdater:options => createSoftwareUpdateDriver({...options,openPath:file => shell.openPath(file),showItemInFolder:file => shell.showItemInFolder(file)}),
           install:driver => updateShutdown.install(driver,{
             assertIdle:() => assertSoftwareUpdateIdle({...v2, unsavedWorkCount}),close:closeForSoftwareUpdate,quit:() => app.quit(),
             onFailure:() => {

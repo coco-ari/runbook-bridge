@@ -50,7 +50,11 @@ async function readResponse(response,limit,onChunk,failureCode = 'UPDATE_DOWNLOA
   return length;
 }
 
-export async function createSoftwareUpdateDriver({url,platform = process.platform,arch = process.arch,fetchImpl = globalThis.fetch,loadUpdater = () => import('electron-updater'),spawnImpl = spawn}) {
+export async function createSoftwareUpdateDriver({url,platform = process.platform,arch = process.arch,fetchImpl = globalThis.fetch,loadUpdater = () => import('electron-updater'),spawnImpl = spawn,...macOptions}) {
+  if (platform === 'darwin') {
+    const {createMacSoftwareUpdateDriver} = await import('./software-update-mac-driver.mjs');
+    return createMacSoftwareUpdateDriver({url,arch,fetchImpl,...macOptions});
+  }
   let base;
   try { base = new URL(url); } catch { throw softwareUpdateError('UPDATE_SOURCE_INVALID'); }
   if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash

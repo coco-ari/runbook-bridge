@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 const MESSAGES = {
   UPDATE_ACCESS_DENIED:'软件更新只能由当前桌面主窗口操作。',
   UPDATE_INVALID_ARGUMENT:'软件更新请求参数无效。',
@@ -9,6 +11,9 @@ const MESSAGES = {
   UPDATE_HTTPS_REQUIRED:'在线升级要求云仓库使用 HTTPS，请先为云服务启用 HTTPS。',
   UPDATE_MANIFEST_INVALID:'云端版本信息无效，请联系云仓库管理员检查发布文件。',
   UPDATE_CHECK_FAILED:'无法检查软件更新，请检查网络及云端更新服务后重试。',
+  UPDATE_NOT_PUBLISHED:'此来源暂未提供当前 Mac 架构的更新清单，请联系发布管理员。',
+  UPDATE_OPEN_FAILED:'无法打开安装包，请重试或在 Finder 中显示后手动打开。',
+  UPDATE_DOWNLOAD_CHANGED:'下载或更新来源已变化，请刷新后重试。',
   UPDATE_DOWNLOAD_FAILED:'更新下载失败，请检查网络后重新检测和下载。',
   UPDATE_INTEGRITY_FAILED:'更新文件校验失败，已停止安装，请联系云仓库管理员重新发布。',
   UPDATE_NOT_AVAILABLE:'请先检查并找到新版本，再下载更新。',
@@ -18,7 +23,7 @@ const MESSAGES = {
   UPDATE_CANCELLED:'本次软件更新操作已取消。',
   UPDATE_STATE_FAILED:'无法保存软件更新来源，请检查本机配置存储后重试。',
 };
-const ACTIONS = {status:[],check:[],download:[],cancel:[],install:[],source:['repositoryId']};
+const ACTIONS = {status:[],check:[],download:[],cancel:[],install:[],source:['repositoryId'],'open-installer':['downloadId'],'reveal-installer':['downloadId']};
 
 export function softwareUpdateError(code) {
   const safeCode = Object.hasOwn(MESSAGES,code) ? code : 'UPDATE_UNAVAILABLE';
@@ -34,7 +39,8 @@ export function validateSoftwareUpdateRequest(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)
     || typeof payload.action !== 'string' || !Object.hasOwn(ACTIONS,payload.action)
     || Object.keys(payload).some(key => key !== 'action' && !ACTIONS[payload.action].includes(key))
-    || (payload.action === 'source' && !(payload.repositoryId === null || validId(payload.repositoryId)))) {
+    || (payload.action === 'source' && !(payload.repositoryId === null || validId(payload.repositoryId)))
+    || (['open-installer','reveal-installer'].includes(payload.action) && !validId(payload.downloadId))) {
     throw softwareUpdateError('UPDATE_INVALID_ARGUMENT');
   }
   return payload;
@@ -98,12 +104,14 @@ export class SoftwareUpdateService {
   constructor({currentVersion,platform = process.platform,arch = process.arch,supported = true,getSources,createUpdater,install,loadSelection = async () => null,saveSelection = async () => {},now = () => new Date()}) {
     Object.assign(this,{platform,arch,getSources,createUpdater,installUpdate:install,loadSelection,saveSelection,now});
     this.supported = Boolean(supported && ['win32','darwin'].includes(platform) && ['x64','arm64'].includes(arch));
-    this.state = {phase:'idle',currentVersion,availableVersion:null,releaseNotes:'',releaseDate:null,progress:null,error:null,checkedAt:null,source:null,sources:[],supported:this.supported};
+    this.state = {phase:'idle',currentVersion,availableVersion:null,releaseNotes:'',releaseDate:null,progress:null,error:null,checkedAt:null,source:null,sources:[],supported:this.supported,
+      installationMode:platform === 'darwin' ? 'manual-dmg' : 'restart',downloadId:null,installerOpened:false};
     this.selectedId = null;
     this.generation = 0;
     this.driver = null;
     this.checkFlight = null;
     this.downloadFlight = null;
+    this.openFlight = null;
     this.selectionQueue = Promise.resolve();
     this.selectionPending = 0;
     this.sourceRefresh = 0;
@@ -139,6 +147,10 @@ export class SoftwareUpdateService {
       return this.snapshot();
     }
     this.assertSource();
+    if (['open-installer','reveal-installer'].includes(action)) {
+      try { return await this.openInstaller(input.downloadId,action === 'reveal-installer'); }
+      finally { this.onStateChanged?.(); }
+    }
     try { return await this[action](); }
     finally { this.onStateChanged?.(); }
   }
@@ -178,7 +190,8 @@ export class SoftwareUpdateService {
     this.driver = null;
     this.checkFlight = null;
     this.downloadFlight = null;
-    Object.assign(this.state,{phase:this.basePhase(),availableVersion:null,releaseNotes:'',releaseDate:null,progress:null,error:null,checkedAt:null});
+    this.openFlight = null;
+    Object.assign(this.state,{phase:this.basePhase(),availableVersion:null,releaseNotes:'',releaseDate:null,progress:null,error:null,checkedAt:null,downloadId:null,installerOpened:false});
     stopDriver(driver);
   }
 
@@ -224,7 +237,7 @@ export class SoftwareUpdateService {
 
   async check() {
     if (this.checkFlight) return this.checkFlight.promise;
-    if (['downloading','downloaded','installing'].includes(this.state.phase)) return this.snapshot();
+    if (['downloading','downloaded','installing','opening'].includes(this.state.phase)) return this.snapshot();
     this.invalidate();
     this.state.phase = 'checking';
     const generation = this.generation;
@@ -232,7 +245,7 @@ export class SoftwareUpdateService {
     const promise = Promise.resolve().then(async () => {
       let driver;
       try {
-        driver = await this.createUpdater({url});
+        driver = await this.createUpdater({url,platform:this.platform,arch:this.arch});
         if (generation !== this.generation || this.disposed) { stopDriver(driver); throw softwareUpdateError('UPDATE_CANCELLED'); }
         this.driver = driver;
         const result = await driver.check();
@@ -277,6 +290,7 @@ export class SoftwareUpdateService {
         });
         this.assertCurrent(generation,driver);
         this.state.phase = 'downloaded';
+        this.state.downloadId = this.platform === 'darwin' ? randomUUID() : null;
         this.state.progress = {...this.state.progress,percent:100};
         return this.snapshot();
       } catch (error) {
@@ -295,6 +309,7 @@ export class SoftwareUpdateService {
   }
 
   async install() {
+    if (this.platform !== 'win32') throw softwareUpdateError('UPDATE_UNSUPPORTED');
     if (this.state.phase !== 'downloaded' || !this.driver) throw softwareUpdateError('UPDATE_NOT_DOWNLOADED');
     const driver = this.driver, generation = this.generation;
     this.state.phase = 'installing';
@@ -309,6 +324,46 @@ export class SoftwareUpdateService {
       this.state.error = publicSoftwareUpdateError(error,'UPDATE_INSTALL_FAILED');
       throw softwareUpdateError(this.state.error.code);
     }
+  }
+
+  async openInstaller(downloadId,reveal) {
+    if (this.platform !== 'darwin') throw softwareUpdateError('UPDATE_UNSUPPORTED');
+    if (!this.state.downloadId || this.state.downloadId !== downloadId) throw softwareUpdateError('UPDATE_DOWNLOAD_CHANGED');
+    if (this.openFlight) return this.openFlight.promise;
+    if (this.state.phase !== 'downloaded' || !this.driver) throw softwareUpdateError('UPDATE_NOT_DOWNLOADED');
+    const driver = this.driver, generation = this.generation;
+    this.state.phase = 'opening';
+    this.state.error = null;
+    const promise = Promise.resolve().then(async () => {
+      try {
+        // 文件复核后重新检查来源，旧弹窗和迟到请求不能打开另一份下载。
+        await driver.openInstaller({reveal,beforeOpen:async () => {
+          await this.refreshSources();
+          this.assertSource();
+          this.assertCurrent(generation,driver);
+        }});
+        this.assertCurrent(generation,driver);
+        this.state.phase = 'downloaded';
+        if (!reveal) this.state.installerOpened = true;
+        return this.snapshot();
+      } catch (error) {
+        this.assertCurrent(generation,driver);
+        const failure = publicSoftwareUpdateError(error,'UPDATE_OPEN_FAILED');
+        this.state.error = failure;
+        if (failure.code === 'UPDATE_INTEGRITY_FAILED') {
+          this.state.phase = 'error';
+          this.state.downloadId = null;
+          this.state.installerOpened = false;
+          this.driver = null;
+          stopDriver(driver);
+        } else this.state.phase = 'downloaded';
+        throw softwareUpdateError(failure.code);
+      } finally {
+        if (this.openFlight?.generation === generation) this.openFlight = null;
+      }
+    });
+    this.openFlight = {generation,promise};
+    return promise;
   }
 
   dispose() { this.disposed = true; this.invalidate(); }

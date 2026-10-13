@@ -14,7 +14,7 @@ export function macBuildArguments({ platform = process.platform, arch = process.
     if (!appleId && !apiKey && !keychain) throw new Error('正式 Mac 构建缺少 Apple 公证配置。');
     args.push('-c.forceCodeSigning=true','-c.mac.notarize=true');
   } else {
-    // 测试包显式使用临时签名，不能冒充已公证的分发包。
+    // 开发和手动安装通道显式使用临时签名，不能冒充已公证的分发包。
     args.push('-c.mac.identity=-','-c.mac.hardenedRuntime=false','-c.mac.notarize=false');
   }
   return args;

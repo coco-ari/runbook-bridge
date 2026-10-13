@@ -11,7 +11,7 @@ function deferred() {
   return {promise,resolve,reject};
 }
 function setup(options = {}) {
-  const calls = {created:[],checked:0,downloaded:0,installed:0,cancelled:0,disposed:0,saved:[]};
+  const calls = {created:[],checked:0,downloaded:0,installed:0,opened:0,revealed:0,cancelled:0,disposed:0,saved:[]};
   const input = {sources:[sourceA],result:{version:'2.1.0',releaseNotes:'修复连接问题',releaseDate:'2026-10-02'},...options};
   const drivers = [];
   const service = new SoftwareUpdateService({currentVersion:'2.0.0',platform:'win32',arch:'x64',
@@ -24,6 +24,12 @@ function setup(options = {}) {
       const driver = {
         check:async () => { calls.checked++; return input.check ? input.check() : input.result; },
         download:async onProgress => { calls.downloaded++; return input.download?.(onProgress); },
+        openInstaller:async ({reveal,beforeOpen}) => {
+          await input.beforeOpen?.();
+          await beforeOpen();
+          if (reveal) calls.revealed++; else calls.opened++;
+          await input.open?.();
+        },
         cancel:() => { calls.cancelled++; },dispose:() => { calls.disposed++; },
       };
       drivers.push(driver);
@@ -283,7 +289,8 @@ test('IPC 只允许受信主窗口及动作白名单，不能传入任意 URL、
     softwareUpdateService:{invoke:async (action,input) => { called++; return {action,...input}; }},
   });
   const event = {sender,senderFrame:sender.mainFrame};
-  for (const invalid of [null,[],{action:'constructor'},{action:'__proto__'},{action:'install',path:'C:/secret.exe'},{action:'check',url:'https://evil.invalid'},{action:'download',version:'9.9.9'},{action:'check',headers:{Authorization:'secret'}},{action:'source'},{action:'source',repositoryId:9}]) {
+  for (const invalid of [null,[],{action:'constructor'},{action:'__proto__'},{action:'install',path:'C:/secret.exe'},{action:'check',url:'https://evil.invalid'},{action:'download',version:'9.9.9'},{action:'check',headers:{Authorization:'secret'}},{action:'source'},{action:'source',repositoryId:9},
+    {action:'open-installer'},{action:'reveal-installer',downloadId:'../a'}, {action:'open-installer',downloadId:'synthetic',path:'/tmp/other.dmg'}]) {
     const result = await handler(event,invalid);
     assert.equal(result.ok,false);
     assert.equal(result.error.code,'UPDATE_INVALID_ARGUMENT');
@@ -294,6 +301,80 @@ test('IPC 只允许受信主窗口及动作白名单，不能传入任意 URL、
   assert.equal(called,0);
   assert.deepEqual(await handler(event,{action:'source',repositoryId:'repo-a'}),{ok:true,data:{action:'source',repositoryId:'repo-a'}});
   assert.equal(called,1);
+});
+
+test('Mac 下载绑定一次下载标识，打开与定位保留待安装状态且绝不调用自动安装',async () => {
+  const unit = setup({overrides:{platform:'darwin',arch:'arm64'}});
+  assert.equal((await unit.invoke('status')).installationMode,'manual-dmg');
+  await unit.invoke('check');
+  assert.deepEqual(unit.calls.created,['https://updates-a.example.invalid/updates/darwin/arm64/']);
+  const ready = await unit.invoke('download');
+  assert.ok(ready.downloadId);
+  assert.equal(ready.installerOpened,false);
+  const located = await unit.invoke('reveal-installer',{downloadId:ready.downloadId});
+  assert.equal(located.installerOpened,false);
+  const opened = await unit.invoke('open-installer',{downloadId:ready.downloadId});
+  assert.equal(opened.phase,'downloaded'); assert.equal(opened.currentVersion,'2.0.0');
+  assert.equal(opened.installerOpened,true); assert.equal(opened.availableVersion,'2.1.0');
+  assert.equal((await unit.invoke('check')).phase,'downloaded');
+  assert.equal(unit.calls.checked,1);
+  await assert.rejects(unit.invoke('install'),{code:'UPDATE_UNSUPPORTED'});
+  assert.equal(unit.calls.installed,0); assert.equal(unit.calls.opened,1); assert.equal(unit.calls.revealed,1);
+  await unit.invoke('cancel'); await unit.invoke('check');
+  const next = await unit.invoke('download');
+  assert.notEqual(next.downloadId,ready.downloadId);
+  await assert.rejects(unit.invoke('open-installer',{downloadId:ready.downloadId}),{code:'UPDATE_DOWNLOAD_CHANGED'});
+  const windows = setup();
+  await assert.rejects(windows.invoke('open-installer',{downloadId:'synthetic'}),{code:'UPDATE_UNSUPPORTED'});
+});
+
+test('Mac 重复打开合并，校验期间取消、解绑或更改来源不得执行系统打开',async () => {
+  const waiting = deferred();
+  let started = false;
+  const unit = setup({overrides:{platform:'darwin'},beforeOpen:async () => { started = true; await waiting.promise; }});
+  await unit.invoke('check'); const ready = await unit.invoke('download');
+  const a = unit.invoke('open-installer',{downloadId:ready.downloadId});
+  const b = unit.invoke('open-installer',{downloadId:ready.downloadId});
+  await until(() => started);
+  assert.equal((await unit.invoke('check')).phase,'opening');
+  waiting.resolve(); await Promise.all([a,b]);
+  assert.equal(unit.calls.opened,1);
+  for (const change of ['cancel','unbind','origin']) {
+    const pending = deferred(); let verifying = false;
+    const next = setup({overrides:{platform:'darwin'},beforeOpen:async () => { verifying = true; await pending.promise; }});
+    await next.invoke('check'); const downloaded = await next.invoke('download');
+    const opening = next.invoke('open-installer',{downloadId:downloaded.downloadId});
+    const rejected = assert.rejects(opening);
+    await until(() => verifying);
+    if (change === 'cancel') await next.invoke('cancel');
+    else next.input.sources = change === 'unbind' ? [] : [{...sourceA,origin:'https://changed.example.invalid'}];
+    pending.resolve(); await rejected;
+    assert.equal(next.calls.opened,0); assert.equal(next.service.snapshot().downloadId,null);
+    assert.equal(next.service.snapshot().installerOpened,false);
+  }
+});
+
+test('Mac 系统打开失败可重试，完整性失败撤销下载状态且不泄露系统异常',async () => {
+  const unit = setup({overrides:{platform:'darwin'},open:() => { throw new Error('synthetic private filename'); }});
+  await unit.invoke('check'); const ready = await unit.invoke('download');
+  await assert.rejects(unit.invoke('open-installer',{downloadId:ready.downloadId}),{code:'UPDATE_OPEN_FAILED'});
+  assert.equal(unit.service.snapshot().phase,'downloaded');
+  assert.equal(unit.service.snapshot().installerOpened,false);
+  assert.doesNotMatch(JSON.stringify(unit.service.snapshot()),/private/);
+  unit.input.open = () => { throw Object.assign(new Error('synthetic private filename'),{code:'UPDATE_INTEGRITY_FAILED'}); };
+  await assert.rejects(unit.invoke('open-installer',{downloadId:ready.downloadId}),{code:'UPDATE_INTEGRITY_FAILED'});
+  assert.equal(unit.service.snapshot().phase,'error'); assert.equal(unit.service.snapshot().downloadId,null);
+  assert.equal(unit.service.driver,null);
+});
+
+test('服务向驱动明确传递平台和架构，重启服务不恢复下载或误报升级完成',async () => {
+  let options;
+  const unit = setup({overrides:{platform:'darwin',arch:'x64',createUpdater:args => { options = args; return {check:async () => ({version:'2.1.0'})}; }}});
+  await unit.invoke('check');
+  assert.deepEqual(options,{url:'https://updates-a.example.invalid/updates/darwin/x64/',platform:'darwin',arch:'x64'});
+  const restarted = setup({overrides:{platform:'darwin'}});
+  const state = await restarted.invoke('status');
+  assert.equal(state.currentVersion,'2.0.0'); assert.equal(state.phase,'idle'); assert.equal(state.downloadId,null);
 });
 
 test('IPC 将第三方异常替换为固定消息',async () => {

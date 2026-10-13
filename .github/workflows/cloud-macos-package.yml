@@ -1,0 +1,88 @@
+name: Cloud macOS manual package
+on:
+  workflow_dispatch:
+    inputs:
+      previous_ref:
+        description: 旧版源码提交，用于跨版本安装与凭据保留验证
+        required: true
+        default: 263978603756fd23bc3be3d996ed0db2313f23ab
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+            app: dist/mac-arm64/Agent运维工作台.app
+          - os: macos-15-intel
+            arch: x64
+            app: dist/mac/Agent运维工作台.app
+    defaults:
+      run:
+        shell: bash
+    env:
+      AI_OPS_MAC_RELEASE: "0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: 安装依赖和 Electron
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+          corepack pnpm run install:electron-runtime
+      - name: 语法、类型与单元测试
+        run: |
+          corepack pnpm run check
+          corepack pnpm test
+      - name: 界面与 Mac 手动更新专项
+        run: |
+          corepack pnpm run test:ui
+          corepack pnpm exec electron scripts/ui-react-foundation-smoke.cjs --software-update-only
+          corepack pnpm exec electron scripts/ui-react-foundation-smoke.cjs --update-center-only
+      - name: 构建临时签名、未公证的手动安装包
+        run: corepack pnpm run dist:mac:${{ matrix.arch }}
+      - name: 验证打包应用与 MCP
+        run: |
+          node scripts/verify-package.mjs "${{ matrix.app }}"
+          node scripts/packaged-mcp-smoke.mjs "${{ matrix.app }}"
+          node scripts/packaged-ui-smoke.cjs "${{ matrix.app }}"
+          /usr/bin/codesign --verify --deep --strict "${{ matrix.app }}"
+      - name: 构建旧版以验证跨版本覆盖
+        id: previous
+        env:
+          PREVIOUS_REF: ${{ inputs.previous_ref }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          git fetch --depth=1 origin "$PREVIOUS_REF"
+          PREVIOUS_ROOT="$RUNNER_TEMP/runbook-bridge-previous"
+          git worktree add --detach "$PREVIOUS_ROOT" FETCH_HEAD
+          cd "$PREVIOUS_ROOT"
+          corepack pnpm install --frozen-lockfile
+          corepack pnpm run install:electron-runtime
+          corepack pnpm run "dist:mac:$TARGET_ARCH"
+          PREVIOUS_VERSION=$(node -p "require('./package.json').version")
+          echo "dmg=$PREVIOUS_ROOT/dist/RunbookBridge-${PREVIOUS_VERSION}-mac-${TARGET_ARCH}.dmg" >> "$GITHUB_OUTPUT"
+      - name: 隔离安装与跨版本覆盖回归
+        env:
+          PREVIOUS_DMG: ${{ steps.previous.outputs.dmg }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          node scripts/install-upgrade-regression.cjs "dist/RunbookBridge-${VERSION}-mac-${{ matrix.arch }}.dmg" "$PREVIOUS_DMG"
+      - name: 准备云仓库文件和构建信息
+        run: |
+          node scripts/prepare-cloud-update.mjs --platform darwin --arch ${{ matrix.arch }}
+          cp build/runtime.json artifacts/cloud-updates/runtime.json
+      - name: 保存待验收的未公证手动安装产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-updates-darwin-${{ matrix.arch }}-manual-unnotarized
+          path: artifacts/cloud-updates/
+          if-no-files-found: error
+          retention-days: 14

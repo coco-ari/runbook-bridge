@@ -397,6 +397,15 @@ async function assertFilesUnchanged(files) {
   for (const [file, expected] of files) assert.deepEqual(await fsp.readFile(file), expected, file);
 }
 
+async function inspectInstalledBuild(executable, env) {
+  const {appAsar} = packagedPaths(executable);
+  const program = "const fs=require('node:fs');const path=require('node:path');const crypto=require('node:crypto');const archive=process.env.AI_OPS_INSPECT_ASAR;const metadata=JSON.parse(fs.readFileSync(path.join(archive,'package.json'),'utf8'));process.stdout.write(JSON.stringify({version:metadata.version,archiveHash:crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex')}));";
+  const result = await runProcess(executable,['--eval',program],{
+    env:{...env,ELECTRON_RUN_AS_NODE:'1',AI_OPS_INSPECT_ASAR:appAsar},
+  });
+  return JSON.parse(result.stdout);
+}
+
 function assertMacInstallDirectory(installDir) {
   const parent = path.dirname(path.resolve(installDir));
   assert.equal(path.dirname(parent),path.resolve(os.tmpdir()),'Mac 安装测试只能修改系统临时目录');
@@ -451,9 +460,13 @@ async function orchestrate() {
   const root = path.resolve(__dirname, '..');
   const manifest = JSON.parse(await fsp.readFile(path.join(root, 'package.json'), 'utf8'));
   const installer = path.resolve(process.argv[2] ?? path.join(root, 'dist', `Agent\u8fd0\u7ef4\u5de5\u4f5c\u53f0 Setup ${manifest.version}.exe`));
+  const previousInstaller = process.argv[3] ? path.resolve(process.argv[3]) : installer;
+  assert.ok(process.argv.length <= 4,'用法：node scripts/install-upgrade-regression.cjs [新版安装包] [旧版安装包]');
   assert.ok(['win32','darwin'].includes(process.platform),'安装回归只支持 Windows 和 macOS');
   if (process.platform === 'darwin') assert.ok(process.argv[2]?.endsWith('.dmg'),'Mac 安装回归必须传入本次构建的 DMG');
+  if (process.platform === 'darwin') assert.ok(previousInstaller.endsWith('.dmg'),'Mac 旧版安装包必须是 DMG');
   await fsp.access(installer);
+  await fsp.access(previousInstaller);
   // ~ 在 Node 文件 URL 中编码为 %7E；真实安装回归覆盖加载地址与 IPC 信任检查一致。
   const temporaryRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'ai-ops-install-regression-~'));
   const isolation = isolatedEnvironment(temporaryRoot);
@@ -465,7 +478,8 @@ async function orchestrate() {
   ]);
   let installedApp = null;
   try {
-    const executable = await install(installer, installDir, isolation.env);
+    const executable = await install(previousInstaller, installDir, isolation.env);
+    const previousBuild = await inspectInstalledBuild(executable,isolation.env);
     const {appAsar} = packagedPaths(executable);
     process.stdout.write(`Installed renderer expected URL: ${pathToFileURL(path.join(appAsar,'renderer-build','v2','index.html')).href}\n`);
     process.stdout.write(`Installed executable real path: ${await fsp.realpath(executable)}\n`);
@@ -494,6 +508,18 @@ async function orchestrate() {
 
     const upgradedExecutable = await install(installer, installDir, isolation.env);
     assert.equal(upgradedExecutable, executable);
+    const currentBuild = await inspectInstalledBuild(upgradedExecutable,isolation.env);
+    assert.equal(currentBuild.version,manifest.version,'安装后的版本必须与本次发布版本一致');
+    if (process.argv[3]) {
+      const versionPattern = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+      assert.match(previousBuild.version,versionPattern);
+      assert.match(currentBuild.version,versionPattern);
+      const previousParts = previousBuild.version.split('.').map(Number);
+      const currentParts = currentBuild.version.split('.').map(Number);
+      const differingIndex = currentParts.findIndex((value,index) => value !== previousParts[index]);
+      assert.ok(differingIndex >= 0 && currentParts[differingIndex] > previousParts[differingIndex],'跨版本回归必须从旧版升级到更高版本');
+      assert.notEqual(previousBuild.archiveHash,currentBuild.archiveHash,'跨版本回归必须使用不同构建');
+    }
     installedApp = await startInstalledApp(upgradedExecutable, isolation);
     await inspectInstalledRenderer(installedApp.cdp, 3);
     const connection = await exerciseFormalConnection(installedApp.cdp);
@@ -508,6 +534,9 @@ async function orchestrate() {
     await assertFilesUnchanged(protectedFiles);
     const result = {
       installedTwice: true,
+      previousVersion: previousBuild.version,
+      currentVersion: currentBuild.version,
+      distinctBuilds: previousBuild.archiveHash !== currentBuild.archiveHash,
       guiCredentialsVerified: 3,
       primaryAndBackupVaultPreserved: true,
       originalPluginYamlPreserved: pluginFiles.length,

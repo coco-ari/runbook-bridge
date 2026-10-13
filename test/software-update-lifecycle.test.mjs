@@ -70,7 +70,7 @@ test('自动检查启动立即执行，每十五分钟重试且只通知每个�
 });
 
 test('自动检查仅处理允许的空闲阶段，下载和安装状态不重新检查',async () => {
-  for (const phase of ['idle','current','error','no-source','source-required','unsupported','checking','available','downloading','downloaded','installing']) {
+  for (const phase of ['idle','current','error','no-source','source-required','unsupported','checking','available','downloading','downloaded','installing','opening']) {
     const calls = [];
     const controller = startSoftwareUpdateChecks({invoke:async action => {
       calls.push(action);

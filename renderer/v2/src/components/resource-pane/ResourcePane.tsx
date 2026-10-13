@@ -252,8 +252,8 @@ function EnvironmentGroup({
         size="xs"
         variant="default"
       >
-        <div className="ml-1 w-7 shrink-0 self-center">
-          <AccordionTrigger aria-label={`${expanded ? "收起" : "展开"}「${environment.name}」的插件`} className="h-7 w-7 flex-none items-center justify-center gap-0 rounded-md p-0 hover:bg-foreground/5 hover:no-underline [&_[data-slot=accordion-trigger-icon]]:ml-0 [&_[data-slot=accordion-trigger-icon]]:size-3.5" data-testid={`environment-expand-${environment.environmentId}`}>
+        <div className="ml-1 w-8 shrink-0 self-center">
+          <AccordionTrigger aria-label={`${expanded ? "收起" : "展开"}「${environment.name}」的插件`} className="h-8 w-8 flex-none items-center justify-center gap-0 rounded-md p-0 hover:bg-foreground/5 hover:no-underline [&_[data-slot=accordion-trigger-icon]]:ml-0 [&_[data-slot=accordion-trigger-icon]]:size-3.5" data-testid={`environment-expand-${environment.environmentId}`}>
             <span className="sr-only">{expanded ? "收起" : "展开"}插件</span>
           </AccordionTrigger>
         </div>

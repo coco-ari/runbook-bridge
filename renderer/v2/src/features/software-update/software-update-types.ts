@@ -1,6 +1,7 @@
 export type SoftwareUpdateRequest =
   | { readonly action: "status" | "check" | "download" | "cancel" | "install" }
   | { readonly action: "source"; readonly repositoryId: string | null }
+  | { readonly action: "open-installer" | "reveal-installer"; readonly downloadId: string }
 
 export interface SoftwareUpdateSource {
   readonly repositoryId: string
@@ -9,7 +10,10 @@ export interface SoftwareUpdateSource {
 }
 
 export interface SoftwareUpdateState {
-  readonly phase: "idle" | "no-source" | "source-required" | "unsupported" | "checking" | "current" | "available" | "downloading" | "downloaded" | "installing" | "error"
+  readonly phase: "idle" | "no-source" | "source-required" | "unsupported" | "checking" | "current" | "available" | "downloading" | "downloaded" | "installing" | "opening" | "error"
+  readonly installationMode: "restart" | "manual-dmg"
+  readonly downloadId: string | null
+  readonly installerOpened: boolean
   readonly currentVersion: string
   readonly availableVersion: string | null
   readonly releaseNotes: string

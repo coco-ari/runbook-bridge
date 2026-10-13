@@ -48,7 +48,7 @@
 - 包验证仍检查源码和 Renderer 哈希、源文件排除、全部 42 个 MCP 工具及真实本机协议驱动，不降低既有断言。
 - `ELECTRON_RUN_AS_NODE=1` 是现有 MCP 启动契约，签名配置不得关闭对应 Fuse。文档使用实际安装的 `.app` 内可执行文件及 `mcp-v2.mjs` 路径。
 - `ssh2` 可选原生加密扩展需要检查目标架构和 Electron ABI；不能把 Windows 的 `node_modules` 复制到 Mac。优先使用现有 JavaScript 回退并以包内真实 SSH 协议测试确认。
-- 开发构建与可公开分发的签名构建区分记录。正式分发需一致 Developer ID 签名、Hardened Runtime、最小必要 entitlements、Apple 公证及 stapling；Apple 账户和证书仅放 CI secret，不进入源码。
+- 开发构建、未公证手动安装通道与签名公证正式构建区分记录。签名公证正式分发需一致 Developer ID 签名、Hardened Runtime、最小必要 entitlements、Apple 公证及 stapling；Apple 账户和证书仅放 CI secret，不进入源码。无需 Apple 账号的 DMG 辅助更新及其验收边界见 [软件更新](software-updates.md#mac-手动覆盖安装)。
 - CI 分别构建 Windows、Mac arm64、Mac x64。发布先汇总所有平台验证后的产物，再由单个发布任务上传，避免多个任务创建同一 Release 的竞态。
 
 ## 验收矩阵

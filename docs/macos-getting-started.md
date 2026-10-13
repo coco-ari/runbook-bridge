@@ -4,7 +4,7 @@ macOS 支持已合并到 `main`，与 Windows 共用业务和界面代码。历�
 
 CI 状态按提交核对：[三平台 CI](https://github.com/coco-ari/runbook-bridge/actions/workflows/ci.yml)。早期终端命令审计失败属于当时运行记录，不能当作所有后续版本的当前状态；同样，本机测试通过不代表 Windows、Intel Mac 和正式分发验收均通过。
 
-普通 CI 继续检查三平台，成功运行的测试安装包位于对应 Actions 的 installers 归档中；开发测试包不作为 Mac 正式分发包。
+普通 CI 继续检查三平台，成功运行的测试安装包位于对应 Actions 的 installers 归档中。另有手动触发的 `Cloud macOS manual package` 工作流，准备无需 Apple 账号的临时签名、未公证手动安装包；它不等于签名公证正式发布，也不会自动部署。
 
 在 Mac 安装 Node.js 22+、Corepack 和 Xcode Command Line Tools 后，使用仓库锁定依赖构建：
 
@@ -17,7 +17,9 @@ corepack pnpm run test:ui:all
 corepack pnpm run dist:mac:arm64
 ```
 
-Intel Mac 使用 `corepack pnpm run dist:mac:x64`，`dist:mac` 默认构建当前 Mac 的架构。两个架构都输出 DMG 与 ZIP。普通构建使用临时签名，供开发验收；正式分发必须完成 Developer ID 签名与 Apple 公证，参见 [测试与交付验证指南](full-function-verification.md)。
+Intel Mac 使用 `corepack pnpm run dist:mac:x64`，`dist:mac` 默认构建当前 Mac 的架构。两个架构都输出 DMG 与 ZIP。普通构建使用临时签名，可供开发验收及明确标注未公证的手动安装通道使用；Developer ID 签名、公证正式构建继续使用 `AI_OPS_MAC_RELEASE=1`，参见 [测试与交付验证指南](full-function-verification.md)。
+
+包含辅助更新功能的打包版本可在“关于 → 软件更新”选择 HTTPS 云仓库，自动检查后由用户点击下载。DMG 校验通过后可打开安装包，按界面说明退出工作台并覆盖原应用。此流程不依赖 Apple 开发者账号，不自动替换或重启；系统仍可能提示无法验证开发者。第一次需手动安装包含此功能的版本，旧版重启后不恢复下载状态。完整发布顺序、缓存规则与验收要求见 [软件更新](software-updates.md#mac-手动覆盖安装)。
 
 安装后可在 **配置 → Agent 接入 → Codex** 一键写入当前用户的 MCP 配置，无需 Codex CLI；备份、同名冲突与配置范围见 [首次使用](getting-started.md#3-为-agent-配置-mcp)。如果使用 CLI 手动注册，macOS 的命令为：
 

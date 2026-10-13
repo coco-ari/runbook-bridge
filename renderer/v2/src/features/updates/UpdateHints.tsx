@@ -28,7 +28,7 @@ export function SoftwareUpdateHint({ compact = false }: { readonly compact?: boo
   if (!item || !updates) return null
   return <div className="shrink-0 border-t border-sidebar-border px-2 py-2" data-testid="software-update-hint">
     <Button variant="ghost" className="h-auto w-full justify-start gap-2 px-1.5 py-1.5 text-left" disabled={updates.busy} onClick={() => updates.view(item)} title={item.title}>
-      <DownloadSimple className="shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 whitespace-normal text-xs leading-4">{item.kind === "downloaded" ? "新版本已就绪" : "新版本可用"}{!compact ? <span className="mt-0.5 block text-[11px] text-muted-foreground">{item.kind === "downloaded" ? "立即更新" : "下载新版本"}</span> : null}</span>{!compact ? <ArrowRight className="shrink-0 text-muted-foreground" /> : null}
+      <DownloadSimple className="shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 whitespace-normal text-xs leading-4">{item.kind === "downloaded" ? "新版本已就绪" : "新版本可用"}{!compact ? <span className="mt-0.5 block text-[11px] text-muted-foreground">{updateAction(item)}</span> : null}</span>{!compact ? <ArrowRight className="shrink-0 text-muted-foreground" /> : null}
     </Button>
   </div>
 }

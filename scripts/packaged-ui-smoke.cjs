@@ -802,7 +802,14 @@ async function main() {
     assert.equal(cloudContract.invalid.error.code,'CLOUD_INVALID_ARGUMENT');
     const updateContract = await running.cdp.evaluate("(async () => ({status:await window.aiOps.v2.softwareUpdate({action:'status'}),invalid:await window.aiOps.v2.softwareUpdate({action:'status',url:'https://fixture.example.invalid/installer.exe'}),unknown:await window.aiOps.v2.softwareUpdate({action:'execute'})}))()");
     assert.equal(updateContract.status.ok,true);
-    assert.equal(updateContract.status.data.phase,process.platform === 'win32' ? 'no-source' : 'unsupported');
+    assert.equal(updateContract.status.data.phase,['win32','darwin'].includes(process.platform) ? 'no-source' : 'unsupported');
+    assert.equal(updateContract.status.data.installationMode,process.platform === 'darwin' ? 'manual-dmg' : 'restart');
+    assert.equal(updateContract.status.data.downloadId,null);
+    assert.equal(updateContract.status.data.installerOpened,false);
+    const macUpdateContract = await running.cdp.evaluate("(async () => ({missing:await window.aiOps.v2.softwareUpdate({action:'open-installer'}),path:await window.aiOps.v2.softwareUpdate({action:'open-installer',downloadId:'synthetic',path:'/tmp/other.dmg'}),reveal:await window.aiOps.v2.softwareUpdate({action:'reveal-installer',downloadId:'synthetic'})}))()");
+    assert.equal(macUpdateContract.missing.error.code,'UPDATE_INVALID_ARGUMENT');
+    assert.equal(macUpdateContract.path.error.code,'UPDATE_INVALID_ARGUMENT');
+    assert.equal(macUpdateContract.reveal.error.code,'UPDATE_NO_SOURCE');
     assert.deepEqual(updateContract.status.data.sources,[]);
     assert.equal(updateContract.status.data.source,null);
     assert.equal(updateContract.invalid.ok,false);

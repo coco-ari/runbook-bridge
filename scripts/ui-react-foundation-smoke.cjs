@@ -3808,7 +3808,7 @@ async function assertViewport(win,width,height,theme,capture) {
         unifiedContainer:Boolean(
           row.getAttribute('data-slot') === 'accordion-item' &&
           parseFloat(rowStyle.borderTopWidth) >= 1 &&
-          Math.abs(parseFloat(rowStyle.borderRadius) - 6) <= 1 &&
+          Math.abs(parseFloat(rowStyle.borderRadius) - 10) <= 1 &&
           (row.dataset.expanded !== 'true' || !content || (
             content.getBoundingClientRect().left >= rowRect.left - 1 &&
             content.getBoundingClientRect().right <= rowRect.right + 1
@@ -4040,7 +4040,7 @@ async function assertViewport(win,width,height,theme,capture) {
     assert.equal(row.noOverlap,true,`${width}x${height} environment action overlap`);
   }
   for (const row of snapshot.pluginRows) {
-    assert.ok(Math.abs(row.height - 40) <= 1,`${width}x${height} 插件行保持约40px：${row.height}`);
+    assert.ok(Math.abs(row.height - 48) <= 1,`${width}x${height} 双行插件名称与状态保持约48px：${row.height}`);
     assert.equal(row.hasStatus,true,`${width}x${height} plugin status missing`);
     assert.equal(row.actionsAreSibling,true,`${width}x${height} nested plugin action`);
     assert.equal(row.noOverlap,true,`${width}x${height} plugin action overlap`);
@@ -4242,7 +4242,7 @@ async function run() {
       assert.deepEqual(externalRequests,[]);
       assert.deepEqual(rendererErrors,[]);
       assert.deepEqual(rendererWindowErrors,[]);
-      process.stdout.write('软件更新 UI 专项通过：来源选择、检查、下载进度、取消、切页恢复和安装确认；无外部请求。\n');
+      process.stdout.write('软件更新 UI 专项通过：来源选择、下载进度与取消、Windows 安装确认、Mac 打开与 Finder 定位及覆盖说明；无外部请求。\n');
       return;
     }
     if (app.commandLine.hasSwitch('update-center-only')) {
@@ -4267,7 +4267,7 @@ async function run() {
       });
       await collectWindowErrorDiagnostics(win);
       assert.deepEqual(externalRequests,[]); assert.deepEqual(rendererErrors,[]); assert.deepEqual(rendererWindowErrors,[]);
-      process.stdout.write('更新提醒 UI 专项通过：统一浮层、持续消息、直接下载与安装确认、通知偏好、窄屏滚动及导航。\n');
+      process.stdout.write('更新提醒 UI 专项通过：持续消息、Windows 安装确认、Mac 打开安装包后保留提醒、通知偏好、窄屏滚动及导航。\n');
       return;
     }
     if (process.env.RUNBOOK_BRIDGE_EDITOR_LAYOUT_REGRESSION_ONLY === '1') {

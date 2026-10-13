@@ -32,7 +32,7 @@ const UpdatesContext = createContext<UpdatesController | null>(null)
 export const useUpdates = () => useContext(UpdatesContext)
 
 export function updateAction(item: UpdateNotice) {
-  return item.type === "software" ? item.kind === "downloaded" ? "立即更新" : "下载新版本"
+  return item.type === "software" ? item.kind === "downloaded" ? item.installationMode === "manual-dmg" ? "打开安装包" : "立即更新" : "下载新版本"
     : item.kind === "deleted" ? "查看详情" : "立即更新"
 }
 
@@ -169,7 +169,8 @@ export function UpdateCenterProvider({ api, onNavigate, confirmations, projects,
     } catch { if (mounted.current) setError("无法保存提醒设置，请重试。") }
     finally { savingRef.current = false; if (mounted.current) { setSaving(false); void refresh() } }
   }
-  const matches = (item: UpdateNotice, current: typeof software.state) => Boolean(item.version && current?.source?.repositoryId === item.repositoryId && current.availableVersion === item.version)
+  const matches = (item: UpdateNotice, current: typeof software.state) => Boolean(item.version && current?.source?.repositoryId === item.repositoryId && current.availableVersion === item.version
+    && (!item.sourceOrigin || item.sourceOrigin === current.source.origin) && (!item.downloadId || item.downloadId === current.downloadId))
   const actOnSoftware = async (item: UpdateNotice, install = false) => {
     if (acting.current) return
     acting.current = true; setActingId(item.id); setActionError("")
@@ -183,7 +184,12 @@ export function UpdateCenterProvider({ api, onNavigate, confirmations, projects,
         const result = await software.run({ action: "install" })
         if (!result || result.phase === "error") { navigating.current = false; show(); toast.error(result?.error?.message ?? "更新未完成，请查看消息中心后重试。") }
       } else if (current?.phase === "downloaded") {
-        navigating.current = true; setOpen(false); setInstallTarget(item)
+        if (current.installationMode === "manual-dmg") {
+          if (!current.downloadId) { fail("安装包状态已变化，请刷新后重试。"); return }
+          const result = await software.run({ action: "open-installer", downloadId: current.downloadId })
+          if (result?.phase === "downloaded") navigate(item)
+          else fail("打开安装包未完成，请查看错误提示后重试。")
+        } else { navigating.current = true; setOpen(false); setInstallTarget(item) }
       } else {
         navigating.current = false; show()
         if (current?.phase === "error") current = await software.run({ action: "check" })
@@ -232,8 +238,8 @@ export function UpdateCenterProvider({ api, onNavigate, confirmations, projects,
             <div className="divide-y divide-border/60">{items.map(item => {
               const current = item.type === "software" && matches(item, software.state) ? software.state : null
               const downloading = current?.phase === "downloading"
-              const installing = current?.phase === "installing"
-              const label = downloading ? `下载中 ${Math.floor(current.progress?.percent ?? 0)}%` : installing ? "正在更新…" : current?.phase === "downloaded" ? "立即更新" : updateAction(item)
+              const installing = current?.phase === "installing" || current?.phase === "opening"
+              const label = downloading ? `下载中 ${Math.floor(current.progress?.percent ?? 0)}%` : current?.phase === "opening" ? "正在打开…" : installing ? "正在更新…" : current?.phase === "downloaded" ? current.installationMode === "manual-dmg" ? "打开安装包" : "立即更新" : updateAction(item)
               return <article key={item.id} className="py-3" data-testid="update-notice" data-update-id={item.id}>
                 <div className="flex items-start gap-2"><h3 className="min-w-0 flex-1 break-words text-sm font-semibold leading-5">{item.title}</h3>{item.kind === "conflict" ? <span className="shrink-0 rounded bg-warning/10 px-1.5 py-0.5 text-[11px] text-warning">本地有修改</span> : null}</div>
                 <p className="mt-1 break-words text-xs leading-5 text-muted-foreground">{item.description}</p>

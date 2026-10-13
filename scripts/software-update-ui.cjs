@@ -8,13 +8,21 @@ module.exports = async function exerciseSoftwareUpdate({evaluate,waitFor,pressKe
   ];
   let state = {phase:'no-source',currentVersion:version,availableVersion:null,releaseNotes:'',releaseDate:null,progress:null,error:null,checkedAt:null,source:null,sources:[],supported:true};
   const requests = [];
-  setHandler(request => {
+  let finishOpen;
+  setHandler(async request => {
     requests.push(request);
     if (request.action === 'source') state = {...state,phase:'idle',source:sources.find(source => source.repositoryId === request.repositoryId)};
     if (request.action === 'check') state = {...state,phase:'available',availableVersion:'99.0.0',releaseNotes:'模拟版本说明\n<script>window.__updateNotesExecuted = true</script>',releaseDate:'2026-10-02T00:00:00.000Z',checkedAt:'2026-10-02T00:00:00.000Z',error:null};
     if (request.action === 'download') state = {...state,phase:'downloading',progress:{percent:25,transferred:256,total:1024}};
     if (request.action === 'cancel') state = {...state,phase:'available',progress:null};
     if (request.action === 'install') state = {...state,phase:'error',error:{code:'UPDATE_WORKSPACE_BUSY',message:'请先结束 SQL 事务和文件传输，再更新。'}};
+    if (request.action === 'open-installer') {
+      assert.equal(request.downloadId,state.downloadId);
+      state = {...state,phase:'opening'};
+      await new Promise(resolve => { finishOpen = resolve; });
+      state = {...state,phase:'downloaded',installerOpened:true};
+    }
+    if (request.action === 'reveal-installer') assert.equal(request.downloadId,state.downloadId);
     return state;
   });
   const click = async id => {
@@ -74,6 +82,23 @@ module.exports = async function exerciseSoftwareUpdate({evaluate,waitFor,pressKe
     await status('更新暂未完成');
     assert.equal(requests.filter(request => request.action === 'install').length,1,'仅明确确认后发送一次安装请求');
     assert.match(await evaluate('document.querySelector("[data-testid=software-update-error]").textContent'),/SQL 事务/u);
+    state = {...state,phase:'downloaded',installationMode:'manual-dmg',downloadId:'synthetic-mac-download',installerOpened:false,error:null};
+    await status('更新已下载');
+    await waitFor('Boolean(document.querySelector("[data-testid=software-update-open]"))','Mac 打开入口');
+    assert.equal(await evaluate('Boolean(document.querySelector("[data-testid=software-update-install]"))'),false,'Mac 不显示重启安装');
+    assert.match(await evaluate('document.querySelector("[data-testid=software-update-mac-instructions]").textContent'),/原安装位置.*替换/u);
+    await click('software-update-open');
+    await status('正在校验并打开安装包…');
+    assert.equal(await evaluate('Boolean(document.querySelector("[data-testid=software-update-confirm][data-state=open]"))'),false,'Mac 不进入 Windows 安装确认');
+    assert.equal(requests.filter(request => request.action === 'install').length,1,'Mac 不发起自动安装');
+    finishOpen();
+    await status('更新已下载');
+    await waitFor('document.querySelector("[data-testid=software-update-open]")?.textContent.includes("重新打开")','打开后仍可重试');
+    assert.match(await evaluate('document.querySelector("[data-testid=software-update-panel]").textContent'),/当前运行版本尚未更新/u);
+    await click('software-update-reveal');
+    await waitFor('!document.querySelector("[data-testid=software-update-reveal]").disabled','Finder 请求结束');
+    assert.equal(requests.filter(request => request.action === 'reveal-installer').length,1);
+    if (capture) await capture();
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth && document.querySelector("[data-testid=settings-main]").scrollWidth <= document.querySelector("[data-testid=settings-main]").clientWidth'),true,'更新面板不能产生水平溢出');
     await click('settings-back');
     await waitFor('!document.querySelector("[data-testid=settings-page]")','关闭更新设置');
