@@ -83,6 +83,7 @@ jobs:
         timeout-minutes: 8
         env:
           PREVIOUS_DMG: ${{ steps.previous.outputs.dmg }}
+          AI_OPS_MAC_TEST_KEYCHAIN: "1"
         run: |
           VERSION=$(node -p "require('./package.json').version")
           node scripts/install-upgrade-regression.cjs "dist/RunbookBridge-${VERSION}-mac-${{ matrix.arch }}.dmg" "$PREVIOUS_DMG"

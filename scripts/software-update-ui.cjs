@@ -43,7 +43,9 @@ module.exports = async function exerciseSoftwareUpdate({evaluate,waitFor,pressKe
     await evaluate('document.querySelector("[data-testid=software-update-source]").focus()');
     await pressKey('SPACE');
     await waitFor('Boolean(document.querySelector("[role=option]"))','更新来源选项');
+    await waitFor('document.activeElement?.getAttribute("role") === "option"','更新来源选项取得键盘焦点');
     await pressKey('END');
+    await waitFor('document.activeElement === [...document.querySelectorAll("[role=option]")].at(-1)','键盘定位最后一个更新来源');
     await pressKey('ENTER');
     await status('尚未检查更新');
     assert.equal(state.source.repositoryId,'fixture-two');

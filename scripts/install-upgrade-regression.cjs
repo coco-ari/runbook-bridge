@@ -8,6 +8,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const { packagedPaths } = require('./packaged-paths.cjs');
+const { createMacTestKeychain } = require('./mac-test-keychain.cjs');
 
 const PROJECT_ID = 'upgrade-regression';
 const ENVIRONMENT_ID = 'production';
@@ -264,6 +265,12 @@ async function stopInstalledApp(appProcess) {
     const killedAt = Date.now();
     while (!exited() && Date.now() - killedAt < 5_000) await delay(100);
   }
+  if (!exited() && process.platform === 'darwin') {
+    // 系统授权窗口可能阻塞主线程，仅强制结束本次回归启动的子进程。
+    child.kill('SIGKILL');
+    const killedAt = Date.now();
+    while (!exited() && Date.now() - killedAt < 5_000) await delay(100);
+  }
   assert.equal(exited(),true,'覆盖安装之前应用必须完全退出');
 }
 
@@ -497,10 +504,16 @@ async function orchestrate() {
     fsp.mkdir(path.dirname(installDir), { recursive: true }),
   ]);
   let installedApp = null;
+  let testKeychain = null;
   let regressionFailed = false;
   try {
     process.stdout.write('安装回归：安装旧版或基准包。\n');
     const executable = await install(previousInstaller, installDir, isolation.env);
+    testKeychain = await createMacTestKeychain({
+      root: temporaryRoot,
+      bundles: [packagedPaths(executable).bundle, packagedPaths().bundle],
+      run: runProcess,
+    });
     const previousBuild = await inspectInstalledBuild(executable,isolation.env);
     const {appAsar} = packagedPaths(executable);
     process.stdout.write(`Installed renderer expected URL: ${pathToFileURL(path.join(appAsar,'renderer-build','v2','index.html')).href}\n`);
@@ -580,6 +593,7 @@ async function orchestrate() {
     throw error;
   } finally {
     if (installedApp) await stopInstalledApp(installedApp).catch(() => undefined);
+    if (testKeychain) await testKeychain.restore();
     const keep = process.env.AI_OPS_KEEP_INSTALL_REGRESSION === '1';
     const temporaryBase = path.resolve(os.tmpdir()) + path.sep;
     const resolvedTemporaryRoot = path.resolve(temporaryRoot);

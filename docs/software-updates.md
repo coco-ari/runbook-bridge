@@ -35,7 +35,7 @@ Windows 使用 NSIS 在线安装。macOS 使用独立 DMG 下载驱动，支持 
 
 1. 保存工作内容，结束 SQL 事务、传输及其他活动操作，通过应用菜单退出工作台，并关闭正在使用它的 Agent 客户端。
 2. 将 DMG 中的“Agent运维工作台”拖到原安装位置，选择“替换”。通常为“应用程序”；自定义安装请保持原路径。若从 DMG 运行，请先复制到“应用程序”。
-3. 从原安装位置启动新版，再重新打开 Agent 客户端。原项目、配置及加密凭据文件保留；临时签名变化下的钥匙串授权和凭据可读性仍须在实际版本间验收。
+3. 从原安装位置启动新版，再重新打开 Agent 客户端。原项目、配置及加密凭据文件保留。临时签名变化可能使系统再次请求访问“AI 运维工具 Safe Storage”钥匙串；确认来源后，在系统窗口输入 Mac 登录密码并允许访问。请勿删除该条目，否则原凭据可能无法解密。拒绝授权后应重新启动并完成授权。
 
 打开后继续保留待安装提醒；只有新版运行并检查到已是当前版本时才消失。本版不保存跨重启下载状态、不增加专用退出按钮、不自动替换应用。若仍启动旧版，请重新检查并下载；已交给系统的 DMG 会保留在系统临时目录，可继续从已打开的窗口安装。安装完成并推出磁盘映像后，可以删除定位到的 DMG。未交给系统的下载在取消或正常释放时清理，异常终止可能留下系统临时文件。
 
@@ -81,6 +81,8 @@ node scripts/prepare-cloud-update.mjs --platform darwin --arch x64
 macOS 输入文件为 `dist/RunbookBridge-<版本>-mac-<架构>.zip` 和同名 `.dmg`，两者都必须存在；输出位于 `artifacts/cloud-updates/darwin/<架构>/`，名称使用 `RunbookBridge-<版本>-darwin-<架构>.zip/.dmg` 和 `latest-mac.yml`。Intel 与 Apple Silicon 各用独立清单。
 
 客户端只下载清单中的 DMG，ZIP 继续保留以兼容现有产物结构。手动触发 `.github/workflows/cloud-macos-package.yml`（Cloud macOS manual package），指定旧版源码提交 `previous_ref`，分别构建两种架构，运行检查、测试、更新 UI、包验证以及旧版到新版的隔离覆盖回归，验证版本确实提高、构建内容不同、项目及凭据可读、MCP 可重新接入，输出 `cloud-updates-darwin-<架构>-manual-unnotarized` 归档。该流程无需 Apple secrets，只准备产物，不部署云服务或创建 GitHub Release；Runner 上的自动回归不替代普通用户环境下的 Gatekeeper 和 Finder 交互验收。
+
+跨版本自动回归设置 `AI_OPS_MAC_TEST_KEYCHAIN=1`，仅在 GitHub Runner 内创建临时钥匙串，预授权本次旧版和新版两个应用包，运行结束后恢复原始默认钥匙串及搜索列表并删除测试钥匙串。合成凭据仍经过真实 Electron `safeStorage` 加解密，原密文在覆盖前后必须保持不变。此预授权只隔离 CI 的系统交互，不改变客户端钥匙串权限，也不代表已验收用户手动允许或拒绝授权的交互。[Electron 官方说明](https://www.electronjs.org/docs/latest/api/safe-storage)解释了签名变化触发重复授权的原因。
 
 需要签名、公证的正式构建时，按 [测试与交付验证指南](./full-function-verification.md) 配置证书，使用 `AI_OPS_MAC_RELEASE=1`；缺少凭据仍明确失败，现有 Release 工作流不降级为未公证发布。
 
