@@ -3779,12 +3779,11 @@ async function assertViewport(win,width,height,theme,capture) {
           && (!typeBadge || (contained(typeRect,triggerRect) && contained(typeLabelRect,typeRect) && !intersects(typeRect,actionsRect)))
           && name && contained(name.getBoundingClientRect(),triggerRect) && name.getBoundingClientRect().width >= 16),
         statusIdentity:Boolean(status?.getAttribute('title') && statusText?.textContent.trim() === status.getAttribute('title')),
-        statusCompactMatchesWidth:resourceRect.width < 400 ? statusTextHidden : !statusTextHidden,
+        // 双行环境卡片固定使用紧凑状态图标，身份放在名称下方。
+        statusUsesCompactIndicator:statusTextHidden,
         environmentType:typeBadge?.dataset.environmentType ?? null,
         environmentTypeReadable:!typeBadge || (typeRect.width >= 24 && parseFloat(getComputedStyle(typeBadge).fontSize) >= 12),
-        environmentTypeAligned:!typeBadge || (resourceRect.width < 280
-          ? Boolean(name && typeRect.top >= name.getBoundingClientRect().bottom - 1)
-          : Boolean(statusRect && Math.abs((typeRect.top + typeRect.bottom - statusRect.top - statusRect.bottom) / 2) <= 1)),
+        environmentTypeAligned:!typeBadge || Boolean(name && typeRect.top >= name.getBoundingClientRect().bottom - 1),
         expansionEvidence:{titleExists:Boolean(trigger),expandExists:Boolean(expand),nested:Boolean(trigger && expand && trigger.contains(expand)),titleExpanded:trigger?.getAttribute('aria-expanded'),expandExpanded:expand?.getAttribute('aria-expanded'),rowExpanded:row.dataset.expanded,expandName:expand?.getAttribute('aria-label'),controls:expand?.getAttribute('aria-controls'),contentMounted:Boolean(content),contentId:content?.id},
         expanded:row.dataset.expanded === 'true',
         boxShadow,
@@ -4025,9 +4024,9 @@ async function assertViewport(win,width,height,theme,capture) {
     assert.equal(row.hasStatus,true,`${width}x${height} environment status missing`);
     assert.equal(row.childContentBounded,true,`${width}x${height} 环境内部状态、身份与文字不能越过选择按钮或覆盖实际动作：${row.id} ${JSON.stringify(row.childContentEvidence)}`);
     assert.equal(row.statusIdentity,true,`${width}x${height} 紧凑状态仍保留完整文字与提示`);
-    assert.equal(row.statusCompactMatchesWidth,true,`${width}x${height} 运行状态按实际资源栏宽度展示：${JSON.stringify(row.childContentEvidence)}`);
+    assert.equal(row.statusUsesCompactIndicator,true,`${width}x${height} 运行状态保留紧凑图标和完整提示：${JSON.stringify(row.childContentEvidence)}`);
     assert.equal(row.environmentTypeReadable,true,`${width}x${height} 生产/测试身份保持完整12px文字`);
-    assert.equal(row.environmentTypeAligned,true,`${width}x${height} 环境类型在窄栏置于名称下方，宽栏与状态对齐：${JSON.stringify(row.childContentEvidence)}`);
+    assert.equal(row.environmentTypeAligned,true,`${width}x${height} 环境类型置于名称下方：${JSON.stringify(row.childContentEvidence)}`);
     assert.equal(row.environmentType,operationEnvironments.find(environment => environment.environmentId === row.id)?.environmentType === 'unspecified'
       ? null : operationEnvironments.find(environment => environment.environmentId === row.id)?.environmentType,`${width}x${height} 环境身份按真实数据保留`);
     assert.equal(row.independentExpansion,true,`${width}x${height} 环境展开和选择按钮互相独立：${row.id} ${JSON.stringify(row.expansionEvidence)}`);

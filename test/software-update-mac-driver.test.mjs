@@ -18,7 +18,7 @@ function metadata(arch = 'arm64') {
   }))};
 }
 async function harness(t,options = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(),'mac-update-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'mac-update-test-')));
   const arch = options.arch ?? 'arm64';
   const calls = {requests:[],opened:[],revealed:[],quarantined:[]};
   const manifest = metadata(arch);
