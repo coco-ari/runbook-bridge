@@ -6,7 +6,7 @@
 - [升级说明、备份、限制与反馈](beta-guide.md)
 - [工作区与 Agent 使用指南](workspace-guide.md)
 - [macOS 源码构建与 MCP](macos-getting-started.md)
-- [2.0.4 云仓库版与 Markdown、工作台交互改进](releases/v2.0.4.md)
+- [2.0.5 云仓库版与数据库一键保存改进](releases/v2.0.5.md)
 - [2.0.3 云仓库版与 Redis 长 JSON 修复](releases/v2.0.3.md)
 - [2.0.2 云仓库版与在线安装修复](releases/v2.0.2.md)
 - [2.0.1 云仓库版历史说明](releases/v2.0.1.md)
