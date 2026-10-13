@@ -399,11 +399,14 @@ async function assertFilesUnchanged(files) {
 
 async function inspectInstalledBuild(executable, env) {
   const {appAsar} = packagedPaths(executable);
-  const program = "const fs=require('node:fs');const path=require('node:path');const crypto=require('node:crypto');const archive=process.env.AI_OPS_INSPECT_ASAR;const metadata=JSON.parse(fs.readFileSync(path.join(archive,'package.json'),'utf8'));process.stdout.write(JSON.stringify({version:metadata.version,archiveHash:crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex')}));";
+  const program = "const fs=require('node:fs');const path=require('node:path');const archive=process.env.AI_OPS_INSPECT_ASAR;const metadata=JSON.parse(fs.readFileSync(path.join(archive,'package.json'),'utf8'));process.stdout.write(JSON.stringify({version:metadata.version}));";
   const result = await runProcess(executable,['--eval',program],{
     env:{...env,ELECTRON_RUN_AS_NODE:'1',AI_OPS_INSPECT_ASAR:appAsar},
   });
-  return JSON.parse(result.stdout);
+  // Electron 按虚拟目录读取 ASAR，物理归档摘要由外层 Node 进程计算。
+  const hash = crypto.createHash('sha256');
+  for await (const chunk of fs.createReadStream(appAsar)) hash.update(chunk);
+  return {...JSON.parse(result.stdout),archiveHash:hash.digest('hex')};
 }
 
 function assertMacInstallDirectory(installDir) {
@@ -566,8 +569,10 @@ async function orchestrate() {
   }
 }
 
-orchestrate().catch((error) => {
+if (require.main === module) orchestrate().catch((error) => {
   process.stderr.write(`${error.stack || error.message}\n`);
   if (error.cause) process.stderr.write(`${error.cause.stack || error.cause.message}\n`);
   process.exitCode = 1;
 });
+
+module.exports = { inspectInstalledBuild };
