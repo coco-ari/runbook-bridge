@@ -52,8 +52,12 @@ test('测试钥匙串仅授权两个构建，结束时恢复原始默认项和�
   await keychain.authorizeUpgrade(options.bundles[0]);
   const partition = calls.find(args => args[0] === 'set-generic-password-partition-list');
   assert.equal(partition[partition.indexOf('-S') + 1], `cdhash:${'a'.repeat(40)},cdhash:${'b'.repeat(40)}`);
-  assert.equal(calls.filter(args => args[0] === 'add-generic-password').length, 1);
-  assert.ok(!calls.flat().includes('-U'));
+  const updates = calls.filter(args => args[0] === 'add-generic-password');
+  assert.equal(updates.length, 2);
+  assert.ok(updates[1].includes('-U'));
+  assert.equal(updates[1][updates[1].indexOf('-w') + 1], add[add.indexOf('-w') + 1]);
+  assert.deepEqual(updates[1].slice(-3), ['-T', options.bundles[0], add.at(-1)]);
+  assert.equal(calls.at(-1)[calls.at(-1).indexOf('-S') + 1], `cdhash:${'b'.repeat(40)}`);
   await keychain.restore();
   assert.deepEqual(calls.at(-3), ['default-keychain', '-d', 'user', '-s', '/mock/login.keychain-db']);
   assert.deepEqual(calls.at(-2), ['list-keychains', '-d', 'user', '-s', '/mock/login.keychain-db', '/mock/other.keychain-db']);

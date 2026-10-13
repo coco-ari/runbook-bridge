@@ -79,6 +79,13 @@ jobs:
           corepack pnpm run "dist:mac:$TARGET_ARCH"
           PREVIOUS_VERSION=$(node -p "require('./package.json').version")
           echo "dmg=$PREVIOUS_ROOT/dist/RunbookBridge-${PREVIOUS_VERSION}-mac-${TARGET_ARCH}.dmg" >> "$GITHUB_OUTPUT"
+      - name: 保存旧版回归基准包
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-upgrade-baseline-${{ matrix.arch }}
+          path: ${{ steps.previous.outputs.dmg }}
+          if-no-files-found: error
+          retention-days: 7
       - name: 隔离安装与跨版本覆盖回归
         timeout-minutes: 8
         env:
