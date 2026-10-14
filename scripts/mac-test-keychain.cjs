@@ -87,6 +87,9 @@ async function createMacTestKeychain({ root, bundles, run, env = process.env, pl
       async authorizeUpgrade(bundle) {
         assert.equal(bundle, bundles[0], '新版必须覆盖到同一测试安装位置');
         assert.equal(await signature(bundle), expectedUpgradeSignature, '覆盖后的签名必须与候选新版相同');
+        // 仅输出隔离测试项的账户和服务元数据，不请求或输出密钥数据。
+        const metadata = await security(['dump-keychain', keychain]);
+        for (const line of metadata.stdout.split('\n').filter(line => /"(?:acct|svce)"<blob>=/.test(line))) process.stdout.write(`测试钥匙串元数据：${line.trim()}\n`);
         // 重建临时测试项的访问控制，避免更新值时沿用旧版签名授权；合成密钥保持不变。
         await security(['delete-generic-password', '-a', 'AI 运维工具', '-s', 'AI 运维工具 Safe Storage', keychain]);
         await security(['add-generic-password', '-a', 'AI 运维工具', '-s', 'AI 运维工具 Safe Storage',
