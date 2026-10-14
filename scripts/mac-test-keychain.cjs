@@ -30,9 +30,12 @@ async function createMacTestKeychain({ root, bundles, run, env = process.env, pl
   const security = async args => {
     try {
       return await run('/usr/bin/security', args, { timeoutMs: 20_000 });
-    } catch {
+    } catch (error) {
       // 不把命令参数或系统输出写入错误，避免测试密码进入日志。
-      throw new Error(`临时测试钥匙串操作失败：${args[0]}`);
+      const status = error.message?.match(/^security exited with (\d+)(?::|$)/)?.[1];
+      const category = /specified item could not be found/i.test(error.message) ? '，测试项不存在'
+        : /interaction is not allowed/i.test(error.message) ? '，系统拒绝非交互授权' : '';
+      throw new Error(`临时测试钥匙串操作失败：${args[0]}${status ? `（退出码 ${status}${category}）` : ''}`);
     }
   };
   async function signature(bundle) {
