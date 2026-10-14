@@ -53,13 +53,10 @@ test('测试钥匙串仅授权两个构建，结束时恢复原始默认项和�
   const partition = calls.find(args => args[0] === 'set-generic-password-partition-list');
   assert.equal(partition[partition.indexOf('-S') + 1], `cdhash:${'a'.repeat(40)},cdhash:${'b'.repeat(40)}`);
   const updates = calls.filter(args => args[0] === 'add-generic-password');
-  assert.equal(updates.length, 2);
-  assert.ok(updates[1].includes('-U'));
-  assert.equal(updates[1][updates[1].indexOf('-w') + 1], add[add.indexOf('-w') + 1]);
-  assert.deepEqual(updates[1].slice(-3), ['-T', options.bundles[0], add.at(-1)]);
-  assert.equal(calls.at(-1)[calls.at(-1).indexOf('-S') + 1], `cdhash:${'b'.repeat(40)}`);
+  assert.equal(updates.length, 1, '覆盖后不得改写原钥匙串项');
+  assert.ok(!calls.some(args => args.includes('-U') || args[0] === 'delete-generic-password'));
   const itemCommands = calls.filter(args => args.includes('-a'));
-  assert.equal(itemCommands.length, 4);
+  assert.equal(itemCommands.length, 2);
   assert.ok(itemCommands.every(args => args[args.indexOf('-a') + 1] === 'AI 运维工具 Key'));
   await keychain.restore();
   assert.deepEqual(calls.at(-3), ['default-keychain', '-d', 'user', '-s', '/mock/login.keychain-db']);
