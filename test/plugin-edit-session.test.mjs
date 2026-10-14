@@ -221,6 +221,47 @@ test('save failure returns the live session to editing without clearing temporar
   assert.equal(values.mutationCoordinator.environmentFence('p1','e1').ownerId,session.editSessionId);
 });
 
+test('过期会话明确报告已结束，清理凭据和门禁且不能继续保存', async () => {
+  const values = fixture();
+  let now = Date.now();
+  values.manager.now = () => now;
+  const prepared = await values.manager.preparePluginConnectionEdit({projectId:'p1',environmentId:'e1',pluginInstanceId:'orders',expectedRevision:1,ownerId:'window-a'});
+  const session = await values.manager.beginPluginConnectionEdit({prepareToken:prepared.prepareToken,ownerId:'window-a'});
+  values.manager.captureCredentialIntent(session.editSessionId,{temporarySecrets:{password:'fixture-only'}});
+  now += values.manager.sessionTtlMs + 1;
+  const ended = error => error.code === 'PLUGIN_EDIT_SESSION_STALE' && error.details?.sessionEnded === true;
+  assert.throws(() => values.manager.beginSave(session.editSessionId,{ownerId:'window-a'}),ended);
+  await assert.rejects(() => values.manager.cancelPluginConnectionEdit({editSessionId:session.editSessionId,ownerId:'window-a'}),ended);
+  assert.equal(values.manager.sessionSummary(session.editSessionId),null);
+  assert.equal(values.mutationCoordinator.environmentFence('p1','e1'),null);
+  assert.equal(values.planRequests.length,0);
+});
+
+test('会话仍在保存或属于其他窗口时不得报告已结束', async () => {
+  const values = fixture();
+  const prepared = await values.manager.preparePluginConnectionEdit({projectId:'p1',environmentId:'e1',pluginInstanceId:'orders',expectedRevision:1,ownerId:'window-a'});
+  const session = await values.manager.beginPluginConnectionEdit({prepareToken:prepared.prepareToken,ownerId:'window-a'});
+  const active = error => error.code === 'PLUGIN_EDIT_SESSION_STALE' && error.details?.sessionEnded !== true;
+  await assert.rejects(() => values.manager.cancelPluginConnectionEdit({editSessionId:session.editSessionId,ownerId:'window-b'}),active);
+  values.manager.beginSave(session.editSessionId,{ownerId:'window-a'});
+  await assert.rejects(() => values.manager.cancelPluginConnectionEdit({editSessionId:session.editSessionId,ownerId:'window-a'}),active);
+  assert.equal(values.manager.sessionSummary(session.editSessionId).phase,'saving');
+  assert.equal(values.mutationCoordinator.environmentFence('p1','e1').ownerId,session.editSessionId);
+});
+
+test('取消后的连接恢复失败明确报告会话已结束，不重放连接请求', async () => {
+  const values = fixture();
+  const prepared = await values.manager.preparePluginConnectionEdit({projectId:'p1',environmentId:'e1',pluginInstanceId:'orders',expectedRevision:1});
+  const session = await values.manager.beginPluginConnectionEdit({prepareToken:prepared.prepareToken});
+  values.connectionManager.requestConnectionIntent = async () => { throw new Error('fixture-only'); };
+  await assert.rejects(
+    () => values.manager.cancelPluginConnectionEdit({editSessionId:session.editSessionId}),
+    error => error.code === 'PLUGIN_EDIT_SESSION_STALE' && error.details?.sessionEnded === true && error.message.includes('连接恢复未确认'),
+  );
+  assert.equal(values.manager.sessionSummary(session.editSessionId),null);
+  assert.equal(values.mutationCoordinator.environmentFence('p1','e1'),null);
+});
+
 test('prepare, begin, validation, and cancel enforce renderer session ownership', async () => {
   const values = fixture();
   const prepared = await values.manager.preparePluginConnectionEdit({

@@ -230,6 +230,8 @@ test('React plugin features preserve scope, credential, and edit-session boundar
   assert.match(editor,/data-testid="plugin-save"/u);
   const footer = editor.slice(editor.indexOf('<footer'),editor.indexOf('</footer>'));
   assert.equal((footer.match(/<Button\s/gu) ?? []).length,2);
+  assert.doesNotMatch(footer,/plugin-editor-restart|恢复编辑/u);
+  assert.match(footer,/onClick=\{cancelAndClose\}/u);
   assert.doesNotMatch(footer,/Select|DropdownMenu|TLS 探测/u);
   assert.match(controller,/const strategy: PluginSaveStrategy = plugin \? "restore-previous" : "disconnect"/u);
   assert.doesNotMatch(editor,/SheetContent|SheetHeader|SheetFooter|SheetTitle|components\/ui\/sheet/u);

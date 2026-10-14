@@ -198,7 +198,7 @@ export function PluginEditorWorkspace({
     && (draft.pluginType !== "server" || draft.auth.type === (plugin?.auth?.type ?? "password"))
   const busy = ["preparing", "validating", "saving"].includes(state.phase) || confirmationInFlight
   const closeBlocked = busy || discardInFlight
-  const saveBlocked = closeBlocked || state.confirmation !== null || pendingLocalChange !== null
+  const saveBlocked = closeBlocked || state.sessionEnded || state.confirmation !== null || pendingLocalChange !== null
   useUnsavedWork(editor.isDirty || busy)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const fieldErrors = useMemo(
@@ -252,6 +252,12 @@ export function PluginEditorWorkspace({
 
   const requestClose = () => {
     void requestLeave().then((allowed) => { if (allowed) onClosed() })
+  }
+
+  const cancelAndClose = () => {
+    if (closeBlocked || state.confirmation || pendingLocalChange || pendingLeaveRef.current) return
+    // 点击取消即明确放弃本次输入；清理会话后直接退出，不再询问是否保留。
+    void cancelSession().then((allowed) => { if (allowed) onClosed() })
   }
 
   const cancelDiscard = () => {
@@ -751,7 +757,7 @@ export function PluginEditorWorkspace({
               </Alert>
             ) : null}
             <div className="mx-auto flex w-full max-w-4xl justify-end gap-2">
-              <Button data-testid="plugin-editor-cancel" disabled={closeBlocked} onClick={requestClose} size="sm" type="button" variant="outline">
+              <Button data-testid="plugin-editor-cancel" disabled={closeBlocked} onClick={cancelAndClose} size="sm" type="button" variant="outline">
                 {discardInFlight ? "正在结束…" : "取消"}
               </Button>
               <Button data-testid="plugin-save" disabled={saveBlocked} form="plugin-editor-form" size="sm" type="submit">

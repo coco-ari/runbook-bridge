@@ -267,7 +267,12 @@ export class PluginEditSessionManager {
   requireSession(editSessionId,{phases = ['editing','saving'],ownerId = undefined} = {}) {
     this.pruneExpired();
     const session = this.sessions.get(String(editSessionId ?? ''));
-    if (!session || !phases.includes(session.phase)) {
+    if (!session) {
+      throw new AppError('PLUGIN_EDIT_SESSION_STALE','编辑会话已经结束或过期。',{
+        sessionEnded:true,
+      });
+    }
+    if (!phases.includes(session.phase)) {
       throw new AppError('PLUGIN_EDIT_SESSION_STALE','编辑会话已经结束、过期或不属于当前请求。');
     }
     if (ownerId !== undefined && session.ownerId !== String(ownerId ?? '')) {
@@ -577,11 +582,21 @@ export class PluginEditSessionManager {
   async cancelPluginConnectionEdit({editSessionId,restorePreEditConnections = true,ownerId} = {}) {
     const session = this.requireSession(editSessionId,{phases:['editing'],ownerId});
     session.phase = 'restoring';
-    const connectionPlan = await this.finishSession(session,{
-      connectIds:restorePreEditConnections ? session.preEditConnectedSet : [],
-      source:'edit-cancel-restore',
-    });
-    return {cancelled:true,connectionPlan};
+    try {
+      const connectionPlan = await this.finishSession(session,{
+        connectIds:restorePreEditConnections ? session.preEditConnectedSet : [],
+        source:'edit-cancel-restore',
+      });
+      return {cancelled:true,connectionPlan};
+    } catch (error) {
+      // 会话已删除时不能让界面继续重试旧编号，也不能声称连接已经恢复。
+      if (!this.sessions.has(session.editSessionId)) {
+        throw new AppError('PLUGIN_EDIT_SESSION_STALE','编辑已结束，但连接恢复未确认，请返回插件详情检查连接状态。',{
+          sessionEnded:true,
+        });
+      }
+      throw error;
+    }
   }
 
   async completeSave(editSessionId,{afterCommit = 'stay-disconnected',ownerId} = {}) {

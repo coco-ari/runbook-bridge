@@ -61,6 +61,7 @@ export interface PluginEditorState {
   readonly validation: PluginValidationState | null
   readonly preparation: PluginEditPreparation | null
   readonly editSessionId: string | null
+  readonly sessionEnded: boolean
   readonly confirmation: PluginEditorConfirmation | null
   readonly databases: readonly string[]
   readonly databasesLoading: boolean
@@ -126,6 +127,7 @@ export function initialPluginEditorState(ownerKey: string, draft: PluginFormDraf
     validation: null,
     preparation: null,
     editSessionId: null,
+    sessionEnded: false,
     confirmation: null,
     databases: [],
     databasesLoading: false,
@@ -166,6 +168,7 @@ export function pluginEditorReducer(
         ...state,
         phase: "editing",
         editSessionId: action.editSessionId,
+        sessionEnded: false,
         confirmation: null,
         error: null,
       }
@@ -231,7 +234,14 @@ export function pluginEditorReducer(
         confirmation: action.confirmation,
       }
     case "failure":
-      return { ...state, phase: "error", databasesLoading: false, error: action.error }
+      return pluginEditSessionHasEnded(action.error)
+        ? {
+            ...state, phase: "error", sessionEnded: true, editSessionId: null,
+            preparation: null, confirmation: null, validation: null,
+            credentials: emptyCredentialDraft(), databases: [], databasesLoading: false,
+            error: { ...action.error, message: "编辑会话已结束或过期，本次修改未保存。请点击“取消”退出，需要修改时重新打开编辑。" },
+          }
+        : { ...state, phase: "error", databasesLoading: false, error: action.error }
     case "clear-sensitive":
       return {
         ...state,
@@ -251,6 +261,12 @@ export function pluginEditorReducer(
         databases: [],
       }
   }
+}
+
+export function pluginEditSessionHasEnded(error: PublicError): boolean {
+  return error.code === "PLUGIN_EDIT_SESSION_STALE"
+    && error.details !== null && typeof error.details === "object"
+    && (error.details as Readonly<Record<string, unknown>>).sessionEnded === true
 }
 
 function readArray(value: unknown): readonly unknown[] {

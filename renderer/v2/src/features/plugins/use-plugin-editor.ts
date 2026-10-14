@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react"
+import { toast } from "sonner"
 import { readPluginRecovery, recoveryTargetIds } from "./plugin-save-feedback"
 
 import type {
@@ -17,6 +18,7 @@ import {
   mergeValidationProgress,
   pluginEditorIsDirty,
   pluginEditorReducer,
+  pluginEditSessionHasEnded,
   normalizePluginSaveOutcome,
   validationMatches,
   type PluginEditorState,
@@ -198,6 +200,23 @@ export function usePluginEditor({
     epochRef.current === epoch
       && `${scope.projectId}/${scope.environmentId}/${plugin?.pluginInstanceId ?? "new"}` === expectedOwner
   ), [currentOwnerKey, plugin?.pluginInstanceId, scope.environmentId, scope.projectId])
+
+  const reportFailure = useCallback((error: PublicError) => {
+    if (pluginEditSessionHasEnded(error)) {
+      epochRef.current += 1
+      sessionRef.current = null
+      preparationRef.current = null
+      activeValidationRef.current = null
+      pendingValidationRequestRef.current = null
+      pendingValidationCancellationsRef.current.clear()
+      pendingValidationRetryRef.current = null
+      pendingForceSaveRef.current = false
+      recoveryTargetsRef.current = null
+    }
+    const action = { type: "failure" as const, error }
+    stateRef.current = pluginEditorReducer(stateRef.current, action)
+    dispatch(action)
+  }, [])
 
   const beginPreparedEdit = useCallback(async (
     preparation: PluginEditPreparation,
@@ -560,6 +579,10 @@ export function usePluginEditor({
           : {}),
       }
       if (!validationMatches(active, correlatedError)) return false
+      if (pluginEditSessionHasEnded(apiError)) {
+        reportFailure(apiError)
+        return false
+      }
       const challenge = snapshot.draft.pluginType === "server"
         ? hostKeyChallengeFromError(apiError, normalizedDraft)
         : null
@@ -607,7 +630,7 @@ export function usePluginEditor({
       if (pendingValidationRequestRef.current === requestId) pendingValidationRequestRef.current = null
       pendingValidationCancellationsRef.current.delete(requestId)
     }
-  }, [api, isCurrent, open, plugin, scope.environmentId, scope.projectId])
+  }, [api, isCurrent, open, plugin, reportFailure, scope.environmentId, scope.projectId])
 
   const validate = useCallback((purpose: "validate" | "tls" = "validate") => {
     pendingValidationRetryRef.current = null
@@ -659,10 +682,10 @@ export function usePluginEditor({
       dispatch({ type: "databases", result })
     } catch (error) {
       if (isCurrent(epoch, expectedOwner) && stateRef.current.draftGeneration === draftGeneration) {
-        dispatch({ type: "failure", error: publicError(error) })
+        reportFailure(publicError(error))
       }
     }
-  }, [api, isCurrent, plugin?.pluginInstanceId, scope.environmentId, scope.projectId])
+  }, [api, isCurrent, plugin?.pluginInstanceId, reportFailure, scope.environmentId, scope.projectId])
 
   const persist = useCallback(async (
     strategy: PluginSaveStrategy,
@@ -768,11 +791,11 @@ export function usePluginEditor({
             description: "现有加密凭据无法读取。继续会永久丢弃旧密文，只保存本次明确输入的非空凭据。此操作无法撤销。",
           },
         })
-      } else dispatch({ type: "failure", error: apiError })
+      } else reportFailure(apiError)
     } finally {
       saveInFlightRef.current = false
     }
-  }, [api, isCurrent, onClosed, onSaved, open, plugin, scope.environmentId, scope.projectId])
+  }, [api, isCurrent, onClosed, onSaved, open, plugin, reportFailure, scope.environmentId, scope.projectId])
 
   const save = useCallback(async () => {
     const strategy: PluginSaveStrategy = plugin ? "restore-previous" : "disconnect"
@@ -867,10 +890,13 @@ export function usePluginEditor({
     const prepareToken = preparationRef.current
     try {
       if (editSessionId) {
-        unwrap(await api.cancelPluginConnectionEdit({
+        const result = await api.cancelPluginConnectionEdit({
           editSessionId,
           restorePreEditConnections: true,
-        }))
+        })
+        if (!result.ok && pluginEditSessionHasEnded(result.error)) {
+          toast.warning("编辑会话已结束。请在插件详情检查连接状态，必要时手动连接。")
+        } else unwrap(result)
       } else if (prepareToken) {
         unwrap(await api.cancelPluginConnectionEdit({ prepareToken }))
       } else if (active) {
@@ -881,6 +907,9 @@ export function usePluginEditor({
           requestId: active.requestId,
         })
         if (!result.ok && result.error.code !== "PLUGIN_VALIDATION_STALE") unwrap(result)
+      }
+      if (stateRef.current.sessionEnded) {
+        toast.warning("编辑会话已结束。请在插件详情检查连接状态，必要时手动连接。")
       }
       if (sessionRef.current === editSessionId) sessionRef.current = null
       if (preparationRef.current === prepareToken) preparationRef.current = null

@@ -437,7 +437,9 @@ async function registerMockApi() {
     state.preparationConnections.delete(payload.prepareToken);
     return ok({editSessionId,preEditConnectedSet});
   });
-  registerMutation('v2:plugin-draft-validate',(payload) => ok({
+  registerMutation('v2:plugin-draft-validate',(payload) => !state.sessions.has(payload.editSessionId)
+    ? {ok:false,error:{code:'PLUGIN_EDIT_SESSION_STALE',message:'编辑会话已经结束或过期。',details:{sessionEnded:true}}}
+    : ok({
     requestId:payload.requestId,
     editSessionId:payload.editSessionId,
     draftGeneration:payload.draftGeneration,
@@ -473,6 +475,9 @@ async function registerMockApi() {
       if (state.cancelFailuresRemaining > 0) {
         state.cancelFailuresRemaining -= 1;
         return {ok:false,error:{code:'EDIT_CANCEL_RESTORE_FAILED',message:'模拟编辑会话恢复暂时失败，请重试。'}};
+      }
+      if (payload.editSessionId && !state.sessions.has(payload.editSessionId)) {
+        return {ok:false,error:{code:'PLUGIN_EDIT_SESSION_STALE',message:'编辑会话已经结束或过期。',details:{sessionEnded:true}}};
       }
       if (payload.editSessionId) state.sessions.delete(payload.editSessionId);
       if (payload.prepareToken) {

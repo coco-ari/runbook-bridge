@@ -3269,24 +3269,18 @@ async function assertCreatePluginWorkspace(win,theme) {
     button?.click();
   })()`,true);
   await waitFor(win,
-    `document.querySelector('[data-testid="plugin-unsaved-changes-confirmation"]') !== null`,
-    'plugin-editor-cancel requests local draft disposal');
-  await win.webContents.executeJavaScript(`(() => {
-    const button = [...document.querySelectorAll('[data-testid="plugin-unsaved-changes-confirmation"] button')]
-      .find((candidate) => candidate.textContent?.trim() === '放弃更改');
-    if (!(button instanceof HTMLButtonElement)) throw new Error('plugin discard action missing');
-    button.click();
-  })()`,true);
-  await waitFor(win,
     `document.querySelector('[data-testid="plugin-editor-workspace"]') === null
       && document.querySelector('[data-testid="plugin-overview"]') !== null`,
     'cancelled new-plugin workspace returns to the original detail page');
+  assert.equal(await win.webContents.executeJavaScript(
+    `document.querySelector('[data-testid="plugin-unsaved-changes-confirmation"]') === null`,true,
+  ),true,'点击取消直接放弃本次输入，不再要求二次确认');
   await waitFor(win,
     `document.activeElement?.matches('[data-testid="add-plugin-env-production-east"]') === true`,
     'plugin-editor-cancel restores the original create trigger');
   await wait(250);
   assert.equal(await win.webContents.executeJavaScript(`document.activeElement?.matches('[data-testid="add-plugin-env-production-east"]') === true`,true),true,
-    '确认框完全关闭后仍保留创建入口焦点');
+    '取消退出后仍保留创建入口焦点');
   assert.deepEqual(mutationCalls,[],'discarding an unsubmitted create-plugin draft must not call edit-session APIs');
 }
 
