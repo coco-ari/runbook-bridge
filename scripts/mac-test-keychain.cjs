@@ -83,8 +83,9 @@ async function createMacTestKeychain({ root, bundles, run, env = process.env, pl
       async authorizeUpgrade(bundle) {
         assert.equal(bundle, bundles[0], '新版必须覆盖到同一测试安装位置');
         assert.equal(await signature(bundle), expectedUpgradeSignature, '覆盖后的签名必须与候选新版相同');
-        // 在实际覆盖路径更新测试授权，合成密钥保持不变，模拟用户允许新版访问。
-        await security(['add-generic-password', '-U', '-a', 'AI 运维工具', '-s', 'AI 运维工具 Safe Storage',
+        // 重建临时测试项的访问控制，避免更新值时沿用旧版签名授权；合成密钥保持不变。
+        await security(['delete-generic-password', '-a', 'AI 运维工具', '-s', 'AI 运维工具 Safe Storage', keychain]);
+        await security(['add-generic-password', '-a', 'AI 运维工具', '-s', 'AI 运维工具 Safe Storage',
           '-w', encryptionKey, '-T', bundle, keychain]);
         await security(['set-generic-password-partition-list', '-a', 'AI 运维工具', '-s', 'AI 运维工具 Safe Storage',
           '-S', `cdhash:${expectedUpgradeSignature}`, '-k', password, keychain]);

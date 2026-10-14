@@ -54,7 +54,9 @@ test('测试钥匙串仅授权两个构建，结束时恢复原始默认项和�
   assert.equal(partition[partition.indexOf('-S') + 1], `cdhash:${'a'.repeat(40)},cdhash:${'b'.repeat(40)}`);
   const updates = calls.filter(args => args[0] === 'add-generic-password');
   assert.equal(updates.length, 2);
-  assert.ok(updates[1].includes('-U'));
+  assert.ok(!updates[1].includes('-U'));
+  const replacementIndex = calls.indexOf(updates[1]);
+  assert.deepEqual(calls[replacementIndex - 1], ['delete-generic-password', '-a', 'AI 运维工具', '-s', 'AI 运维工具 Safe Storage', add.at(-1)]);
   assert.equal(updates[1][updates[1].indexOf('-w') + 1], add[add.indexOf('-w') + 1]);
   assert.deepEqual(updates[1].slice(-3), ['-T', options.bundles[0], add.at(-1)]);
   assert.equal(calls.at(-1)[calls.at(-1).indexOf('-S') + 1], `cdhash:${'b'.repeat(40)}`);
@@ -66,6 +68,17 @@ test('测试钥匙串仅授权两个构建，结束时恢复原始默认项和�
   const count = calls.length;
   await keychain.restore();
   assert.equal(calls.length, count);
+});
+
+test('重建临时授权失败时停止升级验证，不暴露合成密钥且仍可恢复系统配置', async t => {
+  let failReplacement = false;
+  const { options, calls, signatures } = await fixture(t, args => failReplacement && args[0] === 'add-generic-password');
+  const keychain = await createMacTestKeychain(options);
+  signatures.set(options.bundles[0], signatures.get(options.bundles[1]));
+  failReplacement = true;
+  await assert.rejects(keychain.authorizeUpgrade(options.bundles[0]), { message: '临时测试钥匙串操作失败：add-generic-password' });
+  await keychain.restore();
+  assert.equal(calls.at(-1)[0], 'delete-keychain');
 });
 
 test('初始化失败仍恢复钥匙串配置，错误不包含系统敏感输出', async t => {

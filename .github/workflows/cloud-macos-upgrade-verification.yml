@@ -1,0 +1,118 @@
+name: Cloud macOS archived upgrade verification
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: 已完成包验证并归档候选包与旧版基准包的构建运行编号
+        required: true
+      build_commit:
+        description: 候选安装包的完整源码提交标识
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+            app: dist/mac-arm64/Agent运维工作台.app
+          - os: macos-15-intel
+            arch: x64
+            app: dist/mac/Agent运维工作台.app
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: 验证构建来源
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          BUILD_COMMIT: ${{ inputs.build_commit }}
+        run: |
+          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$BUILD_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID" > "$RUNNER_TEMP/source-run.json"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const run = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/source-run.json`));
+          assert.equal(run.head_sha, process.env.BUILD_COMMIT);
+          assert.equal(run.path, '.github/workflows/cloud-macos-package.yml');
+          assert.equal(run.status, 'completed');
+          assert.equal(run.head_repository.full_name, process.env.GITHUB_REPOSITORY);
+          NODE
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac-package-candidate-${{ matrix.arch }}
+          path: artifacts/candidate
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac-upgrade-baseline-${{ matrix.arch }}
+          path: artifacts/baseline
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+      - name: 校验候选包并准备回归
+        env:
+          BUILD_COMMIT: ${{ inputs.build_commit }}
+          TARGET_ARCH: ${{ matrix.arch }}
+          TARGET_APP: ${{ matrix.app }}
+        run: |
+          corepack enable
+          corepack pnpm install --frozen-lockfile
+          node --test test/mac-test-keychain.test.mjs
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const runtime = JSON.parse(fs.readFileSync('artifacts/candidate/build/runtime.json'));
+          const metadata = JSON.parse(fs.readFileSync('package.json'));
+          assert.equal(runtime.gitCommit, process.env.BUILD_COMMIT);
+          assert.equal(runtime.dirty, false);
+          for (const extension of ['dmg','zip']) fs.accessSync(`artifacts/candidate/dist/RunbookBridge-${metadata.version}-mac-${process.env.TARGET_ARCH}.${extension}`);
+          NODE
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir -p "$(dirname "$TARGET_APP")"
+          ditto -x -k "artifacts/candidate/dist/RunbookBridge-${VERSION}-mac-${TARGET_ARCH}.zip" "$(dirname "$TARGET_APP")"
+          node scripts/packaged-mcp-smoke.mjs "$TARGET_APP"
+          node scripts/packaged-ui-smoke.cjs "$TARGET_APP"
+          /usr/bin/codesign --verify --deep --strict "$TARGET_APP"
+      - name: 验证原始候选包跨版本覆盖
+        timeout-minutes: 8
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+          AI_OPS_MAC_TEST_KEYCHAIN: "1"
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          BASELINES=(artifacts/baseline/*.dmg)
+          [[ ${#BASELINES[@]} -eq 1 ]]
+          node scripts/install-upgrade-regression.cjs "artifacts/candidate/dist/RunbookBridge-${VERSION}-mac-${TARGET_ARCH}.dmg" "${BASELINES[0]}"
+      - name: 保存失败诊断
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-install-diagnostics-${{ matrix.arch }}
+          path: artifacts/install-regression-failure.png
+          if-no-files-found: ignore
+      - name: 准备原始候选包云仓库文件
+        env:
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          node scripts/prepare-cloud-update.mjs --platform darwin --arch "$TARGET_ARCH" --input-dir artifacts/candidate/dist
+          cp artifacts/candidate/build/runtime.json artifacts/cloud-updates/runtime.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cloud-updates-darwin-${{ matrix.arch }}-manual-unnotarized
+          path: artifacts/cloud-updates/
+          if-no-files-found: error
+          retention-days: 14
