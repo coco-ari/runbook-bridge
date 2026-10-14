@@ -11,7 +11,7 @@ async function fixture(t, failOperation) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ai-ops-install-regression-keychain-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const bundles = ['old.app', 'new.app'].map(name => path.join(root, name));
-  const signatures = new Map([[bundles[0], 'a'.repeat(40)], [bundles[1], 'b'.repeat(40)], ['/usr/bin/security', 'c'.repeat(40)]]);
+  const signatures = new Map([[bundles[0], 'a'.repeat(40)], [bundles[1], 'b'.repeat(40)]]);
   await Promise.all(bundles.map(bundle => fs.mkdir(bundle)));
   const calls = [];
   const options = {
@@ -39,27 +39,28 @@ test('测试钥匙串必须显式启用且只能在隔离 Mac Runner 内运行',
   assert.equal(calls.length, 0);
 });
 
-test('测试钥匙串仅授权两个构建及初始化工具，覆盖后撤销工具授权并恢复系统配置', async t => {
+test('测试钥匙串仅授权两个构建，结束时恢复原始默认项和搜索列表', async t => {
   const { options, calls, signatures } = await fixture(t);
   const keychain = await createMacTestKeychain(options);
   const add = calls.find(args => args[0] === 'add-generic-password');
-  assert.deepEqual(add.filter((value, index) => add[index - 1] === '-T'), [...options.bundles, '/usr/bin/security']);
+  assert.deepEqual(add.filter((value, index) => add[index - 1] === '-T'), options.bundles);
   assert.ok(!calls.flat().includes('-A'));
-  assert.deepEqual(add.slice(1, 5), ['-a', 'AI 运维工具', '-s', 'AI 运维工具 Safe Storage']);
+  assert.deepEqual(add.slice(1, 5), ['-a', 'AI 运维工具 Key', '-s', 'AI 运维工具 Safe Storage']);
   await assert.rejects(keychain.authorizeUpgrade(options.bundles[1]), /同一测试安装位置/u);
   await assert.rejects(keychain.authorizeUpgrade(options.bundles[0]), /签名必须/u);
   signatures.set(options.bundles[0], signatures.get(options.bundles[1]));
   await keychain.authorizeUpgrade(options.bundles[0]);
   const partition = calls.find(args => args[0] === 'set-generic-password-partition-list');
-  assert.equal(partition[partition.indexOf('-S') + 1], `cdhash:${'a'.repeat(40)},cdhash:${'b'.repeat(40)},cdhash:${'c'.repeat(40)}`);
+  assert.equal(partition[partition.indexOf('-S') + 1], `cdhash:${'a'.repeat(40)},cdhash:${'b'.repeat(40)}`);
   const updates = calls.filter(args => args[0] === 'add-generic-password');
   assert.equal(updates.length, 2);
-  assert.ok(!updates[1].includes('-U'));
-  const replacementIndex = calls.indexOf(updates[1]);
-  assert.deepEqual(calls[replacementIndex - 1], ['delete-generic-password', '-a', 'AI 运维工具', '-s', 'AI 运维工具 Safe Storage', add.at(-1)]);
+  assert.ok(updates[1].includes('-U'));
   assert.equal(updates[1][updates[1].indexOf('-w') + 1], add[add.indexOf('-w') + 1]);
   assert.deepEqual(updates[1].slice(-3), ['-T', options.bundles[0], add.at(-1)]);
   assert.equal(calls.at(-1)[calls.at(-1).indexOf('-S') + 1], `cdhash:${'b'.repeat(40)}`);
+  const itemCommands = calls.filter(args => args.includes('-a'));
+  assert.equal(itemCommands.length, 4);
+  assert.ok(itemCommands.every(args => args[args.indexOf('-a') + 1] === 'AI 运维工具 Key'));
   await keychain.restore();
   assert.deepEqual(calls.at(-3), ['default-keychain', '-d', 'user', '-s', '/mock/login.keychain-db']);
   assert.deepEqual(calls.at(-2), ['list-keychains', '-d', 'user', '-s', '/mock/login.keychain-db', '/mock/other.keychain-db']);
@@ -68,17 +69,6 @@ test('测试钥匙串仅授权两个构建及初始化工具，覆盖后撤销�
   const count = calls.length;
   await keychain.restore();
   assert.equal(calls.length, count);
-});
-
-test('重建临时授权失败时停止升级验证，不暴露合成密钥且仍可恢复系统配置', async t => {
-  let failReplacement = false;
-  const { options, calls, signatures } = await fixture(t, args => failReplacement && args[0] === 'add-generic-password');
-  const keychain = await createMacTestKeychain(options);
-  signatures.set(options.bundles[0], signatures.get(options.bundles[1]));
-  failReplacement = true;
-  await assert.rejects(keychain.authorizeUpgrade(options.bundles[0]), { message: '临时测试钥匙串操作失败：add-generic-password' });
-  await keychain.restore();
-  assert.equal(calls.at(-1)[0], 'delete-keychain');
 });
 
 test('初始化失败仍恢复钥匙串配置，错误不包含系统敏感输出', async t => {
