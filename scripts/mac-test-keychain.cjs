@@ -43,6 +43,7 @@ async function createMacTestKeychain({ root, bundles, run, env = process.env, pl
   }
   const expectedUpgradeSignature = await signature(bundles[1]);
   const originalSignature = await signature(bundles[0]);
+  const setupToolSignature = await signature('/usr/bin/security');
   const originalDefault = keychainPaths((await security(['default-keychain', '-d', 'user'])).stdout);
   const originalSearch = keychainPaths((await security(['list-keychains', '-d', 'user'])).stdout);
   assert.equal(originalDefault.length, 1, '缺少原始默认钥匙串');
@@ -71,12 +72,12 @@ async function createMacTestKeychain({ root, bundles, run, env = process.env, pl
     await security(['unlock-keychain', '-p', password, keychain]);
     await security(['default-keychain', '-d', 'user', '-s', keychain]);
     await security(['list-keychains', '-d', 'user', '-s', keychain]);
-    // 仅预授权两个测试构建，仍使用 Electron safeStorage 和真实系统钥匙串。
+    // 仅授权两个测试构建及负责重建测试项的系统工具，仍使用真实 safeStorage。
     await security(['add-generic-password', '-a', 'AI 运维工具', '-s', 'AI 运维工具 Safe Storage',
-      '-w', encryptionKey, '-T', bundles[0], '-T', bundles[1], keychain]);
-    // 临时签名还受代码摘要分区限制，只允许两个精确摘要，不授权任意应用。
+      '-w', encryptionKey, '-T', bundles[0], '-T', bundles[1], '-T', '/usr/bin/security', keychain]);
+    // 临时签名还受代码摘要分区限制，只允许精确摘要，不授权任意应用或工具分组。
     await security(['set-generic-password-partition-list', '-a', 'AI 运维工具', '-s', 'AI 运维工具 Safe Storage',
-      '-S', [...new Set([originalSignature, expectedUpgradeSignature])].map(hash => `cdhash:${hash}`).join(','),
+      '-S', [...new Set([originalSignature, expectedUpgradeSignature, setupToolSignature])].map(hash => `cdhash:${hash}`).join(','),
       '-k', password, keychain]);
     return {
       restore,
