@@ -4,9 +4,9 @@
 
 面向独立开发者、后端开发者和小团队的本地桌面工作台。按项目和环境组织资源，通过 MCP 为 Codex 等 Agent 提供排查工具，并保留人工终端、数据库和缓存工作区。
 
-当前代码包版本：`2.0.7` · Windows x64 / macOS arm64 / x64 云仓库更新支持 · [MIT 开源](LICENSE)
+当前代码包版本：`2.0.8` · Windows x64 / macOS arm64 / x64 云仓库更新支持 · [MIT 开源](LICENSE)
 
-[云仓库版 2.0.7](docs/releases/v2.0.7.md) · [GitHub 稳定版 2.0.0](https://github.com/coco-ari/runbook-bridge/releases/tag/v2.0.0) · [首次使用](docs/getting-started.md) · [已知限制](docs/beta-guide.md) · [反馈问题](https://github.com/coco-ari/runbook-bridge/issues/new/choose)
+[云仓库版 2.0.8](docs/releases/v2.0.8.md) · [GitHub 稳定版 2.0.0](https://github.com/coco-ari/runbook-bridge/releases/tag/v2.0.0) · [首次使用](docs/getting-started.md) · [已知限制](docs/beta-guide.md) · [反馈问题](https://github.com/coco-ari/runbook-bridge/issues/new/choose)
 
 ## 它能帮你做什么
 
@@ -56,7 +56,7 @@ MySQL 草稿使用不同颜色和文字标记，新增、复制、修改、删�
 
 [GitHub 2.0.0 Windows x64 安装包](https://github.com/coco-ari/runbook-bridge/releases/download/v2.0.0/RunbookBridge-Setup-2.0.0.exe) · [2.0.0 SHA-256 校验文件](https://github.com/coco-ari/runbook-bridge/releases/download/v2.0.0/RunbookBridge-Setup-2.0.0.exe.sha256) · [2.0.0 更新说明](docs/releases/v2.0.0.md)
 
-2.0.7 通过部署管理员维护的现有 HTTPS 云仓库分发，本次不创建 GitHub Release。已安装 2.0.5 及之前含更新功能版本的 Windows 用户可在对应平台发布后检查更新并升级。Mac 首次使用辅助更新需要手动安装包含此功能的版本；后续只检查并下载当前程序架构的 DMG。各平台分批发布，尚未发布的平台保持原清单。原 GitHub 2.0.0 没有软件更新入口，首次使用需要手动安装包含更新功能的客户端。Windows 旧更新器的修复方法见 [2.0.2 历史说明](docs/releases/v2.0.2.md)；后续在线升级在后台下载，经确认后静默安装并重新打开客户端。
+2.0.8 计划通过部署管理员维护的现有 HTTPS 云仓库分发，本次不创建 GitHub Release。已安装含更新功能版本的 Windows 用户可在对应平台发布后检查更新并升级。Mac 首次使用辅助更新需要手动安装包含此功能的版本；后续只检查并下载当前程序架构的 DMG。各平台分批发布，尚未发布的平台保持上表原清单。原 GitHub 2.0.0 没有软件更新入口，首次使用需要手动安装包含更新功能的客户端。Windows 旧更新器的修复方法见 [2.0.2 历史说明](docs/releases/v2.0.2.md)；后续在线升级在后台下载，经确认后静默安装并重新打开客户端。
 
 安装包尚未进行 Windows 发布者数字签名，系统可能提示未知发布者。请使用可信云仓库或本仓库 Release 分发的安装包，并核对校验值，遵守所在组织的软件安装要求。Source code 压缩包不是安装包。
 
