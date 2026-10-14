@@ -49,14 +49,14 @@ MySQL 草稿使用不同颜色和文字标记，新增、复制、修改、删�
 
 | 渠道 | 版本 | 说明 |
 | --- | --- | --- |
-| HTTPS 云仓库 · Mac arm64 / x64 | [2.0.7](docs/releases/v2.0.7.md) | 工作区直接关闭，下载 DMG 后手动覆盖安装 |
-| HTTPS 云仓库 · Windows x64 | [2.0.6](docs/releases/v2.0.6.md) | 保持原有 Windows 更新清单 |
+| HTTPS 云仓库 · Mac arm64 / x64 | [2.0.8](docs/releases/v2.0.8.md) | 修复配置保存与取消，下载 DMG 后手动覆盖安装 |
+| HTTPS 云仓库 · Windows x64 | [2.0.8](docs/releases/v2.0.8.md) | 修复配置保存与取消，确认后安装更新 |
 | GitHub 公开稳定版 | [2.0.0](https://github.com/coco-ari/runbook-bridge/releases/tag/v2.0.0) | 保留原下载入口；本次云仓库发布不变更 GitHub Latest |
 | 历史稳定版 | [1.0.46](https://github.com/coco-ari/runbook-bridge/releases/tag/v1.0.46) | 仅供旧版本查阅，不包含本页全部新工作区能力 |
 
 [GitHub 2.0.0 Windows x64 安装包](https://github.com/coco-ari/runbook-bridge/releases/download/v2.0.0/RunbookBridge-Setup-2.0.0.exe) · [2.0.0 SHA-256 校验文件](https://github.com/coco-ari/runbook-bridge/releases/download/v2.0.0/RunbookBridge-Setup-2.0.0.exe.sha256) · [2.0.0 更新说明](docs/releases/v2.0.0.md)
 
-2.0.8 计划通过部署管理员维护的现有 HTTPS 云仓库分发，本次不创建 GitHub Release。已安装含更新功能版本的 Windows 用户可在对应平台发布后检查更新并升级。Mac 首次使用辅助更新需要手动安装包含此功能的版本；后续只检查并下载当前程序架构的 DMG。各平台分批发布，尚未发布的平台保持上表原清单。原 GitHub 2.0.0 没有软件更新入口，首次使用需要手动安装包含更新功能的客户端。Windows 旧更新器的修复方法见 [2.0.2 历史说明](docs/releases/v2.0.2.md)；后续在线升级在后台下载，经确认后静默安装并重新打开客户端。
+2.0.8 已通过部署管理员维护的现有 HTTPS 云仓库分发，覆盖 Windows x64、Mac arm64 与 Mac x64，本次不创建 GitHub Release。已安装含更新功能版本的 Windows 用户可检查更新并升级。Mac 首次使用辅助更新需要手动安装包含此功能的版本；后续只检查并下载当前程序架构的 DMG。原 GitHub 2.0.0 没有软件更新入口，首次使用需要手动安装包含更新功能的客户端。Windows 旧更新器的修复方法见 [2.0.2 历史说明](docs/releases/v2.0.2.md)；后续在线升级在后台下载，经确认后静默安装并重新打开客户端。
 
 安装包尚未进行 Windows 发布者数字签名，系统可能提示未知发布者。请使用可信云仓库或本仓库 Release 分发的安装包，并核对校验值，遵守所在组织的软件安装要求。Source code 压缩包不是安装包。
 
