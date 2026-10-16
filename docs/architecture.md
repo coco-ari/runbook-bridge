@@ -31,6 +31,8 @@ Agent 可通过 `connect_environment` 或 `connect_plugin` 显式发起连接；
 
 新增插件使用临时探针，修改连接配置使用受保护的编辑会话。验证只针对当前表单，不替换正式连接或 Agent 上下文；正式连接使用已提交配置和 active 凭据。未保存的表单不跨页面或重启保留。主要边界分别在 `src/plugin-probe-manager.mjs`、`src/plugin-edit-session-manager.mjs`、`src/plugin-validation-runtime.mjs` 和 `src/credential-use-resolver.mjs`。
 
+MySQL 编辑器的「读取数据库」通过当前编辑会话执行临时资源发现，校验发起窗口及项目、环境、插件归属；使用当前表单的连接参数和凭据使用意图，不要求预先选定数据库。请求仍计入环境中的进行中操作，编辑门禁继续阻止其他操作；保存、取消或窗口销毁会取消未完成的发现，迟到结果不能恢复已结束的会话。发现只返回可选库名，不保存草稿，也不扩大 Agent 的固定数据库访问范围。
+
 应用管理的秘密由 `src/plugin-credential-vault.mjs` 配合 Electron `safeStorage`（Windows DPAPI / macOS Keychain） 加密，不写入工作区 YAML、运维说明、日志或 MCP 结果。配置与凭据提交由 `src/plugin-config-transaction.mjs` 协调，工作区变更由 `src/workspace-mutation-coordinator.mjs` 协调。旧凭据不可读时必须保留原密文；不能用空值覆盖它来掩盖错误。
 
 ## 安全契约

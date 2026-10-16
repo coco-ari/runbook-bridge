@@ -797,7 +797,7 @@ export function registerV2Ipc(ipcMain, services) {
     if (!secrets[field]) throw new AppError('CREDENTIAL_NOT_FOUND', '该密码尚未保存。');
     return { value: secrets[field] };
   });
-  handle('plugin-databases', ({
+  handleWithEvent('plugin-databases', async (event, {
     projectId,
     environmentId,
     pluginInstanceId,
@@ -808,8 +808,30 @@ export function registerV2Ipc(ipcMain, services) {
     oneTimeGrant,
     editSessionId,
     draftGeneration,
-  }) => (
-    mutationCoordinator.runEnvironmentOperation(projectId,environmentId,async () => {
+  }) => {
+    if (editSessionId) {
+      const manager = requirePluginEditSessionManager();
+      const ownerId = rendererOwner(event);
+      const session = manager.requireSession(editSessionId,{phases:['editing'],ownerId});
+      if (session.scope.projectId !== projectId || session.scope.environmentId !== environmentId
+        || session.scope.pluginInstanceId !== pluginInstanceId) {
+        throw new AppError('PLUGIN_EDIT_SESSION_STALE','数据库发现请求不属于当前插件编辑会话。');
+      }
+      if (session.basePlugin.pluginType !== 'mysql') throw new AppError('INVALID_ARGUMENT','只有 MySQL 插件可以查询数据库列表。');
+      // 只允许所属窗口的临时发现复用编辑门禁，正式连接和其他操作仍受门禁约束。
+      return mutationCoordinator.runEnvironmentOperation(projectId,environmentId,async () => {
+        configTransactionJournal?.assertPluginAvailable(projectId,environmentId,pluginInstanceId);
+        const validation = await manager.validatePluginDraft({
+          editSessionId,ownerId,draftGeneration,purpose:'resource-discovery',
+          requestId:crypto.randomUUID(),
+          draft:{...input,target:{...(input?.target ?? {}),database:''}},
+          credentialIntent,temporarySecrets:temporarySecrets ?? secrets,oneTimeGrant,
+          discardTemporarySecrets:true,
+        });
+        return validation.result;
+      },{ownerId:session.editSessionId});
+    }
+    return mutationCoordinator.runEnvironmentOperation(projectId,environmentId,async () => {
     assertProjectAvailable(projectId);
     if (pluginInstanceId) configTransactionJournal?.assertPluginAvailable(projectId,environmentId,pluginInstanceId);
     else configTransactionJournal?.assertEnvironmentAvailable(projectId,environmentId);
@@ -834,8 +856,8 @@ export function registerV2Ipc(ipcMain, services) {
       caller:'main',
     });
       return mysqlRuntime.listDatabases(transient,resolved.secrets);
-    })
-  ));
+    });
+  });
   for (const [channel, operation] of [
     ['mysql-list-tables', 'listTables'],
     ['mysql-describe-table', 'describeTable'],

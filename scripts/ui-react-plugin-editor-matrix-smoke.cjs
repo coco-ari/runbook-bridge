@@ -45,10 +45,10 @@ function deferred() {
 }
 
 async function installMatrixApi(win) {
-  const [{PluginProbeManager},{PluginEditSessionManager},{WorkspaceMutationCoordinator},{CredentialUseResolver},{workspaceInternals},{AppError,toPublicError}] = await Promise.all([
+  const [{PluginProbeManager},{PluginEditSessionManager},{WorkspaceMutationCoordinator},{CredentialUseResolver},{workspaceInternals},{AppError,toPublicError},{registerV2Ipc}] = await Promise.all([
     import('../src/plugin-probe-manager.mjs'),import('../src/plugin-edit-session-manager.mjs'),
     import('../src/workspace-mutation-coordinator.mjs'),import('../src/credential-use-resolver.mjs'),
-    import('../src/workspace-store.mjs'),import('../src/errors.mjs'),
+    import('../src/workspace-store.mjs'),import('../src/errors.mjs'),import('../src/ipc-v2.mjs'),
   ]);
   const coordinator = new WorkspaceMutationCoordinator();
   const resolver = new CredentialUseResolver({
@@ -80,6 +80,12 @@ async function installMatrixApi(win) {
       assertScope({projectId,environmentId});
       return state.plugins;
     },
+    getPlugin:async (projectId,environmentId,pluginInstanceId) => {
+      assertScope({projectId,environmentId});
+      const plugin = state.plugins.find((item) => item.pluginInstanceId === pluginInstanceId);
+      if (!plugin) throw new AppError('PLUGIN_NOT_FOUND','测试插件不存在。');
+      return plugin;
+    },
   };
   const probe = new PluginProbeManager({workspaceStore,mutationCoordinator:coordinator,credentialUseResolver:resolver,validationRuntime:runtime});
   const edits = new PluginEditSessionManager({
@@ -89,7 +95,7 @@ async function installMatrixApi(win) {
       disconnectForConfigurationEdit:async () => ({connectedBefore:[]}),
     },
   });
-  const ownerId = 'renderer:plugin-matrix';
+  const ownerId = `renderer:${win.webContents.id}`;
   const replace = (channel,handler) => {
     ipcMain.removeHandler(channel);
     ipcMain.handle(channel,async (event,payload) => {
@@ -180,18 +186,22 @@ async function installMatrixApi(win) {
     assert.ok(state.plugins.some((plugin) => plugin.pluginInstanceId === payload.pluginInstanceId));
     throw new AppError('CONFIG_REVISION_CONFLICT',LONG_DIALOG_ERROR);
   });
-  replace('v2:plugin-databases',async (payload) => {
+  // 数据库发现复用真实 IPC 入口，避免模拟实现绕过编辑门禁而漏报回归。
+  let discoverDatabases;
+  registerV2Ipc({handle:(channel,handler) => {
+    if (channel === 'v2:plugin-databases') discoverDatabases = handler;
+  },on:() => undefined},{
+    workspaceStore,mutationCoordinator:coordinator,credentialUseResolver:resolver,pluginEditSessionManager:edits,
+    connectionManager:{on:() => undefined},confirmationManager:{on:() => undefined},
+    mysqlRuntime:{listDatabases:(draft,resolvedSecrets) => runtime.validate({
+      pluginType:'mysql',purpose:'resource-discovery',draft,resolvedSecrets,
+    })},
+  });
+  replace('v2:plugin-databases',async (payload,event) => {
     assertScope(payload);
-    const result = payload.editSessionId
-      ? await edits.validatePluginDraft({
-          ...payload,draft:payload.input,purpose:'resource-discovery',requestId:randomBytes(8).toString('hex'),ownerId,
-        })
-      : await probe.probePluginDraft({
-          ...safeScope(payload),draft:payload.input,temporarySecrets:payload.temporarySecrets,
-          purpose:'resource-discovery',formInstanceId:'matrix-discovery',requestId:randomBytes(8).toString('hex'),
-          draftGeneration:payload.draftGeneration,sequence:calls.length,
-        },{ownerId});
-    return result.result;
+    const result = await discoverDatabases(event,payload);
+    if (!result.ok) throw new AppError(result.error.code,result.error.message,result.error.details);
+    return result.data;
   });
   replace('v2:plugin-credential-status',(payload) => {
     const saved = fixtureCredentials.get(payload.pluginInstanceId) ?? {};
@@ -476,7 +486,15 @@ async function discoveryMatrix(win) {
   assert.equal(runtimeCalls.at(-1).draft.transport.serverPluginInstanceId,SERVER_ID);
   const savedId = await saveAndClose(win);
   await editPlugin(win,savedId);
-  await fill(win,'#plugin-database','inventory');
+  const savedBeforeDiscovery = JSON.stringify(state.plugins.find((plugin) => plugin.pluginInstanceId === savedId));
+  await clickText(win,'读取数据库',EDITOR_SELECTOR);
+  await waitFor(win,`document.querySelector('[aria-label="选择可见数据库"]') !== null`,'editing discovers databases through the real IPC fence');
+  assert.equal(runtimeCalls.at(-1).purpose,'resource-discovery');
+  assert.equal(runtimeCalls.at(-1).draft.target.database,'');
+  assert.equal(runtimeCalls.at(-1).draft.transport.serverPluginInstanceId,SERVER_ID);
+  assert.deepEqual(runtimeCalls.at(-1).credentialFields,['password']);
+  assert.equal(JSON.stringify(state.plugins.find((plugin) => plugin.pluginInstanceId === savedId)),savedBeforeDiscovery,'读取数据库不得保存编辑草稿');
+  await chooseSelectOption(win,'[aria-label="选择可见数据库"]','inventory');
   await checkPassed(win);
   assert.equal(runtimeCalls.at(-1).draft.target.database,'inventory');
   await click(win,'[data-testid="plugin-save"]','save edited MySQL database');
@@ -811,6 +829,15 @@ async function deletionMatrix(win) {
 
 async function matrix(win) {
   const {probe,edits,AppError} = await installMatrixApi(win);
+  if (app.commandLine.hasSwitch('database-discovery-only')) {
+    await discoveryMatrix(win);
+    assert.equal(probe.requests.size,0);
+    assert.equal(edits.sessions.size,0);
+    for (const call of calls) assertNoSensitivePayload(call,'database discovery evidence');
+    for (const call of runtimeCalls) assertNoSensitivePayload(call,'database discovery runtime evidence');
+    process.stdout.write('MySQL 数据库发现回归通过：新建、编辑、隧道、已保存凭据、过期结果隔离和选择后保存。\n');
+    return;
+  }
   if (app.commandLine.hasSwitch('connection-edit-only')) {
     await recoveryMatrix(win,{AppError});
     assert.equal(probe.requests.size,0);

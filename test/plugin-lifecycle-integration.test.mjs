@@ -111,7 +111,7 @@ async function fixture(t) {
     pluginProbeManager:probes,pluginManager,mysqlRuntime:runtime,
     contextManager,confirmationManager,
   });
-  const invoke = (name,payload) => handlers.get(`v2:${name}`)({sender},payload);
+  const invoke = (name,payload,event = {sender}) => handlers.get(`v2:${name}`)(event,payload);
   const success = async (name,payload) => {
     const result = await invoke(name,payload);
     assert.equal(result.ok,true,`${name}: ${result.error?.code ?? ''} ${result.error?.message ?? ''}`);
@@ -154,6 +154,101 @@ function probePayload(scope,input,secrets = {}) {
     purpose:input.pluginType === 'server' ? 'server-auth' : 'resource-access',
     draftGeneration:1,sequence:1,draft:input,temporarySecrets:secrets};
 }
+
+test('MySQL database discovery in an edit session uses the current draft and preserves the environment fence',async (t) => {
+  for (const kind of ['direct','serverTunnel']) {
+    await t.test(kind,async (t) => {
+      const f = await fixture(t);
+      if (kind === 'serverTunnel') {
+        await f.success('plugin-create',{...f.scope,input:configuration('server',{pluginInstanceId:'provider'}),secrets:{password:secret()}});
+      }
+      const plugin = await f.success('plugin-create',{
+        ...f.scope,input:configuration('mysql',{transport:{kind,...(kind === 'serverTunnel' ? {serverPluginInstanceId:'provider'} : {})}}),
+        secrets:{password:secret()},
+      });
+      await f.success('plugin-connect',{...f.scope,pluginInstanceId:plugin.pluginInstanceId});
+      const session = await f.begin(plugin);
+      const before = await f.store.getPlugin(f.scope.projectId,f.scope.environmentId,plugin.pluginInstanceId);
+      const savedSecrets = await f.vault.load(before);
+      const result = await f.success('plugin-databases',{
+        ...f.scope,pluginInstanceId:plugin.pluginInstanceId,editSessionId:session.editSessionId,draftGeneration:1,
+        input:{...plugin,target:{...plugin.target,host:'edited.mysql.invalid',database:'missing_database'}},
+        credentialIntent:'rebind-existing',
+      });
+      assert.deepEqual(result,{databases:['app','archive'],truncated:false});
+      const attempt = f.attempts.at(-1);
+      assert.equal(attempt.diagnostic,true);
+      assert.equal(attempt.plugin.target.host,'edited.mysql.invalid');
+      assert.equal(attempt.plugin.target.database,'');
+      assert.deepEqual(attempt.secretFields,['password']);
+      assert.deepEqual(attempt.plugin.transport,plugin.transport);
+      assert.deepEqual(await f.store.getPlugin(f.scope.projectId,f.scope.environmentId,plugin.pluginInstanceId),before);
+      assert.equal(JSON.stringify(await f.vault.load(before)) === JSON.stringify(savedSecrets),true,'数据库发现不得改写已保存凭据');
+      assert.equal(f.connections.has(plugin.pluginInstanceId),false);
+      assert.equal(f.connections.has(attempt.plugin.pluginInstanceId),false);
+      if (kind === 'serverTunnel') assert.equal(f.connections.has('provider'),true);
+      assert.equal(f.coordinator.environmentFence(f.scope.projectId,f.scope.environmentId).ownerId,session.editSessionId);
+      await assert.rejects(
+        () => f.coordinator.runEnvironmentOperation(f.scope.projectId,f.scope.environmentId,async () => undefined),
+        {code:'PLUGIN_EDIT_BUSY'},
+      );
+    });
+  }
+});
+
+test('edited database discovery rejects foreign scopes, windows, stale generations and closed sessions before network access',async (t) => {
+  const f = await fixture(t);
+  const plugin = await f.success('plugin-create',{...f.scope,input:configuration('mysql'),secrets:{password:secret()}});
+  const session = await f.begin(plugin);
+  const payload = {...f.scope,pluginInstanceId:plugin.pluginInstanceId,editSessionId:session.editSessionId,draftGeneration:1,input:plugin};
+  const assertDenied = async (patch,code,event) => {
+    const before = f.attempts.length;
+    const result = await f.invoke('plugin-databases',{...payload,...patch},event);
+    assert.equal(result.ok,false);
+    assert.equal(result.error.code,code);
+    assert.equal(f.attempts.length,before);
+  };
+  await assertDenied({},'PLUGIN_EDIT_SESSION_STALE',{sender:{id:99}});
+  for (const field of ['projectId','environmentId','pluginInstanceId']) {
+    await assertDenied({[field]:'other'},'PLUGIN_EDIT_SESSION_STALE');
+  }
+  await assertDenied({editSessionId:'unknown'},'PLUGIN_EDIT_SESSION_STALE');
+  await assertDenied({editSessionId:undefined},'PLUGIN_EDIT_BUSY');
+  await assertDenied({draftGeneration:undefined},'INVALID_ARGUMENT');
+  await f.success('plugin-databases',payload);
+  await assertDenied({draftGeneration:0},'PLUGIN_VALIDATION_STALE');
+  await f.success('plugin-connection-edit-cancel',{editSessionId:session.editSessionId,restorePreEditConnections:false});
+  await assertDenied({},'PLUGIN_EDIT_SESSION_STALE');
+});
+
+test('cancelling an edit aborts its database discovery and rejects the late result',async (t) => {
+  const f = await fixture(t);
+  const plugin = await f.success('plugin-create',{...f.scope,input:configuration('mysql'),secrets:{password:secret()}});
+  const session = await f.begin(plugin);
+  const started = deferred();
+  const release = deferred();
+  let signal;
+  f.setBeforeNetwork(async (_plugin,options) => {
+    signal = options.signal;
+    started.resolve();
+    await release.promise;
+  });
+  const pending = f.invoke('plugin-databases',{
+    ...f.scope,pluginInstanceId:plugin.pluginInstanceId,editSessionId:session.editSessionId,draftGeneration:1,input:plugin,
+  });
+  await started.promise;
+  try {
+    await f.success('plugin-connection-edit-cancel',{editSessionId:session.editSessionId,restorePreEditConnections:false});
+    assert.equal(signal.aborted,true);
+  } finally {
+    release.resolve();
+  }
+  const result = await pending;
+  assert.equal(result.ok,false);
+  assert.equal(result.error.code,'PLUGIN_VALIDATION_CANCELLED');
+  assert.equal(f.connections.size,0);
+  assert.equal(f.coordinator.environmentActivitySnapshot(f.scope.projectId,f.scope.environmentId).readers,0);
+});
 
 test('real IPC lifecycle matrix covers auth, proxy, VPN, tunnel, TLS, edits, delete and first re-add', async (t) => {
   const cases = [];
