@@ -8,14 +8,14 @@ const { CdpClient, assertUpgradeSnapshot } = createRequire(import.meta.url)('../
 function migrationSnapshots() {
   const id = 'eecf1af1-cc08-4594-8af8-545b58322466';
   const old = {schemaVersion:1,projectId:'test',environmentId:'test',pluginInstanceId:'mysql-one',pluginType:'mysql',displayName:'测试数据库',revision:3,
-    target:{host:'127.0.0.1',port:3306,database:'test_db'},auth:{username:'test'},transport:{kind:'direct'},tls:{mode:'disabled'},tags:[],permissions:{read:true},limits:{maxRows:10}};
+    target:{host:'127.0.0.1',port:3306,database:'test_db'},auth:{username:'test'},transport:{kind:'direct'},tls:{mode:'disabled'},permissions:{read:true},limits:{maxRows:10}};
   const environment = {schemaVersion:1,revision:4,pluginOrder:['mysql-one','server-one'],updatedAt:'2026-01-01'};
   const oldKey = 'test/test/mysql-one';
   const newKey = `test/test/mysql-connection-${id}`;
   const unchanged = {ciphertext:'b3RoZXI='};
   const migrated = {pluginType:'mysql',bindingHash:'a'.repeat(64),ciphertext:'dGVzdA=='};
   const {auth,transport,tls,...rest} = old;
-  const current = {...rest,schemaVersion:2,revision:4,mysqlConnectionId:id,target:{database:'test_db'}};
+  const current = {...rest,schemaVersion:2,revision:4,mysqlConnectionId:id,target:{database:'test_db'},tags:[]};
   const currentEnvironment = {...environment,schemaVersion:2,revision:5,updatedAt:'2026-01-02',mysqlConnections:[{connectionId:id,name:old.displayName,revision:1,target:{host:'127.0.0.1',port:3306},auth,transport,tls}]};
   const serialize = value => Buffer.from(YAML.stringify(value));
   const vault = entries => Buffer.from(JSON.stringify({schemaVersion:1,entries}));

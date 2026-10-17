@@ -432,7 +432,7 @@ function assertUpgradeSnapshot(before, after, { environmentFile, mysqlFile, vaul
   assert.match(current.mysqlConnectionId, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u);
   const { auth, transport, tls, ...previousNode } = previous;
   assert.deepEqual(current, { ...previousNode, schemaVersion: 2, revision: previous.revision + 1,
-    mysqlConnectionId: current.mysqlConnectionId, target: { database: previous.target.database } });
+    mysqlConnectionId: current.mysqlConnectionId, target: { database: previous.target.database }, tags: previous.tags ?? [] });
   const previousEnvironment = YAML.parse(before.get(environmentFile).toString());
   const currentEnvironment = YAML.parse(after.get(environmentFile).toString());
   const { database: _database, ...target } = previous.target;
