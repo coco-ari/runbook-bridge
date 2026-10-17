@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, type RefObject } from "react"
 import { Trash, Warning } from "@phosphor-icons/react"
 
 import type { AiOpsV2Api, PluginRecord, PublicError } from "@/bridge/ai-ops-v2"
@@ -30,6 +30,7 @@ interface PluginDeleteDialogProps {
   readonly dependents: readonly PluginRecord[]
   readonly onOpenChange: (open: boolean) => void
   readonly onDeleted: (outcome: PluginDeleteOutcome) => void
+  readonly restoreFocusRef?: RefObject<HTMLElement | null>
 }
 
 function publicError(error: unknown): PublicError {
@@ -45,6 +46,7 @@ export function PluginDeleteDialog({
   dependents,
   onOpenChange,
   onDeleted,
+  restoreFocusRef,
 }: PluginDeleteDialogProps) {
   const [busy, setBusy] = useState(false)
   const busyDialogRef = useBusyDialogFocus(busy)
@@ -95,6 +97,7 @@ export function PluginDeleteDialog({
         onCloseAutoFocus={(event) => {
           event.preventDefault()
           requestAnimationFrame(() => {
+            if (focusWorkspaceElement(restoreFocusRef?.current ?? null)) return
             const target = document.querySelector<HTMLElement>('[aria-label="当前范围更多操作"]')
               ?? document.getElementById("detail-main")
             focusWorkspaceElement(target)
@@ -131,7 +134,10 @@ export function PluginDeleteDialog({
                   </ScrollArea>
                 </>
               ) : (
-                <p>连接配置将被删除。本机凭据按现有应用策略保留，不会在此界面显示或复制。</p>
+                <>
+                  <p>连接配置将被删除。本机凭据按现有应用策略保留，不会在此界面显示或复制。</p>
+                  {plugin.pluginType === "mysql" ? <p>仅删除当前数据库插件，不会删除 MySQL 中的数据库、表数据或其他插件。</p> : null}
+                </>
               )}
             </div>
           </AlertDialogDescription>

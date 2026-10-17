@@ -4,6 +4,7 @@ import { pluginConnectionFingerprint } from './plugin-change-classifier.mjs';
 import { getPluginConnectionAdapter } from './plugin-connection-adapters.mjs';
 import { normalizePluginCandidate } from './plugin-config-model.mjs';
 import { hostKeyDraftBinding } from './plugin-host-key-trust.mjs';
+import { mysqlGroupMembers } from './mysql-plugin-group.mjs';
 
 const VALIDATION_PURPOSES = new Set([
   'tls-probe','server-auth','resource-discovery','resource-access','health-check',
@@ -53,6 +54,7 @@ function previewFingerprint(preview) {
     baseRecordRevision:preview.baseRecordRevision,
     baseConnectionFingerprint:preview.baseConnectionFingerprint,
     affectedIds:preview.affectedIds,
+    mysqlGroupMembers:preview.mysqlGroupMembers,
   });
 }
 
@@ -111,7 +113,8 @@ export class PluginEditSessionManager {
     if (expectedRevision !== null && expectedRevision !== undefined && plugin.revision !== expectedRevision) {
       throw new AppError('CONFIG_REVISION_CONFLICT','插件配置已经变化，请刷新后重试。');
     }
-    const affectedIds = dependencyClosure(plugins,pluginInstanceId);
+    const groupMembers = mysqlGroupMembers(plugin,plugins);
+    const affectedIds = groupMembers.length ? sortedUnique(groupMembers.map(item => item.pluginInstanceId)) : dependencyClosure(plugins,pluginInstanceId);
     const runtime = this.connectionManager.snapshot(projectId,environmentId);
     const preEditConnectedSet = affectedIds.filter((id) => runtime.plugins?.[id]?.phase === 'connected');
     const connectionOperations = this.connectionManager.activeConnectionOperations?.(
@@ -124,6 +127,7 @@ export class PluginEditSessionManager {
       baseRecordRevision:plugin.revision,
       baseConnectionFingerprint:pluginConnectionFingerprint(plugin),
       affectedIds,
+      ...(groupMembers.length ? {mysqlGroupMembers:groupMembers} : {}),
       affectedPlugins:plugins.filter(item => affectedIds.includes(item.pluginInstanceId)).map(item => ({pluginInstanceId:item.pluginInstanceId, displayName:item.displayName, pluginType:item.pluginType, connected:preEditConnectedSet.includes(item.pluginInstanceId)})),
       preEditConnectedSet,
       activeOperations:{connection:connectionOperations,workspace:workspaceActivity},
@@ -208,6 +212,7 @@ export class PluginEditSessionManager {
         ownerId:preparation.ownerId,
         scope:current.scope,
         basePlugin:structuredClone(current.plugin),
+        ...(current.mysqlGroupMembers ? {mysqlGroupMembers:structuredClone(current.mysqlGroupMembers)} : {}),
         baseRecordRevision:current.baseRecordRevision,
         baseConnectionFingerprint:current.baseConnectionFingerprint,
         dependencyClosure:[...current.affectedIds],
@@ -540,6 +545,7 @@ export class PluginEditSessionManager {
     const session = this.requireSession(editSessionId,{phases:['saving'],ownerId});
     return {
       scope:structuredClone(session.scope),
+      ...(session.mysqlGroupMembers ? {mysqlGroupMembers:structuredClone(session.mysqlGroupMembers)} : {}),
       baseRecordRevision:session.baseRecordRevision,
       credentialIntent:session.credentialIntent,
       temporarySecrets:{...session.temporarySecrets},

@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
-const { randomBytes } = require('node:crypto');
+const { randomBytes, randomUUID } = require('node:crypto');
 const path = require('node:path');
-const { app, ipcMain } = require('electron');
+const { app, ipcMain, nativeTheme } = require('electron');
 const smoke = require('./ui-react-plugin-operations-smoke.cjs');
 const {
   state,PROJECT_ID,ENVIRONMENT_ID,SERVER_ID,EDITOR_SELECTOR,DISCARD_SELECTOR,
@@ -24,6 +24,7 @@ let failNextDelete = false;
 let holdCredentialReveal = false;
 let releaseCredentialReveal = null;
 let failNextCredentialReveal = false;
+let unreadableMysqlCredentials = false;
 const LONG_DIALOG_ERROR = `模拟操作失败：${'ContinuousFixtureDiagnostic'.repeat(60)}`;
 const ok = (data) => ({ok:true,data});
 const safeScope = (payload) => ({projectId:payload.projectId,environmentId:payload.environmentId});
@@ -51,6 +52,8 @@ async function installMatrixApi(win) {
     import('../src/workspace-store.mjs'),import('../src/errors.mjs'),import('../src/ipc-v2.mjs'),
   ]);
   const coordinator = new WorkspaceMutationCoordinator();
+  const {mysqlPluginGroup,mysqlGroupMembers,mysqlGroupTags,mysqlSharedConnection,withoutMysqlGroupTags} = await import('../src/mysql-plugin-group.mjs');
+  const {bindMysqlConnection,createMysqlConnection} = await import('../src/mysql-connection-profile.mjs');
   const resolver = new CredentialUseResolver({
     normalizeSecrets:(_draft,values) => Object.fromEntries(Object.entries(values ?? {}).filter(([,value]) => typeof value === 'string' && value.length > 0)),
     load:async (plugin) => ({...(fixtureCredentials.get(plugin.pluginInstanceId) ?? {})}),
@@ -147,11 +150,34 @@ async function installMatrixApi(win) {
     const material = edits.commitMaterial(payload.editSessionId,{ownerId});
     const before = state.plugins.find((plugin) => plugin.pluginInstanceId === material.scope.pluginInstanceId);
     assert.equal(payload.expectedRevision,before.revision);
+    if (unreadableMysqlCredentials && mysqlPluginGroup(before)) {
+      if (payload.forceCredentialReplacement !== true) {
+        edits.saveFailed(payload.editSessionId);
+        throw new AppError('CREDENTIAL_REPLACEMENT_INCOMPLETE','合成凭据不可读，旧凭据已保留，需要明确确认替换。');
+      }
+      unreadableMysqlCredentials = false;
+    }
     const next = workspaceInternals.normalizePluginCandidate({...before,...payload.patch},material.scope,before,undefined,{hostKeyTrust:material.hostKeyTrust});
     Object.assign(before,next,{revision:before.revision+1});
     fixtureCredentials.set(before.pluginInstanceId,{
       ...(fixtureCredentials.get(before.pluginInstanceId) ?? {}),...material.temporarySecrets,
     });
+    if (mysqlPluginGroup(before)) {
+      assert.equal(payload.applyToMysqlGroup,true);
+      const original = mysqlGroupMembers(before,state.plugins);
+      for (const member of original.filter(item => item !== before)) {
+        Object.assign(member,workspaceInternals.normalizePlugin(mysqlSharedConnection(before),material.scope,member));
+        fixtureCredentials.set(member.pluginInstanceId,{...fixtureCredentials.get(before.pluginInstanceId)});
+      }
+      if (payload.databases) {
+        for (const member of original.filter(item => !payload.databases.includes(item.target.database))) Object.assign(member,bindMysqlConnection(member,createMysqlConnection(member)));
+        for (const database of payload.databases.filter(database => !original.some(item => item.target.database === database))) {
+          const child = workspaceInternals.normalizePlugin({...before,pluginInstanceId:`mysql-${randomUUID()}`,target:{...before.target,database}},material.scope);
+          state.plugins.push(child);
+          fixtureCredentials.set(child.pluginInstanceId,{...fixtureCredentials.get(before.pluginInstanceId)});
+        }
+      }
+    }
     await edits.completeSave(payload.editSessionId,{afterCommit:payload.afterCommit,ownerId});
     state.environmentRevision += 1;
     return {committed:true,plugin:before};
@@ -167,6 +193,65 @@ async function installMatrixApi(win) {
     Object.assign(plugin,safeScope(payload),{revision:1,configState:'ready',assessment:{phase:'disconnected',primaryStatus:{kind:'disconnected',label:'未连接',action:'connect'}}});
     state.plugins.push(plugin);
     fixtureCredentials.set(plugin.pluginInstanceId,{...(payload.secrets ?? {})});
+    state.environmentRevision += 1;
+    return plugin;
+  });
+  replace('v2:mysql-plugin-batch-create',payload => {
+    assertScope(payload);
+    const tags = mysqlGroupTags([],randomUUID(),payload.groupName);
+    const plugins = payload.databases.map((database,index) => workspaceInternals.normalizePlugin({...payload.input,tags,
+      pluginInstanceId:index === 0 ? payload.input.pluginInstanceId : `mysql-${randomUUID()}`,
+      displayName:`${payload.groupName} · ${database}`,target:{...payload.input.target,database}},safeScope(payload)));
+    const connection = createMysqlConnection(plugins[0],{name:payload.groupName});
+    for (const plugin of plugins) Object.assign(plugin,bindMysqlConnection(plugin,connection));
+    state.plugins.push(...plugins);
+    for (const plugin of plugins) fixtureCredentials.set(plugin.pluginInstanceId,{...payload.secrets});
+    state.environmentRevision += 1;
+    return {plugin:plugins[0],plugins,createdCount:plugins.length};
+  });
+  replace('v2:mysql-plugin-group-describe',payload => {
+    const plugin = state.plugins.find(item => item.pluginInstanceId === payload.pluginInstanceId);
+    return {...mysqlPluginGroup(plugin),revision:plugin.mysqlConnectionRevision ?? 1,members:mysqlGroupMembers(plugin,state.plugins).map(item => ({...item,database:item.target.database})),connectionInconsistent:false,credentialsInconsistent:false,credentialsUnreadable:false};
+  });
+  replace('v2:mysql-connection-delete',payload => {
+    assertScope(payload);
+    const plugin = state.plugins.find(item => item.pluginInstanceId === payload.pluginInstanceId);
+    const group = mysqlPluginGroup(plugin);
+    const members = mysqlGroupMembers(plugin,state.plugins);
+    assert.equal(payload.expectedConnectionId,group.id);
+    assert.equal(payload.expectedRevision,plugin.mysqlConnectionRevision ?? 1);
+    const versions = items => items.map(({pluginInstanceId,revision}) => ({pluginInstanceId,revision})).sort((a,b) => a.pluginInstanceId.localeCompare(b.pluginInstanceId));
+    if (JSON.stringify(versions(members)) !== JSON.stringify(versions(payload.expectedMembers))) throw new AppError('CONFIG_REVISION_CONFLICT','数据库组或成员已变化，请重新打开删除确认。');
+    const ids = members.map(item => item.pluginInstanceId);
+    state.plugins = state.plugins.filter(item => !ids.includes(item.pluginInstanceId));
+    state.environmentRevision += 1;
+    for (const id of ids) {
+      delete state.runtime.plugins[id];
+      win.webContents.send('v2:workspace-changed',{type:'plugin-deleted',projectId:PROJECT_ID,environmentId:ENVIRONMENT_ID,pluginInstanceId:id});
+    }
+    return {committed:true,deletedPluginInstanceIds:ids,deletedCount:ids.length,credentialsPreserved:true};
+  });
+  replace('v2:mysql-connection-intent',payload => {
+    assertScope(payload);
+    const plugin = state.plugins.find(item => item.pluginInstanceId === payload.pluginInstanceId);
+    const members = mysqlGroupMembers(plugin,state.plugins);
+    assert.ok(members.length > 0);
+    const phase = payload.intent === 'connect' ? 'connected' : 'disconnected';
+    for (const member of members) {
+      state.runtime.plugins[member.pluginInstanceId] = {pluginInstanceId:member.pluginInstanceId,phase,
+        assessment:{phase,primaryStatus:{kind:phase,label:phase === 'connected' ? '已连接' : '未连接'}}};
+    }
+    state.runtime.sequence += 1;
+    state.runtime.connectedCount = Object.values(state.runtime.plugins).filter(item => item.phase === 'connected').length;
+    state.runtime.eligibleCount = state.plugins.length;
+    state.runtime.phase = state.runtime.connectedCount > 0 ? 'partial' : 'disconnected';
+    win.webContents.send('v2:environment-status-changed',structuredClone(state.runtime));
+    return {outcome:'started'};
+  });
+  replace('v2:mysql-plugin-group-detach',payload => {
+    const plugin = state.plugins.find(item => item.pluginInstanceId === payload.pluginInstanceId);
+    plugin.tags = withoutMysqlGroupTags(plugin.tags);
+    plugin.revision += 1;
     state.environmentRevision += 1;
     return plugin;
   });
@@ -452,9 +537,9 @@ async function discoveryMatrix(win) {
   await waitFor(win,`document.querySelector('#plugin-database-error')?.textContent?.includes('数据库') === true`,'missing fixed database rejected');
   assert.equal(runtimeCalls.length,beforeInvalid);
   await clickText(win,'读取数据库',EDITOR_SELECTOR);
-  await waitFor(win,`document.querySelector('[aria-label="选择可见数据库"]') !== null`,'real discovery envelope becomes selectable options');
+  await waitFor(win,`document.querySelector('[data-testid="mysql-batch-databases"]') !== null`,'real discovery envelope becomes selectable options');
   assert.equal(await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}).textContent.includes('前 200 项')`,true),true,'truncated discovery is visibly labelled');
-  await chooseSelectOption(win,'[aria-label="选择可见数据库"]','orders');
+  await clickText(win,'orders','[data-testid="mysql-batch-databases"]','label');
   assert.equal(await win.webContents.executeJavaScript(`document.querySelector('#plugin-database').value === 'orders'`,true),true);
 
   for (const change of ['host','credential','failure']) {
@@ -470,18 +555,19 @@ async function discoveryMatrix(win) {
     if (change === 'failure') gate.reject(new Error('Superseded discovery failure fixture'));
     else gate.resolve({databases:['stale-result'],truncated:false});
     await wait(150);
-    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[aria-label="选择可见数据库"]') === null`,true),true,'old discovery does not repopulate options');
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelector('[data-testid="mysql-batch-databases"]') === null`,true),true,'old discovery does not repopulate options');
     assert.equal(await win.webContents.executeJavaScript(`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}).textContent.includes('Superseded discovery failure fixture')`,true),false,'late discovery errors do not overwrite the changed draft');
   }
   runtimeBehavior = null;
   await clickText(win,'读取数据库',EDITOR_SELECTOR);
-  await waitFor(win,`document.querySelector('[aria-label="选择可见数据库"]') !== null`,'discovery retry after input changes');
-  await chooseSelectOption(win,'[aria-label="选择可见数据库"]','orders');
+  await waitFor(win,`document.querySelector('[data-testid="mysql-batch-databases"]') !== null`,'discovery retry after input changes');
+  await clickText(win,'orders','[data-testid="mysql-batch-databases"]','label');
   await advanced(win);
   await chooseSelectOption(win,'[aria-label="连接路径"]','Server 隧道');
   await click(win,'[data-testid="plugin-save"]','save checks the draft');
   await waitFor(win,`document.querySelector('#plugin-tunnel-server-error')?.textContent?.includes('Server') === true`,'missing tunnel target rejected');
   await chooseSelectOption(win,'[aria-label="隧道 Server"]',state.plugins.find((plugin) => plugin.pluginInstanceId === SERVER_ID).displayName);
+  await fill(win,'#plugin-database','orders');
   await checkPassed(win);
   assert.equal(runtimeCalls.at(-1).draft.transport.serverPluginInstanceId,SERVER_ID);
   const savedId = await saveAndClose(win);
@@ -827,8 +913,188 @@ async function deletionMatrix(win) {
   assert.equal(state.plugins[0].pluginType,'mysql');
 }
 
+async function mysqlGroupsMatrix(win) {
+  await openNew(win,'MySQL');
+  await fill(win,'#plugin-display-name','批量测试');
+  await fill(win,'#plugin-primary-credential',randomBytes(24).toString('hex'));
+  await clickText(win,'读取数据库',EDITOR_SELECTOR);
+  await waitFor(win,`document.querySelector('[data-testid="mysql-batch-databases"]') !== null`,'读取多选数据库');
+  await clickText(win,'inventory','[data-testid="mysql-batch-databases"]','label');
+  await clickText(win,'orders','[data-testid="mysql-batch-databases"]','label');
+  await waitFor(win,`document.querySelector('[data-testid="plugin-save"]')?.textContent.includes('2 个库')`,'显示批量创建数量');
+  await click(win,'[data-testid="plugin-save"]','批量保存');
+  await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'批量创建完成');
+  const members = state.plugins.slice(-2);
+  assert.deepEqual(members.map(item => item.target.database),['inventory','orders']);
+  assert.equal(calls.filter(call => call.channel === 'v2:mysql-plugin-batch-create').length,1);
+  await waitFor(win,`document.querySelector('[data-testid="mysql-plugin-group"]')?.textContent.includes('2 个库')`,'导航显示插件组');
+  await smoke.captureFreshFrame(win);
+  await smoke.ensureNativeKeyboardFocus(win);
+  await win.webContents.executeJavaScript(`document.querySelector('[data-testid="mysql-group-toggle"]').focus()`,true);
+  await waitFor(win,`document.activeElement?.dataset.testid === 'mysql-group-toggle'`,'数据库组展开入口获得键盘焦点');
+  win.webContents.sendInputEvent({type:'keyDown',keyCode:'Enter'});
+  win.webContents.sendInputEvent({type:'char',keyCode:'\r'});
+  win.webContents.sendInputEvent({type:'keyUp',keyCode:'Enter'});
+  await waitFor(win,`document.querySelector('[data-testid="mysql-group-toggle"]')?.getAttribute('aria-expanded') === 'false'
+    && document.querySelector('[data-testid="plugin-trigger-${members[0].pluginInstanceId}"]')?.getClientRects().length === 0`,'键盘收起数据库组');
+  await clickText(win,'连接全部','[data-testid="mysql-plugin-group"]');
+  assert.equal(calls.filter(call => call.channel === 'v2:mysql-connection-intent').length,1);
+  await waitFor(win,`document.querySelector('[data-testid="mysql-group-header"]')?.textContent.includes('已连接 2/2')`,'收起状态可以整组连接');
+  const previousTheme = nativeTheme.themeSource;
+  for (const theme of ['light','dark']) {
+    nativeTheme.themeSource = theme;
+    await waitFor(win,`document.documentElement.dataset.theme === '${theme}'`,'数据库组主题跟随');
+    for (const width of [960,1280]) {
+      await setExactViewport(win,width,820);
+      await smoke.captureFreshFrame(win);
+      const layout = await win.webContents.executeJavaScript(`(() => {
+        const header = document.querySelector('[data-testid="mysql-group-header"]');
+        const toggle = header.querySelector('[data-testid="mysql-group-toggle"]');
+        const menu = header.querySelector('[data-testid="mysql-group-menu-trigger"]');
+        const rect = header.getBoundingClientRect();
+        return {overflow:header.scrollWidth > header.clientWidth,
+          actionVisible:menu.getBoundingClientRect().right <= rect.right,
+          toggleWidth:toggle.getBoundingClientRect().width};
+      })()`,true);
+      assert.equal(layout.overflow,false,'窄栏中的数据库组不产生横向溢出');
+      assert.equal(layout.actionVisible,true,'组操作在窄栏中保持可见');
+      assert.ok(layout.toggleWidth > 100,`组名称和展开入口保留足够空间：${JSON.stringify({theme,width,layout})}`);
+    }
+    if (process.env.RUNBOOK_BRIDGE_GROUP_SCREENSHOT) {
+      const file = path.parse(process.env.RUNBOOK_BRIDGE_GROUP_SCREENSHOT);
+      for (const view of ['collapsed','expanded']) {
+        if (view === 'expanded') await click(win,'[data-testid="mysql-group-toggle"]','展开数据库组');
+        await win.webContents.executeJavaScript('document.activeElement?.blur()',true);
+        const screenshot = await smoke.captureFreshFrame(win);
+        require('node:fs').writeFileSync(path.join(file.dir,`${file.name}-${view}-${theme}.png`),screenshot.toPNG());
+      }
+      await click(win,'[data-testid="mysql-group-toggle"]','恢复收起状态');
+    }
+  }
+  nativeTheme.themeSource = previousTheme;
+  await clickText(win,'断开全部','[data-testid="mysql-plugin-group"]');
+  await waitFor(win,`document.querySelector('[data-testid="mysql-group-header"]')?.textContent.includes('未连接')`,'收起状态可以整组断开');
+  assert.equal(calls.filter(call => call.channel === 'v2:mysql-connection-intent').length,2);
+  await openPopup(win,'[data-testid="mysql-group-menu-trigger"]','数据库组更多操作');
+  await clickText(win,'管理连接','[role="menu"]');
+  await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) !== null && document.querySelector('[data-testid="plugin-editor-loading"]') === null`,'菜单进入连接管理');
+  if (await win.webContents.executeJavaScript(`document.querySelector('[data-testid="plugin-editor-confirmation"]') !== null`,true)) {
+    await clickText(win,'继续编辑','[data-testid="plugin-editor-confirmation"]');
+  }
+  await waitFor(win,`document.querySelector('[data-testid="plugin-editor-confirmation"]') === null && document.querySelector('[data-testid="plugin-editor-loading"]') === null`,'菜单编辑会话就绪');
+  await waitFor(win,`document.querySelector('[data-testid="mysql-group-notice"]')?.textContent.includes('2 个库')`,'组编辑影响范围');
+  await click(win,'[data-testid="mysql-group-toggle"]','展开数据库组以选择成员');
+  if (process.env.RUNBOOK_BRIDGE_GROUP_SCREENSHOT) {
+    await setExactViewport(win,1280,820);
+    const screenshot = await smoke.captureFreshFrame(win);
+    require('node:fs').writeFileSync(process.env.RUNBOOK_BRIDGE_GROUP_SCREENSHOT,screenshot.toPNG());
+  }
+  assert.equal(await win.webContents.executeJavaScript(`document.querySelector('#plugin-database') === null`,true),true);
+  await fill(win,'#plugin-host','changed.group.invalid');
+  await click(win,'[data-testid="plugin-save"]','统一保存组连接');
+  await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'组保存完成');
+  assert.ok(members.every(item => item.target.host === 'changed.group.invalid'));
+  assert.deepEqual(members.map(item => item.target.database),['inventory','orders']);
+  await editPlugin(win,members[0].pluginInstanceId);
+  const beforeRecovery = members.map(item => item.revision);
+  const recoveryCalls = () => calls.filter(call => call.channel === 'v2:plugin-connection-edit-save');
+  const callCount = recoveryCalls().length;
+  const replacement = randomBytes(24).toString('hex');
+  unreadableMysqlCredentials = true;
+  await fill(win,'#plugin-primary-credential',replacement);
+  await click(win,'[data-testid="plugin-save"]','保存新凭据并等待确认');
+  const confirmation = '[data-testid="plugin-editor-confirmation"]';
+  await waitFor(win,`document.querySelector(${JSON.stringify(confirmation)})?.textContent.includes('永久替换不可读取的凭据')`,'不可读凭据的替换确认');
+  assert.equal(recoveryCalls().at(-1).payload.forceCredentialReplacement,undefined);
+  assert.deepEqual(members.map(item => item.revision),beforeRecovery);
+  await clickText(win,'取消',confirmation);
+  await waitFor(win,`document.querySelector(${JSON.stringify(confirmation)}) === null`,'取消凭据替换后留在编辑器');
+  assert.equal(recoveryCalls().length,callCount+1,'取消不能提交强制替换');
+  assert.ok(members.every(item => fixtureCredentials.get(item.pluginInstanceId)?.password !== replacement));
+  await click(win,'[data-testid="plugin-save"]','重新请求凭据替换');
+  await waitFor(win,`document.querySelector(${JSON.stringify(confirmation)})?.textContent.includes('永久替换不可读取的凭据')`,'重新确认凭据替换');
+  await clickText(win,'强制替换',confirmation);
+  await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'确认后保存整组凭据');
+  assert.equal(recoveryCalls().at(-1).payload.forceCredentialReplacement,true);
+  assert.equal(recoveryCalls().length,callCount+3);
+  assert.ok(members.every(item => fixtureCredentials.get(item.pluginInstanceId)?.password === replacement));
+  process.stdout.write('MySQL 凭据替换确认、取消和整组保存界面回归通过\n');
+  await editPlugin(win,members[1].pluginInstanceId);
+  await waitFor(win,`document.querySelector('[data-testid="mysql-managed-databases"]')?.textContent.includes('orders')`,'读取待移出的数据库');
+  await click(win,'[data-testid="mysql-managed-databases"] [data-database="orders"]','取消关联数据库');
+  await click(win,'[data-testid="plugin-save"]','保存取消关联');
+  await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'移出分组完成');
+  assert.notEqual(members[1].mysqlConnectionId,members[0].mysqlConnectionId);
+  await editPlugin(win,members[0].pluginInstanceId);
+  await clickText(win,'读取数据库','[data-testid="mysql-group-notice"]');
+  await waitFor(win,`document.querySelector('[data-testid="mysql-managed-databases"]')?.textContent.includes('orders')`,'单库读取可扩展数据库');
+  await clickText(win,'orders','[data-testid="mysql-managed-databases"]','label');
+  await click(win,'[data-testid="plugin-save"]','单库扩展为数据库组');
+  await waitFor(win,`document.querySelector(${JSON.stringify(EDITOR_SELECTOR)}) === null`,'扩展保存完成');
+  assert.equal(state.plugins.filter(item => item.mysqlConnectionId === members[0].mysqlConnectionId).length,2);
+  process.stdout.write('MySQL 共享连接、整组操作、成员移出和单库扩展界面回归通过\n');
+  await mysqlGroupDeletionMatrix(win,members[0],members[1]);
+}
+
+async function mysqlGroupDeletionMatrix(win,representative,independent) {
+  const originalIds = state.plugins.map(item => item.pluginInstanceId);
+  const targetIds = state.plugins.filter(item => item.mysqlConnectionId === representative.mysqlConnectionId).map(item => item.pluginInstanceId);
+  const dialog = '[data-testid="mysql-connection-delete-dialog"]';
+  const openDelete = async () => {
+    await openPopup(win,'[data-testid="mysql-group-menu-trigger"]','打开数据库组菜单');
+    await clickText(win,'删除整组','[role="menu"]');
+    await waitFor(win,`document.querySelector('[data-testid="mysql-delete-members"]')?.children.length === 2`,'列出整组删除范围');
+  };
+  await openDelete();
+  if (process.env.RUNBOOK_BRIDGE_GROUP_DELETE_SCREENSHOT) {
+    require('node:fs').writeFileSync(process.env.RUNBOOK_BRIDGE_GROUP_DELETE_SCREENSHOT,(await smoke.captureFreshFrame(win)).toPNG());
+  }
+  await clickText(win,'取消',dialog);
+  await waitFor(win,`document.querySelector('${dialog}') === null`,'取消整组删除');
+  assert.deepEqual(state.plugins.map(item => item.pluginInstanceId),originalIds);
+  assert.equal(calls.filter(item => item.channel === 'v2:mysql-connection-delete').length,0);
+  await openDelete();
+  representative.revision += 1;
+  await clickText(win,'删除整组',dialog);
+  await waitFor(win,`document.querySelector('${dialog}')?.textContent.includes('数据库组或成员已变化')`,'拒绝陈旧删除确认');
+  assert.deepEqual(state.plugins.map(item => item.pluginInstanceId),originalIds);
+  await clickText(win,'重新读取',dialog);
+  await waitFor(win,`document.querySelector('[data-testid="mysql-delete-members"]')?.children.length === 2`,'重新确认最新成员');
+  await clickText(win,'删除整组',dialog);
+  await waitFor(win,`document.querySelector('${dialog}') === null && document.querySelector('[data-testid="mysql-plugin-group"]') === null`,'整组删除后刷新导航');
+  assert.deepEqual(state.plugins.map(item => item.pluginInstanceId),originalIds.filter(id => !targetIds.includes(id)));
+  const selector = `[data-testid="plugin-row-${independent.pluginInstanceId}"]`;
+  const openSingleDelete = async () => {
+    await win.webContents.executeJavaScript(`(() => {
+      const row = document.querySelector(${JSON.stringify(selector)});
+      row.scrollIntoView({block:'nearest'});
+      const rect = row.getBoundingClientRect();
+      row.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:rect.x+24,clientY:rect.y+24}));
+    })()`,true);
+    await waitFor(win,`document.querySelector('[role="menu"][data-state="open"]') !== null`,'插件右键菜单');
+    await clickText(win,'删除插件','[role="menu"]');
+    await waitFor(win,`document.querySelector('[data-testid="plugin-delete-dialog"]')?.textContent.includes(${JSON.stringify(independent.displayName)})`,'右键删除使用正确插件');
+  };
+  await openSingleDelete();
+  await clickText(win,'取消','[data-testid="plugin-delete-dialog"]');
+  await waitFor(win,`document.querySelector('[data-testid="plugin-delete-dialog"]') === null`,'取消单插件删除');
+  assert.ok(state.plugins.includes(independent));
+  await openSingleDelete();
+  await clickText(win,'删除插件','[data-testid="plugin-delete-dialog"]');
+  await waitFor(win,`document.querySelector('[data-testid="plugin-delete-dialog"]') === null && document.querySelector(${JSON.stringify(selector)}) === null`,'右键删除刷新导航');
+  assert.equal(state.plugins.some(item => item.pluginInstanceId === independent.pluginInstanceId),false);
+  assert.ok(state.plugins.some(item => item.pluginInstanceId === SERVER_ID));
+  process.stdout.write('插件右键删除、整组确认、取消和版本冲突回归通过\n');
+}
+
 async function matrix(win) {
   const {probe,edits,AppError} = await installMatrixApi(win);
+  if (app.commandLine.hasSwitch('mysql-groups-only')) {
+    await mysqlGroupsMatrix(win);
+    assert.equal(probe.requests.size,0);
+    assert.equal(edits.sessions.size,0);
+    return;
+  }
   if (app.commandLine.hasSwitch('database-discovery-only')) {
     await discoveryMatrix(win);
     assert.equal(probe.requests.size,0);

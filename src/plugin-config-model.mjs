@@ -21,6 +21,11 @@ export function normalizePlugin(input, scope, existing = null, registry = builti
     environmentId: scope.environmentId,
     pluginInstanceId,
     pluginType,
+    ...(pluginType === 'mysql' && metadata.mysqlConnectionId ? {
+      mysqlConnectionId:metadata.mysqlConnectionId,
+      mysqlConnectionName:metadata.mysqlConnectionName,
+      mysqlConnectionRevision:metadata.mysqlConnectionRevision,
+    } : {}),
     displayName: normalizeName(input.displayName ?? existing?.displayName ?? pluginType, '插件名称'),
     ...((Object.hasOwn(existing ?? {}, 'description') || Object.hasOwn(input, 'description'))
       ? {description:normalizeDescription(metadata.description)}

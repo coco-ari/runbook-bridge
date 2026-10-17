@@ -13,7 +13,16 @@ import { WorkspaceStore } from '../src/workspace-store.mjs';
 import { PluginCredentialVault, pluginCredentialInternals } from '../src/plugin-credential-vault.mjs';
 import { WorkspaceMutationCoordinator } from '../src/workspace-mutation-coordinator.mjs';
 import { newCloudMeta, deriveCloudKeys, encryptCloudSnapshot, decryptCloudSnapshot, cloudHash, validateCloudMeta } from '../src/cloud-config-crypto.mjs';
-import { exportCloudProject, snapshotDigest, normalizeCloudSnapshot, cloudBackupDiff, cloudProjectDiff } from '../src/cloud-config-snapshot.mjs';
+import { exportCloudProject, snapshotDigest, normalizeCloudSnapshot, cloudBackupDiff, cloudProjectDiff, expandCloudMysqlEnvironment, configProjection } from '../src/cloud-config-snapshot.mjs';
+import { normalizePlugin } from '../src/plugin-config-model.mjs';
+
+// 构造旧版本真实使用的平铺格式，不能只把新格式的版本号改小。
+function legacyPortable(project) {
+  return {...project,environments:project.environments.map(environment => {
+    const {mysqlConnections:_connections,...expanded} = expandCloudMysqlEnvironment(environment);
+    return {...expanded,plugins:expanded.plugins.map(item => ({...item,config:configProjection(normalizePlugin({...item.config,mysqlConnectionId:undefined},{projectId:project.projectId,environmentId:environment.environmentId}))}))};
+  })};
+}
 import { EnvironmentConnectionManager } from '../src/environment-connection-manager.mjs';
 import { RedisWorkspaceManager } from '../src/redis-workspace-manager.mjs';
 import { ServerDockerManager } from '../src/server-docker-manager.mjs';
@@ -99,9 +108,9 @@ async function updateCenter(t,device) {
   }};
 }
 
-test('环境类型随 schema 4 往返，旧哈希不漂移，旧版本更新仍直接覆盖，本地修改显示字段差异',async t => {
+test('环境类型随共享连接格式往返，旧格式可读取，旧版本更新仍直接覆盖',async t => {
   const remote = await cloud(t), a = await device(t,remote.client), b = await device(t,remote.client), p = await project(a);
-  const original = await exportCloudProject(a.store,a.vault,p.projectId);
+  const original = legacyPortable(await exportCloudProject(a.store,a.vault,p.projectId));
   assert.equal(Object.hasOwn(original.environments[0],'environmentType'),false);
   assert.equal(snapshotDigest(normalizeCloudSnapshot({schemaVersion:1,projects:[original]},a.vault).projects[0]),snapshotDigest(original));
   const created = await a.call('create',{serviceUrl:remote.origin,adminToken:ADMIN,password:PASSWORD});
@@ -111,7 +120,7 @@ test('环境类型随 schema 4 往返，旧哈希不漂移，旧版本更新仍�
   await a.store.updateEnvironment(p.projectId,'env-test',{environmentType:'production'});
   await upload(a,p.projectId);
   const archive = await a.service.remote('test-owner',null,created.repositoryId);
-  assert.equal(archive.payload.schemaVersion,4);
+  assert.equal(archive.payload.schemaVersion,5);
   assert.throws(() => normalizeCloudSnapshot({...archive.payload,schemaVersion:3},a.vault),{code:'CLOUD_FORMAT_INVALID'});
   const sync = await b.call('sync',{repositoryId:bound.repositoryId,direction:'download',projectId:p.projectId});
   assert.equal(sync.planId,undefined);
@@ -128,7 +137,7 @@ test('环境类型随 schema 4 往返，旧哈希不漂移，旧版本更新仍�
   // Clearing the badge does not downgrade the repository or discard old typed versions.
   await a.store.updateEnvironment(p.projectId,'env-test',{environmentType:'unspecified'});
   await upload(a,p.projectId);
-  assert.equal((await a.service.remote('test-owner',null,created.repositoryId)).payload.schemaVersion,4);
+  assert.equal((await a.service.remote('test-owner',null,created.repositoryId)).payload.schemaVersion,5);
 });
 
 test('字段对比白名单不包含凭据、运维说明、提问和自定义命令正文，数量有界',async t => {
@@ -259,7 +268,7 @@ test('普通上传不能恢复其他设备删除的项目，显式恢复后仍�
   const removal = await projectOperation(a,created.repositoryId,p.projectId,'delete'); await a.call('confirmProjectOperation',{planId:removal.planId});
   // A retained schema 2 deletion must gain the same protection on upgrade.
   const current = await a.service.remote('test-owner',null,created.repositoryId);
-  const legacy = {schemaVersion:2,projects:current.payload.projects,history:current.payload.history};
+  const legacy = {schemaVersion:2,projects:current.payload.projects.map(legacyPortable),history:current.payload.history.map(record => ({...record,versions:record.versions.map(version => ({...version,project:legacyPortable(version.project)}))}))};
   const envelope = encryptCloudSnapshot(legacy,current.session.metadata,current.session.keys.encryption,current.snapshotId);
   await remote.client.call(current.session,'snapshots',{method:'POST',body:envelope,parentId:current.snapshotId});
   const deletedHead = (await a.service.remote('test-owner',null,created.repositoryId)).snapshotId;
@@ -269,7 +278,7 @@ test('普通上传不能恢复其他设备删除的项目，显式恢复后仍�
   const restore = await projectOperation(a,created.repositoryId,p.projectId,'restore'); await a.call('confirmProjectOperation',{planId:restore.planId});
   await b.call('sync',{repositoryId:bound.repositoryId,direction:'upload',projectId:p.projectId});
   const restored = (await a.service.remote('test-owner',null,created.repositoryId)).payload;
-  assert.equal(restored.schemaVersion,3); assert.equal(restored.tombstones.length,0);
+  assert.equal(restored.schemaVersion,5); assert.equal(restored.tombstones.length,0);
 });
 
 test('慢仓库检测不阻塞其他操作；相同检测合并，旧响应不能覆盖新上传状态',async t => {
@@ -414,7 +423,7 @@ test('旧快照迁移已有历史；30 天过期只在写入时清理，检测�
   let parentId = null;
   for (const name of ['旧仓库第一版','旧仓库第二版']) {
     const project = {...await exportCloudProject(a.store,a.vault,p.projectId),name};
-    const envelope = encryptCloudSnapshot({schemaVersion:1,projects:[project]},session.metadata,session.keys.encryption,parentId);
+    const envelope = encryptCloudSnapshot({schemaVersion:1,projects:[legacyPortable(project)]},session.metadata,session.keys.encryption,parentId);
     await remote.client.call(session,'snapshots',{method:'POST',body:envelope,parentId}); parentId = envelope.snapshotId;
   }
   assert.equal((await a.call('projectHistory',{repositoryId,projectId:p.projectId})).projectHistory.versions.length,2);
@@ -736,7 +745,7 @@ test('错误密码、链接协议、恶意本机路径、未知插件与缺失�
   await assert.rejects(b.call('bind',{url:created.url,password:'incorrect-password-long-enough'}),{code:'CLOUD_AUTH_FAILED'});
   assert.equal(new CloudConfigClient().repository(created.url).url,created.url);
   assert.throws(() => new CloudConfigClient().repository('https://user:password@example.invalid/r/'+crypto.randomUUID()),{code:'CLOUD_URL_INVALID'});
-  const snapshot = {schemaVersion:1,projects:[await exportCloudProject(a.store,a.vault,p.projectId)]};
+  const snapshot = {schemaVersion:1,projects:[legacyPortable(await exportCloudProject(a.store,a.vault,p.projectId))]};
   const badPath = structuredClone(snapshot); badPath.projects[0].environments[0].plugins[0].config.auth.privateKeyPath = '/local/secret';
   assert.throws(() => normalizeCloudSnapshot(badPath,a.vault),{code:'CLOUD_FORMAT_INVALID'});
   const unknown = structuredClone(snapshot); unknown.projects[0].environments[0].plugins[0].config.pluginType = 'unknown';

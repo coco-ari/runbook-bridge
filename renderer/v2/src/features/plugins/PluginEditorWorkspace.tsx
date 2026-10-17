@@ -35,6 +35,9 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
+import { Checkbox } from "@/components/ui/checkbox"
+import { mysqlPluginGroup } from "./mysql-plugin-group"
+import { MysqlPluginGroupNotice } from "./MysqlPluginGroupNotice"
 import { Button } from "@/components/ui/button"
 import {
   Collapsible,
@@ -181,6 +184,7 @@ export function PluginEditorWorkspace({
     onClosed,
   })
   const { state } = editor
+  const mysqlGroup = mysqlPluginGroup(plugin)
   const [pendingLocalChange, setPendingLocalChange] = useState<PendingLocalChange | null>(null)
   const [discardConfirmationOpen, setDiscardConfirmationOpen] = useState(false)
   const [discardInFlight, setDiscardInFlight] = useState(false)
@@ -391,7 +395,7 @@ export function PluginEditorWorkspace({
               </span>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <h1 className="min-w-0 truncate text-base font-semibold tracking-tight" title={plugin?.displayName} id="plugin-editor-title">{editor.isCreating ? "新增插件" : `编辑 ${plugin?.displayName}`}</h1>
+                  <h1 className="min-w-0 truncate text-base font-semibold tracking-tight" title={plugin?.displayName} id="plugin-editor-title">{editor.isCreating ? "新增插件" : mysqlGroup ? `编辑 MySQL 连接 · ${mysqlGroup.name}` : `编辑 ${plugin?.displayName}`}</h1>
                   {editor.isDirty ? <Badge variant="warning">未保存</Badge> : null}
                 </div>
                 {!editor.isCreating ? <p className="mt-1 text-xs leading-5 text-muted-foreground">保存或取消后将尝试恢复编辑前的连接状态。</p> : null}
@@ -418,6 +422,7 @@ export function PluginEditorWorkspace({
                 }}
               >
                 <FieldGroup className="gap-4" inert={saveBlocked}>
+                  {mysqlGroup && plugin ? <MysqlPluginGroupNotice api={api} plugin={plugin} disabled={busy} available={state.databases} selected={state.managedDatabases} discovering={state.databasesLoading} onDiscover={() => void editor.discoverDatabases()} onSelect={editor.manageDatabases} name={state.managedConnectionName} onName={editor.setConnectionName} /> : null}
                   <FieldSet className="gap-3 rounded-xl border border-border/70 bg-surface/40 p-4" disabled={saveBlocked}>
                     <FieldLegend>基本信息</FieldLegend>
                     {editor.isCreating ? (
@@ -443,7 +448,7 @@ export function PluginEditorWorkspace({
                     ) : null}
                     {editor.isCreating ? (
                     <Field data-invalid={Boolean(fieldErrors.displayName)}>
-                      <FieldLabel htmlFor="plugin-display-name">名称</FieldLabel>
+                      <FieldLabel htmlFor="plugin-display-name">{draft.pluginType === "mysql" ? "连接名称" : "名称"}</FieldLabel>
                       <Input
                         aria-describedby="plugin-display-name-description"
                         id="plugin-display-name"
@@ -456,7 +461,7 @@ export function PluginEditorWorkspace({
                         value={draft.displayName}
                       />
                       <FieldDescription id="plugin-display-name-description">
-                        留空时自动生成。
+                        {draft.pluginType === "mysql" ? "填写一次连接信息，读取数据库后可选择一个或多个库。" : "留空时自动生成。"}
                       </FieldDescription>
                     </Field>
                     ) : null}
@@ -590,10 +595,10 @@ export function PluginEditorWorkspace({
                     />
                   ) : null}
 
-                  {draft.pluginType === "mysql" ? (
+                  {draft.pluginType === "mysql" && !mysqlGroup ? (
                     <FieldSet className="gap-3">
                       <div className="flex items-center justify-between gap-3">
-                        <FieldLegend>固定数据库</FieldLegend>
+                        <FieldLegend>{editor.isCreating ? "数据库" : "固定数据库"}</FieldLegend>
                         <Button
                           disabled={busy || state.databasesLoading}
                           onClick={() => void editor.discoverDatabases()}
@@ -604,7 +609,7 @@ export function PluginEditorWorkspace({
                           {state.databasesLoading ? "读取中" : "读取数据库"}
                         </Button>
                       </div>
-                      <Field data-invalid={Boolean(fieldErrors.database)}>
+                      <Field data-invalid={Boolean(fieldErrors.database)} className={state.selectedDatabases.length > 1 ? "hidden" : undefined}>
                         <FieldLabel htmlFor="plugin-database">数据库名称</FieldLabel>
                         <Input
                           aria-describedby={fieldErrors.database ? "plugin-database-error" : undefined}
@@ -618,7 +623,16 @@ export function PluginEditorWorkspace({
                           {issueFor(state.issues, "database")}
                         </FieldError>
                       </Field>
-                      {state.databases.length > 0 ? (
+                      {editor.isCreating && state.databases.length > 0 ? <Field>
+                        <FieldLabel>选择数据库 · 已选 {state.selectedDatabases.length} 个</FieldLabel>
+                        <FieldDescription>选择一个库按单库展示；选择多个库按数据库组展示，共享连接设置。Agent 每次只访问选定的单库。</FieldDescription>
+                        <div className="max-h-56 overflow-auto rounded-lg border p-2" data-testid="mysql-batch-databases">
+                          {state.databases.map(database => <label key={database} className="flex cursor-pointer items-center gap-3 rounded px-2 py-2 hover:bg-surface-hover">
+                            <Checkbox checked={state.selectedDatabases.includes(database)} onCheckedChange={checked => editor.selectDatabases(checked === true ? [...state.selectedDatabases, database] : state.selectedDatabases.filter(item => item !== database))} />
+                            <span className="break-all font-mono text-sm">{database}</span>
+                          </label>)}
+                        </div>
+                      </Field> : !editor.isCreating && state.databases.length > 0 ? (
                         <Field>
                           <FieldLabel>可见数据库</FieldLabel>
                           <Select
@@ -761,7 +775,7 @@ export function PluginEditorWorkspace({
                 {discardInFlight ? "正在结束…" : "取消"}
               </Button>
               <Button data-testid="plugin-save" disabled={saveBlocked} form="plugin-editor-form" size="sm" type="submit">
-                {state.phase === "validating" ? "检查中…" : state.phase === "saving" ? "保存中…" : editor.isCreating ? "创建" : "保存"}
+                {state.phase === "validating" ? "检查中…" : state.phase === "saving" ? "保存中…" : editor.isCreating ? state.selectedDatabases.length > 1 ? `创建连接 · ${state.selectedDatabases.length} 个库` : "创建" : mysqlGroup ? "保存连接与数据库" : "保存"}
               </Button>
             </div>
           </footer>

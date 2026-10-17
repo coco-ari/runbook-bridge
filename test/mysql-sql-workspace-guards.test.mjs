@@ -49,7 +49,7 @@ test('主动断开插件和环境都先保护整个环境的 SQL 事务，包括
 
 test('删除与配置更新在执行持久化或清理前拒绝活动 SQL 事务', async () => {
   const h = harness();
-  for (const channel of ['v2:project-delete','v2:environment-delete','v2:environment-update','v2:plugin-delete','v2:plugin-create','v2:plugin-metadata-update','v2:plugin-agent-configuration-update','v2:plugin-connection-update','v2:plugin-update','v2:plugin-connection-edit-prepare']) {
+  for (const channel of ['v2:project-delete','v2:environment-delete','v2:environment-update','v2:plugin-delete','v2:mysql-connection-delete','v2:plugin-create','v2:plugin-metadata-update','v2:plugin-agent-configuration-update','v2:plugin-connection-update','v2:plugin-update','v2:plugin-connection-edit-prepare']) {
     const response = await h.invoke(channel,{...scope,expectedRevision:1,patch:{displayName:'新名称'}});
     assert.equal(response.ok,false,channel);
     assert.equal(response.error.code,'MYSQL_SQL_TRANSACTION_ACTIVE',channel);

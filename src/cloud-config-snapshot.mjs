@@ -3,17 +3,18 @@ import { cloudProjectFieldDiff } from './cloud-config-diff.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import ssh2 from 'ssh2';
-import { sanitizePluginSnapshot, normalizePlugin, normalizeName } from './plugin-config-model.mjs';
+import { normalizePlugin, normalizeName } from './plugin-config-model.mjs';
 import { getPluginConnectionAdapter } from './plugin-connection-adapters.mjs';
 import { normalizeQuickQuestionText, containsQuickQuestionCredential, QUICK_QUESTION_LIMIT } from './quick-questions.mjs';
 import { CLOUD_MAX_BYTES, cloudError, cloudId } from './cloud-config-crypto.mjs';
+import { storedPluginSnapshot, createMysqlConnection, migrateMysqlRecords } from './mysql-connection-profile.mjs';
 
 export const CLOUD_PROJECT_VERSIONS = 20;
 export const CLOUD_TRASH_DAYS = 30;
 export const cloudTrashAvailable = (record, now = Date.now()) => record.deletedAt !== null && Date.parse(record.deletedAt)+CLOUD_TRASH_DAYS*86400_000 > now;
 
 const ID = /^[a-z0-9][a-z0-9-]{1,62}$/;
-const CONFIG_KEYS = new Set(['pluginType','pluginInstanceId','displayName','description','tags','displayOrder','target','auth','uplink','transport','tls','tunnelProvider','sources','actions','policy','limits','patterns','mode','cluster']);
+const CONFIG_KEYS = new Set(['pluginType','pluginInstanceId','displayName','description','tags','displayOrder','target','auth','uplink','transport','tls','tunnelProvider','sources','actions','policy','limits','patterns','mode','cluster','mysqlConnectionId']);
 export function canonicalCloud(value) {
   if (Array.isArray(value)) return value.map(canonicalCloud);
   if (!value || typeof value !== 'object') return value;
@@ -23,7 +24,7 @@ export function snapshotDigest(value) {
   return crypto.createHash('sha256').update(JSON.stringify(canonicalCloud(value))).digest('hex');
 }
 export function configProjection(plugin) {
-  return Object.fromEntries(Object.entries(sanitizePluginSnapshot(plugin)).filter(([key]) => CONFIG_KEYS.has(key)));
+  return Object.fromEntries(Object.entries(storedPluginSnapshot(plugin)).filter(([key]) => CONFIG_KEYS.has(key)));
 }
 function object(value, keys) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !keys.includes(key))) throw cloudError('FORMAT_INVALID','云配置结构包含不支持的字段。');
@@ -39,11 +40,19 @@ function list(value, max) {
 function unique(values) {
   if (new Set(values).size !== values.length) throw cloudError('FORMAT_INVALID','云配置包含重复资源。');
 }
-function normalizeProject(input, vault, schemaVersion = 4) {
+export function expandCloudMysqlEnvironment(environment) {
+  return {...environment,plugins:environment.plugins.map(item => {
+    if (!item.config.mysqlConnectionId) return item;
+    const connection = environment.mysqlConnections?.find(entry => entry.config.connectionId === item.config.mysqlConnectionId);
+    if (!connection || item.config.pluginType !== 'mysql') throw cloudError('DEPENDENCY_INVALID','数据库引用的 MySQL 连接不存在。');
+    return {config:{...item.config,...connection.config,target:{...connection.config.target,...item.config.target},mysqlConnectionId:connection.config.connectionId},secrets:connection.secrets};
+  })};
+}
+function normalizeProject(input, vault, schemaVersion = 5) {
   object(input,['projectId','name','environments']);
   const projectId = id(input.projectId);
   const environments = list(input.environments,100).map(raw => {
-    object(raw,['environmentId','name','runbook','questions','plugins',...(schemaVersion >= 4 ? ['environmentType'] : [])]);
+    object(raw,['environmentId','name','runbook','questions','plugins',...(schemaVersion >= 4 ? ['environmentType'] : []),...(schemaVersion >= 5 ? ['mysqlConnections'] : [])]);
     const environmentId = id(raw.environmentId);
     if (typeof raw.runbook !== 'string' || Buffer.byteLength(raw.runbook) > 1024*1024) throw cloudError('FORMAT_INVALID','环境运维说明无效或过大。');
     const questions = list(raw.questions,QUICK_QUESTION_LIMIT).map(question => {
@@ -52,13 +61,27 @@ function normalizeProject(input, vault, schemaVersion = 4) {
       return {questionId:id(question.questionId),text:normalizeQuickQuestionText(question.text)};
     });
     unique(questions.map(q => q.questionId));
-    const plugins = list(raw.plugins,500).map(item => {
+    const mysqlConnections = list(raw.mysqlConnections ?? [],100).map(item => {
+      object(item,['config','secrets']);
+      object(item.config,['connectionId','name','target','auth','transport','tls']);
+      const candidate = createMysqlConnection({pluginType:'mysql',pluginInstanceId:'mysql-profile',displayName:item.config.name,projectId,environmentId,
+        ...item.config,target:{...item.config.target,database:'profile'}},{id:item.config.connectionId,name:item.config.name});
+      const {revision:_revision,...config} = candidate;
+      if (snapshotDigest(config) !== snapshotDigest(item.config)) throw cloudError('FORMAT_INVALID','云端 MySQL 连接配置无效。');
+      object(item.secrets,['password','tlsPassphrase','caPem','clientCertPem','clientKeyPem']);
+      if (Object.values(item.secrets).some(value => typeof value !== 'string')) throw cloudError('FORMAT_INVALID','云连接凭据无效。');
+      return {config,secrets:vault.normalizeSecrets({pluginType:'mysql'},item.secrets)};
+    });
+    unique(mysqlConnections.map(item => item.config.connectionId));
+    const expanded = expandCloudMysqlEnvironment({...raw,mysqlConnections});
+    const plugins = list(raw.plugins,500).map((item,index) => {
       object(item,['config','secrets']);
       object(item.config,[...CONFIG_KEYS]);
       if (!['server','mysql','redis'].includes(item.config.pluginType)) throw cloudError('FORMAT_UNSUPPORTED','云配置包含不支持的插件。');
       id(item.config.pluginInstanceId);
       if (item.config.auth?.privateKeyPath || item.config.auth?.agentSocket) throw cloudError('FORMAT_INVALID','云配置不能指定本机私钥路径或 Agent 套接字。');
-      const config = normalizePlugin(item.config,{projectId,environmentId});
+      if (item.config.mysqlConnectionId && (Object.keys(item.secrets ?? {}).length || ['auth','transport','tls'].some(key => Object.hasOwn(item.config,key)) || Object.keys(item.config.target ?? {}).some(key => key !== 'database'))) throw cloudError('FORMAT_INVALID','数据库节点不能重复保存公共连接或凭据。');
+      const config = normalizePlugin(expanded.plugins[index].config,{projectId,environmentId});
       if (snapshotDigest(item.config) !== snapshotDigest(configProjection(config))) throw cloudError('FORMAT_INVALID','云插件配置不是受支持的规范格式，已停止导入。');
       if (config.auth.type === 'privateKey' && config.auth.privateKeySource !== 'vault') throw cloudError('FORMAT_INVALID','云端私钥必须使用凭据库。');
       if (!item.secrets || typeof item.secrets !== 'object' || Array.isArray(item.secrets) || Object.values(item.secrets).some(v => typeof v !== 'string')) throw cloudError('FORMAT_INVALID','云配置凭据结构无效。');
@@ -70,11 +93,12 @@ function normalizeProject(input, vault, schemaVersion = 4) {
       return {config:configProjection(config),secrets};
     });
     unique(plugins.map(p => p.config.pluginInstanceId));
-    for (const {config} of plugins) {
+    unique(plugins.filter(item => item.config.mysqlConnectionId).map(item => `${item.config.mysqlConnectionId}/${item.config.target.database}`));
+    for (const {config} of expanded.plugins) {
       const providerId = config.transport?.kind === 'serverTunnel' ? config.transport.serverPluginInstanceId : null;
       if (providerId && !plugins.some(p => p.config.pluginInstanceId === providerId && p.config.pluginType === 'server' && p.config.tunnelProvider !== false)) throw cloudError('DEPENDENCY_INVALID','云配置的隧道依赖缺失或无效。');
     }
-    return {environmentId,name:normalizeName(raw.name),...environmentTypeFields(raw.environmentType),runbook:raw.runbook,questions,plugins};
+    return {environmentId,name:normalizeName(raw.name),...environmentTypeFields(raw.environmentType),runbook:raw.runbook,questions,plugins,...(mysqlConnections.length ? {mysqlConnections} : {})};
   });
   unique(environments.map(e => e.environmentId));
   unique(environments.map(e => e.name.normalize('NFKC').toLowerCase()));
@@ -82,7 +106,7 @@ function normalizeProject(input, vault, schemaVersion = 4) {
 }
 export function normalizeCloudSnapshot(value, vault) {
   if (Buffer.byteLength(JSON.stringify(value)) > CLOUD_MAX_BYTES) throw cloudError('TOO_LARGE','云配置内容过大。');
-  if (![1,2,3,4].includes(value?.schemaVersion)) throw cloudError('FORMAT_UNSUPPORTED','不支持此云配置版本，请更新应用。');
+  if (![1,2,3,4,5].includes(value?.schemaVersion)) throw cloudError('FORMAT_UNSUPPORTED','不支持此云配置版本，请更新应用。');
   object(value,value.schemaVersion === 1 ? ['schemaVersion','projects'] : ['schemaVersion','projects','history',...(value.schemaVersion >= 3 ? ['tombstones'] : [])]);
   const projects = list(value.projects,200).map(project => normalizeProject(project,vault,value.schemaVersion));
   unique(projects.map(p => p.projectId));
@@ -140,9 +164,18 @@ export async function exportCloudProject(store,vault,projectId) {
   for (const environmentId of project.environmentOrder) {
     const environment = await store.getEnvironment(projectId,environmentId);
     const plugins = [];
-    for (const plugin of await store.listPlugins(projectId,environmentId)) {
+    const mysqlConnections = [];
+    const sourceRecords = [];
+    for (const plugin of await store.listPlugins(projectId,environmentId)) sourceRecords.push({plugin,secrets:{...await vault.load(plugin)}});
+    const migrated = migrateMysqlRecords(sourceRecords,environment.mysqlConnections ?? []);
+    for (const {plugin,secrets:savedSecrets} of migrated.records) {
       const config = configProjection(plugin);
-      const secrets = {...await vault.load(plugin)};
+      const secrets = plugin.mysqlConnectionId ? {} : savedSecrets;
+      if (plugin.mysqlConnectionId && !mysqlConnections.some(item => item.config.connectionId === plugin.mysqlConnectionId)) {
+        const profile = migrated.connections.find(item => item.connectionId === plugin.mysqlConnectionId);
+        const {revision:_revision,...config} = profile;
+        mysqlConnections.push({config,secrets:savedSecrets});
+      }
       if (config.pluginType === 'server') {
         if (config.auth.type === 'privateKey') {
           if (config.auth.privateKeySource !== 'vault') {
@@ -160,13 +193,13 @@ export async function exportCloudProject(store,vault,projectId) {
       plugins.push({config,secrets});
     }
     const questions = await store.listQuickQuestions(projectId,environmentId);
-    environments.push({environmentId,name:environment.name,...environmentTypeFields(environment.environmentType),runbook:(await store.readRunbook(projectId,environmentId)).content,questions:questions.items.map(({questionId,text}) => ({questionId,text})),plugins});
+    environments.push({environmentId,name:environment.name,...environmentTypeFields(environment.environmentType),runbook:(await store.readRunbook(projectId,environmentId)).content,questions:questions.items.map(({questionId,text}) => ({questionId,text})),plugins,...(mysqlConnections.length ? {mysqlConnections} : {})});
   }
   return normalizeProject({projectId,name:project.name,environments},vault);
 }
 export function cloudProjectWarnings(project) {
   const warnings = [];
-  for (const env of project.environments) for (const {config,secrets} of env.plugins) {
+  for (const env of project.environments) for (const {config,secrets} of expandCloudMysqlEnvironment(env).plugins) {
     const prefix = `${env.name} / ${config.displayName}`;
     if (config.auth.type === 'agent') warnings.push(`${prefix}：需要本机 SSH Agent。`);
     if (config.uplink?.type === 'windowsVpn' || config.transport?.kind === 'windowsVpn') warnings.push(`${prefix}：需要本机 VPN 网卡与网络。`);
@@ -196,6 +229,9 @@ export function cloudBackupDiff(before,after) {
   };
 }
 export function cloudProjectDiff(before,after) {
+  const expand = project => project ? {...project,environments:project.environments.map(expandCloudMysqlEnvironment)} : project;
+  before = expand(before);
+  after = expand(after);
   const entries = project => new Map((project?.environments ?? []).flatMap(e => e.plugins.map(p => [`${e.environmentId}/${p.config.pluginInstanceId}`,p])));
   const a = entries(before), b = entries(after);
   return {

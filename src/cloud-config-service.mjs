@@ -20,7 +20,7 @@ async function deadline(promise,ms = 10_000) {
 }
 
 export class CloudConfigService {
-  constructor({workspace,mutationCoordinator,connectionManager,pluginManager,v2Service,contextManager,confirmationManager,configTransactionJournal,pluginEditSessionManager,serverWorkspaceManager,serverWorkspaceFiles,serverDocker,broadcast,client = new CloudConfigClient()}) {
+  constructor({workspace,mutationCoordinator,connectionManager,pluginManager,v2Service,contextManager,confirmationManager,configTransactionJournal,pluginBatchTransaction,pluginEditSessionManager,serverWorkspaceManager,serverWorkspaceFiles,serverDocker,broadcast,client = new CloudConfigClient()}) {
     Object.assign(this,{workspace,mutationCoordinator,connectionManager,pluginManager,v2Service,contextManager,confirmationManager,configTransactionJournal,pluginEditSessionManager,serverWorkspaceManager,serverWorkspaceFiles,serverDocker,broadcast,client});
     this.store = workspace.store;
     this.vault = workspace.vault;
@@ -36,7 +36,10 @@ export class CloudConfigService {
     this.checkSlots = 0;
     this.checkWaiters = [];
     this.stateError = false;
-    mutationCoordinator.cloudRecoveryGuard = projectId => workspace.assertProjectAvailable(projectId);
+    mutationCoordinator.cloudRecoveryGuard = projectId => {
+      workspace.assertProjectAvailable(projectId);
+      pluginBatchTransaction?.assertProjectAvailable(projectId);
+    };
     this.store.cloudMutationGuard = projectId => mutationCoordinator.assertCloudProjectAvailable(projectId);
   }
   async init() {
@@ -156,7 +159,7 @@ export class CloudConfigService {
         try {
           const local = await this.local(mapping.localId);
           const digest = snapshotDigest({...local.portable,projectId:project.projectId});
-          syncStatus = digest === project.digest ? 'synced'
+          syncStatus = digest === project.digest || (digest === mapping.localDigest && project.digest === mapping.remoteDigest) ? 'synced'
             : digest === mapping.localDigest || (repo.hashes?.[project.projectId] ?? []).includes(digest) ? 'behind' : 'modified';
         } catch { syncStatus = 'error'; }
       }
@@ -595,7 +598,7 @@ export class CloudConfigService {
           if (plan.direction === 'restore') {
             const current = await this.workspace.readBackup(plan.backup.record.id);
             if (current.digest !== plan.backup.digest) throw cloudError('STALE','本地备份已变化，请重新预览。');
-            after = this.workspace.rebaseRestore(current.record.before,row.local.before);
+            after = await this.workspace.upgradeMysqlSnapshot(this.workspace.rebaseRestore(current.record.before,row.local.before));
           } else after = await this.workspace.materialize(row.candidate,row.localId,row.local.before);
           await this.quiesce(row.localId,row.local.before);
           await this.assertCurrent(row,plan.direction !== 'restore');
@@ -603,7 +606,8 @@ export class CloudConfigService {
           const committed = await this.workspace.commit(row.local.before,after);
           await this.connectionManager?.forgetProject?.(row.localId);
           if (plan.direction !== 'restore') {
-            const mapping = {repositoryId:plan.repositoryId,remoteId:row.remoteId,localId:row.localId,remoteDigest:snapshotDigest(row.candidate),localDigest:snapshotDigest(row.candidate)};
+            const localDigest = snapshotDigest({...await exportCloudProject(this.store,this.vault,row.localId),projectId:row.remoteId});
+            const mapping = {repositoryId:plan.repositoryId,remoteId:row.remoteId,localId:row.localId,remoteDigest:snapshotDigest(row.candidate),localDigest};
             try { await this.saveState({...this.state,mappings:[...this.state.mappings.filter(m => m.repositoryId !== plan.repositoryId || m.remoteId !== row.remoteId),mapping]}); }
             catch { committed.syncStateWarning = true; }
           } else {

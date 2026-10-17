@@ -66,6 +66,10 @@ export interface EnvironmentRuntimeResolution {
 }
 
 export interface WorkspacePluginReadModel {
+  readonly mysqlConnectionId?: string
+  readonly mysqlConnectionName?: string
+  readonly database?: string
+  readonly tags?: readonly string[]
   readonly configState: WorkspacePluginConfigState
   readonly displayName: string
   readonly pluginInstanceId: string
@@ -230,6 +234,10 @@ function normalizePlugin(value: unknown): WorkspacePluginReadModel | null {
     configState: configState(source.configState),
     displayName: name,
     pluginInstanceId,
+    ...(Array.isArray(source.tags) ? { tags: source.tags.filter((tag): tag is string => typeof tag === "string") } : {}),
+    ...(typeof source.mysqlConnectionId === "string" ? { mysqlConnectionId: source.mysqlConnectionId } : {}),
+    ...(typeof source.mysqlConnectionName === "string" ? { mysqlConnectionName: source.mysqlConnectionName } : {}),
+    ...(source.target && typeof source.target === "object" && "database" in source.target && typeof source.target.database === "string" ? { database: source.target.database } : {}),
     pluginType: pluginType(source.pluginType),
     revision: nonNegativeInteger(source.revision),
     status: pluginStatus(source),

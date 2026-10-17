@@ -626,6 +626,11 @@ export function registerV2Ipc(ipcMain, services) {
     });
   });
   handlePlugin('createPlugin', payload => { assertSqlScopeIdle(payload); return pluginConfigurationService.createPlugin(payload); });
+  handlePlugin('createMysqlPluginBatch', payload => { assertSqlScopeIdle(payload); return pluginConfigurationService.mysqlGroups.create(payload); });
+  handlePlugin('describeMysqlPluginGroup', payload => pluginConfigurationService.mysqlGroups.describe(payload));
+  handlePlugin('detachMysqlPlugin', payload => pluginConfigurationService.mysqlGroups.detach(payload));
+  handlePlugin('connectMysqlConnection', payload => pluginConfigurationService.mysqlGroups.connect(payload));
+  handlePlugin('deleteMysqlConnection', payload => { assertSqlScopeIdle(payload); return pluginConfigurationService.mysqlGroups.remove(payload); });
   handlePlugin('updatePluginMetadata', (payload) => {
     assertExpectedPluginRevision(payload?.expectedRevision);
     assertCredentialFreeUpdate(payload,'插件基本信息');

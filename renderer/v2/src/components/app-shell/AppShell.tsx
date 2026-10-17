@@ -59,6 +59,7 @@ import {
   type EnvironmentMutationEvent,
 } from "@/features/environments/use-environment-mutations"
 import { PluginDeleteDialog } from "@/features/plugins/PluginDeleteDialog"
+import { MysqlConnectionDeleteDialog } from "@/features/plugins/MysqlConnectionDeleteDialog"
 import { PluginEditorHost } from "@/features/plugins/PluginEditorHost"
 import { pluginUi } from "@/features/plugins/plugin-ui-contributions"
 import { PluginMetadataDialog } from "@/features/plugins/PluginMetadataDialog"
@@ -106,7 +107,7 @@ interface PendingSelection {
 
 type PluginSurface =
   | Readonly<{ kind: "metadata"; plugin: PluginConfigurationRecord }>
-  | Readonly<{ kind: "delete"; plugin: PluginConfigurationRecord }>
+  | Readonly<{ kind: "delete" | "delete-mysql-connection"; plugin: PluginRecord }>
   | null
 
 function supportedPlugin(record: PluginRecord | null): PluginConfigurationRecord | null {
@@ -116,11 +117,12 @@ function supportedPlugin(record: PluginRecord | null): PluginConfigurationRecord
 }
 
 function dependentPlugins(
-  plugin: PluginConfigurationRecord,
+  plugin: PluginRecord,
   records: readonly PluginRecord[],
 ): readonly PluginRecord[] {
   if (plugin.pluginType !== "server") return []
   return records.filter((candidate) => {
+    if (candidate.projectId !== plugin.projectId || candidate.environmentId !== plugin.environmentId) return false
     if (candidate.pluginInstanceId === plugin.pluginInstanceId) return false
     const transport = candidate.transport
     if (!transport || typeof transport !== "object" || Array.isArray(transport)) return false
@@ -832,6 +834,11 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       enterPluginEditor(action.environment, null)
       return
     }
+    if (action.type === "delete-plugin" || action.type === "delete-mysql-connection") {
+      const plugin = {...action.plugin,projectId:action.environment.projectId,environmentId:action.environment.environmentId}
+      requestNavigation(() => setPluginSurface({kind:action.type === "delete-plugin" ? "delete" : "delete-mysql-connection",plugin}))
+      return
+    }
     const record = scopedPluginRecords.find(
       (candidate) => candidate.pluginInstanceId === action.plugin.pluginInstanceId,
     ) ?? null
@@ -859,6 +866,8 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       if (selectedEnvironment) enterPluginEditor(selectedEnvironment, action.plugin, () => document.querySelector<HTMLElement>(returnFocusSelector))
     } else if (action.type === "rename-plugin") {
       setPluginSurface({ kind: "metadata", plugin: action.plugin })
+    } else if (action.type === "delete-mysql-connection") {
+      requestNavigation(() => setPluginSurface({ kind: "delete-mysql-connection", plugin: action.plugin }))
     } else {
       requestNavigation(() => setPluginSurface({ kind: "delete", plugin: action.plugin }))
     }
@@ -1173,11 +1182,14 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
       {pluginSurface?.kind === "delete" ? (
         <PluginDeleteDialog
           api={api}
+          restoreFocusRef={restoreFocusRef}
           dependents={dependentPlugins(pluginSurface.plugin, scopedPluginRecords)}
           onDeleted={(outcome) => {
             removePluginWorkspaces(pluginSurface.plugin)
             setPluginSurface(null)
-            if (workspace.data && selectedProject && selectedEnvironment) {
+            if (workspace.data && selectedProject && selectedEnvironment
+              && selection.projectId === pluginSurface.plugin.projectId && selection.environmentId === pluginSurface.plugin.environmentId
+              && selection.pluginInstanceId === pluginSurface.plugin.pluginInstanceId) {
               dispatchSelection({
                 type: "select-environment",
                 projectId: selectedProject.projectId,
@@ -1201,6 +1213,21 @@ function AppShellContent({ api, workspace }: { api: ReturnType<typeof getAiOpsV2
           plugin={pluginSurface.plugin}
         />
       ) : null}
+
+      {pluginSurface?.kind === "delete-mysql-connection" ? <MysqlConnectionDeleteDialog
+        api={api} plugin={pluginSurface.plugin} restoreFocusRef={restoreFocusRef} onClose={() => setPluginSurface(null)}
+        onDeleted={outcome => {
+          const plugin = pluginSurface.plugin
+          for (const pluginInstanceId of outcome.pluginInstanceIds) removePluginWorkspaces({...plugin,pluginInstanceId})
+          if (workspace.data && selection.projectId === plugin.projectId && selection.environmentId === plugin.environmentId
+            && selection.pluginInstanceId && outcome.pluginInstanceIds.includes(selection.pluginInstanceId)) {
+            dispatchSelection({type:"select-environment",projectId:plugin.projectId,environmentId:plugin.environmentId,workspace:workspace.data})
+          }
+          reloadSelectedScope()
+          if (outcome.runtimeWarning || outcome.persistenceWarning) toast.warning("数据库组已删除",{description:outcome.runtimeWarning ? "旧连接清理异常，请检查连接状态。" : "恢复记录待重启清理。"})
+          else toast.success(`数据库组已删除，共 ${outcome.pluginInstanceIds.length} 个插件`)
+        }}
+      /> : null}
 
       <DirtyLeaveAlertDialog controller={dirtyLeave} onCloseAutoFocus={(event) => {
         event.preventDefault()

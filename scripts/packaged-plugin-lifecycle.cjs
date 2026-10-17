@@ -534,9 +534,10 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
       const edit = await begin(plugin);
       fixture.usePassword(fixture.replacement);
       const connectionPatch = pluginType === 'server' ? {target:{addressFamily:'ipv4Only'}}
-        : pluginType === 'mysql' ? {target:{database:'archive'}} : {target:{db:3}};
+        : pluginType === 'mysql' ? {target:{addressFamily:'ipv4Only'}} : {target:{db:3}};
       const saved = await success('savePluginConnectionEdit', {
         editSessionId:edit.editSessionId,expectedRevision:plugin.revision,patch:connectionPatch,
+        ...(pluginType === 'mysql' ? {applyToMysqlGroup:true} : {}),
         credentialIntent:'replace',temporarySecrets:{password:fixture.replacement},discardTemporarySecrets:true,
         afterCommit:'connect-current',
       });
@@ -577,6 +578,69 @@ async function exercisePackagedPluginLifecycle(cdp, dataRoot) {
       assert.equal(emptied.phase, 'disconnected', 'deleting the final plugin clears aggregate connection state');
       assert.equal(emptied.desiredConnected, false, 'an empty environment retains no reconnect intent');
     }
+    process.stdout.write('打包插件生命周期：MySQL 批量创建与组编辑\n');
+    fixture.usePassword(fixture.password);
+    const batchInput = {pluginType:'mysql',pluginInstanceId:`mysql-${crypto.randomUUID()}`,
+      target:{host:'127.0.0.1',port:fixture.mysqlPort,database:'app'},auth:{username:'fixture'},transport:{kind:'direct'},tls:{mode:'disabled'}};
+    const batch = await success('createMysqlPluginBatch',{...scope,input:batchInput,databases:['app','archive'],groupName:'打包测试组',secrets:{password:fixture.password}});
+    assert.equal(batch.createdCount,2);
+    assert.deepEqual(batch.plugins.map(plugin => plugin.target.database),['app','archive']);
+    assert.equal(batch.plugins[0].mysqlConnectionId,batch.plugins[1].mysqlConnectionId);
+    await success('connectMysqlConnection',{...scope,pluginInstanceId:batch.plugins[0].pluginInstanceId,intent:'connect'});
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const runtime = await success('environmentStatus',scope);
+      if (batch.plugins.every(plugin => runtime.plugins[plugin.pluginInstanceId]?.phase === 'connected')) break;
+      await new Promise(resolve => setTimeout(resolve,50));
+    }
+    for (const plugin of batch.plugins) {
+      const connected = await success('connectPlugin',{...scope,pluginInstanceId:plugin.pluginInstanceId});
+      assert.equal(connected.plugins[plugin.pluginInstanceId].phase,'connected');
+    }
+    const groupEdit = await begin(batch.plugins[0]);
+    assert.equal(groupEdit.affectedIds.length,2);
+    fixture.usePassword(fixture.replacement);
+    // 仅破坏隔离测试目录中目标连接的绑定，验证安装版真实凭据恢复路径。
+    const credentialKey = `${scope.projectId}/${scope.environmentId}/mysql-connection-${batch.plugin.mysqlConnectionId}`;
+    const damagedFiles = new Map();
+    for (const name of ['plugins.enc.json','plugins.enc.backup.json']) {
+      const file = path.join(dataRoot,'credentials',name);
+      const envelope = JSON.parse(await fs.readFile(file,'utf8'));
+      assert.ok(envelope.entries[credentialKey]);
+      envelope.entries[credentialKey].bindingHash = '0'.repeat(64);
+      const bytes = JSON.stringify(envelope);
+      await fs.writeFile(file,bytes);
+      damagedFiles.set(file,bytes);
+    }
+    const recoverySave = {editSessionId:groupEdit.editSessionId,expectedRevision:1,
+      patch:{auth:{username:'fixture'}},temporarySecrets:{password:fixture.replacement},applyToMysqlGroup:true,afterCommit:'restore-pre-edit-set'};
+    const unconfirmedRecovery = await invoke('savePluginConnectionEdit',recoverySave);
+    assert.equal(unconfirmedRecovery.ok,false);
+    assert.equal(unconfirmedRecovery.error.code,'CREDENTIAL_REPLACEMENT_INCOMPLETE');
+    for (const [file,bytes] of damagedFiles) assert.equal(await fs.readFile(file,'utf8'),bytes,'未确认替换前保留原密文');
+    const savedGroup = await success('savePluginConnectionEdit',{...recoverySave,forceCredentialReplacement:true});
+    assert.equal(savedGroup.updatedCount,2);
+    const groupStatus = await success('describeMysqlPluginGroup',{...scope,pluginInstanceId:batch.plugins[0].pluginInstanceId});
+    assert.equal(groupStatus.credentialsInconsistent,false);
+    for (const plugin of await success('listPlugins',scope)) {
+      const connected = await success('connectPlugin',{...scope,pluginInstanceId:plugin.pluginInstanceId});
+      assert.equal(connected.plugins[plugin.pluginInstanceId].phase,'connected');
+      await success('disconnectPlugin',{...scope,pluginInstanceId:plugin.pluginInstanceId});
+      await success('detachMysqlPlugin',{...scope,pluginInstanceId:plugin.pluginInstanceId,expectedRevision:plugin.revision});
+      await success('deletePlugin',{...scope,pluginInstanceId:plugin.pluginInstanceId});
+    }
+    const disposable = await success('createMysqlPluginBatch',{...scope,input:{...batchInput,pluginInstanceId:`mysql-${crypto.randomUUID()}`},databases:['app','archive'],groupName:'整组删除测试',secrets:{password:fixture.replacement}});
+    for (const plugin of disposable.plugins) await success('connectPlugin',{...scope,pluginInstanceId:plugin.pluginInstanceId});
+    const deleteScope = {...scope,pluginInstanceId:disposable.plugin.pluginInstanceId};
+    const deletion = await success('describeMysqlPluginGroup',deleteScope);
+    const deletedGroup = await success('deleteMysqlConnection',{...deleteScope,expectedConnectionId:deletion.id,expectedRevision:deletion.revision,
+      expectedMembers:deletion.members.map(({pluginInstanceId,revision}) => ({pluginInstanceId,revision}))});
+    assert.equal(deletedGroup.committed,true);
+    assert.equal(deletedGroup.deletedCount,2);
+    assert.equal(deletedGroup.credentialsPreserved,true);
+    assert.deepEqual(await success('listPlugins',scope),[]);
+    const emptyAfterGroup = await success('environmentStatus',scope);
+    assert.equal(emptyAfterGroup.desiredConnected,false);
+    assert.deepEqual(Object.keys(emptyAfterGroup.plugins),[]);
     // 只检查落盘字节，不输出运行文本或任何合成凭据。
     let encryptedVaultFiles = 0;
     const visit = async (directory) => {

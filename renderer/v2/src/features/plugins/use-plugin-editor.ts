@@ -46,6 +46,7 @@ import {
   pluginSaveStrategyIsAvailable,
   type PluginSaveStrategy,
 } from "@/features/plugins/plugin-save-strategy"
+import { mysqlPluginGroup } from "./mysql-plugin-group"
 
 export interface UsePluginEditorOptions {
   readonly api: AiOpsV2Api
@@ -58,6 +59,10 @@ export interface UsePluginEditorOptions {
 }
 
 export interface UsePluginEditorResult {
+  readonly manageDatabases: (databases: readonly string[]) => void
+  readonly setConnectionName: (name: string) => void
+  readonly selectDatabases: (databases: readonly string[]) => void
+  readonly setUnifyMysqlGroup: (value: boolean) => void
   readonly state: PluginEditorState
   readonly isCreating: boolean
   readonly isDirty: boolean
@@ -189,7 +194,7 @@ export function usePluginEditor({
   const isDirty = open
     && state.phase !== "closed"
     && state.ownerKey === currentOwnerKey
-    && pluginEditorIsDirty(initialDraft, state.draft, state.credentials)
+    && (pluginEditorIsDirty(initialDraft, state.draft, state.credentials) || state.selectedDatabases.length > 0 || state.managedDatabases !== null || state.managedConnectionName !== null || state.unifyMysqlGroup)
 
   useEffect(() => {
     stateRef.current = state
@@ -725,6 +730,9 @@ export function usePluginEditor({
           message: "连接配置编辑会话已经失效，请重新进入。",
         })
         const value = unwrap(await api.savePluginConnectionEdit({
+          ...(mysqlPluginGroup(plugin) ? { applyToMysqlGroup: true, unifyMysqlGroup: snapshot.unifyMysqlGroup } : {}),
+          ...(snapshot.managedDatabases !== null ? { databases: snapshot.managedDatabases } : {}),
+          ...(snapshot.managedConnectionName !== null ? { connectionName: snapshot.managedConnectionName } : {}),
           editSessionId,
           patch: connectionPatch(normalizedDraft),
           expectedRevision: plugin.revision,
@@ -736,12 +744,18 @@ export function usePluginEditor({
         }))
         outcome = { ...normalizePluginSaveOutcome(value), recovery: readPluginRecovery(value, plugin, recoveryTargetsRef.current) }
       } else {
-        outcome = normalizePluginSaveOutcome(unwrap(await api.createPlugin({
+        const createPayload = {
           projectId: scope.projectId,
           environmentId: scope.environmentId,
           input: asPluginDraft(normalizedDraft),
           ...(Object.keys(secrets).length > 0 ? { secrets } : {}),
-        })))
+        }
+        if (normalizedDraft.pluginType === "mysql" && snapshot.selectedDatabases.length > 1) {
+          const result = unwrap(await api.createMysqlPluginBatch({ ...createPayload, databases: snapshot.selectedDatabases,
+            groupName: normalizedDraft.displayName.trim() || `MySQL ${normalizedDraft.target.host}`.slice(0, 40) }))
+          outcome = normalizePluginSaveOutcome(result)
+          toast.success(`已创建 ${result.createdCount} 个单库 MySQL 插件`)
+        } else outcome = normalizePluginSaveOutcome(unwrap(await api.createPlugin(createPayload)))
         if (strategy === "connect-current" && outcome.plugin) {
           let connectionAccepted = false
           try {
@@ -932,6 +946,10 @@ export function usePluginEditor({
   }, [api, scope.environmentId, scope.projectId])
 
   return {
+    selectDatabases: (databases: readonly string[]) => dispatch({ type: "select-databases", databases }),
+    manageDatabases: (databases: readonly string[]) => dispatch({ type: "manage-databases", databases }),
+    setConnectionName: (name: string) => dispatch({ type: "connection-name", name }),
+    setUnifyMysqlGroup: (value: boolean) => dispatch({ type: "unify-mysql-group", value }),
     state,
     isCreating: plugin === null,
     isDirty,

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { AppError } from '../src/errors.mjs';
 import { EnvironmentConnectionManager } from '../src/environment-connection-manager.mjs';
 import { registerV2Ipc } from '../src/ipc-v2.mjs';
+import { createMysqlPluginGroupService } from '../src/mysql-plugin-group-service.mjs';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve,milliseconds));
 
@@ -44,6 +45,28 @@ async function waitFor(predicate,message = 'condition was not reached') {
   }
   assert.fail(message);
 }
+
+test('数据库组一键连接包含所需隧道，断开仅作用于成员并保留 Server 和 Redis',async () => {
+  const id = '12345678-1234-4123-8123-123456789abc';
+  const server = plugin('tunnel','server');
+  const children = ['orders','reports'].map(name => plugin(name,'mysql',{mysqlConnectionId:id,mysqlConnectionName:'业务连接',transport:{kind:'serverTunnel',serverPluginInstanceId:'tunnel'}}));
+  const redis = plugin('cache','redis');
+  const calls = [];
+  const manager = fixture([server,...children,redis],{connect:async item => { calls.push(['connect',item.pluginInstanceId]); return {}; },disconnect:async item => { calls.push(['disconnect',item.pluginInstanceId]); return {}; },closeAll:async () => { throw new Error('不能断开整个环境'); }});
+  manager.workspaceStore.getEnvironment = async () => ({revision:1,mysqlConnections:[{connectionId:id,name:'业务连接',revision:1}]});
+  const service = createMysqlPluginGroupService({workspaceStore:manager.workspaceStore,connectionManager:manager},{});
+  const scope = {projectId:'p1',environmentId:'e1',pluginInstanceId:'orders'};
+  await manager.requestConnectionIntent({...scope,pluginInstanceId:'cache',intent:'connect'});
+  await service.connect({...scope,intent:'connect'});
+  assert.equal(manager.snapshot('p1','e1').plugins.tunnel.phase,'connected');
+  await service.connect({...scope,intent:'disconnect'});
+  const after = manager.snapshot('p1','e1');
+  assert.equal(after.plugins.tunnel.phase,'connected');
+  assert.equal(after.plugins.cache.phase,'connected');
+  assert.equal(after.plugins.orders.phase,'disconnected');
+  assert.equal(after.plugins.reports.phase,'disconnected');
+  assert.deepEqual(calls.filter(item => item[0] === 'disconnect').map(item => item[1]).sort(),['orders','reports']);
+});
 
 test('Connect All connects independent ready branches and returns incomplete plugins as needs-action', async () => {
   const readyA = plugin('orders');

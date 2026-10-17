@@ -5,7 +5,8 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { normalizePlugin } from './plugin-config-model.mjs';
 import { cloudError, cloudId } from './cloud-config-crypto.mjs';
-import { snapshotDigest } from './cloud-config-snapshot.mjs';
+import { snapshotDigest, expandCloudMysqlEnvironment } from './cloud-config-snapshot.mjs';
+import { bindMysqlConnection, migrateMysqlRecords, storedPluginSnapshot } from './mysql-connection-profile.mjs';
 
 const ID = '[a-z0-9][a-z0-9-]{1,62}';
 const FILE = new RegExp(`^(workspace\\.yaml|environments/${ID}/(environment\\.yaml|README\\.md|quick-questions\\.json|plugins/${ID}\\.yaml))$`);
@@ -90,17 +91,24 @@ export class CloudConfigWorkspace {
       const environmentId = environment.environmentId;
       const prefix = `environments/${environmentId}`;
       const previousEnv = old(`${prefix}/environment.yaml`);
-      yaml(`${prefix}/environment.yaml`,{schemaVersion:1,projectId,environmentId,name:environment.name,...environmentTypeFields(environment.environmentType),revision:(previousEnv?.revision ?? 0)+1,pluginOrder:environment.plugins.map(p => p.config.pluginInstanceId),createdAt:previousEnv?.createdAt ?? timestamp,updatedAt:timestamp});
+      const existingConnections = (environment.mysqlConnections ?? []).map(item => ({...item.config,revision:1}));
+      const records = expandCloudMysqlEnvironment(environment).plugins.map(item => {
+        let plugin = normalizePlugin(item.config,{projectId,environmentId});
+        if (plugin.mysqlConnectionId) plugin = bindMysqlConnection(plugin,existingConnections.find(item => item.connectionId === plugin.mysqlConnectionId));
+        return {plugin,secrets:item.secrets};
+      });
+      const migrated = migrateMysqlRecords(records,existingConnections);
+      yaml(`${prefix}/environment.yaml`,{schemaVersion:migrated.connections.length ? 2 : 1,projectId,environmentId,name:environment.name,...environmentTypeFields(environment.environmentType),revision:(previousEnv?.revision ?? 0)+1,pluginOrder:environment.plugins.map(p => p.config.pluginInstanceId),...(migrated.connections.length ? {mysqlConnections:migrated.connections} : {}),createdAt:previousEnv?.createdAt ?? timestamp,updatedAt:timestamp});
       write(`${prefix}/README.md`,environment.runbook);
       const questions = {schemaVersion:1,projectId,environmentId,revision:(old(`${prefix}/quick-questions.json`)?.revision ?? 0)+1,items:environment.questions.map(q => ({...q,createdAt:timestamp,updatedAt:timestamp}))};
       this.store.validateQuickQuestionsDocument(questions,projectId,environmentId);
       write(`${prefix}/quick-questions.json`,JSON.stringify(questions));
-      for (const item of environment.plugins) {
-        const file = `${prefix}/plugins/${item.config.pluginInstanceId}.yaml`;
-        const plugin = normalizePlugin(item.config,{projectId,environmentId});
+      for (const item of migrated.records) {
+        const plugin = item.plugin;
+        const file = `${prefix}/plugins/${plugin.pluginInstanceId}.yaml`;
         plugin.revision = (old(file)?.revision ?? 0)+1;
         plugin.updatedAt = timestamp;
-        yaml(file,plugin);
+        yaml(file,storedPluginSnapshot(plugin));
         plugins.push({plugin,secrets:item.secrets});
       }
     }
@@ -152,6 +160,37 @@ export class CloudConfigWorkspace {
       restored.files[relative] = Buffer.from(json ? JSON.stringify(value) : YAML.stringify(value,{lineWidth:0})).toString('base64');
     }
     return restored;
+  }
+  async upgradeMysqlSnapshot(snapshot) {
+    const upgraded = structuredClone(snapshot);
+    const parse = file => YAML.parse(Buffer.from(upgraded.files[file],'base64').toString('utf8'));
+    const write = (file,value) => { upgraded.files[file] = Buffer.from(YAML.stringify(value,{lineWidth:0})).toString('base64'); };
+    for (const file of Object.keys(upgraded.files).filter(file => file.endsWith('/environment.yaml'))) {
+      const environment = parse(file);
+      const prefix = `environments/${environment.environmentId}/plugins/`;
+      const records = [];
+      for (const id of environment.pluginOrder) {
+        const plugin = parse(`${prefix}${id}.yaml`);
+        if (plugin.pluginType !== 'mysql' || plugin.schemaVersion !== 1 || plugin.mysqlConnectionId) continue;
+        const slots = Object.fromEntries(['primary','backup'].map(slot => [slot,{envelope:{schemaVersion:1,entries:upgraded.entries[slot]}}]));
+        const {secrets} = await this.vault.loadFromSlots(plugin,slots);
+        records.push({plugin,secrets:secrets ?? {}});
+      }
+      if (!records.length) continue;
+      const migrated = migrateMysqlRecords(records,environment.mysqlConnections ?? []);
+      const ids = migrated.records.map(({plugin}) => plugin.pluginInstanceId);
+      const originalIds = new Set(records.map(({plugin}) => plugin.pluginInstanceId));
+      const added = ids.filter(id => !originalIds.has(id));
+      if (new Set(ids).size !== ids.length || environment.pluginOrder.length + added.length > 100 || added.some(id => upgraded.files[`${prefix}${id}.yaml`])) throw cloudError('FORMAT_INVALID','备份迁移的数据库数量超限或标识冲突。');
+      for (const {plugin} of migrated.records) write(`${prefix}${plugin.pluginInstanceId}.yaml`,storedPluginSnapshot(plugin));
+      write(file,{...environment,schemaVersion:2,pluginOrder:[...environment.pluginOrder,...added],mysqlConnections:migrated.connections});
+      const encrypted = await this.vault.encryptProjectEntries(migrated.records);
+      for (const slot of ['primary','backup']) {
+        for (const id of originalIds) delete upgraded.entries[slot][`${snapshot.projectId}/${environment.environmentId}/${id}`];
+        Object.assign(upgraded.entries[slot],encrypted[slot]);
+      }
+    }
+    return upgraded;
   }
   async commit(before,after) {
     this.assertProjectAvailable(before.projectId);

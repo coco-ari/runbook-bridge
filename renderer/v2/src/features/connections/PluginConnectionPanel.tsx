@@ -154,7 +154,9 @@ export function PluginConnectionPanel({
     : connection.state.phase === "partial" || connection.state.phase === "blocked" || !configReady
       ? "bg-warning"
       : connection.state.phase === "connected" ? "bg-success" : "bg-border"
-  const facts = draft.pluginType === "server"
+  const facts = plugin.mysqlConnectionId
+    ? [["数据库", draft.target.database || "未选择"], ["所属 MySQL 连接", plugin.mysqlConnectionName || "MySQL"], ["连接设置", "地址、账号和隧道在所属连接中统一管理"]]
+    : draft.pluginType === "server"
     ? [
         ["SSH 目标", `${draft.auth.username || "未配置"}@${draft.target.host}:${draft.target.port}`],
         ["认证方式", enumLabel(draft.auth.type, AUTH_COPY, "密码")],

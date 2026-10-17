@@ -24,7 +24,7 @@ export function appendCloudVersion(payload,project,{versionId = crypto.randomUUI
   const index = payload.projects.findIndex(p => p.projectId === project.projectId);
   const projects = [...payload.projects];
   if (index === -1) projects.push(project); else projects[index] = project;
-  const schemaVersion = project.environments.some(env => env.environmentType) ? 4 : payload.schemaVersion;
+  const schemaVersion = Math.max(payload.schemaVersion,project.environments.some(env => env.mysqlConnections?.length) ? 5 : project.environments.some(env => env.environmentType) ? 4 : 1);
   return {...payload,schemaVersion,projects,history:[...payload.history.filter(r => r.projectId !== project.projectId),record],
     ...(schemaVersion >= 3 ? {tombstones:(payload.tombstones ?? []).filter(r => r.projectId !== project.projectId)} : {})};
 }

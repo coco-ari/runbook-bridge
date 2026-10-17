@@ -84,6 +84,30 @@ function fixture({plugins = [plugin('orders')],runtime = null,validationRuntime 
   return {manager,store,connectionManager,mutationCoordinator,byId,disconnects,planRequests,resolvedSecrets,getSnapshot:() => snapshot};
 }
 
+test('MySQL 组编辑冻结全部成员快照，只恢复原先已连接的组成员',async () => {
+  const tags = ['rbb:mysql-group:11111111-1111-4111-8111-111111111111','rbb:mysql-name:测试组'];
+  const members = [plugin('orders','mysql',{tags}),plugin('billing','mysql',{tags}),plugin('unrelated')];
+  const values = fixture({plugins:members,runtime:{plugins:{orders:{phase:'connected'},billing:{phase:'disconnected'},unrelated:{phase:'connected'}}}});
+  const preview = await values.manager.preparePluginConnectionEdit({projectId:'p1',environmentId:'e1',pluginInstanceId:'orders',expectedRevision:1});
+  assert.deepEqual(preview.affectedIds,['billing','orders']);
+  const session = await values.manager.beginPluginConnectionEdit({prepareToken:preview.prepareToken});
+  assert.deepEqual(values.disconnects,[['billing','orders']]);
+  values.manager.beginSave(session.editSessionId);
+  const material = values.manager.commitMaterial(session.editSessionId);
+  assert.deepEqual(material.mysqlGroupMembers,members.slice(0,2));
+  await values.manager.completeSave(session.editSessionId,{afterCommit:'restore-pre-edit-set'});
+  assert.deepEqual(values.planRequests[0].pluginInstanceIds,['orders']);
+});
+
+test('MySQL 组内其他成员在预览后变化会阻止进入编辑',async () => {
+  const tags = ['rbb:mysql-group:11111111-1111-4111-8111-111111111111'];
+  const values = fixture({plugins:[plugin('orders','mysql',{tags}),plugin('billing','mysql',{tags})]});
+  const preview = await values.manager.preparePluginConnectionEdit({projectId:'p1',environmentId:'e1',pluginInstanceId:'orders',expectedRevision:1});
+  values.byId.get('billing').revision += 1;
+  await assert.rejects(values.manager.beginPluginConnectionEdit({prepareToken:preview.prepareToken}),{code:'PLUGIN_EDIT_SESSION_STALE'});
+  assert.equal(values.disconnects.length,0);
+});
+
 test('begin installs the edit fence before draining existing Agent work and disconnects the exact affected set afterward', async () => {
   const server = plugin('server','server');
   const orders = plugin('orders','mysql',{transport:{kind:'serverTunnel',serverPluginInstanceId:'server'}});

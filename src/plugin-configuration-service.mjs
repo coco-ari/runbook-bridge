@@ -3,6 +3,8 @@ import { AppError, toPublicError } from './errors.mjs';
 import { pluginCredentialInternals } from './plugin-credential-vault.mjs';
 import { normalizePlugin, normalizePluginCandidate } from './plugin-config-model.mjs';
 import { assertPluginConfigurationReady, getPluginConnectionAdapter, isCredentialFreeServerAgent } from './plugin-connection-adapters.mjs';
+import { mysqlPluginGroup } from './mysql-plugin-group.mjs';
+import { createMysqlPluginGroupService } from './mysql-plugin-group-service.mjs';
 
 function nonEmptySecrets(input) {
   return Object.fromEntries(
@@ -64,7 +66,12 @@ export function createPluginConfigurationService(services) {
       if (token !== null && !ended) connectionManager.endConfigurationMutation?.(projectId, environmentId, token);
     }
   };
-  const createPlugin = ({ projectId, environmentId, input, secrets }) => enqueuePluginMutation(projectId, environmentId, () => withConfigurationMutation(projectId, environmentId, null, async () => {
+  const createPlugin = async ({ projectId, environmentId, input, secrets }) => {
+    if (input?.pluginType === 'mysql' && services.pluginBatchTransaction) {
+      const result = await mysqlGroups.create({projectId,environmentId,input,secrets,databases:[input.target?.database],groupName:input.displayName});
+      return {...result.plugin,...(result.runtimeWarning ? {runtimeWarning:result.runtimeWarning,manualReconnectRequired:true} : {})};
+    }
+    return enqueuePluginMutation(projectId, environmentId, () => withConfigurationMutation(projectId, environmentId, null, async () => {
     let candidate = normalizePlugin(input,{projectId,environmentId});
     assertPluginConfigurationReady(candidate);
     candidate = await isolateNewPluginIdentity(candidate,{
@@ -93,7 +100,8 @@ export function createPluginConfigurationService(services) {
     contextManager.invalidateEnvironment(projectId, environmentId);
     await recordPluginChange(plugin,'plugin-added');
     return {...plugin,...(runtimeWarning ? {runtimeWarning,manualReconnectRequired:true} : {})};
-  }));
+    }));
+  };
 
   const preparePluginUpdate = async (payload, patchScope = null, {hostKeyTrust = null} = {}) => {
     const {
@@ -143,6 +151,9 @@ export function createPluginConfigurationService(services) {
     const connectionSave = patchScope === 'connection'
       || (patchScope === null && ['session-affecting','dependency-affecting'].includes(result.change.kind));
     if (connectionSave) {
+      if (mysqlPluginGroup(result.before) && payload.applyToMysqlGroup !== true) {
+        throw new AppError('MYSQL_GROUP_EDIT_REQUIRED','此连接由 MySQL 插件组管理，请编辑组连接或先移出分组。');
+      }
       const candidate = result.after ?? result.candidate ?? normalizePluginCandidate(
         {...(patch ?? {}),pluginInstanceId,pluginType:result.before.pluginType},
         {projectId,environmentId},
@@ -188,6 +199,7 @@ export function createPluginConfigurationService(services) {
   const commitConnectionPluginUpdate = (prepared, payload, {ownerId = null, recordChange = true} = {}) => withConfigurationMutation(
     payload.projectId,payload.environmentId,payload.pluginInstanceId,
     async ({restoreOnFailure}) => {
+      if (mysqlPluginGroup(prepared.before)) throw new AppError('MYSQL_GROUP_EDIT_REQUIRED','组内连接必须通过组编辑统一保存。');
       let transaction = null;
       let journalWarning = null;
       const bindingChanged = prepared.after
@@ -313,7 +325,11 @@ export function createPluginConfigurationService(services) {
         let plugin = prepared.before;
         let persistenceWarning = null;
         let runtimeWarning = null;
-        if (prepared.change.kind !== 'none') {
+        let updatedCount;
+        if (mysqlPluginGroup(prepared.before)) {
+          const value = await mysqlGroups.save(scopedPayload,material,{...prepared,after:prepared.after ?? prepared.before});
+          ({plugin,persistenceWarning,runtimeWarning,updatedCount} = value);
+        } else if (prepared.change.kind !== 'none') {
           const value = await commitConnectionPluginUpdate(prepared,scopedPayload,{ownerId:payload.editSessionId});
           ({persistenceWarning = null,runtimeWarning = null,...plugin} = value);
         }
@@ -334,8 +350,9 @@ export function createPluginConfigurationService(services) {
         }
         return {
           committed:true,
-          changed:prepared.change.kind !== 'none',
-          changeKind:prepared.change.kind,
+          changed:Boolean(updatedCount) || prepared.change.kind !== 'none',
+          ...(updatedCount ? {updatedCount} : {}),
+          changeKind:updatedCount && prepared.change.kind === 'none' ? 'session-affecting' : prepared.change.kind,
           plugin:typeof store.publicPlugin === 'function' ? store.publicPlugin(plugin) : plugin,
           persistenceWarning,
           connectionPlan,
@@ -351,7 +368,9 @@ export function createPluginConfigurationService(services) {
     }
   };
 
+  const mysqlGroups = createMysqlPluginGroupService(services,{withConfigurationMutation,recordPluginChange});
   return Object.freeze({
+    mysqlGroups,
     createPlugin, preparePluginUpdate, commitPreparedPlugin, commitAgentPluginUpdate, commitConnectionPluginUpdate,
     withConfigurationMutation, invalidateServerWorkspace, recordPluginChange,
     restoreRuntimeWarning, savePluginConnectionEdit,

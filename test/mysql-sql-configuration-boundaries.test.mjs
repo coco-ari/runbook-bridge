@@ -167,6 +167,7 @@ function cloudFixture(t, target = scope) {
     capture:async () => before,
     readBackup:async () => backup,
     rebaseRestore:() => after,
+    upgradeMysqlSnapshot:async snapshot => snapshot,
     writeSealed:async () => events.push('state'),
     commit:async () => { events.push('commit'); return {backupId:'synthetic-backup-result'}; },
   };

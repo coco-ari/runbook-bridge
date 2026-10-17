@@ -34,6 +34,8 @@ export interface EnvironmentRecord extends OpaqueData {
 }
 
 export interface PluginRecord extends OpaqueData {
+  readonly mysqlConnectionId?: string
+  readonly mysqlConnectionName?: string
   readonly projectId: string
   readonly environmentId: string
   readonly pluginInstanceId: string
@@ -406,6 +408,21 @@ export interface PluginCreatePayload extends EnvironmentScope {
   readonly secrets?: SecretMap
 }
 
+export interface MysqlPluginBatchPayload extends PluginCreatePayload {
+  readonly databases: readonly string[]
+  readonly groupName: string
+}
+
+export interface MysqlPluginGroupData {
+  readonly id: string
+  readonly name: string
+  readonly revision: number
+  readonly members: readonly { readonly pluginInstanceId: string; readonly displayName: string; readonly database: string; readonly revision: number }[]
+  readonly connectionInconsistent: boolean
+  readonly credentialsInconsistent: boolean
+  readonly credentialsUnreadable: boolean
+}
+
 export type CredentialMutation =
   | "unchanged"
   | "none"
@@ -497,6 +514,10 @@ export type PluginEditAfterCommit =
   | "restore-pre-edit-set"
 
 export interface PluginEditSavePayload {
+  readonly databases?: readonly string[]
+  readonly connectionName?: string
+  readonly applyToMysqlGroup?: boolean
+  readonly unifyMysqlGroup?: boolean
   readonly editSessionId: string
   readonly patch: PluginPatch
   readonly expectedRevision: number
@@ -966,6 +987,11 @@ export interface AiOpsV2Api {
   listPlugins(payload: EnvironmentScope): Promise<IpcResult<readonly PluginRecord[]>>
   assessPlugin(payload: PluginAssessmentPayload): Promise<IpcResult<OpaqueData>>
   createPlugin(payload: PluginCreatePayload): Promise<IpcResult<PluginRecord>>
+  createMysqlPluginBatch(payload: MysqlPluginBatchPayload): Promise<IpcResult<{ readonly plugin: PluginRecord; readonly plugins: readonly PluginRecord[]; readonly createdCount: number }>>
+  describeMysqlPluginGroup(payload: PluginScope): Promise<IpcResult<MysqlPluginGroupData>>
+  detachMysqlPlugin(payload: PluginScope & { readonly expectedRevision: number }): Promise<IpcResult<PluginRecord>>
+  connectMysqlConnection(payload: PluginScope & { readonly intent: "connect" | "disconnect" }): Promise<IpcResult<OpaqueData>>
+  deleteMysqlConnection(payload: PluginScope & { readonly expectedConnectionId: string; readonly expectedRevision: number; readonly expectedMembers: readonly { readonly pluginInstanceId: string; readonly revision: number }[] }): Promise<IpcResult<OpaqueData>>
   updatePlugin(payload: PluginUpdatePayload): Promise<IpcResult<PluginRecord>>
   updatePluginMetadata(payload: PluginMetadataUpdatePayload): Promise<IpcResult<PluginRecord>>
   updatePluginAgentConfiguration(payload: PluginAgentConfigurationUpdatePayload): Promise<IpcResult<PluginRecord>>
@@ -1089,6 +1115,11 @@ export const AI_OPS_V2_API_NAMES = [
   "listPlugins",
   "assessPlugin",
   "createPlugin",
+  "createMysqlPluginBatch",
+  "describeMysqlPluginGroup",
+  "detachMysqlPlugin",
+  "connectMysqlConnection",
+  "deleteMysqlConnection",
   "updatePlugin",
   "updatePluginMetadata",
   "updatePluginAgentConfiguration",

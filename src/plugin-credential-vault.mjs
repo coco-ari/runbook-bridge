@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { AppError } from './errors.mjs';
+import { mysqlCredentialIdentity } from './mysql-connection-profile.mjs';
 
 const SECRET_KEYS = Object.freeze({
   server: new Set(['password', 'privateKeyPassphrase', 'proxyPassword', 'privateKeyPem']),
@@ -10,10 +11,12 @@ const SECRET_KEYS = Object.freeze({
 });
 
 function resourceKey(scope) {
+  scope = mysqlCredentialIdentity(scope);
   return `${scope.projectId}/${scope.environmentId}/${scope.pluginInstanceId}`;
 }
 
 function bindingProjection(plugin) {
+  plugin = mysqlCredentialIdentity(plugin);
   const target = plugin.target ? {
     host: plugin.target.host,
     port: plugin.target.port,
@@ -222,10 +225,32 @@ export class PluginCredentialVault {
     return { saved: true };
   }
 
+  // 只准备内存中的凭据，不提前落盘；单插件和整组事务使用相同的替换规则。
+  async prepareSecretsUpdate(previousPlugin, nextPlugin, secrets = {}, {forceCredentialReplacement = false, slots = null} = {}) {
+    const replacements = this.normalizeSecrets(nextPlugin, secrets);
+    if (forceCredentialReplacement) {
+      if (!Object.keys(replacements).length) throw new AppError('INVALID_ARGUMENT', '强制替换凭据必须提供至少一个新的凭据字段。');
+      if (!this.encryption?.isEncryptionAvailable?.()) throw new AppError('CREDENTIAL_ENCRYPTION_UNAVAILABLE', '系统安全存储当前不可用。');
+    }
+    let existingSecrets = null;
+    let discardedCause = null;
+    try {
+      existingSecrets = (await this.loadFromSlots(previousPlugin ?? nextPlugin, slots ?? await this.readEnvelopeSlots())).secrets ?? {};
+    } catch (error) {
+      const recoverable = error instanceof AppError && ['CREDENTIAL_BINDING_MISMATCH', 'CREDENTIAL_DECRYPT_FAILED'].includes(error.code);
+      if (!recoverable || !Object.keys(replacements).length) throw error;
+      if (!forceCredentialReplacement) {
+        throw new AppError('CREDENTIAL_REPLACEMENT_INCOMPLETE',
+          '现有凭据暂时无法读取，不能确认其中是否含有未显示的历史字段；旧凭据已原样保留。', {causeCode:error.code});
+      }
+      discardedCause = error.code;
+    }
+    // 确认后如果原凭据已恢复可读，仍须合并历史字段，不能按过期的错误状态清空。
+    return {secrets:this.normalizeSecrets(nextPlugin, {...existingSecrets, ...replacements}),existingSecrets,discardedCause};
+  }
+
   async saveMerged(previousPlugin, nextPlugin, secrets = {}) {
-    // Empty/omitted fields mean "preserve", never "clear". Reading the old
-    // entry must succeed before any replacement is written; a temporary DPAPI
-    // or binding failure must not turn a partial form submission into data loss.
+    // 空值表示保留；无法读取旧凭据时先要求确认，不能把部分输入当作完整替换。
     const replacements = this.normalizeSecrets(nextPlugin, secrets);
     const previous = previousPlugin ?? nextPlugin;
     const bindingChanged = resourceKey(previous) !== resourceKey(nextPlugin)
@@ -235,31 +260,14 @@ export class PluginCredentialVault {
     }
     return this.enqueue(async () => {
       const slots = await this.readEnvelopeSlots();
-      let existing;
-      try {
-        existing = (await this.loadFromSlots(previous, slots)).secrets ?? {};
-      } catch (error) {
-        const recoverable = error instanceof AppError && ['CREDENTIAL_BINDING_MISMATCH', 'CREDENTIAL_DECRYPT_FAILED'].includes(error.code);
-        if (recoverable && Object.keys(replacements).length > 0) {
-          throw new AppError(
-            'CREDENTIAL_REPLACEMENT_INCOMPLETE',
-            '现有凭据暂时无法读取，不能确认其中是否含有未显示的历史字段；旧凭据已原样保留。',
-            { causeCode:error.code },
-          );
-        }
-        throw error;
-      }
-      const merged = this.normalizeSecrets(nextPlugin, { ...existing, ...replacements });
+      const {secrets:merged} = await this.prepareSecretsUpdate(previous,nextPlugin,replacements,{slots});
       if (!Object.keys(merged).length) return { saved: false };
       return this.saveUnlocked(nextPlugin, merged, slots);
     });
   }
 
   async replaceUnreadable(previousPlugin, nextPlugin, secrets = {}) {
-    // This is deliberately separate from saveMerged: callers must first try the
-    // lossless merge and obtain explicit user confirmation before choosing to
-    // discard fields that cannot be decrypted. A recovered credential is merged
-    // normally so a stale confirmation can never erase readable historical data.
+    // 调用方必须先尝试无损合并，再取得用户对丢弃不可读字段的明确确认。
     const replacements = this.normalizeSecrets(nextPlugin, secrets);
     if (!Object.keys(replacements).length) {
       throw new AppError('INVALID_ARGUMENT', '强制替换凭据必须提供至少一个新的凭据字段。');
@@ -270,18 +278,7 @@ export class PluginCredentialVault {
     const previous = previousPlugin ?? nextPlugin;
     return this.enqueue(async () => {
       const slots = await this.readEnvelopeSlots();
-      let merged = replacements;
-      let discardedCause = null;
-      try {
-        const existing = (await this.loadFromSlots(previous, slots)).secrets ?? {};
-        merged = this.normalizeSecrets(nextPlugin, { ...existing, ...replacements });
-      } catch (error) {
-        if (!(error instanceof AppError)
-          || !['CREDENTIAL_BINDING_MISMATCH', 'CREDENTIAL_DECRYPT_FAILED'].includes(error.code)) {
-          throw error;
-        }
-        discardedCause = error.code;
-      }
+      const {secrets:merged,discardedCause} = await this.prepareSecretsUpdate(previous,nextPlugin,replacements,{forceCredentialReplacement:true,slots});
       const result = await this.saveUnlocked(nextPlugin, merged, slots, {
         removeResourceKeys:[resourceKey(previous)],
       });
@@ -386,6 +383,33 @@ export class PluginCredentialVault {
       entries[resourceKey(plugin)] = {pluginType:plugin.pluginType,bindingHash:bindingHash(plugin),ciphertext:Buffer.from(encrypted).toString('base64'),updatedAt:new Date().toISOString()};
     }
     return {primary:entries,backup:structuredClone(entries)};
+  }
+
+  async capturePluginEntries(projectId,environmentId,pluginIds) {
+    const entries = await this.captureProjectEntries(projectId);
+    const keys = new Set(pluginIds.map(id => resourceKey({projectId,environmentId,pluginInstanceId:id})));
+    return Object.fromEntries(['primary','backup'].map(slot => [slot,Object.fromEntries(Object.entries(entries[slot]).filter(([key]) => keys.has(key)))]));
+  }
+
+  async restorePluginEntries(projectId,environmentId,pluginIds,saved) {
+    return this.enqueue(async () => {
+      const keys = new Set(pluginIds.map(id => resourceKey({projectId,environmentId,pluginInstanceId:id})));
+      const slots = await this.readEnvelopeSlots();
+      const values = {};
+      for (const slot of ['primary','backup']) {
+        if (!slots[slot].envelope && slots[slot].error?.code !== 'ENOENT') throw new AppError('CREDENTIAL_STORE_INVALID','凭据库无法安全更新。');
+        const envelope = cloneEnvelope(slots[slot].envelope ?? slots[slot === 'primary' ? 'backup' : 'primary'].envelope ?? emptyEnvelope());
+        for (const key of keys) delete envelope.entries[key];
+        for (const [key,entry] of Object.entries(saved[slot])) {
+          if (!keys.has(key)) throw new AppError('SCOPE_MISMATCH','凭据备份不属于本次插件组。');
+          envelope.entries[key] = entry;
+        }
+        values[slot] = envelope;
+      }
+      // 只替换当前批次条目，其他环境并发保存的凭据必须保留。
+      await this.atomicWrite(this.file,JSON.stringify(values.primary));
+      await this.atomicWrite(this.backupFile,JSON.stringify(values.backup));
+    });
   }
 
   async restoreProjectEntries(projectId, saved) {

@@ -38,6 +38,8 @@ import { registerV2Ipc } from './ipc-v2.mjs';
 import { CodexIntegration } from './codex-integration.mjs';
 import { NetworkChangeWatcher } from './network-change-watcher.mjs';
 import { PluginConfigTransactionJournal } from './plugin-config-transaction.mjs';
+import { PluginBatchTransaction } from './plugin-batch-transaction.mjs';
+import { migrateMysqlConnections } from './mysql-connection-migration.mjs';
 import { WorkspaceMutationCoordinator } from './workspace-mutation-coordinator.mjs';
 import { CredentialUseResolver } from './credential-use-resolver.mjs';
 import { PluginValidationRuntime } from './plugin-validation-runtime.mjs';
@@ -194,8 +196,11 @@ if (process.argv.includes('--mcp')) {
         await pluginCredentialVault.ensureBackup();
         const cloudWorkspace = new CloudConfigWorkspace(workspaceStore,pluginCredentialVault,safeStorage);
         await cloudWorkspace.recoverAll();
+        const pluginBatchTransaction = new PluginBatchTransaction(workspaceStore,pluginCredentialVault,safeStorage);
+        await pluginBatchTransaction.recoverAll();
         const configTransactionJournal = new PluginConfigTransactionJournal(dataRoot, workspaceStore, pluginCredentialVault);
         configTransactionJournal.addGuard(cloudWorkspace);
+        configTransactionJournal.addGuard(pluginBatchTransaction);
         await configTransactionJournal.recoverAll();
         const pluginDraftCredentialVault = new PluginDraftCredentialVault(dataRoot,safeStorage);
         const pluginDraftStore = new PluginDraftStore(workspaceStore,pluginDraftCredentialVault);
@@ -225,6 +230,7 @@ if (process.argv.includes('--mcp')) {
             // is archived byte-for-byte if the project is explicitly deleted.
           }
         }
+        await migrateMysqlConnections(workspaceStore,pluginCredentialVault,pluginBatchTransaction,configTransactionJournal);
         const resolver = new AddressResolver();
         const vpnGuard = new SystemVpnGuard();
         const serverRuntime = new ServerPluginRuntime(workspaceStore, pluginCredentialVault, { resolver, vpnGuard });
@@ -278,7 +284,7 @@ if (process.argv.includes('--mcp')) {
           }
         };
         const v2Service = new V2Service({ workspaceStore, connectionManager: environmentConnectionManager, pluginManager, contextManager, confirmationManager, serverOperations, credentialVault: pluginCredentialVault, mutationCoordinator, workspaceChanged:(payload) => broadcast('v2:workspace-changed', payload) });
-        v2 = { serverDocker, serverWorkspaceManager, serverWorkspaceFiles, workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, mutationCoordinator, credentialUseResolver, validationRuntime, pluginProbeManager, pluginEditSessionManager, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
+        v2 = { serverDocker, serverWorkspaceManager, serverWorkspaceFiles, workspaceStore, credentialVault: pluginCredentialVault, legacyCredentialStore:credentialStore, configTransactionJournal, pluginBatchTransaction, mutationCoordinator, credentialUseResolver, validationRuntime, pluginProbeManager, pluginEditSessionManager, resolver, vpnGuard, serverRuntime, routeManager, mysqlRuntime, redisRuntime, pluginManager, connectionManager: environmentConnectionManager, networkWatcher, serverOperations, contextManager, confirmationManager, v2Service };
         const cloudConfigService = new CloudConfigService({...v2,workspace:cloudWorkspace,broadcast});
         await cloudConfigService.init();
         v2.cloudConfigService = cloudConfigService;

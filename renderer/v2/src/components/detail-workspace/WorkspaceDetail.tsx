@@ -22,7 +22,7 @@ import {
 } from "@phosphor-icons/react"
 import { useCallback,useEffect,useRef,useState,type ReactNode } from "react"
 
-import type { AiOpsV2Api, EnvironmentRuntime } from "@/bridge/ai-ops-v2"
+import type { AiOpsV2Api, EnvironmentRuntime, PluginRecord } from "@/bridge/ai-ops-v2"
 import { StatusIndicator } from "@/components/app-shell/StatusIndicator"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -82,6 +82,7 @@ export type WorkspaceDetailAction =
   | Readonly<{ type: "edit-plugin"; plugin: PluginConfigurationRecord; returnFocus?: "plugin-action-edit" }>
   | Readonly<{ type: "rename-plugin"; plugin: PluginConfigurationRecord }>
   | Readonly<{ type: "delete-plugin"; plugin: PluginConfigurationRecord }>
+  | Readonly<{ type: "delete-mysql-connection"; plugin: PluginRecord }>
 
 export interface WorkspaceDetailProps {
   readonly onOpenWorkspace: () => void
@@ -572,6 +573,7 @@ export function WorkspaceDetail({
                       onCreatePlugin={() => onAction({ type: "create-plugin", environment })}
                       onOpenWorkspace={onOpenEnvironmentWorkspace}
                       onConfigurePlugin={onConfigureEnvironmentPlugin}
+                      onDeleteMysqlConnection={plugin => onAction({type:"delete-mysql-connection",plugin:{...plugin,projectId:environment.projectId,environmentId:environment.environmentId}})}
                       workspaceActions={environmentWorkspaceActions}
                       api={api}
                       environment={environment}

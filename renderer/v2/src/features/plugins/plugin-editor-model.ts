@@ -64,6 +64,10 @@ export interface PluginEditorState {
   readonly sessionEnded: boolean
   readonly confirmation: PluginEditorConfirmation | null
   readonly databases: readonly string[]
+  readonly selectedDatabases: readonly string[]
+  readonly managedDatabases: readonly string[] | null
+  readonly managedConnectionName: string | null
+  readonly unifyMysqlGroup: boolean
   readonly databasesLoading: boolean
   readonly databasesTruncated: boolean
   readonly error: PublicError | null
@@ -111,10 +115,19 @@ export type PluginEditorAction =
   | { readonly type: "saving" }
   | { readonly type: "databases-loading" }
   | { readonly type: "databases"; readonly result: PluginDatabaseListData }
+  | { readonly type: "select-databases"; readonly databases: readonly string[] }
+  | { readonly type: "manage-databases"; readonly databases: readonly string[] }
+  | { readonly type: "connection-name"; readonly name: string }
+  | { readonly type: "unify-mysql-group"; readonly value: boolean }
   | { readonly type: "confirmation"; readonly confirmation: PluginEditorConfirmation | null }
   | { readonly type: "failure"; readonly error: PublicError }
   | { readonly type: "clear-sensitive" }
   | { readonly type: "closed" }
+
+function mysqlDiscoveryIdentity(draft: PluginFormDraft): string {
+  const {database: _database, ...target} = draft.target
+  return JSON.stringify({pluginType: draft.pluginType, target, auth: draft.auth, transport: draft.transport, tls: draft.tls})
+}
 
 export function initialPluginEditorState(ownerKey: string, draft: PluginFormDraft): PluginEditorState {
   return {
@@ -130,6 +143,10 @@ export function initialPluginEditorState(ownerKey: string, draft: PluginFormDraf
     sessionEnded: false,
     confirmation: null,
     databases: [],
+    selectedDatabases: [],
+    managedDatabases: null,
+    managedConnectionName: null,
+    unifyMysqlGroup: false,
     databasesLoading: false,
     databasesTruncated: false,
     error: null,
@@ -143,6 +160,10 @@ export function pluginEditorReducer(
   action: PluginEditorAction,
 ): PluginEditorState {
   switch (action.type) {
+    case "manage-databases":
+      return { ...state, managedDatabases: action.databases }
+    case "connection-name":
+      return { ...state, managedConnectionName: action.name }
     case "reset":
       return {
         ...initialPluginEditorState(action.ownerKey, action.draft),
@@ -175,9 +196,11 @@ export function pluginEditorReducer(
     case "draft":
       return {
         ...state,
-        draft: action.draft,
+        draft: state.selectedDatabases.length > 0 && mysqlDiscoveryIdentity(state.draft) !== mysqlDiscoveryIdentity(action.draft)
+          ? { ...action.draft, target: { ...action.draft.target, database: "" } } : action.draft,
         issues: [],
-        databases: [],
+        databases: mysqlDiscoveryIdentity(state.draft) === mysqlDiscoveryIdentity(action.draft) ? state.databases : [],
+        selectedDatabases: mysqlDiscoveryIdentity(state.draft) === mysqlDiscoveryIdentity(action.draft) && state.draft.target.database === action.draft.target.database ? state.selectedDatabases : [],
         databasesLoading: false,
         databasesTruncated: false,
         validation: state.validation
@@ -190,7 +213,9 @@ export function pluginEditorReducer(
       return {
         ...state,
         credentials: action.credentials,
+        draft: state.selectedDatabases.length > 0 ? { ...state.draft, target: { ...state.draft.target, database: "" } } : state.draft,
         databases: [],
+        selectedDatabases: [],
         databasesLoading: false,
         databasesTruncated: false,
         validation: state.validation
@@ -225,8 +250,17 @@ export function pluginEditorReducer(
       return { ...state, phase: "saving", error: null }
     case "databases-loading":
       return { ...state, databasesLoading: true, databases: [], databasesTruncated: false, error: null }
-    case "databases":
-      return { ...state, databasesLoading: false, databases: action.result.databases, databasesTruncated: action.result.truncated }
+    case "databases": {
+      const selected = state.selectedDatabases.filter(database => action.result.databases.includes(database))
+      const selectionChanged = selected.length !== state.selectedDatabases.length
+      return { ...state, databasesLoading: false, databases: action.result.databases, databasesTruncated: action.result.truncated,
+        selectedDatabases: selected,
+        ...(selectionChanged ? { draft: { ...state.draft, target: { ...state.draft.target, database: selected[0] ?? "" } }, validation: null, draftGeneration: state.draftGeneration + 1 } : {}) }
+    }
+    case "select-databases":
+      return { ...state, selectedDatabases: action.databases, draft: { ...state.draft, target: { ...state.draft.target, database: action.databases[0] ?? "" } }, validation: null, issues: [], draftGeneration: state.draftGeneration + 1 }
+    case "unify-mysql-group":
+      return { ...state, unifyMysqlGroup: action.value }
     case "confirmation":
       return {
         ...state,

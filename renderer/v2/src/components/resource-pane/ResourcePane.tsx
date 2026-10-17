@@ -1,4 +1,5 @@
 import { ProjectUpdateBanner } from "@/features/updates/UpdateHints"
+import { MysqlPluginGroups } from "@/features/plugins/MysqlPluginGroups"
 import {
   ArrowClockwise,
   DotsThree,
@@ -96,6 +97,7 @@ export type ResourcePaneAction =
   | Readonly<{ type: "delete-environment"; environment: WorkspaceEnvironmentReadModel }>
   | Readonly<{ type: "create-plugin"; environment: WorkspaceEnvironmentReadModel }>
   | Readonly<{ type: "edit-plugin"; environment: WorkspaceEnvironmentReadModel; plugin: WorkspacePluginReadModel }>
+  | Readonly<{ type: "delete-plugin" | "delete-mysql-connection"; environment: WorkspaceEnvironmentReadModel; plugin: WorkspacePluginReadModel }>
 
 interface ResourcePaneProps {
   readonly api: AiOpsV2Api
@@ -154,11 +156,12 @@ function NavigationReadFailure({
   )
 }
 
-function PluginContextMenu({ children, icon: PluginIcon, onEdit, onView, scopeKey }: {
+function PluginContextMenu({ children, icon: PluginIcon, onEdit, onView, onDelete, scopeKey }: {
   readonly children: ReactNode
   readonly icon: Icon
   readonly onEdit: () => void
   readonly onView: () => void
+  readonly onDelete: () => void
   readonly scopeKey: string
 }) {
   const handoff = useMenuHandoff(scopeKey)
@@ -174,6 +177,11 @@ function PluginContextMenu({ children, icon: PluginIcon, onEdit, onView, scopeKe
         <ContextMenuItem onSelect={() => handoff.queueAction(onEdit)}>
           <GearSix />
           插件设置
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => handoff.queueAction(onDelete)} variant="destructive">
+          <Trash />
+          删除插件
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
@@ -419,7 +427,7 @@ function EnvironmentGroup({
             </div>
           ) : null}
           {plugins.length > 0 ? <ItemGroup className="gap-0 has-data-[size=xs]:gap-0">
-            {plugins.map((plugin) => {
+            <MysqlPluginGroups api={api} scope={environment} runtime={rawRuntime} disabled={!connectionControlsReady} onConfigure={plugin => onAction({ type: "edit-plugin", environment, plugin })} onDelete={plugin => onAction({ type: "delete-mysql-connection", environment, plugin })} plugins={plugins} renderPlugin={(plugin) => {
             const PluginIcon = pluginIcons[plugin.pluginType]
             const selected =
               selectedEnvironmentId === environment.environmentId
@@ -517,13 +525,14 @@ function EnvironmentGroup({
                 icon={PluginIcon}
                 key={plugin.pluginInstanceId}
                 onEdit={() => onAction({ type: "edit-plugin", environment, plugin })}
+                onDelete={() => onAction({ type: "delete-plugin", environment, plugin })}
                 onView={() => onSelectPlugin(plugin.pluginInstanceId)}
                 scopeKey={`${menuScopeKey}/${plugin.pluginInstanceId}:${plugin.revision}`}
               >
                 {row}
               </PluginContextMenu>
             )
-            })}
+            }} />
           </ItemGroup> : null}
           <Button
             className="h-8 w-full justify-start gap-2 rounded-md border-0 bg-transparent px-2 text-xs font-normal text-muted-foreground shadow-none transition-colors duration-150 hover:bg-surface-hover hover:text-foreground"

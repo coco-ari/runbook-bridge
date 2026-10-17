@@ -1,6 +1,8 @@
 import { normalizeEnvironmentType, environmentTypeFields } from './environment-type.mjs';
 import { builtinPluginRegistry } from './plugins/builtins.mjs';
 import { normalizePlugin, normalizePluginCandidate, materializePluginCandidate, sanitizePluginSnapshot, normalizeId, normalizeName } from './plugin-config-model.mjs';
+import { resolveStoredMysql, storedPluginSnapshot } from './mysql-connection-profile.mjs';
+import { mysqlConnectionsEqual } from './mysql-plugin-group.mjs';
 import { ID_RE, assertId, assertPluginPatchScope, assertPluginNestedPatchScope, preserveNormalizationOnlyRoots, PLUGIN_METADATA_FIELDS, PLUGIN_AGENT_FIELDS } from './plugin-config-utils.mjs';
 import crypto from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
@@ -32,6 +34,7 @@ const FATAL_FILESYSTEM_ERRORS = new Set(['EACCES', 'EPERM', 'EIO', 'EMFILE', 'EN
 const ISOLATABLE_CONFIG_ERRORS = new Set([
   'PROJECT_CONFIG_INVALID', 'ENVIRONMENT_CONFIG_INVALID', 'PLUGIN_CONFIG_INVALID',
   'ENVIRONMENT_NOT_FOUND', 'PLUGIN_NOT_FOUND', 'SCOPE_MISMATCH',
+  'MYSQL_CONNECTION_INVALID', 'MYSQL_CONNECTION_NOT_FOUND',
 ]);
 
 function isConfigurationFailure(error) {
@@ -587,12 +590,15 @@ export class WorkspaceStore {
   async getEnvironment(projectId, environmentId) {
     const value = await this.readYaml(this.environmentPath(projectId, environmentId), 'ENVIRONMENT_NOT_FOUND', '环境不存在。');
     if (value?.projectId !== projectId || value.environmentId !== environmentId) throw new AppError('SCOPE_MISMATCH', '环境不属于当前项目。');
-    if (value?.schemaVersion !== 1 || typeof value.name !== 'string' || !value.name.trim()
+    if (![1,2].includes(value?.schemaVersion) || typeof value.name !== 'string' || !value.name.trim()
       || !Number.isInteger(value.revision) || value.revision < 1 || !Array.isArray(value.pluginOrder)
       || value.pluginOrder.some((id) => !ID_RE.test(String(id))) || new Set(value.pluginOrder).size !== value.pluginOrder.length) {
       throw new AppError('ENVIRONMENT_CONFIG_INVALID', '环境配置损坏。');
     }
     normalizeEnvironmentType(value.environmentType);
+    if (value.schemaVersion === 2 && (!Array.isArray(value.mysqlConnections) || value.mysqlConnections.length > 100 || new Set(value.mysqlConnections.map(item => item.connectionId)).size !== value.mysqlConnections.length)) {
+      throw new AppError('ENVIRONMENT_CONFIG_INVALID','环境中的 MySQL 连接记录损坏。');
+    }
     return value;
   }
 
@@ -913,15 +919,17 @@ export class WorkspaceStore {
 
   async listPluginsForEnvironment(environment) {
     return mapLimit(environment.pluginOrder ?? [], FILE_READ_CONCURRENCY, (pluginInstanceId) => (
-      this.getPlugin(environment.projectId, environment.environmentId, pluginInstanceId)
+      this.getPlugin(environment.projectId, environment.environmentId, pluginInstanceId,environment)
     ));
   }
 
-  async getPlugin(projectId, environmentId, pluginInstanceId) {
-    const value = await this.readYaml(this.pluginPath(projectId, environmentId, pluginInstanceId), 'PLUGIN_NOT_FOUND', '插件不存在。');
+  async getPlugin(projectId, environmentId, pluginInstanceId,environment = null) {
+    let value = await this.readYaml(this.pluginPath(projectId, environmentId, pluginInstanceId), 'PLUGIN_NOT_FOUND', '插件不存在。');
     if (value?.projectId !== projectId || value.environmentId !== environmentId || value.pluginInstanceId !== pluginInstanceId) {
       throw new AppError('SCOPE_MISMATCH', '插件不属于当前环境。');
     }
+    if (environment && (environment.projectId !== projectId || environment.environmentId !== environmentId)) throw new AppError('SCOPE_MISMATCH','共享连接不属于当前环境。');
+    if (value.schemaVersion === 2) value = resolveStoredMysql(value,environment ?? await this.getEnvironment(projectId,environmentId));
     if (value?.schemaVersion !== 1 || !this.registry.has(value.pluginType) || typeof value.displayName !== 'string' || !value.displayName.trim()
       || !Number.isInteger(value.revision) || value.revision < 1 || !['ready','draft'].includes(value.configState)) {
       throw new AppError('PLUGIN_CONFIG_INVALID', '插件配置损坏。');
@@ -1091,11 +1099,12 @@ export class WorkspaceStore {
   async commitPluginSnapshot(plugin, expectedCurrentRevision) {
     return this.enqueue(`environment:${plugin.projectId}:${plugin.environmentId}`, async () => {
       const current = await this.getPlugin(plugin.projectId, plugin.environmentId, plugin.pluginInstanceId);
+      if (current.mysqlConnectionId && (plugin.mysqlConnectionId !== current.mysqlConnectionId || !mysqlConnectionsEqual(current,plugin))) throw new AppError('MYSQL_GROUP_EDIT_REQUIRED','共享连接必须在连接编辑事务中统一修改。');
       if (current.revision !== expectedCurrentRevision || plugin.revision !== expectedCurrentRevision + 1) {
         throw new AppError('CONFIG_REVISION_CONFLICT', '插件配置已经变化，请刷新后重试。');
       }
       await this.assertPluginReferences(plugin);
-      await this.writeYaml(this.pluginPath(plugin.projectId, plugin.environmentId, plugin.pluginInstanceId), plugin);
+      await this.writeYaml(this.pluginPath(plugin.projectId, plugin.environmentId, plugin.pluginInstanceId), storedPluginSnapshot(plugin,this.registry));
       return plugin;
     });
   }
@@ -1108,7 +1117,7 @@ export class WorkspaceStore {
           throw new AppError('CONFIG_REVISION_CONFLICT', '插件配置在凭据保存期间再次变化，不能覆盖较新的配置。');
         }
       }
-      await this.writeYaml(this.pluginPath(plugin.projectId, plugin.environmentId, plugin.pluginInstanceId), plugin);
+      await this.writeYaml(this.pluginPath(plugin.projectId, plugin.environmentId, plugin.pluginInstanceId), storedPluginSnapshot(plugin,this.registry));
       return plugin;
     });
   }
@@ -1132,6 +1141,7 @@ export class WorkspaceStore {
       const dependents = plugins.filter((item) => item.transport?.kind === 'serverTunnel' && item.transport.serverPluginInstanceId === pluginInstanceId);
       if (dependents.length) throw new AppError('PLUGIN_HAS_DEPENDENTS', `仍有 ${dependents.length} 个插件复用此隧道：${dependents.map((item) => item.displayName).join('、')}。`);
       const next = { ...environment, pluginOrder: environment.pluginOrder.filter((id) => id !== pluginInstanceId), revision: environment.revision + 1, updatedAt: now() };
+      if (environment.mysqlConnections) next.mysqlConnections = environment.mysqlConnections.filter(connection => plugins.some(item => item.pluginInstanceId !== pluginInstanceId && item.mysqlConnectionId === connection.connectionId));
       const source = this.pluginPath(projectId, environmentId, pluginInstanceId);
       const tombstone = `${source}.deleting-${crypto.randomBytes(4).toString('hex')}`;
       await fs.rename(source, tombstone);
@@ -1160,6 +1170,7 @@ export class WorkspaceStore {
       pluginInstanceId: plugin.pluginInstanceId,
       pluginType: plugin.pluginType,
       displayName: plugin.displayName,
+      ...(plugin.mysqlConnectionId ? {mysqlConnectionId:plugin.mysqlConnectionId,mysqlConnectionName:plugin.mysqlConnectionName} : {}),
       configState: plugin.configState,
       revision: plugin.revision,
       resource: this.registry.get(plugin.pluginType).publicResource(plugin),

@@ -1,4 +1,5 @@
 import { DiagnosticDetails } from "./DiagnosticDetails"
+import { MysqlPluginGroups } from "@/features/plugins/MysqlPluginGroups"
 import { EnvironmentPluginRow, type EnvironmentWorkspaceAction } from "./EnvironmentPluginRow"
 import {
   ArrowClockwise,
@@ -40,6 +41,7 @@ export interface EnvironmentConnectionPanelProps {
   readonly onOpenWorkspace: (pluginInstanceId: string) => void
   readonly workspaceActions: Readonly<Record<string, EnvironmentWorkspaceAction>>
   readonly onConfigurePlugin: (pluginInstanceId: string) => void
+  readonly onDeleteMysqlConnection: (plugin: WorkspacePluginReadModel) => void
   readonly onCreatePlugin?: (() => void) | undefined
   readonly onOpenPlugin: (pluginInstanceId: string) => void
   readonly runtime?: EnvironmentRuntime | null
@@ -63,6 +65,7 @@ export function EnvironmentConnectionPanel({
   plugins,
   onOpenPlugin,
   onConfigurePlugin,
+  onDeleteMysqlConnection,
   onCreatePlugin,
   onOpenWorkspace,
   workspaceActions,
@@ -218,7 +221,10 @@ export function EnvironmentConnectionPanel({
         ) : (
           <CardContent className="px-3">
             <div aria-label="环境插件状态" className="divide-y divide-border/60" role="list">
-              {detail.rows.map(row => <EnvironmentPluginRow key={row.plugin.pluginInstanceId} api={api} environment={environment} row={row} runtime={connection.state.runtime} onRuntime={onRuntime} onOpenPlugin={onOpenPlugin} onConfigurePlugin={onConfigurePlugin} onOpenWorkspace={onOpenWorkspace} workspace={workspaceActions[row.plugin.pluginInstanceId]} />)}
+              <MysqlPluginGroups api={api} scope={environment} runtime={connection.state.runtime} onConfigure={plugin => onConfigurePlugin(plugin.pluginInstanceId)} onDelete={onDeleteMysqlConnection} plugins={detail.rows.map(row => row.plugin)} renderPlugin={plugin => {
+                const row = detail.rows.find(item => item.plugin.pluginInstanceId === plugin.pluginInstanceId)!
+                return <EnvironmentPluginRow key={plugin.pluginInstanceId} api={api} environment={environment} row={{...row,plugin}} runtime={connection.state.runtime} onRuntime={onRuntime} onOpenPlugin={onOpenPlugin} onConfigurePlugin={onConfigurePlugin} onOpenWorkspace={onOpenWorkspace} workspace={workspaceActions[plugin.pluginInstanceId]} />
+              }} />
             </div>
           </CardContent>
         )}

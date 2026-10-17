@@ -5,6 +5,7 @@ const fsp = require('node:fs/promises');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
+const YAML = require('yaml');
 const { spawn } = require('node:child_process');
 const { pathToFileURL } = require('node:url');
 const { packagedPaths } = require('./packaged-paths.cjs');
@@ -421,6 +422,52 @@ async function assertFilesUnchanged(files) {
   for (const [file, expected] of files) assert.deepEqual(await fsp.readFile(file), expected, file);
 }
 
+function assertUpgradeSnapshot(before, after, { environmentFile, mysqlFile, vaultFiles }) {
+  const previous = YAML.parse(before.get(mysqlFile).toString());
+  if (previous.schemaVersion === 2) {
+    for (const [file, value] of before) assert.deepEqual(after.get(file), value, file);
+    return false;
+  }
+  const current = YAML.parse(after.get(mysqlFile).toString());
+  assert.match(current.mysqlConnectionId, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u);
+  const { auth, transport, tls, ...previousNode } = previous;
+  assert.deepEqual(current, { ...previousNode, schemaVersion: 2, revision: previous.revision + 1,
+    mysqlConnectionId: current.mysqlConnectionId, target: { database: previous.target.database } });
+  const previousEnvironment = YAML.parse(before.get(environmentFile).toString());
+  const currentEnvironment = YAML.parse(after.get(environmentFile).toString());
+  const { database: _database, ...target } = previous.target;
+  assert.deepEqual(currentEnvironment, { ...previousEnvironment, schemaVersion: 2,
+    revision: previousEnvironment.revision + 1, updatedAt: currentEnvironment.updatedAt,
+    mysqlConnections: [{ connectionId: current.mysqlConnectionId, name: previous.displayName, revision: 1, target, auth, transport, tls }] });
+  const prefix = `${previous.projectId}/${previous.environmentId}/`;
+  const oldKey = `${prefix}${previous.pluginInstanceId}`;
+  const newKey = `${prefix}mysql-connection-${current.mysqlConnectionId}`;
+  let migratedEntry;
+  for (const file of vaultFiles) {
+    const oldVault = JSON.parse(before.get(file));
+    const newVault = JSON.parse(after.get(file));
+    const entry = newVault.entries[newKey];
+    assert.equal(entry?.pluginType, 'mysql');
+    assert.match(entry?.bindingHash ?? '', /^[a-f0-9]{64}$/u);
+    assert.ok(Buffer.from(entry?.ciphertext ?? '', 'base64').length > 0);
+    const entries = { ...oldVault.entries };
+    delete entries[oldKey];
+    entries[newKey] = entry;
+    assert.deepEqual(newVault, { ...oldVault, entries });
+    if (migratedEntry) assert.deepEqual(entry, migratedEntry, '迁移后的主备凭据必须一致');
+    migratedEntry = entry;
+  }
+  // 仅允许 MySQL 节点、其共享连接和对应凭据迁移；其他插件逐字节保留。
+  for (const [file, value] of before) {
+    if (![environmentFile, mysqlFile, ...vaultFiles].includes(file)) assert.deepEqual(after.get(file), value, file);
+  }
+  return true;
+}
+
+async function captureFiles(paths) {
+  return new Map(await Promise.all(paths.map(async file => [file, await fsp.readFile(file)])));
+}
+
 async function inspectInstalledBuild(executable, env) {
   const {appAsar} = packagedPaths(executable);
   const program = "const fs=require('node:fs');const path=require('node:path');const archive=process.env.AI_OPS_INSPECT_ASAR;const metadata=JSON.parse(fs.readFileSync(path.join(archive,'package.json'),'utf8'));process.stdout.write(JSON.stringify({version:metadata.version}));";
@@ -539,8 +586,9 @@ async function orchestrate() {
       'plugins',
       `${plugin.pluginInstanceId}.yaml`,
     ));
-    const protectedFiles = new Map();
-    for (const file of [...vaultFiles, ...pluginFiles]) protectedFiles.set(file, await fsp.readFile(file));
+    const environmentFile = path.join(isolation.dataRoot, 'projects', PROJECT_ID, 'environments', ENVIRONMENT_ID, 'environment.yaml');
+    const snapshotPaths = [...vaultFiles, ...pluginFiles, environmentFile];
+    const protectedFiles = await captureFiles(snapshotPaths);
     await assertFilesUnchanged(protectedFiles);
 
     const upgradedExecutable = await install(installer, installDir, isolation.env);
@@ -561,25 +609,33 @@ async function orchestrate() {
     installedApp = await startInstalledApp(upgradedExecutable, isolation);
     process.stdout.write('安装回归：新版已启动，验证保留的项目与凭据。\n');
     await inspectInstalledRenderer(installedApp.cdp, 3);
+    const afterMigration = await captureFiles(snapshotPaths);
+    const mysqlMigrated = assertUpgradeSnapshot(protectedFiles, afterMigration, {
+      environmentFile, mysqlFile: pluginFiles[1], vaultFiles,
+    });
+    // MCP 新增插件会更新环境索引；现有节点与凭据在正常使用中仍不得被改写。
+    const stableFiles = new Map([...afterMigration].filter(([file]) => file !== environmentFile));
     const connection = await exerciseFormalConnection(installedApp.cdp);
     const agent = await exerciseInstalledMcp(upgradedExecutable, isolation);
     process.stdout.write('安装回归：新版凭据与 MCP 验证通过。\n');
     await inspectInstalledRenderer(installedApp.cdp, 4);
     await stopInstalledApp(installedApp);
     installedApp = null;
-    await assertFilesUnchanged(protectedFiles);
+    await assertFilesUnchanged(stableFiles);
+    const uninstallSnapshot = await captureFiles(snapshotPaths);
 
     await uninstall(installDir, isolation.env);
     assert.equal(fs.existsSync(isolation.dataRoot), true, 'uninstall removed isolated AppData');
-    await assertFilesUnchanged(protectedFiles);
+    await assertFilesUnchanged(uninstallSnapshot);
     const result = {
       installedTwice: true,
       previousVersion: previousBuild.version,
       currentVersion: currentBuild.version,
       distinctBuilds: previousBuild.archiveHash !== currentBuild.archiveHash,
       guiCredentialsVerified: 3,
-      primaryAndBackupVaultPreserved: true,
-      originalPluginYamlPreserved: pluginFiles.length,
+      primaryAndBackupCredentialsPreserved: true,
+      mysqlSharedConnectionMigrated: mysqlMigrated,
+      unchangedPluginYamlCount: pluginFiles.length - Number(mysqlMigrated),
       formalConnectionOutcome: connection.attemptOutcome,
       agentListProjects: agent.listed,
       agentOpenEnvironment: agent.opened,
@@ -621,4 +677,4 @@ if (require.main === module) orchestrate().catch((error) => {
   process.exitCode = 1;
 });
 
-module.exports = { CdpClient, inspectInstalledBuild };
+module.exports = { CdpClient, inspectInstalledBuild, assertUpgradeSnapshot };
